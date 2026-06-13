@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/mensura-syntax",
     "crates/mensura-types",
+    "crates/mensura-runtime",
     "crates/mensura-cli",
 ]
 
@@ -15,5 +16,7 @@ repository = "https://github.com/mensura-lang/mensura"
 [workspace.dependencies]
 mensura-syntax = { path = "crates/mensura-syntax" }
 mensura-types = { path = "crates/mensura-types" }
+mensura-runtime = { path = "crates/mensura-runtime" }
 unicode-xid = "0.2"
 clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
