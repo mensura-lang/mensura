@@ -223,7 +223,7 @@ unit Enrollment {
 
 store Departments {
   unit { Department }
-  const { faculty: string }
+  const { name: string }
 }
 
 store Persons {
