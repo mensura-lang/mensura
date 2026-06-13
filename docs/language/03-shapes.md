@@ -40,7 +40,7 @@ store Students implements PersonRecord {
 store Faculty implements PersonRecord {
   unit { Person }
   const { admission: date }
-  var   { rank: enum(assistant, associate, full) }
+  var   { rank: enum("assistant", "associate", "full") }
 }
 
 fn count(t: PersonRecord) -> number { ... }

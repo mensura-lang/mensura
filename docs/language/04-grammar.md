@@ -50,7 +50,7 @@ domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
 
 type          = enum_type | named_type ;
-enum_type     = "enum" "(" ident { "," ident } ")" ;
+enum_type     = "enum" "(" string { "," string } ")" ;
 named_type    = ident ;
 ```
 
@@ -65,6 +65,9 @@ named_type    = ident ;
 - **`type`**: the word `enum` selects `enum_type`; any other `ident` selects
   `named_type`.  The decision is made on the current token alone (the `(`
   that must follow `enum` is checked after committing, not used to decide).
+  Enum variants are **string literals**, so their values are explicit and may
+  contain characters that are not valid identifiers (`"in-progress"`, spaces,
+  accents); this also matches how categorical values are stored and matched.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -96,7 +99,7 @@ as a reference to a unit (a compound field, deferred):
 | `number`    | numeric (integer or real)                 |
 | `bool`      | boolean                                   |
 | `date`      | calendar date (ISO 8601)                  |
-| `enum(...)` | one of a fixed set of bare-word variants  |
+| `enum(...)` | one of a fixed set of string-literal values |
 
 Physical-unit types (dimensional quantities, precision) are a separate,
 larger feature with their own design doc and are not in this subset.

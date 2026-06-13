@@ -5,7 +5,7 @@
 //! one token of lookahead, no backtracking.  Keywords are contextual, matched
 //! on the `Ident` text in the position where they are expected.
 
-use crate::ast::{DomainEntry, Field, Ident, Item, Program, StoreDecl, TypeExpr, UnitDecl};
+use crate::ast::{DomainEntry, Field, Ident, Item, Program, StoreDecl, StrLit, TypeExpr, UnitDecl};
 use crate::token::{Span, Token, TokenKind};
 
 /// A parse failure, located by a source span.
@@ -74,6 +74,20 @@ impl<'a> Parser<'a> {
                 };
                 self.pos += 1;
                 Ok(id)
+            }
+            _ => Err(self.error(format!("expected {what}"))),
+        }
+    }
+
+    fn expect_str(&mut self, what: &str) -> Result<StrLit, ParseError> {
+        match self.cur_kind() {
+            TokenKind::Str(value) => {
+                let lit = StrLit {
+                    value: value.clone(),
+                    span: self.cur_span(),
+                };
+                self.pos += 1;
+                Ok(lit)
             }
             _ => Err(self.error(format!("expected {what}"))),
         }
@@ -210,9 +224,9 @@ impl<'a> Parser<'a> {
             let start = self.cur_span().start;
             self.pos += 1; // `enum`
             self.expect(&TokenKind::LParen, "`(` after `enum`")?;
-            let mut variants = vec![self.expect_ident("an enum variant")?];
+            let mut variants = vec![self.expect_str("an enum variant string")?];
             while self.eat(&TokenKind::Comma) {
-                variants.push(self.expect_ident("an enum variant")?);
+                variants.push(self.expect_str("an enum variant string")?);
             }
             let end = self.expect(&TokenKind::RParen, "`)` to close the enum")?;
             Ok(TypeExpr::Enum {
@@ -280,15 +294,15 @@ mod tests {
 
     #[test]
     fn parses_enum_type() {
-        let src = "store S { unit { U } var { status: enum(active, inactive) } }";
+        let src = r#"store S { unit { U } var { status: enum("active", "inactive") } }"#;
         let program = parse_str(src).unwrap();
         let Item::Store(s) = &program.items[0] else {
             panic!("expected a store");
         };
         match &s.vars[0].ty {
             TypeExpr::Enum { variants, .. } => {
-                let names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
-                assert_eq!(names, ["active", "inactive"]);
+                let values: Vec<&str> = variants.iter().map(|v| v.value.as_str()).collect();
+                assert_eq!(values, ["active", "inactive"]);
             }
             other => panic!("expected an enum type, got {other:?}"),
         }

@@ -8,7 +8,7 @@ pub mod lexer;
 pub mod parser;
 pub mod token;
 
-pub use ast::{DomainEntry, Field, Ident, Item, Program, StoreDecl, TypeExpr, UnitDecl};
+pub use ast::{DomainEntry, Field, Ident, Item, Program, StoreDecl, StrLit, TypeExpr, UnitDecl};
 pub use lexer::{LexError, tokenize};
 pub use parser::{ParseError, parse};
 pub use token::{Span, Token, TokenKind};
