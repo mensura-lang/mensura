@@ -1,0 +1,10 @@
+[package]
+name = "mensura-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lexer, parser, and AST for the Mensura language."
+
+[dependencies]
+unicode-xid = { workspace = true }

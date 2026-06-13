@@ -1,0 +1,15 @@
+[package]
+name = "mensura-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The `mensura` command-line tool."
+
+[[bin]]
+name = "mensura"
+path = "src/main.rs"
+
+[dependencies]
+mensura-syntax = { workspace = true }
+clap = { workspace = true }
