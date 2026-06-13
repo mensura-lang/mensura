@@ -41,3 +41,6 @@ specification.
   `docs/` *before* any code.  Code is the encoding of an agreed-upon spec.
 - Do not create new top-level files without a clear place for them in the
   repository layout described in `ROADMAP.md`.
+- Before each commit, run `cargo fmt --all` and `cargo test --workspace`.
+  CI enforces the same on every pull request (`cargo fmt --all -- --check`
+  plus the tests), so a commit that skips them will fail CI.
