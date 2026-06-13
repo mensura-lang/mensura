@@ -1,0 +1,32 @@
+// College stores: the basic, fully-resolving subset of
+// docs/language/02-stores.md.
+//
+// Compound units (units whose fields reference other units) and `domain`
+// blocks are deferred, so the compound `Course`/`Enrollment` stores from that
+// document are intentionally omitted here.  Everything below parses and
+// resolves under the current `unit` + basic `store` feature.
+
+unit Person {
+  id: string
+}
+
+unit Department {
+  code: string
+}
+
+store Departments {
+  unit { Department }
+  const { name: string }
+}
+
+store Persons {
+  unit { Person }
+  const { birthdate: date }
+  var   { last_name: string }
+}
+
+store Students {
+  unit { Person }
+  const { admission: date }
+  var   { status: enum("active", "inactive") }
+}

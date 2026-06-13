@@ -114,7 +114,7 @@ Specifically:
 
 ## M1 — Frontend: parse + typecheck (no execution)
 
-Output: `mensura check file.men` accepts/rejects programs with span-based
+Output: `mensura check file.mensura` accepts/rejects programs with span-based
 diagnostics.
 
 - `mensura-syntax`: lexer, hand-written recursive-descent LL(1) parser, AST,
