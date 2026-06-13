@@ -1,0 +1,10 @@
+[package]
+name = "mensura-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Name resolution and the resolved schema model for Mensura."
+
+[dependencies]
+mensura-syntax = { workspace = true }
