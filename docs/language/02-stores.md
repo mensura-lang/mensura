@@ -44,7 +44,7 @@ A store declaration consists of a name, a unit reference, an optional
 store Persons {
   unit { Person }
   const { birthdate: date }
-  var   { status: enum(active, inactive) }
+  var   { status: enum("active", "inactive") }
 }
 ```
 
@@ -243,7 +243,7 @@ store Courses {
     department: Departments
   }
   const {
-    weekday: enum(Monday, Tuesday, Wednesday, Thursday, Friday)
+    weekday: enum("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
   }
 }
 

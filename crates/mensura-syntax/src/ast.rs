@@ -26,6 +26,13 @@ pub struct Ident {
     pub span: Span,
 }
 
+/// A string literal: its already-unescaped value and where it appeared.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrLit {
+    pub value: String,
+    pub span: Span,
+}
+
 /// `unit Name { field* }`
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnitDecl {
@@ -69,8 +76,8 @@ pub struct DomainEntry {
 pub enum TypeExpr {
     /// A primitive name (`string`, `number`, ...) or a unit reference.
     Named(Ident),
-    /// `enum(a, b, ...)` with one or more bare-word variants.
-    Enum { variants: Vec<Ident>, span: Span },
+    /// `enum("a", "b", ...)` with one or more string-literal variants.
+    Enum { variants: Vec<StrLit>, span: Span },
 }
 
 impl TypeExpr {
