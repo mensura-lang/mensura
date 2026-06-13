@@ -12,4 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 mensura-syntax = { workspace = true }
+mensura-types = { workspace = true }
+mensura-runtime = { workspace = true }
 clap = { workspace = true }
