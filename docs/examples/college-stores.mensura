@@ -1,5 +1,5 @@
 // College stores: the basic, fully-resolving subset of
-// docs/language/02-stores.md, plus a parameter-free shape from
+// docs/language/02-stores.md, plus a unit-agnostic shape from
 // docs/language/03-shapes.md.
 //
 // Compound units (units whose fields reference other units) and `domain`
@@ -15,20 +15,18 @@ unit Department {
   code: string
 }
 
-// A structural contract: any store claiming `Ageable` must tabulate `Person`
-// and carry a `const birthdate: date`, so an age can be derived from it.
-// `Persons` claims it below.
-shape Ageable {
-  unit { Person }
-  const { birthdate: date }
+// Unit-agnostic: no unit clause, so any store carrying a `const name: string`
+// conforms, whatever its unit.  `Departments` claims it below.
+shape Named {
+  const { name: string }
 }
 
-store Departments {
+store Departments : Named {
   unit { Department }
   const { name: string }
 }
 
-store Persons : Ageable {
+store Persons {
   unit { Person }
   const { birthdate: date }
   var   { last_name: string }

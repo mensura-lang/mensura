@@ -50,32 +50,55 @@ pub struct Field {
     pub span: Span,
 }
 
-/// `store Name [: Shape, ...] { unit { U } (const|var|domain block)* }`
+/// `store Name [: ShapeRef, ...] { unit { U } (const|var|domain block)* }`
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreDecl {
     pub name: Ident,
     /// The unit named by the `unit { U }` clause.
     pub unit: Ident,
     /// The shapes claimed by the `:` conformance clause, in source order.
-    pub conforms: Vec<Ident>,
+    pub conforms: Vec<ShapeRef>,
     pub consts: Vec<Field>,
     pub vars: Vec<Field>,
     pub domain: Vec<DomainEntry>,
     pub span: Span,
 }
 
-/// `shape Name { unit { U } (const|var block)* }`
+/// One entry in a `:` conformance clause: a shape name with positional
+/// arguments, e.g. `Tabular(Person)` or the parameter-free `PersonRecord`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeRef {
+    pub name: Ident,
+    /// Positional arguments; bare unit names for `Unit` parameters.
+    pub args: Vec<Ident>,
+    pub span: Span,
+}
+
+/// `shape Name [(params)] { [unit { U }] (const|var block)* }`
 ///
-/// A parameter-free structural contract: a unit plus the attributes a
-/// conforming store must carry.  Shapes hold no `domain` block, no policy,
-/// and no storage; see `docs/language/03-shapes.md`.
+/// A structural contract: an optional unit plus the attributes a conforming
+/// store must carry.  Shapes hold no `domain` block, no policy, and no
+/// storage; see `docs/language/03-shapes.md`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeDecl {
     pub name: Ident,
-    /// The unit named by the `unit { U }` clause.
-    pub unit: Ident,
+    /// Parameters in source order; their kind is the annotation `Ident`.
+    pub params: Vec<ShapeParam>,
+    /// The unit named by the `unit { U }` clause, if any.  `None` is a
+    /// unit-agnostic shape.
+    pub unit: Option<Ident>,
     pub consts: Vec<Field>,
     pub vars: Vec<Field>,
+    pub span: Span,
+}
+
+/// A shape parameter `name: Kind`.  The parser leaves `kind` as the raw
+/// annotation identifier (`Unit`, `string`, ...); the resolver gives it
+/// meaning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeParam {
+    pub name: Ident,
+    pub kind: Ident,
     pub span: Span,
 }
 

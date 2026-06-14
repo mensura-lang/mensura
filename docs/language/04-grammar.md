@@ -2,9 +2,9 @@
 
 This document specifies the concrete surface grammar Mensura's parser
 accepts *today*.  It grows one feature at a time; the current subset covers
-`unit` declarations, the basic form of `store` declarations, and
-parameter-free `shape` declarations with the `:` conformance clause on
-stores.
+`unit` declarations, the basic form of `store` declarations, and `shape`
+declarations (with an optional unit clause and optional `Unit` parameters)
+claimed through the `:` conformance clause on stores.
 
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
@@ -21,9 +21,10 @@ with a `:` clause after its name.  Per `CLAUDE.md`, the design docs are
 authoritative; alternative spellings (such as an inline field-level domain
 annotation) are deferred sugar and are not accepted yet.
 
-Shape *parameters* (the `(units; names)` list of `03-shapes.md`) and the
-`:` clause on function signatures are deferred; this subset covers
-parameter-free shapes only.
+Shapes may take a parameter list and may omit the unit clause, per
+`03-shapes.md`.  This subset implements `Unit` parameters only; *value*
+parameters (`string`, ...), backtick name interpolation, and the parameter
+list on function signatures are deferred to a follow-up.
 
 ## Lexical basis
 
@@ -47,7 +48,9 @@ unit_decl     = "unit" ident "{" { field } "}" ;
 field         = ident ":" type ;
 
 store_decl    = "store" ident [ conforms ] "{" unit_clause { store_block } "}" ;
-conforms      = ":" ident { "," ident } ;
+conforms      = ":" shape_ref { "," shape_ref } ;
+shape_ref     = ident [ args ] ;
+args          = "(" ident { "," ident } ")" ;
 unit_clause   = "unit" "{" ident "}" ;
 store_block   = const_block | var_block | domain_block ;
 const_block   = "const" "{" { attr } "}" ;
@@ -56,7 +59,9 @@ attr          = ident ":" type ;
 domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
 
-shape_decl    = "shape" ident "{" unit_clause { shape_block } "}" ;
+shape_decl    = "shape" ident [ params ] "{" [ unit_clause ] { shape_block } "}" ;
+params        = "(" param { "," param } ")" ;
+param         = ident ":" ident ;
 shape_block   = const_block | var_block ;
 
 type          = enum_type | named_type ;
@@ -70,8 +75,13 @@ named_type    = ident ;
   `store` selects `store_decl`, `shape` selects `shape_decl`; the three
   FIRST sets are disjoint.
 - **`conforms`**: after a store name the next token is either `:` (the
-  clause is present) or `{` (it is absent).  One token decides; the clause
-  itself is a non-empty `,`-separated `ident` list with no further choice.
+  clause is present) or `{` (it is absent).  One token decides.
+- **`shape_ref`**: after the shape name, `(` opens an argument list and any
+  other token (`,` or `{`) ends the reference.  One token decides.
+- **`params`**: after a shape name, `(` opens the parameter list and `{`
+  skips it.  One token decides.
+- **`shape_decl` body**: the optional `unit_clause` is taken when the body
+  opens with the `unit` keyword, and skipped otherwise.  One token decides.
 - **`store_block` loop**: at each turn the next token is either `}` (end the
   store body) or one of the introducers `const` / `var` / `domain`, all
   distinct words.  One token decides.
@@ -101,6 +111,11 @@ subset.
 - **Clause order.**  A `store` body must begin with its `unit { U }` clause,
   followed by zero or more `const`, `var`, and `domain` blocks in any order.
   Repeated `const`/`var` blocks are allowed and merged by the resolver.
+- **A shape's unit clause is optional.**  When present it comes first, as in
+  a store; when absent the shape is unit-agnostic.  A shape claimed with
+  arguments (`Tabular(Person)`) binds its `Unit` parameters positionally;
+  a non-`Unit` parameter annotation is rejected by the resolver as "not yet
+  supported".
 - **`enum` is positional.**  `enum` is a keyword only in `type` position; it
   cannot be a unit or store name there.
 - **`domain` is parsed, not yet resolved.**  The grammar accepts `domain`
@@ -148,7 +163,7 @@ store Persons {
   var   { last_name: string }
 }
 
-store Students : PersonRecord {
+store Students : PersonRecord, Tabular(Person) {
   unit { Person }
   const { admission: date }
 }
@@ -157,18 +172,29 @@ shape PersonRecord {
   unit { Person }
   const { admission: date }
 }
+
+shape Tabular(U: Unit) {
+  unit { U }
+}
+
+shape Named {
+  const { name: string }
+}
 ```
 
-`Students` claims conformance to the shape `PersonRecord`; the resolver
-checks that the store's unit and `admission` attribute match.  `Courses` and
-`StudentGrades` from `02-stores.md` are compound (their units reference other
-units and they carry `domain` blocks); they parse but are rejected by the
-resolver until compound support lands.
+`Students` claims the concrete-unit shape `PersonRecord` and the
+unit-parameter shape `Tabular(Person)`; the resolver checks the store's unit
+and `admission` attribute against the former and binds `U := Person` for the
+latter.  `Named` is unit-agnostic (no unit clause): any store carrying a
+`const name: string` conforms.  `Courses` and `StudentGrades` from
+`02-stores.md` are compound (their units reference other units and they carry
+`domain` blocks); they parse but are rejected by the resolver until compound
+support lands.
 
 ## Forward references
 
-- Shape parameters (`(units; names)`) and the `:` clause on function
-  signatures.
+- Value parameters (`string`, ...), backtick name interpolation, and the
+  parameter list on function signatures.
 - Compound units, `domain` resolution, and foreign keys.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Physical-unit and precision types.

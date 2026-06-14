@@ -6,7 +6,8 @@
 //! on the `Ident` text in the position where they are expected.
 
 use crate::ast::{
-    DomainEntry, Field, Ident, Item, Program, ShapeDecl, StoreDecl, StrLit, TypeExpr, UnitDecl,
+    DomainEntry, Field, Ident, Item, Program, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit,
+    TypeExpr, UnitDecl,
 };
 use crate::token::{Span, Token, TokenKind};
 
@@ -187,8 +188,14 @@ impl<'a> Parser<'a> {
         let start = self.cur_span().start;
         self.pos += 1; // `shape`
         let name = self.expect_ident("a shape name")?;
+        let params = self.parse_param_list()?;
         self.expect(&TokenKind::LBrace, "`{` to open the shape body")?;
-        let unit = self.parse_unit_clause()?;
+        // The unit clause is optional: a shape with none is unit-agnostic.
+        let unit = if self.at_keyword("unit") {
+            Some(self.parse_unit_clause()?)
+        } else {
+            None
+        };
 
         let mut consts = Vec::new();
         let mut vars = Vec::new();
@@ -210,6 +217,7 @@ impl<'a> Parser<'a> {
         let end = self.expect(&TokenKind::RBrace, "`}` to close the shape body")?;
         Ok(ShapeDecl {
             name,
+            params,
             unit,
             consts,
             vars,
@@ -217,17 +225,70 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse the optional `: Shape, Shape, ...` conformance clause that may
-    /// follow a store name.  Returns an empty vector when absent.
-    fn parse_conforms_clause(&mut self) -> Result<Vec<Ident>, ParseError> {
+    /// Parse the optional `: ShapeRef, ShapeRef, ...` conformance clause that
+    /// may follow a store name.  Returns an empty vector when absent.
+    fn parse_conforms_clause(&mut self) -> Result<Vec<ShapeRef>, ParseError> {
         let mut shapes = Vec::new();
         if self.eat(&TokenKind::Colon) {
-            shapes.push(self.expect_ident("a shape name after `:`")?);
+            shapes.push(self.parse_shape_ref("a shape name after `:`")?);
             while self.eat(&TokenKind::Comma) {
-                shapes.push(self.expect_ident("a shape name after `,`")?);
+                shapes.push(self.parse_shape_ref("a shape name after `,`")?);
             }
         }
         Ok(shapes)
+    }
+
+    /// Parse one conformance entry: a shape name with an optional positional
+    /// argument list, e.g. `Tabular(Person)` or `PersonRecord`.
+    fn parse_shape_ref(&mut self, what: &str) -> Result<ShapeRef, ParseError> {
+        let name = self.expect_ident(what)?;
+        let mut args = Vec::new();
+        let mut end = name.span.end;
+        if self.check(&TokenKind::LParen) {
+            self.pos += 1; // `(`
+            args.push(self.expect_ident("a shape argument")?);
+            while self.eat(&TokenKind::Comma) {
+                args.push(self.expect_ident("a shape argument")?);
+            }
+            end = self
+                .expect(&TokenKind::RParen, "`)` to close the argument list")?
+                .end;
+        }
+        Ok(ShapeRef {
+            span: Span::new(name.span.start, end),
+            name,
+            args,
+        })
+    }
+
+    /// Parse an optional `(name: Kind, ...)` shape parameter list.  Returns an
+    /// empty vector when absent.  An empty `()` is rejected.
+    fn parse_param_list(&mut self) -> Result<Vec<ShapeParam>, ParseError> {
+        let mut params = Vec::new();
+        if self.check(&TokenKind::LParen) {
+            self.pos += 1; // `(`
+            if self.check(&TokenKind::RParen) {
+                return Err(self.error("empty parameter list; omit the `()`"));
+            }
+            params.push(self.parse_param()?);
+            while self.eat(&TokenKind::Comma) {
+                params.push(self.parse_param()?);
+            }
+            self.expect(&TokenKind::RParen, "`)` to close the parameter list")?;
+        }
+        Ok(params)
+    }
+
+    /// Parse one shape parameter `name : Kind`.
+    fn parse_param(&mut self) -> Result<ShapeParam, ParseError> {
+        let name = self.expect_ident("a parameter name")?;
+        self.expect(&TokenKind::Colon, "`:` after the parameter name")?;
+        let kind = self.expect_ident("a parameter kind (e.g. `Unit`)")?;
+        Ok(ShapeParam {
+            span: Span::new(name.span.start, kind.span.end),
+            name,
+            kind,
+        })
     }
 
     /// Parse the `unit { U }` clause that opens a store or shape body.
@@ -405,13 +466,17 @@ mod tests {
             panic!("expected a shape");
         };
         assert_eq!(shape.name.name, "PersonRecord");
-        assert_eq!(shape.unit.name, "Person");
+        assert_eq!(shape.unit.as_ref().unwrap().name, "Person");
         assert_eq!(shape.consts[0].name.name, "admission");
 
         let Item::Store(store) = &program.items[1] else {
             panic!("expected a store");
         };
-        let claimed: Vec<&str> = store.conforms.iter().map(|s| s.name.as_str()).collect();
+        let claimed: Vec<&str> = store
+            .conforms
+            .iter()
+            .map(|s| s.name.name.as_str())
+            .collect();
         assert_eq!(claimed, ["PersonRecord"]);
     }
 
@@ -422,7 +487,11 @@ mod tests {
         let Item::Store(store) = &program.items[0] else {
             panic!("expected a store");
         };
-        let claimed: Vec<&str> = store.conforms.iter().map(|s| s.name.as_str()).collect();
+        let claimed: Vec<&str> = store
+            .conforms
+            .iter()
+            .map(|s| s.name.name.as_str())
+            .collect();
         assert_eq!(claimed, ["A", "B", "C"]);
     }
 
@@ -433,6 +502,50 @@ mod tests {
             panic!("expected a store");
         };
         assert!(store.conforms.is_empty());
+    }
+
+    #[test]
+    fn parses_unit_parameter_shape() {
+        let program = parse_str("shape Tabular(U: Unit) { unit { U } }").unwrap();
+        let Item::Shape(shape) = &program.items[0] else {
+            panic!("expected a shape");
+        };
+        assert_eq!(shape.params.len(), 1);
+        assert_eq!(shape.params[0].name.name, "U");
+        assert_eq!(shape.params[0].kind.name, "Unit");
+        assert_eq!(shape.unit.as_ref().unwrap().name, "U");
+    }
+
+    #[test]
+    fn parses_unit_agnostic_shape() {
+        let program = parse_str("shape Named { const { name: string } }").unwrap();
+        let Item::Shape(shape) = &program.items[0] else {
+            panic!("expected a shape");
+        };
+        assert!(shape.params.is_empty());
+        assert!(shape.unit.is_none());
+        assert_eq!(shape.consts[0].name.name, "name");
+    }
+
+    #[test]
+    fn parses_parametric_conformance() {
+        let program = parse_str("store S : Tabular(Person) { unit { Person } }").unwrap();
+        let Item::Store(store) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        assert_eq!(store.conforms[0].name.name, "Tabular");
+        let args: Vec<&str> = store.conforms[0]
+            .args
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(args, ["Person"]);
+    }
+
+    #[test]
+    fn empty_parameter_list_is_an_error() {
+        let err = parse_str("shape Bad() { unit { U } }").unwrap_err();
+        assert!(err.message.contains("empty parameter list"));
     }
 
     #[test]

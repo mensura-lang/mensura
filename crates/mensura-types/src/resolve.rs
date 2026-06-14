@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mensura_syntax::{Item, Program, ShapeDecl, Span, StoreDecl, TypeExpr, UnitDecl};
+use mensura_syntax::{Item, Program, ShapeDecl, ShapeRef, Span, StoreDecl, TypeExpr, UnitDecl};
 
 use crate::model::{Column, ColumnRole, ColumnType, Schema};
 
@@ -89,7 +89,7 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     for s in &stores {
         match resolve_store(s, &units) {
             Ok(schema) => {
-                check_conformance(s, &schema, &shapes, &resolved_shapes, &mut errors);
+                check_conformance(s, &schema, &shapes, &resolved_shapes, &units, &mut errors);
                 schemas.push(schema);
             }
             Err(mut errs) => errors.append(&mut errs),
@@ -177,12 +177,24 @@ fn resolve_store(
     }
 }
 
-/// A shape resolved to the structure a conforming store must provide: its
-/// unit and its `const`/`var` attributes as columns.  Unlike a [`Schema`] it
-/// carries no index columns (those come from the unit, not the shape) and no
+/// How a shape constrains the unit of a conforming store.
+enum ShapeUnit {
+    /// No `unit { ... }` clause: any unit conforms.
+    Agnostic,
+    /// `unit { Person }`: the store must tabulate this concrete unit.
+    Concrete(String),
+    /// `unit { U }` where `U` is a `Unit` parameter: the store must tabulate
+    /// the unit supplied for that parameter at the use site.
+    Param(String),
+}
+
+/// A shape resolved for conformance: its unit parameters in order, how it
+/// constrains the unit, and its `const`/`var` attributes as columns.  Unlike
+/// a [`Schema`] it carries no index columns (those come from the unit) and no
 /// storage; it exists only to check conformance.
 struct ResolvedShape {
-    unit: String,
+    unit_params: Vec<String>,
+    unit: ShapeUnit,
     columns: Vec<Column>,
 }
 
@@ -192,12 +204,46 @@ fn resolve_shape(
 ) -> Result<ResolvedShape, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
-    if !units.contains_key(sh.unit.name.as_str()) {
-        errors.push(ResolveError::new(
-            format!("unknown unit `{}`", sh.unit.name),
-            sh.unit.span,
-        ));
+    // Parameters.  This slice supports `Unit` parameters only; value
+    // parameters (`string`, ...) are parsed but deferred.
+    let mut unit_params: Vec<String> = Vec::new();
+    let mut seen_params: HashSet<&str> = HashSet::new();
+    for p in &sh.params {
+        if !seen_params.insert(p.name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!("duplicate parameter `{}`", p.name.name),
+                p.name.span,
+            ));
+        }
+        match p.kind.name.as_str() {
+            "Unit" => unit_params.push(p.name.name.clone()),
+            "string" | "number" | "bool" | "date" => errors.push(ResolveError::new(
+                format!(
+                    "value parameters are not yet supported (parameter `{}: {}`)",
+                    p.name.name, p.kind.name
+                ),
+                p.kind.span,
+            )),
+            other => errors.push(ResolveError::new(
+                format!("unknown parameter kind `{other}`"),
+                p.kind.span,
+            )),
+        }
     }
+
+    // Unit clause: optional, and may name a `Unit` parameter or a real unit.
+    let unit = match &sh.unit {
+        None => ShapeUnit::Agnostic,
+        Some(u) if unit_params.iter().any(|p| p == &u.name) => ShapeUnit::Param(u.name.clone()),
+        Some(u) if units.contains_key(u.name.as_str()) => ShapeUnit::Concrete(u.name.clone()),
+        Some(u) => {
+            errors.push(ResolveError::new(
+                format!("unknown unit `{}`", u.name),
+                u.span,
+            ));
+            ShapeUnit::Agnostic
+        }
+    };
 
     let mut columns = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -228,7 +274,8 @@ fn resolve_shape(
 
     if errors.is_empty() {
         Ok(ResolvedShape {
-            unit: sh.unit.name.clone(),
+            unit_params,
+            unit,
             columns,
         })
     } else {
@@ -236,35 +283,80 @@ fn resolve_shape(
     }
 }
 
-/// Check every shape a store claims with its `:` clause.  A store conforms
-/// when it tabulates the shape's unit and carries every shape attribute with
-/// the same name, role (`const`/`var`), and type; extra store attributes are
-/// fine.  Each failure is a separate diagnostic pointing at the claim.
+/// Check every shape a store claims with its `:` clause.  After binding the
+/// shape's `Unit` parameters to the arguments supplied, a store conforms when
+/// it tabulates the required unit (if any) and carries every shape attribute
+/// with the same name, role (`const`/`var`), and type; extra store attributes
+/// are fine.  Each failure is a separate diagnostic pointing at the claim.
 fn check_conformance(
     s: &StoreDecl,
     schema: &Schema,
     shapes: &HashMap<&str, &ShapeDecl>,
     resolved: &HashMap<&str, ResolvedShape>,
+    units: &HashMap<&str, &UnitDecl>,
     errors: &mut Vec<ResolveError>,
 ) {
     for claim in &s.conforms {
-        let Some(shape) = resolved.get(claim.name.as_str()) else {
+        let name = claim.name.name.as_str();
+        let Some(shape) = resolved.get(name) else {
             // A claimed shape that exists but failed to resolve already
             // reported its own errors; only an entirely unknown name is new.
-            if !shapes.contains_key(claim.name.as_str()) {
+            if !shapes.contains_key(name) {
                 errors.push(ResolveError::new(
-                    format!("unknown shape `{}`", claim.name),
+                    format!("unknown shape `{name}`"),
                     claim.span,
                 ));
             }
             continue;
         };
 
-        if schema.unit != shape.unit {
+        if claim.args.len() != shape.unit_params.len() {
             errors.push(ResolveError::new(
                 format!(
-                    "store `{}` claims shape `{}`, which tabulates `{}`, but the store tabulates `{}`",
-                    s.name.name, claim.name, shape.unit, schema.unit
+                    "store `{}` claims `{}` with {} argument(s), but the shape declares {}",
+                    s.name.name,
+                    shape_ref_label(claim),
+                    claim.args.len(),
+                    shape.unit_params.len()
+                ),
+                claim.span,
+            ));
+            continue;
+        }
+
+        // Bind each `Unit` parameter to its argument; arguments must be units.
+        let mut bindings: HashMap<&str, &str> = HashMap::new();
+        let mut args_ok = true;
+        for (param, arg) in shape.unit_params.iter().zip(&claim.args) {
+            if !units.contains_key(arg.name.as_str()) {
+                errors.push(ResolveError::new(
+                    format!("unknown unit `{}`", arg.name),
+                    arg.span,
+                ));
+                args_ok = false;
+            }
+            bindings.insert(param.as_str(), arg.name.as_str());
+        }
+        if !args_ok {
+            continue;
+        }
+
+        // Unit check, unless the shape is unit-agnostic.  `required` is set
+        // only when the shape pins a unit and the store disagrees.
+        let required = match &shape.unit {
+            ShapeUnit::Agnostic => None,
+            ShapeUnit::Concrete(u) => Some(u.as_str()),
+            ShapeUnit::Param(p) => Some(bindings[p.as_str()]),
+        }
+        .filter(|req| schema.unit != *req);
+        if let Some(req) = required {
+            errors.push(ResolveError::new(
+                format!(
+                    "store `{}` claims `{}`, which tabulates `{}`, but the store tabulates `{}`",
+                    s.name.name,
+                    shape_ref_label(claim),
+                    req,
+                    schema.unit
                 ),
                 claim.span,
             ));
@@ -275,16 +367,18 @@ fn check_conformance(
             match schema.columns.iter().find(|c| c.name == want.name) {
                 None => errors.push(ResolveError::new(
                     format!(
-                        "store `{}` claims shape `{}` but is missing attribute `{}`",
-                        s.name.name, claim.name, want.name
+                        "store `{}` claims `{}` but is missing attribute `{}`",
+                        s.name.name,
+                        shape_ref_label(claim),
+                        want.name
                     ),
                     claim.span,
                 )),
                 Some(have) if have.role != want.role => errors.push(ResolveError::new(
                     format!(
-                        "store `{}` claims shape `{}`: attribute `{}` is `{}` in the shape but `{}` in the store",
+                        "store `{}` claims `{}`: attribute `{}` is `{}` in the shape but `{}` in the store",
                         s.name.name,
-                        claim.name,
+                        shape_ref_label(claim),
                         want.name,
                         role_word(want.role),
                         role_word(have.role)
@@ -293,9 +387,9 @@ fn check_conformance(
                 )),
                 Some(have) if have.ty != want.ty => errors.push(ResolveError::new(
                     format!(
-                        "store `{}` claims shape `{}`: attribute `{}` has type `{}` in the shape but `{}` in the store",
+                        "store `{}` claims `{}`: attribute `{}` has type `{}` in the shape but `{}` in the store",
                         s.name.name,
-                        claim.name,
+                        shape_ref_label(claim),
                         want.name,
                         type_name(&want.ty),
                         type_name(&have.ty)
@@ -305,6 +399,22 @@ fn check_conformance(
                 Some(_) => {}
             }
         }
+    }
+}
+
+/// Render a conformance claim for diagnostics: `Tabular(Person)` or, with no
+/// arguments, just `PersonRecord`.
+fn shape_ref_label(r: &ShapeRef) -> String {
+    if r.args.is_empty() {
+        r.name.name.clone()
+    } else {
+        let args = r
+            .args
+            .iter()
+            .map(|a| a.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}({})", r.name.name, args)
     }
 }
 
@@ -647,6 +757,112 @@ mod tests {
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("duplicate shape `S`"))
+        );
+    }
+
+    #[test]
+    fn unit_parameter_shape_conforms() {
+        let src = r#"
+            unit Person { id: string }
+            shape Tabular(U: Unit) { unit { U } }
+            store Persons : Tabular(Person) { unit { Person } const { birthdate: date } }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
+    }
+
+    #[test]
+    fn unit_agnostic_shape_conforms_to_any_unit() {
+        // `Named` has no unit clause, so a `Department` store conforms purely
+        // by carrying the required `name` attribute.
+        let src = r#"
+            unit Department { code: string }
+            shape Named { const { name: string } }
+            store Departments : Named { unit { Department } const { name: string } }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
+    }
+
+    #[test]
+    fn wrong_unit_argument_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            unit Course { code: string }
+            shape Tabular(U: Unit) { unit { U } }
+            store S : Tabular(Course) { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| e.message.contains("tabulates `Course`")
+            && e.message.contains("tabulates `Person`")));
+    }
+
+    #[test]
+    fn arity_mismatch_is_rejected() {
+        // `Tabular` declares one parameter; claiming it with none is an error.
+        let src = r#"
+            unit Person { id: string }
+            shape Tabular(U: Unit) { unit { U } }
+            store S : Tabular { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("with 0 argument(s)")
+                    && e.message.contains("declares 1"))
+        );
+    }
+
+    #[test]
+    fn extra_argument_on_plain_shape_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord { unit { Person } }
+            store S : PersonRecord(Person) { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("with 1 argument(s)")
+                    && e.message.contains("declares 0"))
+        );
+    }
+
+    #[test]
+    fn unknown_unit_argument_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape Tabular(U: Unit) { unit { U } }
+            store S : Tabular(Ghost) { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown unit `Ghost`"))
+        );
+    }
+
+    #[test]
+    fn duplicate_parameter_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape D(U: Unit, U: Unit) { unit { U } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("duplicate parameter `U`"))
+        );
+    }
+
+    #[test]
+    fn value_parameter_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape NumericCol(col: string) { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("value parameters are not yet supported"))
         );
     }
 
