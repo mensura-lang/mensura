@@ -4,10 +4,15 @@
 //! since stores and units are largely independent.  It enforces the current
 //! "basic only" scope by rejecting compound units, compound fields, and
 //! `domain` blocks with clear "not yet supported" errors.
+//!
+//! Shapes (`docs/language/03-shapes.md`) are validated here too: each store
+//! that claims conformance with a `:` clause is checked against the shape's
+//! structure.  Shapes carry no storage, so they produce no [`Schema`]; only
+//! stores do.
 
 use std::collections::{HashMap, HashSet};
 
-use mensura_syntax::{Item, Program, Span, StoreDecl, TypeExpr, UnitDecl};
+use mensura_syntax::{Item, Program, ShapeDecl, Span, StoreDecl, TypeExpr, UnitDecl};
 
 use crate::model::{Column, ColumnRole, ColumnType, Schema};
 
@@ -32,10 +37,11 @@ impl ResolveError {
 pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
-    // Pass 1: collect unit and store names (separate namespaces).
+    // Pass 1: collect unit, store, and shape names (separate namespaces).
     let mut units: HashMap<&str, &UnitDecl> = HashMap::new();
     let mut store_names: HashSet<&str> = HashSet::new();
     let mut stores: Vec<&StoreDecl> = Vec::new();
+    let mut shapes: HashMap<&str, &ShapeDecl> = HashMap::new();
 
     for item in &program.items {
         match item {
@@ -56,14 +62,36 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                 }
                 stores.push(s);
             }
+            Item::Shape(sh) => {
+                if shapes.insert(&sh.name.name, sh).is_some() {
+                    errors.push(ResolveError::new(
+                        format!("duplicate shape `{}`", sh.name.name),
+                        sh.name.span,
+                    ));
+                }
+            }
         }
     }
 
-    // Pass 2: resolve each store independently.
+    // Pass 2: resolve each shape's structure, for conformance checks below.
+    let mut resolved_shapes: HashMap<&str, ResolvedShape> = HashMap::new();
+    for (name, sh) in &shapes {
+        match resolve_shape(sh, &units) {
+            Ok(rs) => {
+                resolved_shapes.insert(name, rs);
+            }
+            Err(mut errs) => errors.append(&mut errs),
+        }
+    }
+
+    // Pass 3: resolve each store, then check the shapes it claims.
     let mut schemas = Vec::new();
     for s in &stores {
         match resolve_store(s, &units) {
-            Ok(schema) => schemas.push(schema),
+            Ok(schema) => {
+                check_conformance(s, &schema, &shapes, &resolved_shapes, &mut errors);
+                schemas.push(schema);
+            }
             Err(mut errs) => errors.append(&mut errs),
         }
     }
@@ -146,6 +174,162 @@ fn resolve_store(
         })
     } else {
         Err(errors)
+    }
+}
+
+/// A shape resolved to the structure a conforming store must provide: its
+/// unit and its `const`/`var` attributes as columns.  Unlike a [`Schema`] it
+/// carries no index columns (those come from the unit, not the shape) and no
+/// storage; it exists only to check conformance.
+struct ResolvedShape {
+    unit: String,
+    columns: Vec<Column>,
+}
+
+fn resolve_shape(
+    sh: &ShapeDecl,
+    units: &HashMap<&str, &UnitDecl>,
+) -> Result<ResolvedShape, Vec<ResolveError>> {
+    let mut errors = Vec::new();
+
+    if !units.contains_key(sh.unit.name.as_str()) {
+        errors.push(ResolveError::new(
+            format!("unknown unit `{}`", sh.unit.name),
+            sh.unit.span,
+        ));
+    }
+
+    let mut columns = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for f in &sh.consts {
+        add_column(
+            &mut columns,
+            &mut seen,
+            &mut errors,
+            &f.name.name,
+            f.name.span,
+            &f.ty,
+            ColumnRole::Const,
+            units,
+        );
+    }
+    for f in &sh.vars {
+        add_column(
+            &mut columns,
+            &mut seen,
+            &mut errors,
+            &f.name.name,
+            f.name.span,
+            &f.ty,
+            ColumnRole::Var,
+            units,
+        );
+    }
+
+    if errors.is_empty() {
+        Ok(ResolvedShape {
+            unit: sh.unit.name.clone(),
+            columns,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+/// Check every shape a store claims with its `:` clause.  A store conforms
+/// when it tabulates the shape's unit and carries every shape attribute with
+/// the same name, role (`const`/`var`), and type; extra store attributes are
+/// fine.  Each failure is a separate diagnostic pointing at the claim.
+fn check_conformance(
+    s: &StoreDecl,
+    schema: &Schema,
+    shapes: &HashMap<&str, &ShapeDecl>,
+    resolved: &HashMap<&str, ResolvedShape>,
+    errors: &mut Vec<ResolveError>,
+) {
+    for claim in &s.conforms {
+        let Some(shape) = resolved.get(claim.name.as_str()) else {
+            // A claimed shape that exists but failed to resolve already
+            // reported its own errors; only an entirely unknown name is new.
+            if !shapes.contains_key(claim.name.as_str()) {
+                errors.push(ResolveError::new(
+                    format!("unknown shape `{}`", claim.name),
+                    claim.span,
+                ));
+            }
+            continue;
+        };
+
+        if schema.unit != shape.unit {
+            errors.push(ResolveError::new(
+                format!(
+                    "store `{}` claims shape `{}`, which tabulates `{}`, but the store tabulates `{}`",
+                    s.name.name, claim.name, shape.unit, schema.unit
+                ),
+                claim.span,
+            ));
+            continue;
+        }
+
+        for want in &shape.columns {
+            match schema.columns.iter().find(|c| c.name == want.name) {
+                None => errors.push(ResolveError::new(
+                    format!(
+                        "store `{}` claims shape `{}` but is missing attribute `{}`",
+                        s.name.name, claim.name, want.name
+                    ),
+                    claim.span,
+                )),
+                Some(have) if have.role != want.role => errors.push(ResolveError::new(
+                    format!(
+                        "store `{}` claims shape `{}`: attribute `{}` is `{}` in the shape but `{}` in the store",
+                        s.name.name,
+                        claim.name,
+                        want.name,
+                        role_word(want.role),
+                        role_word(have.role)
+                    ),
+                    claim.span,
+                )),
+                Some(have) if have.ty != want.ty => errors.push(ResolveError::new(
+                    format!(
+                        "store `{}` claims shape `{}`: attribute `{}` has type `{}` in the shape but `{}` in the store",
+                        s.name.name,
+                        claim.name,
+                        want.name,
+                        type_name(&want.ty),
+                        type_name(&have.ty)
+                    ),
+                    claim.span,
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+}
+
+fn role_word(role: ColumnRole) -> &'static str {
+    match role {
+        ColumnRole::Index => "index",
+        ColumnRole::Const => "const",
+        ColumnRole::Var => "var",
+    }
+}
+
+fn type_name(ty: &ColumnType) -> String {
+    match ty {
+        ColumnType::String => "string".into(),
+        ColumnType::Number => "number".into(),
+        ColumnType::Bool => "bool".into(),
+        ColumnType::Date => "date".into(),
+        ColumnType::Enum(variants) => {
+            let inner = variants
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("enum({inner})")
+        }
     }
 }
 
@@ -351,6 +535,119 @@ mod tests {
         "#;
         let errs = errors(src);
         assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn conforming_store_resolves() {
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord {
+              unit { Person }
+              const { admission: date }
+            }
+            store Students : PersonRecord {
+              unit { Person }
+              const { admission: date }
+              var   { status: enum("active", "inactive") }
+            }
+        "#;
+        // The store carries an extra attribute (`status`); conformance only
+        // requires the shape's attributes to be present.
+        let schemas = resolve_str(src).expect("should resolve");
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].store, "Students");
+    }
+
+    #[test]
+    fn marker_shape_conforms_on_unit_alone() {
+        let src = r#"
+            unit Person { id: string }
+            shape Anything { unit { Person } }
+            store Persons : Anything { unit { Person } const { birthdate: date } }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
+    }
+
+    #[test]
+    fn unknown_shape_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            store Students : Ghost { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown shape `Ghost`"))
+        );
+    }
+
+    #[test]
+    fn missing_shape_attribute_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord { unit { Person } const { admission: date } }
+            store Students : PersonRecord { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("missing attribute `admission`"))
+        );
+    }
+
+    #[test]
+    fn wrong_unit_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            unit Course { code: string }
+            shape PersonRecord { unit { Person } const { admission: date } }
+            store Courses : PersonRecord { unit { Course } const { admission: date } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| e.message.contains("tabulates `Person`")
+            && e.message.contains("tabulates `Course`")));
+    }
+
+    #[test]
+    fn wrong_attribute_type_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord { unit { Person } const { admission: date } }
+            store Students : PersonRecord { unit { Person } const { admission: string } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("type `date` in the shape but `string`"))
+        );
+    }
+
+    #[test]
+    fn wrong_attribute_role_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord { unit { Person } const { admission: date } }
+            store Students : PersonRecord { unit { Person } var { admission: date } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`const` in the shape but `var`"))
+        );
+    }
+
+    #[test]
+    fn duplicate_shape_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape S { unit { Person } }
+            shape S { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("duplicate shape `S`"))
+        );
     }
 
     #[test]

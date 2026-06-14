@@ -17,6 +17,7 @@ pub struct Program {
 pub enum Item {
     Unit(UnitDecl),
     Store(StoreDecl),
+    Shape(ShapeDecl),
 }
 
 /// An identifier together with where it appeared.
@@ -49,15 +50,32 @@ pub struct Field {
     pub span: Span,
 }
 
-/// `store Name { unit { U } (const|var|domain block)* }`
+/// `store Name [: Shape, ...] { unit { U } (const|var|domain block)* }`
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreDecl {
     pub name: Ident,
     /// The unit named by the `unit { U }` clause.
     pub unit: Ident,
+    /// The shapes claimed by the `:` conformance clause, in source order.
+    pub conforms: Vec<Ident>,
     pub consts: Vec<Field>,
     pub vars: Vec<Field>,
     pub domain: Vec<DomainEntry>,
+    pub span: Span,
+}
+
+/// `shape Name { unit { U } (const|var block)* }`
+///
+/// A parameter-free structural contract: a unit plus the attributes a
+/// conforming store must carry.  Shapes hold no `domain` block, no policy,
+/// and no storage; see `docs/language/03-shapes.md`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeDecl {
+    pub name: Ident,
+    /// The unit named by the `unit { U }` clause.
+    pub unit: Ident,
+    pub consts: Vec<Field>,
+    pub vars: Vec<Field>,
     pub span: Span,
 }
 

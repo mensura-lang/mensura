@@ -5,7 +5,9 @@
 //! one token of lookahead, no backtracking.  Keywords are contextual, matched
 //! on the `Ident` text in the position where they are expected.
 
-use crate::ast::{DomainEntry, Field, Ident, Item, Program, StoreDecl, StrLit, TypeExpr, UnitDecl};
+use crate::ast::{
+    DomainEntry, Field, Ident, Item, Program, ShapeDecl, StoreDecl, StrLit, TypeExpr, UnitDecl,
+};
 use crate::token::{Span, Token, TokenKind};
 
 /// A parse failure, located by a source span.
@@ -119,8 +121,10 @@ impl<'a> Parser<'a> {
             Ok(Item::Unit(self.parse_unit_decl()?))
         } else if self.at_keyword("store") {
             Ok(Item::Store(self.parse_store_decl()?))
+        } else if self.at_keyword("shape") {
+            Ok(Item::Shape(self.parse_shape_decl()?))
         } else {
-            Err(self.error("expected a `unit` or `store` declaration"))
+            Err(self.error("expected a `unit`, `store`, or `shape` declaration"))
         }
     }
 
@@ -145,16 +149,9 @@ impl<'a> Parser<'a> {
         let start = self.cur_span().start;
         self.pos += 1; // `store`
         let name = self.expect_ident("a store name")?;
+        let conforms = self.parse_conforms_clause()?;
         self.expect(&TokenKind::LBrace, "`{` to open the store body")?;
-
-        // The body must begin with the `unit { U }` clause.
-        if !self.at_keyword("unit") {
-            return Err(self.error("a store body must begin with a `unit { ... }` clause"));
-        }
-        self.pos += 1; // `unit`
-        self.expect(&TokenKind::LBrace, "`{` after `unit`")?;
-        let unit = self.expect_ident("the tabulated unit name")?;
-        self.expect(&TokenKind::RBrace, "`}` to close the `unit` clause")?;
+        let unit = self.parse_unit_clause()?;
 
         let mut consts = Vec::new();
         let mut vars = Vec::new();
@@ -178,11 +175,71 @@ impl<'a> Parser<'a> {
         Ok(StoreDecl {
             name,
             unit,
+            conforms,
             consts,
             vars,
             domain,
             span: Span::new(start, end.end),
         })
+    }
+
+    fn parse_shape_decl(&mut self) -> Result<ShapeDecl, ParseError> {
+        let start = self.cur_span().start;
+        self.pos += 1; // `shape`
+        let name = self.expect_ident("a shape name")?;
+        self.expect(&TokenKind::LBrace, "`{` to open the shape body")?;
+        let unit = self.parse_unit_clause()?;
+
+        let mut consts = Vec::new();
+        let mut vars = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.at_eof() {
+            if self.at_keyword("const") {
+                self.parse_attr_block(&mut consts)?;
+            } else if self.at_keyword("var") {
+                self.parse_attr_block(&mut vars)?;
+            } else if self.at_keyword("domain") {
+                return Err(self.error("a shape cannot contain a `domain` block"));
+            } else if self.at_keyword("unit") {
+                return Err(
+                    self.error("the `unit` clause may appear only once, at the start of the body")
+                );
+            } else {
+                return Err(self.error("expected `const`, `var`, or `}`"));
+            }
+        }
+        let end = self.expect(&TokenKind::RBrace, "`}` to close the shape body")?;
+        Ok(ShapeDecl {
+            name,
+            unit,
+            consts,
+            vars,
+            span: Span::new(start, end.end),
+        })
+    }
+
+    /// Parse the optional `: Shape, Shape, ...` conformance clause that may
+    /// follow a store name.  Returns an empty vector when absent.
+    fn parse_conforms_clause(&mut self) -> Result<Vec<Ident>, ParseError> {
+        let mut shapes = Vec::new();
+        if self.eat(&TokenKind::Colon) {
+            shapes.push(self.expect_ident("a shape name after `:`")?);
+            while self.eat(&TokenKind::Comma) {
+                shapes.push(self.expect_ident("a shape name after `,`")?);
+            }
+        }
+        Ok(shapes)
+    }
+
+    /// Parse the `unit { U }` clause that opens a store or shape body.
+    fn parse_unit_clause(&mut self) -> Result<Ident, ParseError> {
+        if !self.at_keyword("unit") {
+            return Err(self.error("the body must begin with a `unit { ... }` clause"));
+        }
+        self.pos += 1; // `unit`
+        self.expect(&TokenKind::LBrace, "`{` after `unit`")?;
+        let unit = self.expect_ident("the tabulated unit name")?;
+        self.expect(&TokenKind::RBrace, "`}` to close the `unit` clause")?;
+        Ok(unit)
     }
 
     /// Parse a `const { ... }` or `var { ... }` block, appending its fields.
@@ -330,6 +387,61 @@ mod tests {
     }
 
     #[test]
+    fn parses_shape_and_conformance() {
+        let src = r#"
+            shape PersonRecord {
+              unit { Person }
+              const { admission: date }
+            }
+
+            store Students : PersonRecord {
+              unit { Person }
+              const { admission: date }
+            }
+        "#;
+        let program = parse_str(src).unwrap();
+
+        let Item::Shape(shape) = &program.items[0] else {
+            panic!("expected a shape");
+        };
+        assert_eq!(shape.name.name, "PersonRecord");
+        assert_eq!(shape.unit.name, "Person");
+        assert_eq!(shape.consts[0].name.name, "admission");
+
+        let Item::Store(store) = &program.items[1] else {
+            panic!("expected a store");
+        };
+        let claimed: Vec<&str> = store.conforms.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(claimed, ["PersonRecord"]);
+    }
+
+    #[test]
+    fn parses_multiple_conformance_entries() {
+        let src = "store S : A, B, C { unit { U } }";
+        let program = parse_str(src).unwrap();
+        let Item::Store(store) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        let claimed: Vec<&str> = store.conforms.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(claimed, ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn store_without_conformance_has_empty_list() {
+        let program = parse_str("store S { unit { U } }").unwrap();
+        let Item::Store(store) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        assert!(store.conforms.is_empty());
+    }
+
+    #[test]
+    fn shape_with_domain_block_is_an_error() {
+        let err = parse_str("shape Sh { unit { U } domain { x: Y } }").unwrap_err();
+        assert!(err.message.contains("`domain`"));
+    }
+
+    #[test]
     fn empty_program_is_ok() {
         assert_eq!(parse_str("").unwrap().items.len(), 0);
     }
@@ -373,6 +485,6 @@ mod tests {
     #[test]
     fn junk_at_top_level_is_an_error() {
         let err = parse_str("wat X { }").unwrap_err();
-        assert!(err.message.contains("`unit` or `store`"));
+        assert!(err.message.contains("`unit`, `store`, or `shape`"));
     }
 }
