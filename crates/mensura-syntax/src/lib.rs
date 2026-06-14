@@ -9,6 +9,6 @@ pub mod parser;
 pub mod token;
 
 pub use ast::{DomainEntry, Field, Ident, Item, Program, StoreDecl, StrLit, TypeExpr, UnitDecl};
-pub use lexer::{LexError, tokenize};
-pub use parser::{ParseError, parse};
-pub use token::{Span, Token, TokenKind};
+pub use lexer::{LexError, Lexed, lex, tokenize};
+pub use parser::{ParseError, Parsed, parse, parse_with_meta};
+pub use token::{Span, Token, TokenKind, Trivia, TriviaKind};

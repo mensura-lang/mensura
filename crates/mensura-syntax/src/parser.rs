@@ -15,15 +15,44 @@ pub struct ParseError {
     pub span: Span,
 }
 
+/// A parsed program together with the side information later passes want but
+/// the AST does not carry.  Currently the spans of every contextual keyword
+/// the parser recognized: since the lexer is keyword-free, the parser is the
+/// only place that knows an `Ident` was acting as a keyword in context, so it
+/// records that here for tooling (highlighting, formatting) to reuse.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Parsed {
+    pub program: Program,
+    /// Spans of the contextual keywords (`unit`, `store`, `const`, `var`,
+    /// `domain`, `enum`), in source order.
+    pub keyword_spans: Vec<Span>,
+}
+
 /// Parse a token slice (lexer output, ending in [`TokenKind::Eof`]) into a
 /// [`Program`].
 pub fn parse(tokens: &[Token]) -> Result<Program, ParseError> {
-    Parser { tokens, pos: 0 }.parse_program()
+    parse_with_meta(tokens).map(|parsed| parsed.program)
+}
+
+/// Parse a token slice into a [`Parsed`]: the [`Program`] plus the
+/// classified-span table (keyword spans).  Used by the language server.
+pub fn parse_with_meta(tokens: &[Token]) -> Result<Parsed, ParseError> {
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        keyword_spans: Vec::new(),
+    };
+    let program = parser.parse_program()?;
+    Ok(Parsed {
+        program,
+        keyword_spans: parser.keyword_spans,
+    })
 }
 
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    keyword_spans: Vec<Span>,
 }
 
 impl<'a> Parser<'a> {
@@ -97,6 +126,13 @@ impl<'a> Parser<'a> {
         matches!(self.cur_kind(), TokenKind::Ident(s) if s == word)
     }
 
+    /// Consume the current token, which the caller has confirmed is a
+    /// contextual keyword, recording its span for the classified-span table.
+    fn bump_keyword(&mut self) {
+        self.keyword_spans.push(self.cur_span());
+        self.pos += 1;
+    }
+
     fn error(&self, message: impl Into<String>) -> ParseError {
         ParseError {
             message: message.into(),
@@ -126,7 +162,7 @@ impl<'a> Parser<'a> {
 
     fn parse_unit_decl(&mut self) -> Result<UnitDecl, ParseError> {
         let start = self.cur_span().start;
-        self.pos += 1; // `unit`
+        self.bump_keyword(); // `unit`
         let name = self.expect_ident("a unit name")?;
         self.expect(&TokenKind::LBrace, "`{` to open the unit body")?;
         let mut fields = Vec::new();
@@ -143,7 +179,7 @@ impl<'a> Parser<'a> {
 
     fn parse_store_decl(&mut self) -> Result<StoreDecl, ParseError> {
         let start = self.cur_span().start;
-        self.pos += 1; // `store`
+        self.bump_keyword(); // `store`
         let name = self.expect_ident("a store name")?;
         self.expect(&TokenKind::LBrace, "`{` to open the store body")?;
 
@@ -151,7 +187,7 @@ impl<'a> Parser<'a> {
         if !self.at_keyword("unit") {
             return Err(self.error("a store body must begin with a `unit { ... }` clause"));
         }
-        self.pos += 1; // `unit`
+        self.bump_keyword(); // `unit`
         self.expect(&TokenKind::LBrace, "`{` after `unit`")?;
         let unit = self.expect_ident("the tabulated unit name")?;
         self.expect(&TokenKind::RBrace, "`}` to close the `unit` clause")?;
@@ -187,7 +223,7 @@ impl<'a> Parser<'a> {
 
     /// Parse a `const { ... }` or `var { ... }` block, appending its fields.
     fn parse_attr_block(&mut self, out: &mut Vec<Field>) -> Result<(), ParseError> {
-        self.pos += 1; // `const` / `var`
+        self.bump_keyword(); // `const` / `var`
         self.expect(&TokenKind::LBrace, "`{` to open the block")?;
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
             out.push(self.parse_field()?);
@@ -197,7 +233,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_domain_block(&mut self, out: &mut Vec<DomainEntry>) -> Result<(), ParseError> {
-        self.pos += 1; // `domain`
+        self.bump_keyword(); // `domain`
         self.expect(&TokenKind::LBrace, "`{` to open the domain block")?;
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
             let field = self.expect_ident("a field name")?;
@@ -222,7 +258,7 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
         if self.at_keyword("enum") {
             let start = self.cur_span().start;
-            self.pos += 1; // `enum`
+            self.bump_keyword(); // `enum`
             self.expect(&TokenKind::LParen, "`(` after `enum`")?;
             let mut variants = vec![self.expect_str("an enum variant string")?];
             while self.eat(&TokenKind::Comma) {
@@ -374,5 +410,16 @@ mod tests {
     fn junk_at_top_level_is_an_error() {
         let err = parse_str("wat X { }").unwrap_err();
         assert!(err.message.contains("`unit` or `store`"));
+    }
+
+    #[test]
+    fn keyword_spans_cover_every_contextual_keyword() {
+        let src = r#"unit U { x: enum("a") } store S { unit { U } const { a: string } var { b: number } }"#;
+        let tokens = tokenize(src).expect("should lex");
+        let parsed = parse_with_meta(&tokens).expect("should parse");
+        let words: Vec<&str> = parsed.keyword_spans.iter().map(|s| s.slice(src)).collect();
+        // In source order: the unit decl, its enum, the store decl, the
+        // `unit` clause, then `const` and `var`.
+        assert_eq!(words, ["unit", "enum", "store", "unit", "const", "var"]);
     }
 }

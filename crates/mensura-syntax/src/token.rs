@@ -95,3 +95,29 @@ impl Token {
         Token { kind, span }
     }
 }
+
+/// The lexical category of a piece of trivia.
+///
+/// Trivia is text that is meaningful to a reader and to tooling but not to the
+/// grammar: comments today, and only line comments so far.  It rides a
+/// separate channel from the token stream (see [`crate::lexer::Lexed`]) so the
+/// parser never has to step over it.  See ADR 0005.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TriviaKind {
+    /// A `//` line comment, up to but not including the newline.
+    LineComment,
+    // DocComment (`///`, `//!`) is reserved for a later feature.
+}
+
+/// A piece of trivia: a [`TriviaKind`] tagged with its [`Span`] in the source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Trivia {
+    pub kind: TriviaKind,
+    pub span: Span,
+}
+
+impl Trivia {
+    pub fn new(kind: TriviaKind, span: Span) -> Self {
+        Trivia { kind, span }
+    }
+}
