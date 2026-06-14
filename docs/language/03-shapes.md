@@ -7,10 +7,10 @@ table types in function signatures, transform inputs and outputs, and
 contracts that multiple stores can claim.
 
 This document defines what a shape is and how it is declared, the
-two-kind parameter system (unit and name parameters, written in one
-parameter list and separated by a semicolon), interpolation of name
-parameters into attribute names using backticks, and the conformance
-clause (`:`) on stores and on function signatures.
+parameter system (a single annotated list whose parameters may be units
+(`Unit`) or compile-time values such as `string`), interpolation of
+`string` parameters into attribute names using backticks, and the
+conformance clause (`:`) on stores and on function signatures.
 
 The syntax shown is preliminary, like the rest of the language docs at
 this stage; the design content is not.
@@ -63,20 +63,21 @@ has everything the shape requires, possibly more.
 
 ## Shape declaration
 
-A shape declaration consists of a name, an optional parameter list, a
-`unit { ... }` clause, and any number of `const` and `var` blocks.
+A shape declaration consists of a name, an optional parameter list, an
+optional `unit { ... }` clause, and any number of `const` and `var`
+blocks.
 
 ```
-shape ShapeName(UnitParams; NameParams) {
-  unit { ... }
+shape ShapeName(p1: T1, p2: T2, ...) {
+  unit { ... }        // optional
   const { ... }
   var   { ... }
 }
 ```
 
-The parameter list is optional, and so is each side of its semicolon
-(see *Parameters* below).  A shape with no parameters reads exactly
-like the `PersonRecord` example above.
+Both the parameter list and the `unit` clause are optional.  A shape
+with neither reads as a pure attribute contract; a shape with no
+parameters reads exactly like the `PersonRecord` example above.
 
 The body of a shape carries *structure only*: which unit, which
 attributes, and (per attribute) whether it is `const` or `var`.  A
@@ -85,90 +86,78 @@ surface, or any storage commitment; those are store concerns.  A
 program containing only shape declarations is well-typed but observes
 no data.
 
+## The unit clause (optional)
+
+A shape's `unit { ... }` clause says which unit a conforming table must
+tabulate.  It has three forms:
+
+- **Concrete:** `unit { Person }` requires the conforming store to
+  tabulate `Person`.
+- **Parameterised:** `unit { U }`, where `U` is a `Unit` parameter,
+  requires the store's unit to equal the unit supplied for `U` at the
+  use site.
+- **Omitted:** a shape with no `unit` clause is *unit-agnostic*; any
+  store conforms regardless of its unit, so long as it carries the
+  required attributes.
+
+A store always has exactly one unit, so for store conformance the unit
+either must match (concrete or parameterised) or is simply not
+constrained (omitted).  Unit-agnostic shapes are how one structural
+contract applies across different units.
+
 ## Parameters
 
-Shapes admit two kinds of parameters, written in a single parameter
-list and separated by a semicolon:
+A shape takes a single parameter list.  Every parameter is written
+`name: T`: a name, a colon, and the type of the argument it stands for.
+
+- **`Unit`** is the kind of units.  A `Unit` parameter is a type-level
+  variable filled in by a unit name when the shape is used; it is
+  typically threaded into the `unit { U }` clause.
+- **A primitive type** (`string`, ...) makes the parameter a
+  compile-time value of that type.  A `string` parameter can be
+  interpolated into attribute names within the shape body.
 
 ```
-shape ShapeName(UnitParams; NameParams) { ... }
-```
-
-Unit parameters come before the `;`, name parameters after it.  The
-ordering is a telescope: name parameters, and the shape body, may
-refer to the unit parameters, not the other way round.
-
-### Unit parameters
-
-Before the semicolon.  A unit parameter introduces a *type-level*
-variable that must be filled in by a unit name when the shape is used.
-
-```
-shape Tabular(U) {
-  unit { U }
-}
-```
-
-`Tabular(U)` is "any table of any unit, with no required attributes."
-A function that does not care which unit it operates on can use it as
-its argument type:
-
-```
-fn count(U)(t: Tabular(U)) -> number { ... }
-```
-
-### Name parameters
-
-After the semicolon.  A name parameter introduces a *compile-time
-value* of type `Name` that is filled in when the shape is used.
-Names can be interpolated into attribute names within the shape body.
-
-```
-shape NumericCol(U; col: Name) {
+shape NumericCol(U: Unit, col: string) {
   unit { U }
   const { `{col}`: number }
 }
+
+shape Ageable(date_field: string) {
+  const { `{date_field}`: date }
+}
 ```
 
-`NumericCol(Person; height)` is "a table of `Person` with at least a
-`const` attribute named `height` of type `number`."
+`NumericCol(Person, "height")` is "a table of `Person` with at least a
+`const` attribute named `height` of type `number`."  `Ageable` is
+unit-agnostic: `Ageable("birthdate")` is "any table with a `const`
+attribute named `birthdate` of type `date`," whatever its unit.
 
-A shape may have any number of unit parameters and any number of name
-parameters.  Other parameter kinds (numbers, types, predicates) are
-not in this version of the language.
+The list is a **telescope**: parameters are positional, and a later
+parameter (or the shape body) may refer to an earlier one.  A `Unit`
+parameter therefore comes before the table parameter or `string`
+parameter that depends on it, simply by being written first.
 
-### One list, one semicolon
+The annotation is always explicit; there is no privileged default.
+This keeps one uniform form for every parameter and leaves room for
+further value types (numbers, predicates) to be used as parameters
+later, with no new syntax.  `string` is the value type consumed today
+(by name interpolation); `Unit` feeds the `unit` clause.
 
-The split between the two kinds is deliberate, but it lives inside a
-single pair of parentheses rather than across two bracket kinds.  The
-semicolon partitions the list into a type-level group (units) and a
-compile-time-value group (names), and it marks a dependency direction:
-everything after the `;` may mention what comes before it.  At a use
-site, `NumericCol(Person; height)` reads "the shape `NumericCol`
-applied to the unit `Person` and the name `height`," and the `;` shows
-at a glance which argument is structural and which is a name.
-
-Empty sides follow one rule:
-
-- **No name parameters:** omit the semicolon.  `Tabular(U)`, not
-  `Tabular(U;)`.
-- **No unit parameters** (a shape over a concrete unit that still takes
-  a name): keep a leading semicolon.  `Counts(; col)`.
-- **No parameters at all:** omit the list.  `PersonRecord`.
-
-At a use site the semicolon is mandatory whenever name arguments are
-present, even though the declaration already fixes each argument's kind
-positionally.  Parsing would not need it; readability does.  It is what
-lets `NumericCol(Person; height)` be read without consulting the
-declaration.
+At a **use site** arguments are supplied positionally, without
+annotations.  A `Unit` argument is a bare unit name (`Person`); a
+`string` argument is a string literal (`"height"`).  The bare-versus-
+quoted distinction shows at a glance which argument is a unit and which
+is a name.  A shape with no parameters omits the list entirely
+(`PersonRecord`).
 
 ## Name interpolation
 
-Name parameters can be interpolated into attribute-name positions
+`string` parameters can be interpolated into attribute-name positions
 using **backticks**:
 
 ```
-shape NormalizedCol(U; col: Name) {
+shape NormalizedCol(U: Unit, col: string) {
   unit { U }
   const {
     `{col}`:    number
@@ -184,9 +173,11 @@ identifier" from "this is a fixed identifier"; without them,
 `{col}_z` would be a literal identifier.
 
 Interpolation is resolved at compile time, when shape parameters are
-bound.  Names cannot be derived from runtime values; if a transform
-genuinely needs runtime column names, that is a different feature,
-not yet in the language.
+bound.  The interpolated result must be a valid attribute identifier;
+a `string` argument that does not render to one is rejected at the use
+site.  Names cannot be derived from runtime values; if a transform
+genuinely needs runtime column names, that is a different feature, not
+yet in the language.
 
 Only attribute-name positions support interpolation in this version.
 Interpolating into unit names, shape names, or other identifier
@@ -196,10 +187,10 @@ positions is a much larger feature and is not yet on the table.
 
 A store declares the shapes it conforms to with a `:` clause after the
 store name.  The clause may list one or more shapes, separated by
-commas, with their parameter values supplied:
+commas, with their arguments supplied:
 
 ```
-store Students : PersonRecord, NumericCol(Person; height) {
+store Students : PersonRecord, NumericCol(Person, "height") {
   unit { Person }
   const {
     admission: date
@@ -209,10 +200,12 @@ store Students : PersonRecord, NumericCol(Person; height) {
 ```
 
 Each conformance entry is checked at the store declaration site,
-independently of the others.  After substituting parameter values,
-the compiler verifies that:
+independently of the others.  After substituting the arguments, the
+compiler verifies that:
 
-- The store's unit equals the shape's unit.
+- If the shape pins a unit (concrete or via a `Unit` parameter), the
+  store's unit equals it; a unit-agnostic shape imposes no unit
+  constraint.
 - Every attribute required by the shape is present in the store, with
   the same name (after interpolation), the same type, and in the same
   block (`const` or `var`).
@@ -221,8 +214,8 @@ the compiler verifies that:
 
 If any check fails, the declaration is rejected with a diagnostic that
 names the missing or mismatched attribute.  The diagnostic mentions the
-substituted parameter values so the reader can see which interpolation
-produced the expected name.
+substituted argument so the reader can see which interpolation produced
+the expected name.
 
 The conformance clause and the `domain` block of a store are
 independent: shape conformance checks structure, the `domain` block
@@ -231,40 +224,40 @@ resolves foreign keys.  Both are checked, neither implies the other.
 ## Conformance in function signatures
 
 A function or transform parameter is typed by referring to a shape.
-Unit and name parameters of the shape become generic parameters of the
-function:
+The unit and value parameters a function is generic over sit in the
+*same* parameter list as its table arguments, as one telescope:
 
 ```
-fn count(U)(t: Tabular(U)) -> number { ... }
+fn count(t: PersonRecord) -> number { ... }
 
-fn normalize(U; col: Name)(
-  t: NumericCol(U; col)
-) -> NormalizedCol(U; col) {
+fn normalize(U: Unit, col: string, t: NumericCol(U, col)) -> NormalizedCol(U, col) {
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
 }
 ```
 
-A function carries two parameter lists: a generic list and a value
-list.  The generic list uses the same `(units; names)` form as a
-shape, with each name parameter annotated by its kind (`col: Name`);
-the value list that follows binds the runtime arguments (`t`).  At the
-call site, both are supplied positionally:
+There is one list, not a separate "generics" list and "value" list.
+What a parameter *is* follows from its annotation: a parameter
+annotated with `Unit` or a primitive type is a compile-time argument,
+resolved and erased before run time; a parameter annotated with a
+**shape** (a table type, such as `NumericCol(U, col)`) is a run-time
+table value.  Because the list is a telescope, a table parameter's type
+may mention the unit and value parameters declared before it, which is
+how `normalize` threads one unit identity through both its input and
+its output.
+
+At the call site, all arguments are supplied positionally:
 
 ```
-let standardised = normalize(Person; height)(Students);
+let standardised = normalize(Person, "height", Students);
 ```
 
-The compiler resolves the generic parameters and verifies that
-`Students` conforms to `NumericCol(Person; height)`.  If it does, the
-call is well-typed and `standardised` has type
-`NormalizedCol(Person; height)`.
+The compiler resolves `U` and `col`, verifies that `Students` conforms
+to `NumericCol(Person, "height")`, and then `standardised` has type
+`NormalizedCol(Person, "height")`.
 
-The two-list shape of a function (generics, then values) is the open
-end of this design: whether the runtime arguments live in a second
-parenthesised list as shown, or fold into the generic list behind a
-further semicolon, is not yet locked.  It does not affect parameter-free
-shapes or the conformance clause on stores, which is what the first
-implementation slice covers.
+Functions and transforms are a later implementation slice; the
+parameter form above is settled, but only shape declarations and the
+store conformance clause are implemented today.
 
 ## What shapes do not contain
 
@@ -279,9 +272,10 @@ A shape declaration cannot contain:
 
 A shape *does* contain:
 
-- A unit (concrete or unit-parameterised).
+- An optional unit: concrete, a `Unit` parameter, or omitted.
 - Const and var attribute blocks.
-- Optional unit and name parameters.
+- Optional parameters, each of kind `Unit` or a primitive type such as
+  `string`.
 
 Nothing else.
 
@@ -289,8 +283,8 @@ Nothing else.
 
 In this version, the result type of a function is exactly what the
 function declares.  If `normalize` declares its return type as
-`NormalizedCol(U; col)`, the value cannot be passed to a function
-expecting `NumericCol(U; col)`, even though structurally a
+`NormalizedCol(U, col)`, the value cannot be passed to a function
+expecting `NumericCol(U, col)`, even though structurally a
 `NormalizedCol` already contains everything a `NumericCol` requires.
 
 The reason is that **sub-shape relationships** (the rule "every
@@ -316,12 +310,16 @@ shape PersonRecord {
   const { admission: date }
 }
 
-shape NumericCol(U; col: Name) {
+shape Ageable(date_field: string) {
+  const { `{date_field}`: date }
+}
+
+shape NumericCol(U: Unit, col: string) {
   unit { U }
   const { `{col}`: number }
 }
 
-shape NormalizedCol(U; col: Name) {
+shape NormalizedCol(U: Unit, col: string) {
   unit { U }
   const {
     `{col}`:    number
@@ -329,43 +327,47 @@ shape NormalizedCol(U; col: Name) {
   }
 }
 
-store Students : PersonRecord, NumericCol(Person; height) {
+store Students : PersonRecord, Ageable("birthdate"), NumericCol(Person, "height") {
   unit { Person }
   const {
     admission: date
+    birthdate: date
     height:    number
   }
 }
 
-fn normalize(U; col: Name)(
-  t: NumericCol(U; col)
-) -> NormalizedCol(U; col) {
+fn normalize(U: Unit, col: string, t: NumericCol(U, col)) -> NormalizedCol(U, col) {
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
 }
 
-let standardised = normalize(Person; height)(Students);
-// standardised has type NormalizedCol(Person; height)
+let standardised = normalize(Person, "height", Students);
+// standardised has type NormalizedCol(Person, "height")
 ```
 
-`Students` is a basic store of `Person`, claiming conformance to two
-shapes: `PersonRecord` (the project-domain contract) and
-`NumericCol(Person; height)` (the structural contract demanded by
-`normalize`).  Both claims are checked at the store declaration site.
+`Students` is a basic store of `Person`, claiming conformance to three
+shapes: `PersonRecord` (a concrete-unit contract), `Ageable("birthdate")`
+(a unit-agnostic contract that also fits a `Department` store keyed on
+`"foundation_day"`), and `NumericCol(Person, "height")` (the structural
+contract demanded by `normalize`).  All claims are checked at the store
+declaration site.
 
 The transform `normalize` is generic in both the unit and the column
-name.  The same definition handles `normalize(Person; height)`,
-`normalize(Person; weight)`, and `normalize(Course; credits)`
+name.  The same definition handles `normalize(Person, "height", ...)`,
+`normalize(Person, "weight", ...)`, and `normalize(Course, "credits", ...)`
 without modification.
 
 ## Forward references and open questions
 
-- **Function parameter lists.**  The generics-then-values split shown
-  above is provisional; see "Conformance in function signatures."
-- **Marker shapes.**  Shapes with no structural body, used as
-  user-defined property tags (Independent, Exhaustive, ...).  The
-  empty body is `{ unit { U } }` with no `const`/`var` blocks; the
-  grammar admits zero attribute blocks for exactly this reason.  The
-  same conformance machinery becomes the carrier of table properties.
+- **Functions and transforms.**  The parameter form is settled (one
+  telescope, kinds/value-types for compile-time arguments, shapes for
+  run-time table values), but functions are not implemented yet.
+- **Further parameter value types.**  Numbers, predicates, and other
+  primitive-typed parameters would slot into the same list; only
+  `string` is consumed today.
+- **Marker shapes.**  Shapes with no body, used as user-defined
+  property tags (Independent, Exhaustive, ...).  With the `unit` clause
+  optional, a marker is simply `shape Independent {}`; the same
+  conformance machinery becomes the carrier of table properties.
   Treated in its own document; supersedes the qualifier ADR when
   written.
 - **Sub-shape relationships.**  See "A known cost" above.  The first
@@ -377,9 +379,8 @@ without modification.
   expressing schema deltas in function signatures: deferred.
 - **Coherence and orphan rules.**  Whether one program may declare
   another program's store conforms to its own shape is unsettled.
-- **"Any table" type.**  A function genuinely working on any table
-  (e.g.  `count_rows`) cannot be written without conformance to a
-  `Tabular(U)` shape on every relevant store.  Whether this remains
-  acceptable is open.
+- **"Any table" type.**  A unit-agnostic shape with no attributes
+  (`shape Any {}`) is now expressible and any store conforms to it;
+  whether that is the right spelling for "works on any table" is open.
 - **Attribute identity** (cross-shape, cross-store).  Still open;
   important for `bind` and `join`.
