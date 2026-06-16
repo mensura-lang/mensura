@@ -17,6 +17,7 @@ pub struct Program {
 pub enum Item {
     Unit(UnitDecl),
     Store(StoreDecl),
+    Shape(ShapeDecl),
 }
 
 /// An identifier together with where it appeared.
@@ -41,24 +42,111 @@ pub struct UnitDecl {
     pub span: Span,
 }
 
-/// A `name: type` pair, used for both unit index fields and store attributes.
+/// A `name: type` pair: a unit index field, or a `const`/`var` attribute of a
+/// store or shape.  The name may be backtick-quoted and, in a shape, may
+/// interpolate `string` parameters; a plain identifier is a single literal
+/// [`NameSeg`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Field {
-    pub name: Ident,
+    pub name: NameTemplate,
     pub ty: TypeExpr,
     pub span: Span,
 }
 
-/// `store Name { unit { U } (const|var|domain block)* }`
+/// `store Name [: ShapeRef, ...] { unit { U } (const|var|domain block)* }`
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreDecl {
     pub name: Ident,
     /// The unit named by the `unit { U }` clause.
     pub unit: Ident,
+    /// The shapes claimed by the `:` conformance clause, in source order.
+    pub conforms: Vec<ShapeRef>,
     pub consts: Vec<Field>,
     pub vars: Vec<Field>,
     pub domain: Vec<DomainEntry>,
     pub span: Span,
+}
+
+/// One entry in a `:` conformance clause: a shape name with positional
+/// arguments, e.g. `Tabular(Person)`, `Ageable("birthdate")`, or the
+/// parameter-free `PersonRecord`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeRef {
+    pub name: Ident,
+    /// Positional arguments, matched to parameters by position.
+    pub args: Vec<ShapeArg>,
+    pub span: Span,
+}
+
+/// One positional argument in a conformance reference.  Its form picks the
+/// parameter kind it can fill: a bare identifier for a `Unit` parameter, a
+/// string literal for a `string` parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShapeArg {
+    Unit(Ident),
+    Str(StrLit),
+}
+
+impl ShapeArg {
+    pub fn span(&self) -> Span {
+        match self {
+            ShapeArg::Unit(id) => id.span,
+            ShapeArg::Str(s) => s.span,
+        }
+    }
+}
+
+/// `shape Name [(params)] { [unit { U }] (const|var block)* }`
+///
+/// A structural contract: an optional unit plus the attributes a conforming
+/// store must carry.  Shapes hold no `domain` block, no policy, and no
+/// storage; see `docs/language/03-shapes.md`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeDecl {
+    pub name: Ident,
+    /// Parameters in source order; their kind is the annotation `Ident`.
+    pub params: Vec<ShapeParam>,
+    /// The unit named by the `unit { U }` clause, if any.  `None` is a
+    /// unit-agnostic shape.
+    pub unit: Option<Ident>,
+    pub consts: Vec<Field>,
+    pub vars: Vec<Field>,
+    pub span: Span,
+}
+
+/// A shape parameter `name: Kind`.  The parser leaves `kind` as the raw
+/// annotation identifier (`Unit`, `string`, ...); the resolver gives it
+/// meaning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeParam {
+    pub name: Ident,
+    pub kind: Ident,
+    pub span: Span,
+}
+
+/// An attribute name as literal text with optional `{param}` holes.  A plain
+/// identifier is a single [`NameSeg::Lit`] segment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NameTemplate {
+    pub segments: Vec<NameSeg>,
+    pub span: Span,
+}
+
+impl NameTemplate {
+    /// The name as a plain string when it has no interpolation, else `None`.
+    pub fn as_literal(&self) -> Option<&str> {
+        match self.segments.as_slice() {
+            [NameSeg::Lit(s)] => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// One piece of a [`NameTemplate`]: fixed text or an interpolated parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NameSeg {
+    Lit(String),
+    Param(Ident),
 }
 
 /// One `field: Store` line inside a `domain { ... }` block.
