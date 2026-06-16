@@ -18,9 +18,15 @@ Declared names split into two classes by what they denote.
   appear in type position: `unit` and `shape`.  Examples: `Machine`,
   `TemperatureSensor`, `FeatureWindow`.
 - **Terms** use **snake_case**.  These are named resources, instances, and
-  fields: `store` and `collect` names, attribute (column) names, and shape
-  parameters.  Examples: `temperature_readings`, `foundation_day`,
-  `date_field`.
+  fields: `store` and `collect` names, attribute (column) names, and
+  `string`-valued shape parameters.  Examples: `temperature_readings`,
+  `foundation_day`, `date_field`.
+
+A shape parameter follows its kind, since the type/term split applies to it
+too.  A `Unit` parameter is a type parameter (like `U` in `Tabular(U: Unit)`
+or `FeatureWindow<U>`), so it is PascalCase.  A `string` parameter names a
+value (like `date_field` in `Ageable(date_field: string)`), so it is
+snake_case.
 
 `view` is deferred: views are underdefined (they are both type-like and
 served), so no rule is enforced on `view` names yet, and they may stay

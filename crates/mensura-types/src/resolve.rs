@@ -35,6 +35,67 @@ impl ResolveError {
     }
 }
 
+/// The casing convention a declared name must follow
+/// (`docs/language/05-naming-and-casing.md`).
+#[derive(Clone, Copy)]
+enum Case {
+    /// Types: `unit`, `shape`, and `Unit`-kind shape parameters.
+    Pascal,
+    /// Terms: `store` names, attributes, and `string`-kind parameters.
+    Snake,
+}
+
+/// True if `name` has at least one character with a case distinction.  A
+/// caseless identifier (for example a CJK name such as `温度`) is exempt from
+/// the convention, so the check returns early for it.
+fn has_cased(name: &str) -> bool {
+    name.chars().any(|c| c.is_uppercase() || c.is_lowercase())
+}
+
+/// snake_case: no uppercase character (every character is lowercase or
+/// caseless), with `_` allowed as a separator.
+fn is_snake_case(name: &str) -> bool {
+    !name.chars().any(char::is_uppercase)
+}
+
+/// PascalCase: the first cased character is uppercase, and there is no `_`.
+fn is_pascal_case(name: &str) -> bool {
+    if name.contains('_') {
+        return false;
+    }
+    match name.chars().find(|c| c.is_uppercase() || c.is_lowercase()) {
+        Some(c) => c.is_uppercase(),
+        None => false,
+    }
+}
+
+/// Check a declared name against the casing convention, recording a
+/// diagnostic when it is violated.  Caseless names are exempt.  `what` names
+/// the construct for the message (e.g. "store", "unit", "attribute").
+fn check_case(name: &str, span: Span, case: Case, what: &str, errors: &mut Vec<ResolveError>) {
+    if !has_cased(name) {
+        return;
+    }
+    let ok = match case {
+        Case::Pascal => is_pascal_case(name),
+        Case::Snake => is_snake_case(name),
+    };
+    if ok {
+        return;
+    }
+    let (style, hint) = match case {
+        Case::Pascal => (
+            "PascalCase",
+            "start with an uppercase letter and use no underscores",
+        ),
+        Case::Snake => ("snake_case", "use lowercase words separated by `_`"),
+    };
+    errors.push(ResolveError::new(
+        format!("{what} `{name}` must be {style}: {hint}"),
+        span,
+    ));
+}
+
 /// Resolve a parsed program into one [`Schema`] per store, or every error
 /// found along the way.
 pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
@@ -49,6 +110,15 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     for item in &program.items {
         match item {
             Item::Unit(u) => {
+                check_case(&u.name.name, u.name.span, Case::Pascal, "unit", &mut errors);
+                // Index field names are checked here, once per unit, rather
+                // than in `add_column` (which runs once per store that uses
+                // the unit) to avoid duplicate diagnostics.
+                for f in &u.fields {
+                    if let Some(lit) = f.name.as_literal() {
+                        check_case(lit, f.name.span, Case::Snake, "attribute", &mut errors);
+                    }
+                }
                 if units.insert(&u.name.name, u).is_some() {
                     errors.push(ResolveError::new(
                         format!("duplicate unit `{}`", u.name.name),
@@ -57,6 +127,7 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                 }
             }
             Item::Store(s) => {
+                check_case(&s.name.name, s.name.span, Case::Snake, "store", &mut errors);
                 if !store_names.insert(&s.name.name) {
                     errors.push(ResolveError::new(
                         format!("duplicate store `{}`", s.name.name),
@@ -66,6 +137,13 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                 stores.push(s);
             }
             Item::Shape(sh) => {
+                check_case(
+                    &sh.name.name,
+                    sh.name.span,
+                    Case::Pascal,
+                    "shape",
+                    &mut errors,
+                );
                 if shapes.insert(&sh.name.name, sh).is_some() {
                     errors.push(ResolveError::new(
                         format!("duplicate shape `{}`", sh.name.name),
@@ -249,6 +327,13 @@ fn resolve_shape(
             }
         };
         if let Some(k) = kind {
+            // A `Unit` parameter is a type parameter (PascalCase); a `string`
+            // parameter is a value parameter (snake_case).
+            let case = match k {
+                ParamKind::Unit => Case::Pascal,
+                ParamKind::Str => Case::Snake,
+            };
+            check_case(&p.name.name, p.name.span, case, "parameter", &mut errors);
             params.push((p.name.name.clone(), k));
         }
     }
@@ -298,12 +383,16 @@ fn resolve_shape(
                     ));
                 }
             }
-            match a.name.as_literal() {
-                Some(lit) if !seen_literals.insert(lit) => errors.push(ResolveError::new(
-                    format!("duplicate attribute `{lit}`"),
-                    a.name.span,
-                )),
-                _ => {}
+            // A literal attribute name is checked here; an interpolated one is
+            // checked on the conforming store's resolved column instead.
+            if let Some(lit) = a.name.as_literal() {
+                check_case(lit, a.name.span, Case::Snake, "attribute", &mut errors);
+                if !seen_literals.insert(lit) {
+                    errors.push(ResolveError::new(
+                        format!("duplicate attribute `{lit}`"),
+                        a.name.span,
+                    ));
+                }
             }
             match resolve_type(&a.ty, units) {
                 Ok(ty) => attrs.push(ResolvedAttr {
@@ -567,6 +656,11 @@ fn add_column(
         ));
         return;
     }
+    // Index fields come from the unit and are checked at its declaration;
+    // here only the store's own `const`/`var` attributes are checked.
+    if role != ColumnRole::Index {
+        check_case(&name, field.name.span, Case::Snake, "attribute", errors);
+    }
     match resolve_type(&field.ty, units) {
         Ok(ct) => columns.push(Column {
             name,
@@ -662,16 +756,16 @@ mod tests {
             unit Person { id: string }
             unit Department { code: string }
 
-            store Departments {
+            store departments {
               unit { Department }
               const { name: string }
             }
-            store Persons {
+            store persons {
               unit { Person }
               const { birthdate: date }
               var   { last_name: string }
             }
-            store Students {
+            store students {
               unit { Person }
               const { admission: date }
               var   { status: enum("active", "inactive") }
@@ -680,7 +774,7 @@ mod tests {
         let schemas = resolve_str(src).expect("should resolve");
         assert_eq!(schemas.len(), 3);
 
-        let students = schemas.iter().find(|s| s.store == "Students").unwrap();
+        let students = schemas.iter().find(|s| s.store == "students").unwrap();
         assert_eq!(students.unit, "Person");
         let cols: Vec<(&str, ColumnRole, &ColumnType)> = students
             .columns
@@ -703,7 +797,7 @@ mod tests {
 
     #[test]
     fn unknown_unit_is_rejected() {
-        let errs = errors("store S { unit { Ghost } const { a: string } }");
+        let errs = errors("store s { unit { Ghost } const { a: string } }");
         assert!(errs[0].message.contains("unknown unit `Ghost`"));
     }
 
@@ -712,7 +806,7 @@ mod tests {
         let src = r#"
             unit Department { code: string }
             unit Course { department: Department }
-            store Courses { unit { Course } }
+            store courses { unit { Course } }
         "#;
         let errs = errors(src);
         assert!(
@@ -726,7 +820,7 @@ mod tests {
     fn domain_block_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            store S {
+            store s {
               unit { Person }
               domain { x: Other }
             }
@@ -740,7 +834,7 @@ mod tests {
         // `id` is both the index field and a const attribute.
         let src = r#"
             unit Person { id: string }
-            store S { unit { Person } const { id: string } }
+            store s { unit { Person } const { id: string } }
         "#;
         let errs = errors(src);
         assert!(errs[0].message.contains("duplicate column `id`"));
@@ -748,7 +842,7 @@ mod tests {
 
     #[test]
     fn unknown_type_is_rejected() {
-        let errs = errors("unit U { x: widget } store S { unit { U } }");
+        let errs = errors("unit U { x: widget } store s { unit { U } }");
         assert!(errs[0].message.contains("unknown type `widget`"));
     }
 
@@ -757,7 +851,7 @@ mod tests {
         // A backtick-quoted literal name is the same as the bare identifier.
         let src = r#"
             unit Person { id: string }
-            store S { unit { Person } const { `extra`: string } }
+            store s { unit { Person } const { `extra`: string } }
         "#;
         let schema = &resolve_str(src).expect("should resolve")[0];
         assert!(schema.columns.iter().any(|c| c.name == "extra"));
@@ -768,7 +862,7 @@ mod tests {
         // A store has no parameters, so a `{param}` name cannot resolve.
         let src = r#"
             unit Person { id: string }
-            store S { unit { Person } const { `{x}`: string } }
+            store s { unit { Person } const { `{x}`: string } }
         "#;
         let errs = errors(src);
         assert!(
@@ -779,7 +873,7 @@ mod tests {
 
     #[test]
     fn duplicate_enum_variant_is_rejected() {
-        let src = r#"unit U { id: string } store S { unit { U } var { c: enum("a", "a") } }"#;
+        let src = r#"unit U { id: string } store s { unit { U } var { c: enum("a", "a") } }"#;
         let errs = errors(src);
         assert!(errs[0].message.contains("duplicate enum variant `a`"));
     }
@@ -799,8 +893,8 @@ mod tests {
         // distinct diagnostics, not just the first.
         let src = r#"
             unit U { id: string }
-            store A { unit { Ghost } }
-            store B { unit { U } const { x: widget } }
+            store a { unit { Ghost } }
+            store b { unit { U } const { x: widget } }
         "#;
         let errs = errors(src);
         assert_eq!(errs.len(), 2);
@@ -814,7 +908,7 @@ mod tests {
               unit { Person }
               const { admission: date }
             }
-            store Students : PersonRecord {
+            store students : PersonRecord {
               unit { Person }
               const { admission: date }
               var   { status: enum("active", "inactive") }
@@ -824,7 +918,7 @@ mod tests {
         // requires the shape's attributes to be present.
         let schemas = resolve_str(src).expect("should resolve");
         assert_eq!(schemas.len(), 1);
-        assert_eq!(schemas[0].store, "Students");
+        assert_eq!(schemas[0].store, "students");
     }
 
     #[test]
@@ -832,7 +926,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Anything { unit { Person } }
-            store Persons : Anything { unit { Person } const { birthdate: date } }
+            store persons : Anything { unit { Person } const { birthdate: date } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -841,7 +935,7 @@ mod tests {
     fn unknown_shape_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            store Students : Ghost { unit { Person } }
+            store students : Ghost { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -855,7 +949,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape PersonRecord { unit { Person } const { admission: date } }
-            store Students : PersonRecord { unit { Person } }
+            store students : PersonRecord { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -870,7 +964,7 @@ mod tests {
             unit Person { id: string }
             unit Course { code: string }
             shape PersonRecord { unit { Person } const { admission: date } }
-            store Courses : PersonRecord { unit { Course } const { admission: date } }
+            store courses : PersonRecord { unit { Course } const { admission: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| e.message.contains("tabulates `Person`")
@@ -882,7 +976,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape PersonRecord { unit { Person } const { admission: date } }
-            store Students : PersonRecord { unit { Person } const { admission: string } }
+            store students : PersonRecord { unit { Person } const { admission: string } }
         "#;
         let errs = errors(src);
         assert!(
@@ -896,7 +990,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape PersonRecord { unit { Person } const { admission: date } }
-            store Students : PersonRecord { unit { Person } var { admission: date } }
+            store students : PersonRecord { unit { Person } var { admission: date } }
         "#;
         let errs = errors(src);
         assert!(
@@ -924,7 +1018,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Tabular(U: Unit) { unit { U } }
-            store Persons : Tabular(Person) { unit { Person } const { birthdate: date } }
+            store persons : Tabular(Person) { unit { Person } const { birthdate: date } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -936,7 +1030,7 @@ mod tests {
         let src = r#"
             unit Department { code: string }
             shape Named { const { name: string } }
-            store Departments : Named { unit { Department } const { name: string } }
+            store departments : Named { unit { Department } const { name: string } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -947,7 +1041,7 @@ mod tests {
             unit Person { id: string }
             unit Course { code: string }
             shape Tabular(U: Unit) { unit { U } }
-            store S : Tabular(Course) { unit { Person } }
+            store s : Tabular(Course) { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| e.message.contains("tabulates `Course`")
@@ -960,7 +1054,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Tabular(U: Unit) { unit { U } }
-            store S : Tabular { unit { Person } }
+            store s : Tabular { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -975,7 +1069,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape PersonRecord { unit { Person } }
-            store S : PersonRecord(Person) { unit { Person } }
+            store s : PersonRecord(Person) { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -990,7 +1084,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Tabular(U: Unit) { unit { U } }
-            store S : Tabular(Ghost) { unit { Person } }
+            store s : Tabular(Ghost) { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1036,11 +1130,11 @@ mod tests {
             shape Ageable(date_field: string) {
               const { `{date_field}`: date }
             }
-            store Persons : Ageable("birthdate") {
+            store persons : Ageable("birthdate") {
               unit { Person }
               const { birthdate: date }
             }
-            store Departments : Ageable("foundation_day") {
+            store departments : Ageable("foundation_day") {
               unit { Department }
               const { foundation_day: date }
             }
@@ -1058,7 +1152,7 @@ mod tests {
                 `{col}_z`: number
               }
             }
-            store Students : NormalizedCol("height") {
+            store students : NormalizedCol("height") {
               unit { Person }
               const {
                 height:   number
@@ -1074,7 +1168,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Ageable(date_field: string) { const { `{date_field}`: date } }
-            store Persons : Ageable("birthdate") { unit { Person } }
+            store persons : Ageable("birthdate") { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1088,7 +1182,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Tabular(U: Unit) { unit { U } }
-            store S : Tabular("Person") { unit { Person } }
+            store s : Tabular("Person") { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1102,7 +1196,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Ageable(date_field: string) { const { `{date_field}`: date } }
-            store Persons : Ageable(birthdate) { unit { Person } const { birthdate: date } }
+            store persons : Ageable(birthdate) { unit { Person } const { birthdate: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1134,5 +1228,120 @@ mod tests {
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let schemas = resolve_str(&src).expect("example should resolve");
         assert_eq!(schemas.len(), 3);
+    }
+
+    // --- Casing convention (docs/language/05-naming-and-casing.md) ---
+
+    #[test]
+    fn conforming_casing_resolves() {
+        // PascalCase types, snake_case store and attributes: no casing errors.
+        let src = r#"
+            unit Machine { id: string }
+            store temperature_readings {
+              unit { Machine }
+              const { temp_mean: number }
+            }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
+    }
+
+    #[test]
+    fn non_snake_store_is_rejected() {
+        let errs = errors("unit U { id: string } store TempReadings { unit { U } }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("store `TempReadings` must be snake_case")
+        }));
+    }
+
+    #[test]
+    fn non_pascal_unit_is_rejected() {
+        let errs = errors("unit machine { id: string } store s { unit { machine } }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unit `machine` must be PascalCase"))
+        );
+    }
+
+    #[test]
+    fn non_pascal_shape_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape person_record { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("shape `person_record` must be PascalCase")
+        }));
+    }
+
+    #[test]
+    fn non_snake_attribute_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            store s { unit { Person } const { birthDate: date } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("attribute `birthDate` must be snake_case")
+        }));
+    }
+
+    #[test]
+    fn non_snake_index_attribute_is_rejected() {
+        // An index field is checked once, at the unit, and only once even when
+        // several stores tabulate that unit.
+        let src = r#"
+            unit Person { personId: string }
+            store a { unit { Person } }
+            store b { unit { Person } }
+        "#;
+        let errs = errors(src);
+        let casing: Vec<_> = errs
+            .iter()
+            .filter(|e| {
+                e.message
+                    .contains("attribute `personId` must be snake_case")
+            })
+            .collect();
+        assert_eq!(casing.len(), 1, "index field casing reported exactly once");
+    }
+
+    #[test]
+    fn non_snake_string_parameter_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape Ageable(dateField: string) { const { `{dateField}`: date } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("parameter `dateField` must be snake_case")
+        }));
+    }
+
+    #[test]
+    fn unit_parameter_keeps_pascal_case() {
+        // A `Unit` parameter is a type parameter, so PascalCase is correct and
+        // must not be flagged.
+        let src = r#"
+            unit Person { id: string }
+            shape Tabular(U: Unit) { unit { U } }
+            store persons : Tabular(Person) { unit { Person } const { birthdate: date } }
+        "#;
+        assert!(resolve_str(src).is_ok());
+    }
+
+    #[test]
+    fn caseless_names_are_exempt() {
+        // Identifiers with no cased characters (CJK) carry no case distinction,
+        // so the convention does not constrain them in any position.
+        let src = r#"
+            unit 温度 { 标识: string }
+            store 温度表 { unit { 温度 } const { 测量: string } }
+        "#;
+        assert!(resolve_str(src).is_ok());
     }
 }
