@@ -101,7 +101,9 @@ typing rules attached to each operation.
 - The web-service surface (`store`/`collect` endpoints, OAuth, REST,
   auditing/versioning at the HTTP layer) is **deferred** to M4 and may be
   spun off as a companion `mensura-server` project. The core language is
-  usable without it.
+  usable without it. Its design is settled in
+  `docs/decisions/0005-identity-and-authorization.md` and
+  `docs/decisions/0006-transport-agnostic-surface.md`.
 - A new query language for analytics. Mensura is a transformation
   language; it does not aim to replace SQL.
 

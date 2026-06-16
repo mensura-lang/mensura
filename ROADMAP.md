@@ -164,6 +164,14 @@ separate `mensura-server` project until after M3.
 
 Output: the college case study from `proposal.md` runs as a web service.
 
+Design settled ahead of implementation:
+`docs/decisions/0005-identity-and-authorization.md` (federated SPIFFE
+identity, unified `auth {}`, RBAC plus bounded ABAC),
+`docs/decisions/0006-transport-agnostic-surface.md` (core stays
+wire-agnostic, deploy config owns transport selection), and
+`docs/language/05-naming-and-casing.md` (canonical names and wire
+translation).
+
 - `store` and `collect` with auto-generated REST endpoints.
 - Auditing (`@audited`), versioning (`@versioned`), auto-fields (`@auto`),
   creation-control (`@allowcreate`).
