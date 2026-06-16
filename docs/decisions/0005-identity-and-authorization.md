@@ -127,7 +127,7 @@ was doing two unrelated jobs:
 2. a **payload contract** (the fields and their units).
 
 Job 1 collapses into roles plus `auth {}` (see below): the SPIFFE path maps
-to a role, the role carries `write:temperature_readings`.  Job 2 is already
+to a role, the role carries `write:temperature-readings`.  Job 2 is already
 the ingestion surface's own columns, which today duplicate the `device`
 block.  So `device` is removed:
 
@@ -158,17 +158,26 @@ roles {
   temperature-sensor {
     when: principal.kind == "device"
           and principal.type == "temperature-sensor"
-    permissions: ["write:temperature_readings"]
+    permissions: ["write:temperature-readings"]
   }
 }
 ```
 
 Device-type gating is therefore just a permission a role holds.  "A
 vibration sensor cannot publish temperature" means the vibration role lacks
-`write:temperature_readings`.  Permissions are **auto-derived from
-resources**: `collect temperature_readings` yields `read:temperature_readings`
-and `write:temperature_readings`, so there is no separate permission
+`write:temperature-readings`.  Permissions are **auto-derived from
+resources**: `collect temperature_readings` yields `read:temperature-readings`
+and `write:temperature-readings`, so there is no separate permission
 vocabulary to keep in sync.
+
+The resource half of a permission scope is the **wire form** of the store
+name, not the bare identifier: a scope appears in IdP-issued JWT claims and
+OAuth scope strings, the same external surface that sees the REST path
+`/temperature-readings`.  So scopes use kebab-case, and Mensura maps a scope
+back to its store by the same translation
+(`docs/language/05-naming-and-casing.md`).  The mapping is `-` to `_`, which
+is bijective because identifiers never contain `-` and a snake_case store name
+uses `_` only as its separator, so no scope is ambiguous.
 
 A bounded **ABAC** extension covers instance-level scoping that RBAC cannot
 express, such as "a device may only write readings for its own machine".  An
@@ -177,7 +186,7 @@ fields:
 
 ```mensura
 auth {
-  permissions: ["write:temperature_readings"]
+  permissions: ["write:temperature-readings"]
   where: row.machine == lookup(principal).machine
 }
 ```

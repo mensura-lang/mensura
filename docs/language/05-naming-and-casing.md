@@ -101,6 +101,7 @@ it with that transport's idiom; the projection is deterministic.
 | GraphQL | PascalCase type | camelCase field |
 | gRPC / protobuf | PascalCase message, service, RPC | snake_case field |
 | MQTT | (topics only) | kebab-case topic segment |
+| Permission scope | (n/a) | kebab-case resource |
 
 Worked example, for a `collect temperature_readings` with a `machine` field:
 
@@ -108,7 +109,16 @@ Worked example, for a `collect temperature_readings` with a `machine` field:
 - GraphQL: query field `temperatureReadings`, field `machine`.
 - gRPC: message `TemperatureReadings`, field `machine`.
 - MQTT: topic segment `temperature-readings`.
+- Permission scope: `read:temperature-readings`, `write:temperature-readings`.
 
 Because the canonical name is always in the expected case (enforcement
 guarantees it), each of these is a pure function of the canonical name: the
 compiler can generate every wire name, and round-tripping is unambiguous.
+
+Permission scopes are a wire form too, not a special case: a scope appears in
+IdP-issued tokens and OAuth scope strings, so its resource half uses the same
+kebab-case as a REST path.  Mensura maps a scope back to its `store` or
+`collect` by the inverse (`-` to `_`); the mapping is bijective because a
+snake_case name uses `_` only as a separator and identifiers never contain
+`-`.  See `docs/decisions/0005-identity-and-authorization.md` for how scopes
+are auto-derived from resources.
