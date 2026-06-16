@@ -29,6 +29,18 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).run()
 }
 
+/// True if `s` is a valid Mensura identifier: a UAX#31 identifier, augmented
+/// with a leading `_` (the same profile the lexer accepts).  Shared so the
+/// resolver can validate names produced by template interpolation.
+pub fn is_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_xid_start() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_xid_continue())
+}
+
 struct Lexer<'a> {
     src: &'a str,
     /// Current byte offset into `src`.
@@ -79,6 +91,8 @@ impl<'a> Lexer<'a> {
                 self.lex_number()?
             } else if c == '"' {
                 self.lex_string()?
+            } else if c == '`' {
+                self.lex_template()?
             } else {
                 self.lex_symbol()?
             };
@@ -182,6 +196,33 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 Some(c) => value.push(c),
+            }
+        }
+    }
+
+    /// Lex a backtick template name, returning its raw inner text (without
+    /// the backticks).  The content is left unparsed; the parser splits it
+    /// into literal and `{param}` segments.
+    fn lex_template(&mut self) -> Result<TokenKind, LexError> {
+        let start = self.pos;
+        self.bump(); // opening backtick
+        let content_start = self.pos;
+        loop {
+            match self.peek() {
+                None | Some('\n') => {
+                    return Err(LexError::new(
+                        "unterminated template name (missing closing backtick)",
+                        Span::new(start, self.pos),
+                    ));
+                }
+                Some('`') => {
+                    let content = self.src[content_start..self.pos].to_string();
+                    self.bump(); // closing backtick
+                    return Ok(TokenKind::Template(content));
+                }
+                Some(_) => {
+                    self.bump();
+                }
             }
         }
     }
@@ -396,6 +437,24 @@ mod tests {
     fn unterminated_string_is_an_error() {
         let err = tokenize("\"oops").unwrap_err();
         assert!(err.message.contains("unterminated"));
+    }
+
+    #[test]
+    fn template_name_is_one_token() {
+        assert_eq!(
+            kinds("`{col}_z`"),
+            vec![TokenKind::Template("{col}_z".into())]
+        );
+        // Whitespace inside is preserved verbatim (the parser validates it).
+        assert_eq!(kinds("`a b`"), vec![TokenKind::Template("a b".into())]);
+    }
+
+    #[test]
+    fn unterminated_template_is_an_error() {
+        let err = tokenize("`{col}").unwrap_err();
+        assert!(err.message.contains("unterminated template"));
+        let err = tokenize("`oops\n`").unwrap_err();
+        assert!(err.message.contains("unterminated template"));
     }
 
     #[test]

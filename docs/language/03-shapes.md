@@ -153,8 +153,11 @@ is a name.  A shape with no parameters omits the list entirely
 
 ## Name interpolation
 
-`string` parameters can be interpolated into attribute-name positions
-using **backticks**:
+A backtick name is a uniform attribute-name form.  *Any* attribute
+name (a unit index field, a store `const`/`var`, or a shape
+`const`/`var`) may be written backtick-quoted, and `` `a` `` denotes
+the same attribute as the bare `a`.  Backticks add one capability:
+inside them, `{param}` interpolates a `string` parameter.
 
 ```
 shape NormalizedCol(U: Unit, col: string) {
@@ -166,11 +169,21 @@ shape NormalizedCol(U: Unit, col: string) {
 }
 ```
 
-The same `` `{...}` `` syntax works in expression-side positions
-within transform bodies (mutate keys, rename targets, etc.).
-Backticks are required to disambiguate "this is a parametric
-identifier" from "this is a fixed identifier"; without them,
+Interpolation resolves only where parameters are in scope.  In a shape
+that is the shape's `string` parameters; a `{param}` written in a unit
+or store, which has no parameters, is a resolution error.  Backticks
+are required to mark "this is a parametric identifier"; without them,
 `{col}_z` would be a literal identifier.
+
+This uniformity is deliberate and forward-looking.  The same backtick
+mechanism is what will let **transform and function bodies derive new
+columns as functions of the existing ones**: a transform that
+standardises a column writes its result to an interpolated name, e.g.
+`mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }`, naming
+the derived column by interpolation in exactly the same way a shape
+names a required one.  Keeping one name form across declarations and
+transforms means a derived-column name reads the same wherever it
+appears.
 
 Interpolation is resolved at compile time, when shape parameters are
 bound.  The interpolated result must be a valid attribute identifier;

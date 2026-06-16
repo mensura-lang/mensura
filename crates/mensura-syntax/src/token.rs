@@ -43,6 +43,10 @@ pub enum TokenKind {
     Float(f64),
     /// A string literal, already unescaped: `"machine_1"`.
     Str(String),
+    /// The raw inner text of a backtick template name (without the backticks):
+    /// `` `{col}_z` `` lexes to `Template("{col}_z")`.  The parser splits it
+    /// into literal and `{param}` segments.
+    Template(String),
 
     // Brackets.
     LBrace,

@@ -12,7 +12,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mensura_syntax::{Item, Program, ShapeDecl, ShapeRef, Span, StoreDecl, TypeExpr, UnitDecl};
+use mensura_syntax::{
+    Field, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeRef, Span, StoreDecl,
+    TypeExpr, UnitDecl, is_identifier,
+};
 
 use crate::model::{Column, ColumnRole, ColumnType, Schema};
 
@@ -133,9 +136,7 @@ fn resolve_store(
             &mut columns,
             &mut seen,
             &mut errors,
-            &f.name.name,
-            f.name.span,
-            &f.ty,
+            f,
             ColumnRole::Index,
             units,
         );
@@ -145,9 +146,7 @@ fn resolve_store(
             &mut columns,
             &mut seen,
             &mut errors,
-            &f.name.name,
-            f.name.span,
-            &f.ty,
+            f,
             ColumnRole::Const,
             units,
         );
@@ -157,9 +156,7 @@ fn resolve_store(
             &mut columns,
             &mut seen,
             &mut errors,
-            &f.name.name,
-            f.name.span,
-            &f.ty,
+            f,
             ColumnRole::Var,
             units,
         );
@@ -177,6 +174,13 @@ fn resolve_store(
     }
 }
 
+/// The kind of a shape parameter.  Only these two are supported; numeric and
+/// predicate parameters are deferred.
+enum ParamKind {
+    Unit,
+    Str,
+}
+
 /// How a shape constrains the unit of a conforming store.
 enum ShapeUnit {
     /// No `unit { ... }` clause: any unit conforms.
@@ -188,14 +192,22 @@ enum ShapeUnit {
     Param(String),
 }
 
-/// A shape resolved for conformance: its unit parameters in order, how it
-/// constrains the unit, and its `const`/`var` attributes as columns.  Unlike
-/// a [`Schema`] it carries no index columns (those come from the unit) and no
-/// storage; it exists only to check conformance.
+/// One resolved shape attribute: its (possibly interpolated) name template,
+/// resolved type, and block.
+struct ResolvedAttr {
+    name: NameTemplate,
+    ty: ColumnType,
+    role: ColumnRole,
+}
+
+/// A shape resolved for conformance: its parameters in order (with kinds),
+/// how it constrains the unit, and its attributes.  Attribute names are kept
+/// as templates because they are not concrete until a claim binds the shape's
+/// `string` parameters.
 struct ResolvedShape {
-    unit_params: Vec<String>,
+    params: Vec<(String, ParamKind)>,
     unit: ShapeUnit,
-    columns: Vec<Column>,
+    attrs: Vec<ResolvedAttr>,
 }
 
 fn resolve_shape(
@@ -204,9 +216,9 @@ fn resolve_shape(
 ) -> Result<ResolvedShape, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
-    // Parameters.  This slice supports `Unit` parameters only; value
-    // parameters (`string`, ...) are parsed but deferred.
-    let mut unit_params: Vec<String> = Vec::new();
+    // Parameters.  `Unit` and `string` are supported; numeric/predicate
+    // parameter types are deferred.
+    let mut params: Vec<(String, ParamKind)> = Vec::new();
     let mut seen_params: HashSet<&str> = HashSet::new();
     for p in &sh.params {
         if !seen_params.insert(p.name.name.as_str()) {
@@ -215,79 +227,112 @@ fn resolve_shape(
                 p.name.span,
             ));
         }
-        match p.kind.name.as_str() {
-            "Unit" => unit_params.push(p.name.name.clone()),
-            "string" | "number" | "bool" | "date" => errors.push(ResolveError::new(
-                format!(
-                    "value parameters are not yet supported (parameter `{}: {}`)",
-                    p.name.name, p.kind.name
-                ),
-                p.kind.span,
-            )),
-            other => errors.push(ResolveError::new(
-                format!("unknown parameter kind `{other}`"),
-                p.kind.span,
-            )),
+        let kind = match p.kind.name.as_str() {
+            "Unit" => Some(ParamKind::Unit),
+            "string" => Some(ParamKind::Str),
+            "number" | "bool" | "date" => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "`{}` parameters are not yet supported; use `Unit` or `string`",
+                        p.kind.name
+                    ),
+                    p.kind.span,
+                ));
+                None
+            }
+            other => {
+                errors.push(ResolveError::new(
+                    format!("unknown parameter kind `{other}`"),
+                    p.kind.span,
+                ));
+                None
+            }
+        };
+        if let Some(k) = kind {
+            params.push((p.name.name.clone(), k));
         }
     }
 
-    // Unit clause: optional, and may name a `Unit` parameter or a real unit.
+    // Unit clause: optional; if it names a parameter, that must be a `Unit`.
     let unit = match &sh.unit {
         None => ShapeUnit::Agnostic,
-        Some(u) if unit_params.iter().any(|p| p == &u.name) => ShapeUnit::Param(u.name.clone()),
-        Some(u) if units.contains_key(u.name.as_str()) => ShapeUnit::Concrete(u.name.clone()),
-        Some(u) => {
-            errors.push(ResolveError::new(
-                format!("unknown unit `{}`", u.name),
-                u.span,
-            ));
-            ShapeUnit::Agnostic
-        }
+        Some(u) => match params.iter().find(|(n, _)| n == &u.name) {
+            Some((_, ParamKind::Unit)) => ShapeUnit::Param(u.name.clone()),
+            Some((_, ParamKind::Str)) => {
+                errors.push(ResolveError::new(
+                    format!("`{}` is a `string` parameter, not a unit", u.name),
+                    u.span,
+                ));
+                ShapeUnit::Agnostic
+            }
+            None if units.contains_key(u.name.as_str()) => ShapeUnit::Concrete(u.name.clone()),
+            None => {
+                errors.push(ResolveError::new(
+                    format!("unknown unit `{}`", u.name),
+                    u.span,
+                ));
+                ShapeUnit::Agnostic
+            }
+        },
     };
 
-    let mut columns = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for f in &sh.consts {
-        add_column(
-            &mut columns,
-            &mut seen,
-            &mut errors,
-            &f.name.name,
-            f.name.span,
-            &f.ty,
-            ColumnRole::Const,
-            units,
-        );
-    }
-    for f in &sh.vars {
-        add_column(
-            &mut columns,
-            &mut seen,
-            &mut errors,
-            &f.name.name,
-            f.name.span,
-            &f.ty,
-            ColumnRole::Var,
-            units,
-        );
+    // The `string` parameters, for validating template interpolation.
+    let str_params: HashSet<&str> = params
+        .iter()
+        .filter(|(_, k)| matches!(k, ParamKind::Str))
+        .map(|(n, _)| n.as_str())
+        .collect();
+
+    // Attributes.  A name may interpolate `string` parameters; its type must
+    // be a primitive or enum (compound types stay deferred via `resolve_type`).
+    let mut attrs = Vec::new();
+    let mut seen_literals: HashSet<&str> = HashSet::new();
+    for (role, list) in [(ColumnRole::Const, &sh.consts), (ColumnRole::Var, &sh.vars)] {
+        for a in list {
+            for seg in &a.name.segments {
+                let NameSeg::Param(p) = seg else { continue };
+                if !str_params.contains(p.name.as_str()) {
+                    errors.push(ResolveError::new(
+                        format!("`{}` is not a `string` parameter of this shape", p.name),
+                        p.span,
+                    ));
+                }
+            }
+            match a.name.as_literal() {
+                Some(lit) if !seen_literals.insert(lit) => errors.push(ResolveError::new(
+                    format!("duplicate attribute `{lit}`"),
+                    a.name.span,
+                )),
+                _ => {}
+            }
+            match resolve_type(&a.ty, units) {
+                Ok(ty) => attrs.push(ResolvedAttr {
+                    name: a.name.clone(),
+                    ty,
+                    role,
+                }),
+                Err(e) => errors.push(e),
+            }
+        }
     }
 
     if errors.is_empty() {
         Ok(ResolvedShape {
-            unit_params,
+            params,
             unit,
-            columns,
+            attrs,
         })
     } else {
         Err(errors)
     }
 }
 
-/// Check every shape a store claims with its `:` clause.  After binding the
-/// shape's `Unit` parameters to the arguments supplied, a store conforms when
-/// it tabulates the required unit (if any) and carries every shape attribute
-/// with the same name, role (`const`/`var`), and type; extra store attributes
-/// are fine.  Each failure is a separate diagnostic pointing at the claim.
+/// Check every shape a store claims with its `:` clause.  Arguments are bound
+/// to parameters by position (a unit name to a `Unit` parameter, a string to
+/// a `string` parameter), `string` bindings are interpolated into attribute
+/// names, and the store must tabulate the required unit (if any) and carry
+/// every attribute with the same name, role, and type.  Each failure is a
+/// separate diagnostic pointing at the claim.
 fn check_conformance(
     s: &StoreDecl,
     schema: &Schema,
@@ -310,32 +355,57 @@ fn check_conformance(
             continue;
         };
 
-        if claim.args.len() != shape.unit_params.len() {
+        if claim.args.len() != shape.params.len() {
             errors.push(ResolveError::new(
                 format!(
                     "store `{}` claims `{}` with {} argument(s), but the shape declares {}",
                     s.name.name,
                     shape_ref_label(claim),
                     claim.args.len(),
-                    shape.unit_params.len()
+                    shape.params.len()
                 ),
                 claim.span,
             ));
             continue;
         }
 
-        // Bind each `Unit` parameter to its argument; arguments must be units.
-        let mut bindings: HashMap<&str, &str> = HashMap::new();
+        // Bind arguments to parameters by position, checking each kind.
+        let mut unit_bind: HashMap<&str, &str> = HashMap::new();
+        let mut str_bind: HashMap<&str, &str> = HashMap::new();
         let mut args_ok = true;
-        for (param, arg) in shape.unit_params.iter().zip(&claim.args) {
-            if !units.contains_key(arg.name.as_str()) {
-                errors.push(ResolveError::new(
-                    format!("unknown unit `{}`", arg.name),
-                    arg.span,
-                ));
-                args_ok = false;
+        for ((pname, pkind), arg) in shape.params.iter().zip(&claim.args) {
+            match (pkind, arg) {
+                (ParamKind::Unit, ShapeArg::Unit(id)) => {
+                    if !units.contains_key(id.name.as_str()) {
+                        errors.push(ResolveError::new(
+                            format!("unknown unit `{}`", id.name),
+                            id.span,
+                        ));
+                        args_ok = false;
+                    }
+                    unit_bind.insert(pname.as_str(), id.name.as_str());
+                }
+                (ParamKind::Str, ShapeArg::Str(lit)) => {
+                    str_bind.insert(pname.as_str(), lit.value.as_str());
+                }
+                (ParamKind::Unit, ShapeArg::Str(_)) => {
+                    errors.push(ResolveError::new(
+                        format!("parameter `{pname}` expects a unit name, but a string was given"),
+                        arg.span(),
+                    ));
+                    args_ok = false;
+                }
+                (ParamKind::Str, ShapeArg::Unit(id)) => {
+                    errors.push(ResolveError::new(
+                        format!(
+                            "parameter `{pname}` expects a string, but `{}` was given",
+                            id.name
+                        ),
+                        arg.span(),
+                    ));
+                    args_ok = false;
+                }
             }
-            bindings.insert(param.as_str(), arg.name.as_str());
         }
         if !args_ok {
             continue;
@@ -346,7 +416,7 @@ fn check_conformance(
         let required = match &shape.unit {
             ShapeUnit::Agnostic => None,
             ShapeUnit::Concrete(u) => Some(u.as_str()),
-            ShapeUnit::Param(p) => Some(bindings[p.as_str()]),
+            ShapeUnit::Param(p) => Some(unit_bind[p.as_str()]),
         }
         .filter(|req| schema.unit != *req);
         if let Some(req) = required {
@@ -363,35 +433,48 @@ fn check_conformance(
             continue;
         }
 
-        for want in &shape.columns {
-            match schema.columns.iter().find(|c| c.name == want.name) {
+        for attr in &shape.attrs {
+            let want = render_template(&attr.name, &str_bind);
+            if !is_identifier(&want) {
+                errors.push(ResolveError::new(
+                    format!(
+                        "store `{}` claims `{}`: interpolated attribute name `{}` is not a valid identifier",
+                        s.name.name,
+                        shape_ref_label(claim),
+                        want
+                    ),
+                    claim.span,
+                ));
+                continue;
+            }
+            match schema.columns.iter().find(|c| c.name == want) {
                 None => errors.push(ResolveError::new(
                     format!(
                         "store `{}` claims `{}` but is missing attribute `{}`",
                         s.name.name,
                         shape_ref_label(claim),
-                        want.name
+                        want
                     ),
                     claim.span,
                 )),
-                Some(have) if have.role != want.role => errors.push(ResolveError::new(
+                Some(have) if have.role != attr.role => errors.push(ResolveError::new(
                     format!(
                         "store `{}` claims `{}`: attribute `{}` is `{}` in the shape but `{}` in the store",
                         s.name.name,
                         shape_ref_label(claim),
-                        want.name,
-                        role_word(want.role),
+                        want,
+                        role_word(attr.role),
                         role_word(have.role)
                     ),
                     claim.span,
                 )),
-                Some(have) if have.ty != want.ty => errors.push(ResolveError::new(
+                Some(have) if have.ty != attr.ty => errors.push(ResolveError::new(
                     format!(
                         "store `{}` claims `{}`: attribute `{}` has type `{}` in the shape but `{}` in the store",
                         s.name.name,
                         shape_ref_label(claim),
-                        want.name,
-                        type_name(&want.ty),
+                        want,
+                        type_name(&attr.ty),
                         type_name(&have.ty)
                     ),
                     claim.span,
@@ -402,8 +485,22 @@ fn check_conformance(
     }
 }
 
-/// Render a conformance claim for diagnostics: `Tabular(Person)` or, with no
-/// arguments, just `PersonRecord`.
+/// Concatenate a name template, substituting each `string` parameter with its
+/// bound argument.  The bindings are complete by the time this runs (arity and
+/// declaration validation guarantee every parameter is a bound `string`).
+fn render_template(name: &NameTemplate, str_bind: &HashMap<&str, &str>) -> String {
+    let mut out = String::new();
+    for seg in &name.segments {
+        match seg {
+            NameSeg::Lit(s) => out.push_str(s),
+            NameSeg::Param(p) => out.push_str(str_bind.get(p.name.as_str()).copied().unwrap_or("")),
+        }
+    }
+    out
+}
+
+/// Render a conformance claim for diagnostics: `Tabular(Person)`,
+/// `Ageable("birthdate")`, or, with no arguments, just `PersonRecord`.
 fn shape_ref_label(r: &ShapeRef) -> String {
     if r.args.is_empty() {
         r.name.name.clone()
@@ -411,7 +508,10 @@ fn shape_ref_label(r: &ShapeRef) -> String {
         let args = r
             .args
             .iter()
-            .map(|a| a.name.clone())
+            .map(|a| match a {
+                ShapeArg::Unit(id) => id.name.clone(),
+                ShapeArg::Str(s) => format!("\"{}\"", s.value),
+            })
             .collect::<Vec<_>>()
             .join(", ");
         format!("{}({})", r.name.name, args)
@@ -443,33 +543,67 @@ fn type_name(ty: &ColumnType) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn add_column(
     columns: &mut Vec<Column>,
     seen: &mut HashSet<String>,
     errors: &mut Vec<ResolveError>,
-    name: &str,
-    name_span: Span,
-    ty: &TypeExpr,
+    field: &Field,
     role: ColumnRole,
     units: &HashMap<&str, &UnitDecl>,
 ) {
-    if !seen.insert(name.to_string()) {
+    // Units and stores carry no parameters, so a field name must render to a
+    // plain identifier with no interpolation.
+    let name = match literal_field_name(&field.name) {
+        Ok(name) => name,
+        Err(e) => {
+            errors.push(e);
+            return;
+        }
+    };
+    if !seen.insert(name.clone()) {
         errors.push(ResolveError::new(
             format!("duplicate column `{name}`"),
-            name_span,
+            field.name.span,
         ));
         return;
     }
-    match resolve_type(ty, units) {
+    match resolve_type(&field.ty, units) {
         Ok(ct) => columns.push(Column {
-            name: name.to_string(),
+            name,
             ty: ct,
             role,
-            span: name_span,
+            span: field.name.span,
         }),
         Err(e) => errors.push(e),
     }
+}
+
+/// Render a name template that may not interpolate: units and stores have no
+/// parameters in scope.  Errors if the name has a `{param}` hole or does not
+/// render to a valid identifier.
+fn literal_field_name(name: &NameTemplate) -> Result<String, ResolveError> {
+    let mut rendered = String::new();
+    for seg in &name.segments {
+        match seg {
+            NameSeg::Lit(s) => rendered.push_str(s),
+            NameSeg::Param(p) => {
+                return Err(ResolveError::new(
+                    format!(
+                        "`{}` is a shape parameter, but units and stores have none to interpolate",
+                        p.name
+                    ),
+                    p.span,
+                ));
+            }
+        }
+    }
+    if !is_identifier(&rendered) {
+        return Err(ResolveError::new(
+            format!("`{rendered}` is not a valid attribute name"),
+            name.span,
+        ));
+    }
+    Ok(rendered)
 }
 
 fn resolve_type(
@@ -616,6 +750,31 @@ mod tests {
     fn unknown_type_is_rejected() {
         let errs = errors("unit U { x: widget } store S { unit { U } }");
         assert!(errs[0].message.contains("unknown type `widget`"));
+    }
+
+    #[test]
+    fn backtick_literal_name_in_store_resolves() {
+        // A backtick-quoted literal name is the same as the bare identifier.
+        let src = r#"
+            unit Person { id: string }
+            store S { unit { Person } const { `extra`: string } }
+        "#;
+        let schema = &resolve_str(src).expect("should resolve")[0];
+        assert!(schema.columns.iter().any(|c| c.name == "extra"));
+    }
+
+    #[test]
+    fn interpolation_in_store_is_rejected() {
+        // A store has no parameters, so a `{param}` name cannot resolve.
+        let src = r#"
+            unit Person { id: string }
+            store S { unit { Person } const { `{x}`: string } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("none to interpolate"))
+        );
     }
 
     #[test]
@@ -854,15 +1013,114 @@ mod tests {
     }
 
     #[test]
-    fn value_parameter_is_rejected() {
+    fn numeric_parameter_is_rejected() {
+        // `Unit` and `string` are supported; other parameter types are not.
         let src = r#"
             unit Person { id: string }
-            shape NumericCol(col: string) { unit { Person } }
+            shape Weighted(n: number) { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("`number` parameters are not yet supported")
+        }));
+    }
+
+    #[test]
+    fn string_parameter_shape_conforms_with_interpolation() {
+        // `Ageable` is unit-agnostic and names its date field via a `string`
+        // parameter, so `Person` and `Department` conform with different names.
+        let src = r#"
+            unit Person { id: string }
+            unit Department { code: string }
+            shape Ageable(date_field: string) {
+              const { `{date_field}`: date }
+            }
+            store Persons : Ageable("birthdate") {
+              unit { Person }
+              const { birthdate: date }
+            }
+            store Departments : Ageable("foundation_day") {
+              unit { Department }
+              const { foundation_day: date }
+            }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 2);
+    }
+
+    #[test]
+    fn interpolated_template_conforms() {
+        let src = r#"
+            unit Person { id: string }
+            shape NormalizedCol(col: string) {
+              const {
+                `{col}`:   number
+                `{col}_z`: number
+              }
+            }
+            store Students : NormalizedCol("height") {
+              unit { Person }
+              const {
+                height:   number
+                height_z: number
+              }
+            }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
+    }
+
+    #[test]
+    fn missing_interpolated_attribute_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape Ageable(date_field: string) { const { `{date_field}`: date } }
+            store Persons : Ageable("birthdate") { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("value parameters are not yet supported"))
+                .any(|e| e.message.contains("missing attribute `birthdate`"))
+        );
+    }
+
+    #[test]
+    fn string_argument_for_unit_parameter_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape Tabular(U: Unit) { unit { U } }
+            store S : Tabular("Person") { unit { Person } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("expects a unit name, but a string was given")
+        }));
+    }
+
+    #[test]
+    fn unit_argument_for_string_parameter_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape Ageable(date_field: string) { const { `{date_field}`: date } }
+            store Persons : Ageable(birthdate) { unit { Person } const { birthdate: date } }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("expects a string, but `birthdate` was given")
+        }));
+    }
+
+    #[test]
+    fn template_referencing_unknown_parameter_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            shape Bad(col: string) { const { `{other}`: number } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`other` is not a `string` parameter"))
         );
     }
 
