@@ -16,7 +16,7 @@ unit Department {
 }
 
 // Unit-agnostic: no unit clause, so any store carrying a `const name: string`
-// conforms, whatever its unit.  `Departments` claims it below.
+// conforms, whatever its unit.  `departments` claims it below.
 shape Named {
   const { name: string }
 }
@@ -28,7 +28,7 @@ shape Ageable(date_field: string) {
   const { `{date_field}`: date }
 }
 
-store Departments : Named, Ageable("foundation_day") {
+store departments : Named, Ageable("foundation_day") {
   unit { Department }
   const {
     name: string
@@ -36,13 +36,13 @@ store Departments : Named, Ageable("foundation_day") {
   }
 }
 
-store Persons : Ageable("birthdate") {
+store persons : Ageable("birthdate") {
   unit { Person }
   const { birthdate: date }
   var { last_name: string }
 }
 
-store Students {
+store students {
   unit { Person }
   const { admission: date }
   var { status: enum("active", "inactive") }
