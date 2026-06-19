@@ -150,6 +150,14 @@ device types"; it is one role holding several permissions.  This converges
 `allow:`, `rbac:`, and `auth { permissions }` collapse into a single
 `auth {}` block.
 
+Two blocks are involved and they are named distinctly to avoid confusion.
+The program-level configuration that declares trusted issuers and roles is
+`identity {}` (proposal.md called it `auth {}`).  The block that attaches
+access control to a single surface (`store`, `collect`, `endpoint`) stays
+`auth {}`.  So `identity {}` defines *who exists and what each role may do*,
+and a surface's `auth {}` says *which of those permissions this surface
+requires*.
+
 The core is **RBAC**.  A SPIFFE path maps to one or more roles through
 `when:` predicates; each role carries permissions:
 
