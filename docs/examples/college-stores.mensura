@@ -1,10 +1,11 @@
 // College stores: the basic, fully-resolving subset of
-// docs/language/02-stores.md.
+// docs/language/02-stores.md, plus shapes from docs/language/03-shapes.md
+// (unit-agnostic, and parameterised by a `string` field name).
 //
 // Compound units (units whose fields reference other units) and `domain`
 // blocks are deferred, so the compound `Course`/`Enrollment` stores from that
 // document are intentionally omitted here.  Everything below parses and
-// resolves under the current `unit` + basic `store` feature.
+// resolves under the current `unit` + basic `store` + `shape` feature.
 
 unit Person {
   id: string
@@ -14,19 +15,35 @@ unit Department {
   code: string
 }
 
-store Departments {
-  unit { Department }
+// Unit-agnostic: no unit clause, so any store carrying a `const name: string`
+// conforms, whatever its unit.  `departments` claims it below.
+shape Named {
   const { name: string }
 }
 
-store Persons {
-  unit { Person }
-  const { birthdate: date }
-  var   { last_name: string }
+// A `string` parameter names the date field age is measured from, so the same
+// contract fits `Person` (born on `birthdate`) and `Department` (founded on
+// `foundation_day`).
+shape Ageable(date_field: string) {
+  const { `{date_field}`: date }
 }
 
-store Students {
+store departments : Named, Ageable("foundation_day") {
+  unit { Department }
+  const {
+    name: string
+    foundation_day: date
+  }
+}
+
+store persons : Ageable("birthdate") {
+  unit { Person }
+  const { birthdate: date }
+  var { last_name: string }
+}
+
+store students {
   unit { Person }
   const { admission: date }
-  var   { status: enum("active", "inactive") }
+  var { status: enum("active", "inactive") }
 }

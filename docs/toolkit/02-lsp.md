@@ -37,7 +37,7 @@ source --lex--> tokens (+ trivia) --parse--> AST --resolve--> Schema
                         (highlight)         (highlight)        (publish)
 ```
 
-Every stage already carries byte-offset spans: `Token`, `Trivia` (ADR 0005),
+Every stage already carries byte-offset spans: `Token`, `Trivia` (ADR 0007),
 each AST node, `LexError`, `ParseError`, and `ResolveError`.  The server's job
 is span translation and protocol plumbing, not language analysis.
 
@@ -91,9 +91,10 @@ Token types (the legend advertised at `initialize`):
 
 | Type         | Source                                                |
 |--------------|-------------------------------------------------------|
-| `keyword`    | Contextual keywords: `unit`, `store`, `const`, `var`, `domain`, `enum`. |
-| `type`       | Declaration and reference names of units (`UnitDecl.name`, `StoreDecl.unit`, type-position idents). |
-| `property`   | Field and attribute names (`Field.name`, `DomainEntry.field`). |
+| `keyword`    | Contextual keywords: `unit`, `store`, `shape`, `const`, `var`, `domain`, `enum`. |
+| `type`       | Declaration and reference names of units and shapes, and conformance targets. |
+| `property`   | Field and attribute names, including the literal parts of a name template. |
+| `parameter`  | Shape parameters and `{param}` holes inside a name template. |
 | `string`     | String literals.                                      |
 | `number`     | Integer and float literals.                           |
 | `operator`   | Operators and punctuation.                            |
@@ -116,18 +117,25 @@ raw tokens.
 from the AST and a small companion table:
 
 - *Keyword spans* come from the parser.  As it recognizes each contextual
-  keyword (it already calls `at_keyword("unit")`, `"store"`, `"const"`,
-  `"var"`, `"domain"`, `"enum"`), the parser records the matched span in a
-  classified-span table returned alongside the AST.  This keeps the keyword
-  vocabulary in exactly one place (the parser) and covers the clause-header
-  keywords (`unit {`, `const {`, `var {`, `domain {`) whose spans the AST does
-  not otherwise store.  The highlighter never re-derives the keyword set.
+  keyword (it already calls `at_keyword("unit")`, `"store"`, `"shape"`,
+  `"const"`, `"var"`, `"domain"`, `"enum"`), the parser records the matched
+  span in a classified-span table returned alongside the AST.  This keeps the
+  keyword vocabulary in exactly one place (the parser) and covers the
+  clause-header keywords (`unit {`, `const {`, `var {`, `domain {`) whose spans
+  the AST does not otherwise store.  The highlighter never re-derives the
+  keyword set.
 - *Types* are `UnitDecl.name`, `StoreDecl.name`, `StoreDecl.unit`,
-  `DomainEntry.store`, and every `TypeExpr::Named` ident.
-- *Properties* are `Field.name` and `DomainEntry.field`.
+  `ShapeDecl.name` and its optional `unit`, `DomainEntry.store`, the shape-param
+  kind annotations, every `TypeExpr::Named` ident, and the `:` conformance
+  targets (`ShapeRef.name` and any `ShapeArg::Unit`).
+- *Properties* are attribute names (`Field.name`) and `DomainEntry.field`.  A
+  backtick name template is split so its literal segments are `property` and
+  its `{param}` holes are `parameter` (LSP tokens may not overlap).
+- *Parameters* are `ShapeParam.name` and the `NameSeg::Param` holes of a name
+  template.
 - *enumMembers* are the `StrLit` variants inside `TypeExpr::Enum`.
-- *strings*, *numbers*, and *operators* come from the token stream, since
-  those token kinds never conflict with the AST classification above.
+- *strings*, *numbers*, and *operators* come from the token stream (the
+  backtick template token is left to the AST tier, like an identifier).
 
 **Lex tier (fallback).**  When parsing fails, the AST is absent or partial, so
 the server cannot classify keywords, types, or properties.  It falls back to
@@ -137,10 +145,10 @@ unclassified (default text).  This guarantees a file mid-edit, with a syntax
 error, still gets reasonable highlighting instead of going blank.
 
 **Comments (both tiers).**  Comments come from the lexer's trivia channel
-(ADR 0005), independent of whether the parse succeeded, so they always color.
+(ADR 0007), independent of whether the parse succeeded, so they always color.
 Every `Trivia` span becomes a `comment` token.
 
-This split is the load-bearing reason ADR 0005 records comments on a side
+This split is the load-bearing reason ADR 0007 records comments on a side
 channel rather than discarding them: it is the only source of comment spans,
 and it is available even when the parser is not.
 
@@ -193,7 +201,7 @@ flow through the editor's standard diagnostic UI.
 ## Forward references
 
 - Hover revealing a binding's full type (`ROADMAP.md`, M5: the type quadruple).
-  Doc comments (ADR 0005) attach to the declaration they precede and show in
+  Doc comments (ADR 0007) attach to the declaration they precede and show in
   hover, the rustdoc / Javadoc pattern.
 - Completion, goto-definition, and find-references.
 - Incremental document sync and semantic-token deltas / range requests.

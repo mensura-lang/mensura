@@ -124,7 +124,7 @@ mod tests {
 
     const PERSONS: &str = r#"
         unit Person { id: string }
-        store Persons {
+        store persons {
           unit { Person }
           const { birthdate: date }
           var   { last_name: string }
@@ -133,10 +133,10 @@ mod tests {
 
     #[test]
     fn create_table_sql_for_persons() {
-        let sql = create_table_sql(&schema(PERSONS, "Persons"));
+        let sql = create_table_sql(&schema(PERSONS, "persons"));
         assert_eq!(
             sql,
-            "CREATE TABLE IF NOT EXISTS \"Persons\" (\n  \"id\" TEXT,\n  \"birthdate\" TEXT,\n  \"last_name\" TEXT,\n  PRIMARY KEY (\"id\")\n);"
+            "CREATE TABLE IF NOT EXISTS \"persons\" (\n  \"id\" TEXT,\n  \"birthdate\" TEXT,\n  \"last_name\" TEXT,\n  PRIMARY KEY (\"id\")\n);"
         );
     }
 
@@ -144,23 +144,23 @@ mod tests {
     fn create_table_sql_for_enum_has_check() {
         let src = r#"
             unit U { id: string }
-            store S { unit { U } var { status: enum("active", "inactive") } }
+            store s { unit { U } var { status: enum("active", "inactive") } }
         "#;
-        let sql = create_table_sql(&schema(src, "S"));
+        let sql = create_table_sql(&schema(src, "s"));
         assert!(sql.contains("\"status\" TEXT CHECK (\"status\" IN ('active', 'inactive'))"));
     }
 
     #[test]
     fn ensure_store_creates_then_reports_existing() {
         let mut db = SqliteBackend::open_in_memory().unwrap();
-        let s = schema(PERSONS, "Persons");
+        let s = schema(PERSONS, "persons");
         assert_eq!(db.ensure_store(&s).unwrap(), EnsureOutcome::Created);
         assert_eq!(db.ensure_store(&s).unwrap(), EnsureOutcome::AlreadyExists);
 
         // Columns, types, and the primary key are as declared.
         let cols: Vec<(String, String, i64)> = db
             .conn
-            .prepare("PRAGMA table_info(\"Persons\")")
+            .prepare("PRAGMA table_info(\"persons\")")
             .unwrap()
             .query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(5)?)))
             .unwrap()
@@ -180,19 +180,19 @@ mod tests {
     fn enum_check_constraint_is_enforced() {
         let src = r#"
             unit U { id: string }
-            store S { unit { U } var { status: enum("active", "inactive") } }
+            store s { unit { U } var { status: enum("active", "inactive") } }
         "#;
         let mut db = SqliteBackend::open_in_memory().unwrap();
-        db.ensure_store(&schema(src, "S")).unwrap();
+        db.ensure_store(&schema(src, "s")).unwrap();
 
         db.conn
             .execute(
-                "INSERT INTO \"S\" (\"id\", \"status\") VALUES ('a', 'active')",
+                "INSERT INTO \"s\" (\"id\", \"status\") VALUES ('a', 'active')",
                 [],
             )
             .expect("valid enum value should insert");
         let bad = db.conn.execute(
-            "INSERT INTO \"S\" (\"id\", \"status\") VALUES ('b', 'bogus')",
+            "INSERT INTO \"s\" (\"id\", \"status\") VALUES ('b', 'bogus')",
             [],
         );
         assert!(bad.is_err(), "value outside the enum must be rejected");

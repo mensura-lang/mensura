@@ -10,7 +10,9 @@ use lsp_types::{
     Diagnostic, DiagnosticSeverity, Position, Range, SemanticToken, SemanticTokenType,
 };
 
-use mensura_syntax::{Item, Program, Span, TokenKind, TypeExpr, lex, parse_with_meta};
+use mensura_syntax::{
+    Item, NameSeg, NameTemplate, Program, ShapeArg, Span, TokenKind, TypeExpr, lex, parse_with_meta,
+};
 use mensura_types::resolve;
 
 use crate::line_index::{LineIndex, PositionEncoding, encoded_len};
@@ -23,6 +25,7 @@ pub fn token_legend() -> Vec<SemanticTokenType> {
         SemanticTokenType::KEYWORD,
         SemanticTokenType::TYPE,
         SemanticTokenType::PROPERTY,
+        SemanticTokenType::PARAMETER,
         SemanticTokenType::STRING,
         SemanticTokenType::NUMBER,
         SemanticTokenType::OPERATOR,
@@ -34,11 +37,12 @@ pub fn token_legend() -> Vec<SemanticTokenType> {
 const KEYWORD_TY: u32 = 0;
 const TYPE_TY: u32 = 1;
 const PROPERTY_TY: u32 = 2;
-const STRING_TY: u32 = 3;
-const NUMBER_TY: u32 = 4;
-const OPERATOR_TY: u32 = 5;
-const ENUM_MEMBER_TY: u32 = 6;
-const COMMENT_TY: u32 = 7;
+const PARAMETER_TY: u32 = 3;
+const STRING_TY: u32 = 4;
+const NUMBER_TY: u32 = 5;
+const OPERATOR_TY: u32 = 6;
+const ENUM_MEMBER_TY: u32 = 7;
+const COMMENT_TY: u32 = 8;
 
 /// What the server reports for one document version.
 pub struct Analysis {
@@ -121,40 +125,88 @@ pub fn analyze(src: &str, encoding: PositionEncoding) -> Analysis {
     }
 }
 
-/// Emit type, property, and enum-member tokens from the AST.
+/// Emit type, property, parameter, and enum-member tokens from the AST.
 fn highlight_program(builder: &mut TokenBuilder, program: &Program) {
     for item in &program.items {
         match item {
             Item::Unit(unit) => {
                 builder.push(unit.name.span, TYPE_TY);
                 for field in &unit.fields {
-                    highlight_field(builder, &field.name.span, &field.ty);
+                    highlight_field(builder, field);
                 }
             }
             Item::Store(store) => {
                 builder.push(store.name.span, TYPE_TY);
                 builder.push(store.unit.span, TYPE_TY);
+                for shape_ref in &store.conforms {
+                    builder.push(shape_ref.name.span, TYPE_TY);
+                    for arg in &shape_ref.args {
+                        // A `Str` argument is a string literal already colored
+                        // by the token stream; only unit references need the
+                        // type classification.
+                        if let ShapeArg::Unit(id) = arg {
+                            builder.push(id.span, TYPE_TY);
+                        }
+                    }
+                }
                 for field in store.consts.iter().chain(&store.vars) {
-                    highlight_field(builder, &field.name.span, &field.ty);
+                    highlight_field(builder, field);
                 }
                 for entry in &store.domain {
                     builder.push(entry.field.span, PROPERTY_TY);
                     builder.push(entry.store.span, TYPE_TY);
                 }
             }
+            Item::Shape(shape) => {
+                builder.push(shape.name.span, TYPE_TY);
+                for param in &shape.params {
+                    builder.push(param.name.span, PARAMETER_TY);
+                    builder.push(param.kind.span, TYPE_TY);
+                }
+                if let Some(unit) = &shape.unit {
+                    builder.push(unit.span, TYPE_TY);
+                }
+                for field in shape.consts.iter().chain(&shape.vars) {
+                    highlight_field(builder, field);
+                }
+            }
         }
     }
 }
 
-fn highlight_field(builder: &mut TokenBuilder, name: &Span, ty: &TypeExpr) {
-    builder.push(*name, PROPERTY_TY);
-    match ty {
+fn highlight_field(builder: &mut TokenBuilder, field: &mensura_syntax::Field) {
+    highlight_name(builder, &field.name);
+    match &field.ty {
         TypeExpr::Named(id) => builder.push(id.span, TYPE_TY),
         TypeExpr::Enum { variants, .. } => {
             for variant in variants {
                 builder.push(variant.span, ENUM_MEMBER_TY);
             }
         }
+    }
+}
+
+/// Highlight an attribute name.  A plain identifier is one `property` span; a
+/// backtick template colors its `{param}` holes as `parameter` and the literal
+/// remainder (text, braces, backticks) as `property`, split into
+/// non-overlapping spans since LSP tokens may not nest.
+fn highlight_name(builder: &mut TokenBuilder, name: &NameTemplate) {
+    if name.as_literal().is_some() {
+        builder.push(name.span, PROPERTY_TY);
+        return;
+    }
+    let mut cursor = name.span.start;
+    for seg in &name.segments {
+        if let NameSeg::Param(id) = seg {
+            if id.span.start > cursor {
+                builder.push(Span::new(cursor, id.span.start), PROPERTY_TY);
+            }
+            builder.push(id.span, PARAMETER_TY);
+            cursor = id.span.end;
+        }
+    }
+    if cursor < name.span.end {
+        builder.push(Span::new(cursor, name.span.end), PROPERTY_TY);
     }
 }
 
@@ -166,7 +218,8 @@ fn highlight_literals(builder: &mut TokenBuilder, tokens: &[mensura_syntax::Toke
         let ty = match token.kind {
             TokenKind::Str(_) => STRING_TY,
             TokenKind::Int(_) | TokenKind::Float(_) => NUMBER_TY,
-            TokenKind::Ident(_) | TokenKind::Eof => continue,
+            // Identifiers and template names are classified by the AST tier.
+            TokenKind::Ident(_) | TokenKind::Template(_) | TokenKind::Eof => continue,
             // Everything else is an operator or punctuation.
             _ => OPERATOR_TY,
         };
@@ -279,10 +332,11 @@ fn priority(token_type: u32) -> u8 {
         ENUM_MEMBER_TY => 1,
         KEYWORD_TY => 2,
         TYPE_TY => 3,
-        PROPERTY_TY => 4,
-        STRING_TY => 5,
-        NUMBER_TY => 6,
-        _ => 7,
+        PARAMETER_TY => 4,
+        PROPERTY_TY => 5,
+        STRING_TY => 6,
+        NUMBER_TY => 7,
+        _ => 8,
     }
 }
 
@@ -353,5 +407,18 @@ mod tests {
         // A store naming an unknown unit resolves with an error.
         let analysis = analyze("store S { unit { Missing } }", PositionEncoding::Utf8);
         assert!(!analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn shapes_highlight_keyword_type_and_parameter() {
+        // `shape`/`var` keywords; `Sized`, `string`, `number` types; the
+        // declared param `c` and the `{c}` template hole are both parameters;
+        // the literal `_z` template segment is a property.
+        let toks = types_at("shape Sized(c: string) { var { `{c}_z`: number } }");
+        let kinds: Vec<u32> = toks.iter().map(|t| t.3).collect();
+        assert!(kinds.contains(&KEYWORD_TY));
+        assert!(kinds.contains(&TYPE_TY));
+        assert!(kinds.contains(&PROPERTY_TY));
+        assert_eq!(kinds.iter().filter(|&&k| k == PARAMETER_TY).count(), 2);
     }
 }

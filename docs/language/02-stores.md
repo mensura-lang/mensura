@@ -280,7 +280,10 @@ nothing.  Acyclic, well-formed.
 - **API surface.**  REST endpoints, authentication, and permission
   checking are part of the M4 web-service work, not the language
   core.  This document is silent on whether or how any particular
-  store is exposed over HTTP.
+  store is exposed over HTTP.  The design is settled in
+  `docs/decisions/0005-identity-and-authorization.md` (identity and
+  `auth {}`) and `docs/decisions/0006-transport-agnostic-surface.md`
+  (transport projection).
 - **Attribute identity.**  When are two attributes (in two stores, or
   in two intermediate tables) "the same thing"?  Unsettled, important
   for `bind` and `join`, has its own document pending.
