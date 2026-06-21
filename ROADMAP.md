@@ -48,6 +48,8 @@ mensura/
     mensura-runtime/    -- Polars-backed interpreter
     mensura-cli/        -- the `mensura` binary
     mensura-lsp/        -- the `mensura lsp` subcommand backend
+  formal/               -- Lean 4 formalization of the data-handling algebra
+                           (Mathlib-backed); see decisions/0008
 ```
 
 ## Pre-M0 — Design docs only
@@ -84,7 +86,7 @@ Minimum set of documents before M0 ends:
 - `docs/decisions/0002-no-defaults-policy.md`
 - `docs/decisions/0003-cli-subcommand-shape.md`
 
-Validation criterion: every code example in `data-handling.tex`, the proposal,
+Validation criterion: every code example in the book's Chapter 5, the proposal,
 and the postdoc report can be transcribed to Mensura syntax and the docs say
 unambiguously whether each one type-checks.
 
@@ -107,10 +109,15 @@ Specifically:
   `tumbling_window`, `sliding_window`, `embed`.
 - Disjointness solver semantics over lineage trees.
 - A working definition of split-invariance for binary operations (closes the
-  open question in `data-handling.tex`).
+  open question in the book's Chapter 5).
 - Completeness propagation rules for `collect`-sourced data.
 - A test suite of "must accept" and "must reject" programs, derived from the
   examples in the chapter and the postdoc report.
+
+The algebra underpinning this freeze is mechanized in Lean 4 under `formal/`
+(see `docs/decisions/0008-formalize-algebra-in-lean.md`). The split-invariance
+results, in particular, are proved there before the calculus is declared
+stable.
 
 ## M1 — Frontend: parse + typecheck (no execution)
 
@@ -145,7 +152,7 @@ This is the "first working language" milestone. Narrow on purpose.
 
 ## M3 — Algebra surface (chapter Tier A + Tier B)
 
-Output: every operation in `data-handling.tex` is a language primitive, with
+Output: every operation in the book's Chapter 5 is a language primitive, with
 correct typing.
 
 - Tier A: tagged `bind`/`split`, `pivot`/`unpivot`, `select`, `filter`,
