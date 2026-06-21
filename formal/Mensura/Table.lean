@@ -1,6 +1,6 @@
 /-
-Indexed tables: the core data structure of the algebra, plus the first
-operations (split, bind, filter) and the split-invariance result.
+Indexed tables: the core data structure of the algebra, the operations
+(split, bind, map), and the split-invariance results.
 
 Main Source:  Chapter 5, section "Formal structured data" and "Split-invariant
 operations", of F. A. N. Verri (2026). Data Science Project: An Inductive Learning
@@ -23,12 +23,18 @@ The general `card(r) ≥ 2` case (needing `Multiset`, and the home of `ungroup`
 and `aggregate`) is where the Mathlib *library* starts to earn its keep; for
 now we only borrow Mathlib's tactics.
 
-Done here: def:split, def:bind, def:disjoint-tables, def:split-invariance,
-def:filtering, and the proofs that a split yields disjoint tables, that bind
-undoes split, and that `filter` is split-invariant.
+Done here: def:split, def:bind, def:disjoint-tables, def:split-invariance, and
+`map` -- a single row-wise primitive that subsumes the chapter's def:selection,
+def:mutating, and def:filtering.  Proved: a split yields disjoint tables, bind
+undoes split, bind is commutative on disjoint tables, and `map` is
+split-invariant.
 
-Next, in dependency order: def:selection, def:mutating, def:left-join, then the
-tagged variants (def:tagged-bind / def:tagged-split).
+Next: def:left-join (changes the key type, so it needs the binary / fixed-table
+form of split-invariance), then aggregate and ungroup (which need `card ≥ 2`,
+i.e. `Multiset`), and the tagged variants (def:tagged-bind / def:tagged-split).
+The bias-free `bind` arrives with the `card ≥ 2` lift, where it becomes
+multiset union; until then `bind_comm` shows the current left-bias is invisible
+on disjoint tables.
 -/
 
 import Mathlib.Tactic
@@ -51,6 +57,7 @@ structure Table (K H α : Type _) where
   row : K → Option (H → Cell α)
 
 variable {K H α : Type _}
+variable {H' α' : Type _}
 
 /-- A row is present when it has cardinality 1. -/
 def Table.Present (T : Table K H α) (k : K) : Prop := T.row k ≠ none
@@ -86,16 +93,34 @@ def Disjoint (T₀ T₁ : Table K H α) : Prop :=
   ∀ k, T₀.row k = none ∨ T₁.row k = none
 
 /-- def:split-invariance, for a unary operation.  `f` distributes over `bind`
-of disjoint tables. -/
-def SplitInvariant (f : Table K H α → Table K H α) : Prop :=
+of disjoint tables.  The operation may change the columns and value type, but
+keeps the key type `K`: that is what guarantees the outputs are still disjoint,
+so the right-hand `bind` is meaningful.  (A key-changing operation such as
+`left_join` needs the binary / fixed-table form, deferred.) -/
+def SplitInvariant (f : Table K H α → Table K H' α') : Prop :=
   ∀ T₀ T₁ : Table K H α, Disjoint T₀ T₁ → f (bind T₀ T₁) = bind (f T₀) (f T₁)
 
-/-- def:filtering.  Keep a row iff the predicate holds on its key and nested
-row; rows are treated independently. -/
-def filter (p : K → (H → Cell α) → Bool) (T : Table K H α) : Table K H α :=
+/-- The single row-wise primitive (def:selection + def:mutating + def:filtering).
+`φ k f` transforms the nested row `f` at key `k`, returning `none` to drop the
+row or `some f'` to keep it as `f'`.  It may rename, drop, reorder, or add
+columns and change the value type, so every per-row operation of the chapter is
+`map φ` for a particular `φ`:
+
+* selection by a reindexing `g : H' → H`:  `map (fun _ f => some (f ∘ g))`;
+* mutation adding a column from `m`:
+    `map (fun k f => some (Sum.elim f (fun _ => m k f)))`;
+* filtering by a predicate `p`:  `map (fun k f => bif p k f then some f else none)`.
+
+`map` is `Option.bind`-shaped: because it can drop a row, its split-invariance
+genuinely needs disjointness (a row dropped on one side must not be silently
+recovered from the other).  The drop-free fragment (`φ` always `some`) is
+split-invariant even without it, but folding `filter` in means the general
+statement uses the hypothesis. -/
+def map (φ : K → (H → Cell α) → Option (H' → Cell α')) (T : Table K H α) :
+    Table K H' α' :=
   ⟨fun k =>
     match T.row k with
-    | some f => bif p k f then some f else none
+    | some f => φ k f
     | none => none⟩
 
 /-- The two halves of a split are disjoint. -/
@@ -112,20 +137,31 @@ theorem bind_split (s : K → Bool) (T : Table K H α) :
   simp only [bind, split]
   cases s k <;> cases T.row k <;> rfl
 
-/-- `filter` is split-invariant.  Disjointness is essential: were a row present
-in both tables, filtering it out of one but not the other would break the
-equation. -/
-theorem filter_splitInvariant (p : K → (H → Cell α) → Bool) :
-    SplitInvariant (filter p) := by
+/-- `bind` is commutative on disjoint tables.  The definition is left-biased,
+but disjointness kills one side at every key, so the bias is unobservable: this
+is what "the order of concatenation is not an issue" means under `card ∈ {0,1}`. -/
+theorem bind_comm {T₀ T₁ : Table K H α} (h : Disjoint T₀ T₁) :
+    bind T₀ T₁ = bind T₁ T₀ := by
+  refine Table.ext_row fun k => ?_
+  simp only [bind]
+  rcases h k with h | h
+  · simp only [h]; cases T₁.row k <;> rfl
+  · simp only [h]; cases T₀.row k <;> rfl
+
+/-- `map` is split-invariant.  Disjointness is essential because `map` can drop
+rows: were a row present in both tables, dropping it on one side but not the
+other would break the equation. -/
+theorem map_splitInvariant (φ : K → (H → Cell α) → Option (H' → Cell α')) :
+    SplitInvariant (map φ) := by
   intro T₀ T₁ hdisj
   refine Table.ext_row fun k => ?_
-  simp only [filter, bind]
+  simp only [map, bind]
   rcases hdisj k with h | h
   · simp only [h]
   · cases T₀.row k with
     | none => simp only [h]
     | some f =>
       simp only [h]
-      cases p k f <;> rfl
+      cases φ k f <;> rfl
 
 end Mensura
