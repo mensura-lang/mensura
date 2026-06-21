@@ -23,18 +23,18 @@ The general `card(r) ≥ 2` case (needing `Multiset`, and the home of `ungroup`
 and `aggregate`) is where the Mathlib *library* starts to earn its keep; for
 now we only borrow Mathlib's tactics.
 
-Done here: def:split, def:bind, def:disjoint-tables, def:split-invariance, and
+Done here: def:split, def:bind, def:disjoint-tables, def:split-invariance,
 `map` -- a single row-wise primitive that subsumes the chapter's def:selection,
-def:mutating, and def:filtering.  Proved: a split yields disjoint tables, bind
-undoes split, bind is commutative on disjoint tables, and `map` is
-split-invariant.
+def:mutating, and def:filtering -- and `leftJoin` (def:left-join, lookup form),
+which turns out to be an instance of `map`.  Proved: a split yields disjoint
+tables, bind undoes split, bind is commutative on disjoint tables, and both
+`map` and `leftJoin` are split-invariant.
 
-Next: def:left-join (changes the key type, so it needs the binary / fixed-table
-form of split-invariance), then aggregate and ungroup (which need `card ≥ 2`,
-i.e. `Multiset`), and the tagged variants (def:tagged-bind / def:tagged-split).
-The bias-free `bind` arrives with the `card ≥ 2` lift, where it becomes
-multiset union; until then `bind_comm` shows the current left-bias is invisible
-on disjoint tables.
+Next: aggregate and ungroup, and the general join with right-private indices --
+all of which need `card ≥ 2` (i.e. `Multiset`) -- then the tagged variants
+(def:tagged-bind / def:tagged-split).  The bias-free `bind` also arrives with
+the `card ≥ 2` lift, where it becomes multiset union; until then `bind_comm`
+shows the current left-bias is invisible on disjoint tables.
 -/
 
 import Mathlib.Tactic
@@ -58,6 +58,7 @@ structure Table (K H α : Type _) where
 
 variable {K H α : Type _}
 variable {H' α' : Type _}
+variable {U G : Type _}
 
 /-- A row is present when it has cardinality 1. -/
 def Table.Present (T : Table K H α) (k : K) : Prop := T.row k ≠ none
@@ -95,8 +96,9 @@ def Disjoint (T₀ T₁ : Table K H α) : Prop :=
 /-- def:split-invariance, for a unary operation.  `f` distributes over `bind`
 of disjoint tables.  The operation may change the columns and value type, but
 keeps the key type `K`: that is what guarantees the outputs are still disjoint,
-so the right-hand `bind` is meaningful.  (A key-changing operation such as
-`left_join` needs the binary / fixed-table form, deferred.) -/
+so the right-hand `bind` is meaningful.  (An operation that changes the key, as
+the *general* join does when the right table has private indices, would need a
+different statement; the lookup `leftJoin` below keeps the key and fits here.) -/
 def SplitInvariant (f : Table K H α → Table K H' α') : Prop :=
   ∀ T₀ T₁ : Table K H α, Disjoint T₀ T₁ → f (bind T₀ T₁) = bind (f T₀) (f T₁)
 
@@ -122,6 +124,24 @@ def map (φ : K → (H → Cell α) → Option (H' → Cell α')) (T : Table K H
     match T.row k with
     | some f => φ k f
     | none => none⟩
+
+/-- def:left-join, against a fixed right table.  The right table shares the
+index columns `U` with the left and adds columns `G` (disjoint from the left's
+`H`, kept apart here by `⊕`).  `key : K → U` projects a left key to the shared
+index.
+
+Under `card ∈ {0,1}` the right table must have at most one row per shared key
+(else one left row matches several right rows, i.e. `card ≥ 2`), so we model it
+as keyed by `U` alone -- a lookup.  A present left row is kept and enriched with
+the matching right row's columns, or with missing values (`none`) when there is
+no match.  Left presence is thus preserved, which makes `leftJoin` an instance
+of `map`; its split-invariance is immediate. -/
+def leftJoin (key : K → U) (right : Table U G α) (T : Table K H α) :
+    Table K (H ⊕ G) α :=
+  map (fun k f => some (Sum.elim f (fun g =>
+    match right.row (key k) with
+    | some r => r g
+    | none => none))) T
 
 /-- The two halves of a split are disjoint. -/
 theorem split_disjoint (s : K → Bool) (T : Table K H α) :
@@ -163,5 +183,16 @@ theorem map_splitInvariant (φ : K → (H → Cell α) → Option (H' → Cell �
     | some f =>
       simp only [h]
       cases φ k f <;> rfl
+
+/-- `leftJoin` against a fixed table is split-invariant.  Because it is a `map`
+that always keeps the row (it only enriches), the proof inspects the left table
+alone and never uses disjointness. -/
+theorem leftJoin_splitInvariant (key : K → U) (right : Table U G α) :
+    SplitInvariant (leftJoin (H := H) key right) := by
+  intro T₀ T₁ _hdisj
+  apply Table.ext_row
+  intro k
+  simp only [leftJoin, map, bind]
+  cases T₀.row k <;> rfl
 
 end Mensura
