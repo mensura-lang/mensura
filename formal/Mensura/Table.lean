@@ -642,7 +642,11 @@ theorem Minimal.bind {T₀ T₁ : Table K H σ} (h₀ : Minimal T₀) (h₁ : Mi
 /-- `split` preserves minimality: each half's rows are a subset of `T`'s. -/
 theorem Minimal.split (s : K → Bool) {T : Table K H σ} (h : Minimal T) :
     Minimal (split s T).1 ∧ Minimal (split s T).2 := by
-  refine ⟨fun k f hf => ?_, fun k f hf => ?_⟩ <;>
-    (cases hs : s k <;> simp [split, hs] at hf <;> exact h k f hf)
+  have hle₁ : ∀ k, (Mensura.split s T).1.rows k ≤ T.rows k := by
+    intro k; simp only [Mensura.split]; cases s k <;> simp
+  have hle₂ : ∀ k, (Mensura.split s T).2.rows k ≤ T.rows k := by
+    intro k; simp only [Mensura.split]; cases s k <;> simp
+  exact ⟨fun k f hf => h k f (Multiset.mem_of_le (hle₁ k) hf),
+         fun k f hf => h k f (Multiset.mem_of_le (hle₂ k) hf)⟩
 
 end Mensura
