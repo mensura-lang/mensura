@@ -34,28 +34,33 @@ tuples carry over:
 
 `card(r)` is the multiset's cardinality; `card(r) = 0` is an absent row.
 
-Two properties are formalized: `SplitInvariant` (the chapter's def:split-invariance,
-distributivity over the bind of *disjoint* tables, which is what Mensura tracks
-and enforces) and `BindHom` (distributivity over *every* bind, strictly
-stronger).  `BindHom.splitInvariant` bridges them, and `aggregate` separates
-them.
+Three properties are formalized, in increasing/orthogonal strength:
+* `SplitInvariant` -- distributes over the bind of *disjoint* tables (the
+  chapter's def:split-invariance, the per-operation guarantee);
+* `BindHom` -- distributes over *every* bind (strictly stronger);
+* `SplitSafe` -- split-invariant *and* disjointness-preserving, the class
+  closed under composition, so an entire *pipeline* stays split-invariant.
+`BindHom.splitInvariant` and `SplitSafe` package the relationships.  `aggregate`
+separates `SplitInvariant` from `BindHom` (split-invariant, not a hom);
+`project` separates `SplitInvariant` from `SplitSafe` (a hom, hence
+split-invariant, yet not disjointness-preserving, so unsafe to pipeline).
 
-Done here: def:split, def:bind, def:disjoint-tables, the two properties above,
+Done here: def:split, def:bind, def:disjoint-tables, the three properties above,
 `map` (subsuming def:selection, def:mutating, def:filtering, and the
 row-expanding direction of def:grouping), `leftJoin` and `innerJoin`
-(def:left-join and def:join, fixed-right form), `ungroup` (def:grouping), and
-`aggregate` (def:aggregating).  Proved: split yields disjoint tables, bind
-undoes split, bind is commutative and associative, `map`/`leftJoin`/`innerJoin`/
-`ungroup` are bind-homomorphisms (hence split-invariant), `aggregate` *is*
-split-invariant yet *not* a bind-homomorphism.
+(def:left-join and def:join, fixed-right form), `ungroup` (def:grouping),
+`aggregate` (def:aggregating), and `project` (def:projection).  Proved: split
+yields disjoint tables, bind undoes split, bind is commutative and associative,
+`map`/`leftJoin`/`innerJoin`/`ungroup` are bind-homomorphisms, `aggregate` is
+split-invariant but not a bind-homomorphism, `project` is a bind-homomorphism
+but not disjointness-preserving; all of the former are `SplitSafe` and compose,
+`project` is not.
 
-Next, now expressible with typed domains: def:projection (but note: with a total
-`bind` it is a bind-homomorphism, so faithfully excluding it the way the chapter
-does requires `SplitInvariant` to also demand the outputs stay disjoint -- a
-design choice), def:pivot-l2w / def:pivot-w2l (a gather across keys; clean only
-when at most one value per name), and the tagged variants (def:tagged-bind /
-def:tagged-split, whose characteristic law is reversibility, not split-invariance).
-Also deferred: the minimality side-condition (no all-missing nested row).
+Next: def:pivot-l2w / def:pivot-w2l (a gather across keys; clean only when at
+most one value per name) and the tagged variants (def:tagged-bind /
+def:tagged-split, whose characteristic law is reversibility, not
+split-invariance).  Also deferred: the minimality side-condition (no all-missing
+nested row).
 -/
 
 import Mathlib.Data.Multiset.Bind
@@ -82,7 +87,9 @@ structure Table (K H : Type _) (σ : H → Type) where
 
 variable {K H : Type _} {σ : H → Type}
 variable {K' H' : Type _} {σ' : H' → Type}
+variable {K'' H'' : Type _} {σ'' : H'' → Type}
 variable {U G : Type _} {τ : G → Type}
+variable {D : Type _}
 
 /-- Combine a left row and a right row into a row over the disjoint-union schema
 `Sum.elim σ τ`.  This is the dependent counterpart of `Sum.elim`: at `Sum.inl h`
@@ -146,6 +153,41 @@ theorem BindHom.splitInvariant {f : Table K H σ → Table K' H' σ'} (h : BindH
   intro T₀ T₁ _
   exact h T₀ T₁
 
+/-- `f` sends disjoint tables to disjoint tables.  This is the missing
+ingredient that makes split-invariance *compositional*: `SplitInvariant` alone
+is not closed under composition, because `g`'s split-invariance needs its inputs
+`f T₀, f T₁` disjoint, which only holds if `f` preserves disjointness. -/
+def PreservesDisjoint (f : Table K H σ → Table K' H' σ') : Prop :=
+  ∀ T₀ T₁ : Table K H σ, Disjoint T₀ T₁ → Disjoint (f T₀) (f T₁)
+
+/-- The class of operations safe to put in a pipeline between a split and a
+bind: split-invariant *and* disjointness-preserving.  Unlike bare
+`SplitInvariant`, this is closed under composition (`SplitSafe.comp`) and
+contains the identity (`SplitSafe.id`), so a whole pipeline of `SplitSafe`
+operations is split-invariant -- applying it between split and bind equals
+applying it to the full table.  `project` is split-invariant but *not* here
+(it does not preserve disjointness), which is exactly why pipelines through it,
+such as `aggregate ∘ project`, can disagree with the full-table result. -/
+def SplitSafe (f : Table K H σ → Table K' H' σ') : Prop :=
+  PreservesDisjoint f ∧ SplitInvariant f
+
+/-- The identity is split-safe. -/
+theorem SplitSafe.id : SplitSafe (id : Table K H σ → Table K H σ) :=
+  ⟨fun _ _ h => h, fun _ _ _ => rfl⟩
+
+/-- Split-safe operations are closed under composition.  This is the payoff: the
+disjointness `f` preserves is exactly what feeds `g`'s split-invariance, so the
+equation threads through the whole pipeline. -/
+theorem SplitSafe.comp {f : Table K H σ → Table K' H' σ'}
+    {g : Table K' H' σ' → Table K'' H'' σ''} (hg : SplitSafe g) (hf : SplitSafe f) :
+    SplitSafe (g ∘ f) := by
+  obtain ⟨hfP, hfS⟩ := hf
+  obtain ⟨hgP, hgS⟩ := hg
+  refine ⟨fun T₀ T₁ h => hgP _ _ (hfP _ _ h), fun T₀ T₁ h => ?_⟩
+  show g (f (bind T₀ T₁)) = bind (g (f T₀)) (g (f T₁))
+  rw [hfS T₀ T₁ h]
+  exact hgS (f T₀) (f T₁) (hfP T₀ T₁ h)
+
 /-- The single row-wise primitive (def:selection + def:mutating + def:filtering,
 and the row-expanding direction of def:grouping).  `φ k f` maps a nested row to a
 multiset of output rows: `0` drops it, a singleton keeps or transforms it, and
@@ -202,6 +244,17 @@ def ungroup {β : Type} [DecidableEq β]
     match v with
     | some w => if w = p.2 then {fun h => f (Sum.inl h)} else 0
     | none => 0)⟩
+
+/-- def:projection.  Drop the index component `D` from the key, turning it into a
+new column (`Sum.inr ()`, domain `D`): the rows of every dropped key `(k, d)` are
+*merged* into the single output key `k`, each tagged with its `d`.  Needs `D`
+finite to sum over.  This *changes the observational unit*, and -- crucially --
+it does not preserve disjointness (`project_not_preservesDisjoint`): two input
+rows that a split separates can share an output key, so `project` is not
+`SplitSafe` even though it is a `BindHom` (`project_bindHom`). -/
+def project [Fintype D] (T : Table (K × D) H σ) :
+    Table K (H ⊕ Unit) (Sum.elim σ (fun _ => D)) :=
+  ⟨fun k => ∑ d : D, (T.rows (k, d)).map (fun f => Row.elim f (fun _ => some d))⟩
 
 /-- The two halves of a split are disjoint. -/
 theorem split_disjoint (s : K → Bool) (T : Table K H σ) :
@@ -314,5 +367,102 @@ theorem aggregate_not_bindHom :
   have hT := h ⟨fun _ => {fun _ => none}⟩ ⟨fun _ => {fun _ => none}⟩
   apply_fun (fun U => (U.rows ()).card) at hT
   simp [aggregate, bind] at hT
+
+/-- `project` *is* a bind-homomorphism (hence split-invariant): it sums each
+dropped key's mapped rows, and both `Multiset.map` and `Finset.sum` distribute
+over `+`.  So by the bare equation alone, `project` looks safe. -/
+theorem project_bindHom [Fintype D] :
+    BindHom (project (K := K) (H := H) (σ := σ) (D := D)) := by
+  intro T₀ T₁
+  apply Table.ext_rows
+  intro k
+  simp only [project, bind, Multiset.map_add]
+  rw [Finset.sum_add_distrib]
+
+/-- ...yet `project` does *not* preserve disjointness, so it is **not**
+`SplitSafe`.  Counterexample: two single-row tables that a split separates by the
+dropped index (`d = false` vs `d = true`) both land on the same output key once
+`d` is dropped.  This is precisely why a pipeline through `project` -- e.g.
+`aggregate ∘ project`, the averaging case -- can disagree with the full-table
+result: `aggregate` is then handed overlapping tables its guarantee does not
+cover. -/
+theorem project_not_preservesDisjoint :
+    ¬ PreservesDisjoint
+        (project (K := Unit) (σ := fun (_ : Unit) => Unit) (D := Bool)) := by
+  intro h
+  have hd := h
+    ⟨fun p => if p.2 then 0 else {fun _ => none}⟩
+    ⟨fun p => if p.2 then {fun _ => none} else 0⟩
+    (by intro p; cases hp : p.2 <;> simp [hp]) ()
+  simp [project] at hd
+
+/-! ### Split-safety of the operations
+
+Every operation defined above preserves disjointness, hence is `SplitSafe`, hence
+can be freely composed into pipelines that stay split-invariant.  Each acts at a
+key (or refines the key, for `ungroup`) using `Multiset.bind`/the `if`, both of
+which send the empty multiset to the empty multiset. -/
+
+theorem map_preservesDisjoint (φ : K → Row H σ → Multiset (Row H' σ')) :
+    PreservesDisjoint (map φ) := by
+  intro T₀ T₁ hdisj k
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [map, h])
+  · exact Or.inr (by simp [map, h])
+
+theorem map_splitSafe (φ : K → Row H σ → Multiset (Row H' σ')) :
+    SplitSafe (map φ) := ⟨map_preservesDisjoint φ, map_splitInvariant φ⟩
+
+theorem aggregate_preservesDisjoint (f : K → Multiset (Row H σ) → Row H σ) :
+    PreservesDisjoint (aggregate f) := by
+  intro T₀ T₁ hdisj k
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [aggregate, h])
+  · exact Or.inr (by simp [aggregate, h])
+
+theorem aggregate_splitSafe (f : K → Multiset (Row H σ) → Row H σ) :
+    SplitSafe (aggregate f) := ⟨aggregate_preservesDisjoint f, aggregate_splitInvariant f⟩
+
+theorem leftJoin_preservesDisjoint (key : K → U) (right : Table U G τ) :
+    PreservesDisjoint (leftJoin (σ := σ) key right) := by
+  intro T₀ T₁ hdisj k
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [leftJoin, map, h])
+  · exact Or.inr (by simp [leftJoin, map, h])
+
+theorem leftJoin_splitSafe (key : K → U) (right : Table U G τ) :
+    SplitSafe (leftJoin (σ := σ) key right) :=
+  ⟨leftJoin_preservesDisjoint key right, leftJoin_splitInvariant key right⟩
+
+theorem innerJoin_preservesDisjoint (key : K → U) (right : Table U G τ) :
+    PreservesDisjoint (innerJoin (σ := σ) key right) := by
+  intro T₀ T₁ hdisj k
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [innerJoin, map, h])
+  · exact Or.inr (by simp [innerJoin, map, h])
+
+theorem innerJoin_splitSafe (key : K → U) (right : Table U G τ) :
+    SplitSafe (innerJoin (σ := σ) key right) :=
+  ⟨innerJoin_preservesDisjoint key right, innerJoin_splitInvariant key right⟩
+
+theorem ungroup_preservesDisjoint {β : Type} [DecidableEq β] :
+    PreservesDisjoint (ungroup (K := K) (H := H) (σ := σ) (β := β)) := by
+  intro T₀ T₁ hdisj
+  rintro ⟨k, v⟩
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [ungroup, h])
+  · exact Or.inr (by simp [ungroup, h])
+
+theorem ungroup_splitSafe {β : Type} [DecidableEq β] :
+    SplitSafe (ungroup (K := K) (H := H) (σ := σ) (β := β)) :=
+  ⟨ungroup_preservesDisjoint, ungroup_splitInvariant⟩
+
+/-- A pipeline of split-safe operations is split-safe, hence split-invariant --
+applying it between split and bind equals applying it to the full table.  Here:
+`map`, then `leftJoin`, then `aggregate`. -/
+example (φ : K → Row H σ → Multiset (Row H' σ')) (key : K → U) (right : Table U G τ)
+    (g : K → Multiset (Row (H' ⊕ G) (Sum.elim σ' τ)) → Row (H' ⊕ G) (Sum.elim σ' τ)) :
+    SplitSafe (aggregate g ∘ leftJoin (σ := σ') key right ∘ map φ) :=
+  (aggregate_splitSafe g).comp ((leftJoin_splitSafe key right).comp (map_splitSafe φ))
 
 end Mensura
