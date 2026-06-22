@@ -49,18 +49,19 @@ Done here: def:split, def:bind, def:disjoint-tables, the three properties above,
 `map` (subsuming def:selection, def:mutating, def:filtering, and the
 row-expanding direction of def:grouping), `leftJoin` and `innerJoin`
 (def:left-join and def:join, fixed-right form), `ungroup` (def:grouping),
-`aggregate` (def:aggregating), and `project` (def:projection).  Proved: split
-yields disjoint tables, bind undoes split, bind is commutative and associative,
-`map`/`leftJoin`/`innerJoin`/`ungroup` are bind-homomorphisms, `aggregate` is
-split-invariant but not a bind-homomorphism, `project` is a bind-homomorphism
-but not disjointness-preserving; all of the former are `SplitSafe` and compose,
-`project` is not.
+`aggregate` (def:aggregating), `project` (def:projection), and `unpivot` /
+`pivot` (def:pivot-w2l / def:pivot-l2w).  Proved: split yields disjoint tables,
+bind undoes split, bind is commutative and associative,
+`map`/`leftJoin`/`innerJoin`/`ungroup`/`unpivot` are bind-homomorphisms,
+`aggregate` is split-invariant but not a bind-homomorphism, `project` is a
+bind-homomorphism but not disjointness-preserving, and `pivot` is *not even*
+split-invariant (a name-separating split breaks it) though it inverts `unpivot`
+on functional tables (`pivot_unpivot`).  All bind-homomorphisms plus `aggregate`
+are `SplitSafe` and compose; `project` and `pivot` are not.
 
-Next: def:pivot-l2w / def:pivot-w2l (a gather across keys; clean only when at
-most one value per name) and the tagged variants (def:tagged-bind /
-def:tagged-split, whose characteristic law is reversibility, not
-split-invariance).  Also deferred: the minimality side-condition (no all-missing
-nested row).
+Next: the tagged variants (def:tagged-bind / def:tagged-split, whose
+characteristic law is reversibility, not split-invariance), and the minimality
+side-condition (no all-missing nested row).
 -/
 
 import Mathlib.Data.Multiset.Bind
@@ -90,6 +91,7 @@ variable {K' H' : Type _} {σ' : H' → Type}
 variable {K'' H'' : Type _} {σ'' : H'' → Type}
 variable {U G : Type _} {τ : G → Type}
 variable {D : Type _}
+variable {N : Type _} {V : Type}
 
 /-- Combine a left row and a right row into a row over the disjoint-union schema
 `Sum.elim σ τ`.  This is the dependent counterpart of `Sum.elim`: at `Sum.inl h`
@@ -255,6 +257,39 @@ rows that a split separates can share an output key, so `project` is not
 def project [Fintype D] (T : Table (K × D) H σ) :
     Table K (H ⊕ Unit) (Sum.elim σ (fun _ => D)) :=
   ⟨fun k => ∑ d : D, (T.rows (k, d)).map (fun f => Row.elim f (fun _ => some d))⟩
+
+/-- Read the one value out of a card-≤1 bag of single-column rows (`none` when
+empty).  `noncomputable` (uses `Multiset.toList`), which is fine for this
+proof-only development; execution lives in the runtime layer. -/
+noncomputable def cellOf (m : Multiset (Row Unit (fun _ => V))) : Cell V :=
+  (m.toList.head?).elim none (fun g => g ())
+
+@[simp] theorem cellOf_zero :
+    cellOf (0 : Multiset (Row Unit (fun _ => V))) = none := by
+  simp [cellOf, Multiset.toList_zero]
+
+@[simp] theorem cellOf_singleton (g : Row Unit (fun _ => V)) :
+    cellOf {g} = g () := by
+  simp [cellOf, Multiset.toList_singleton]
+
+/-- def:pivot-w2l (unpivot, wide-to-long).  Spread each name-column `n` of a wide
+row into its own output key `(k, n)`, carrying that column's value.  A map-like
+operation, hence a `BindHom` and `SplitSafe` -- the safe reshape direction. -/
+def unpivot (T : Table K N (fun _ => V)) : Table (K × N) Unit (fun _ => V) :=
+  ⟨fun p => (T.rows p.1).map (fun f => fun _ => f p.2)⟩
+
+/-- def:pivot-l2w (pivot, long-to-wide).  Gather the value at each name `n` into
+one wide row per key `k`; a key whose names are all empty stays absent (matching
+the chapter's minimality).  A canonical value exists only at card ≤ 1 per
+`(k, n)` (the chapter's "card constant"), so `cellOf` is used.  Unlike `unpivot`,
+`pivot` is *not* split-invariant (`pivot_not_splitInvariant`). -/
+noncomputable def pivot [Fintype N] (T : Table (K × N) Unit (fun _ => V)) :
+    Table K N (fun _ => V) :=
+  ⟨fun k => if (∀ n, (T.rows (k, n)).card = 0) then 0
+            else {fun n => cellOf (T.rows (k, n))}⟩
+
+/-- A table is functional when every key holds at most one nested row. -/
+def Functional (T : Table K H σ) : Prop := ∀ k, (T.rows k).card ≤ 1
 
 /-- The two halves of a split are disjoint. -/
 theorem split_disjoint (s : K → Bool) (T : Table K H σ) :
@@ -464,5 +499,63 @@ example (φ : K → Row H σ → Multiset (Row H' σ')) (key : K → U) (right :
     (g : K → Multiset (Row (H' ⊕ G) (Sum.elim σ' τ)) → Row (H' ⊕ G) (Sum.elim σ' τ)) :
     SplitSafe (aggregate g ∘ leftJoin (σ := σ') key right ∘ map φ) :=
   (aggregate_splitSafe g).comp ((leftJoin_splitSafe key right).comp (map_splitSafe φ))
+
+/-! ### Reshape: unpivot is split-safe, pivot is not, and they are inverses -/
+
+/-- `unpivot` is a bind-homomorphism (it is map-like over the input key). -/
+theorem unpivot_bindHom : BindHom (unpivot (K := K) (N := N) (V := V)) := by
+  intro T₀ T₁
+  apply Table.ext_rows
+  rintro ⟨k, n⟩
+  simp only [unpivot, bind]
+  exact Multiset.map_add _ _ _
+
+theorem unpivot_preservesDisjoint :
+    PreservesDisjoint (unpivot (K := K) (N := N) (V := V)) := by
+  intro T₀ T₁ hdisj
+  rintro ⟨k, n⟩
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [unpivot, h])
+  · exact Or.inr (by simp [unpivot, h])
+
+/-- Hence `unpivot` is split-safe -- the safe reshape direction. -/
+theorem unpivot_splitSafe : SplitSafe (unpivot (K := K) (N := N) (V := V)) :=
+  ⟨unpivot_preservesDisjoint, unpivot_bindHom.splitInvariant⟩
+
+/-- `pivot` is *not* split-invariant: a split that separates the names of one key
+yields two complementary partial rows that union-`bind` keeps apart (card 1 on
+the left, card 2 on the right).  This refines the book, whose pivot
+split-invariance relies on cell-wise-merge bind over ragged cells -- which this
+total-row / union-bind model deliberately does not have. -/
+theorem pivot_not_splitInvariant :
+    ¬ SplitInvariant (pivot (K := Unit) (N := Bool) (V := Unit)) := by
+  intro h
+  have hd := h
+    ⟨fun p => if p.2 then 0 else {fun _ => none}⟩
+    ⟨fun p => if p.2 then {fun _ => none} else 0⟩
+    (by intro p; cases hp : p.2 <;> simp [hp])
+  apply_fun (fun U => (U.rows ()).card) at hd
+  simp [pivot, bind, Bool.forall_bool] at hd
+
+/-- def:pivot inverts def:pivot-w2l on functional tables (the "card constant"
+case): pivoting an unpivoted wide table recovers it.  This reversibility is the
+reason pivot is useful despite not being split-invariant. -/
+theorem pivot_unpivot [Fintype N] [Nonempty N] {T : Table K N (fun _ => V)}
+    (hT : Functional T) : pivot (unpivot T) = T := by
+  apply Table.ext_rows
+  intro k
+  rcases Nat.lt_or_ge (T.rows k).card 1 with hc | hc
+  · have h0 : T.rows k = 0 := Multiset.card_eq_zero.mp (by omega)
+    simp [pivot, unpivot, h0]
+  · have hc1 : (T.rows k).card = 1 := le_antisymm (hT k) hc
+    obtain ⟨f, hf⟩ := Multiset.card_eq_one.mp hc1
+    obtain ⟨n₀⟩ := (inferInstance : Nonempty N)
+    have hguard : ¬ (∀ n, ((unpivot T).rows (k, n)).card = 0) := by
+      intro hall
+      have h1 := hall n₀
+      simp [unpivot, hf] at h1
+    simp only [pivot]
+    rw [if_neg hguard]
+    simp [unpivot, hf, Multiset.map_singleton]
 
 end Mensura
