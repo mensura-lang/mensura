@@ -504,4 +504,64 @@ theorem project_additiveGather [Fintype D] :
   simp only [Multiset.map_add]
   exact Finset.sum_add_distrib
 
+/-! ## A split-safe pivot: spreading a non-index column
+
+`Table.lean`'s `pivot` spreads a column that is part of the *index*
+(`Table (K × N) Unit → Table K N`), and is not split-invariant
+(`pivot_not_splitInvariant`): a split can cut the spread column.  The same
+reshape becomes split-safe once the spread column `name` is a non-index
+*attribute*: the long table is indexed by the residual key `K`, with the
+`(value, name)` pairs carried in the bag at each key (here `value = Sum.inl ()`,
+`name = Sum.inr ()`).  Then pivoting reads only one key's bag, so it is a strict
+`fiberMap`, hence `SplitSafe`.  This is the formal counterpart of the book's
+relaxed pivot: safe when `name` is an attribute, unsafe (a `project`) when `name`
+is an index.
+
+Reversibility is stated, not reproved here: recovering the long table from a
+wide one re-introduces `name` into the index via the existing `unpivot`, and a
+`project` (which is *not* split-safe, `project_not_preservesDisjoint`) brings it
+back to attribute form, i.e. `T = project (unpivot (pivotAttr T))` on tables that
+hold exactly one row per name.  The lone non-split-safe step is that `project`. -/
+
+open Classical in
+/-- The value sub-bag of `m` at name `n`: the long rows whose `name` cell is
+`some n`, projected to single-column value rows so `cellOf` can read them.  The
+filter predicate is decided classically (this development is proof-only). -/
+noncomputable def valuesAt (n : N)
+    (m : Multiset (Row (Unit ⊕ Unit) (Sum.elim (fun _ => V) (fun _ => N)))) :
+    Multiset (Row Unit (fun _ => V)) :=
+  (m.filter (fun r => (r (Sum.inr ()) : Cell N) = some n)).map
+    (fun r => fun _ => (r (Sum.inl ()) : Cell V))
+
+/-- The relaxed, split-safe pivot.  `name` (`Sum.inr ()`) is a non-index column;
+each key's whole `(value, name)` bag is collapsed into one wide row `n ↦` the
+value stored at name `n`.  `noncomputable` because it reads values through
+`cellOf`. -/
+noncomputable def pivotAttr
+    (T : Table K (Unit ⊕ Unit) (Sum.elim (fun _ => V) (fun _ => N))) :
+    Table K N (fun _ => V) :=
+  ⟨fun k => if (T.rows k).card = 0 then 0 else {fun n => cellOf (valuesAt n (T.rows k))}⟩
+
+/-- `pivotAttr` is a `fiberMap`: it reads only the bag at its own key. -/
+theorem pivotAttr_eq_fiberMap :
+    pivotAttr (K := K) (V := V) (N := N)
+      = fiberMap (fun (_k : K)
+          (m : Multiset (Row (Unit ⊕ Unit) (Sum.elim (fun _ => V) (fun _ => N)))) =>
+            if m.card = 0 then 0 else {fun n => cellOf (valuesAt n m)}) := rfl
+
+/-- Its fiber action is strict: the empty bag pivots to the empty table. -/
+theorem pivotAttr_strict :
+    Strict (fun (_k : K)
+      (m : Multiset (Row (Unit ⊕ Unit) (Sum.elim (fun _ => V) (fun _ => N)))) =>
+        if m.card = 0 then 0 else {fun n => cellOf (valuesAt n m)}) := by
+  intro k
+  simp
+
+/-- Hence the relaxed pivot is `SplitSafe` -- in contrast to the index-column
+`pivot`, which is not even split-invariant (`pivot_not_splitInvariant`). -/
+theorem pivotAttr_splitSafe :
+    SplitSafe (pivotAttr (K := K) (V := V) (N := N)) := by
+  rw [pivotAttr_eq_fiberMap]
+  exact fiberMap_splitSafe pivotAttr_strict
+
 end Mensura
