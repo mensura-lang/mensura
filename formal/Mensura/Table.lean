@@ -49,19 +49,23 @@ Done here: def:split, def:bind, def:disjoint-tables, the three properties above,
 `map` (subsuming def:selection, def:mutating, def:filtering, and the
 row-expanding direction of def:grouping), `leftJoin` and `innerJoin`
 (def:left-join and def:join, fixed-right form), `ungroup` (def:grouping),
-`aggregate` (def:aggregating), `project` (def:projection), and `unpivot` /
-`pivot` (def:pivot-w2l / def:pivot-l2w).  Proved: split yields disjoint tables,
-bind undoes split, bind is commutative and associative,
+`aggregate` (def:aggregating), `project` (def:projection), `unpivot` / `pivot`
+(def:pivot-w2l / def:pivot-l2w), and the tagged variants `taggedBind` /
+`taggedSplit` (def:tagged-bind / def:tagged-split).  Proved: split yields
+disjoint tables, bind undoes split, bind is commutative and associative,
 `map`/`leftJoin`/`innerJoin`/`ungroup`/`unpivot` are bind-homomorphisms,
 `aggregate` is split-invariant but not a bind-homomorphism, `project` is a
-bind-homomorphism but not disjointness-preserving, and `pivot` is *not even*
+bind-homomorphism but not disjointness-preserving, `pivot` is *not even*
 split-invariant (a name-separating split breaks it) though it inverts `unpivot`
-on functional tables (`pivot_unpivot`).  All bind-homomorphisms plus `aggregate`
-are `SplitSafe` and compose; `project` and `pivot` are not.
+on functional tables (`pivot_unpivot`), and `taggedSplit` inverts `taggedBind`
+(`taggedSplit_taggedBind_left`/`_right`).  All bind-homomorphisms plus
+`aggregate` are `SplitSafe` and compose; `project` and `pivot` are not.  The
+chapter's minimality assumption is `Minimal`, preserved by `bind` and `split`.
 
-Next: the tagged variants (def:tagged-bind / def:tagged-split, whose
-characteristic law is reversibility, not split-invariance), and the minimality
-side-condition (no all-missing nested row).
+This completes the operations of the chapter's data-handling algebra.  Future
+directions: the grouped/arranged (window) operations of the chapter's "Other
+operations" section, which are deliberately not split-invariant, and a
+completeness/expressiveness result for the algebra as a whole.
 -/
 
 import Mathlib.Data.Multiset.Bind
@@ -92,6 +96,7 @@ variable {K'' H'' : Type _} {σ'' : H'' → Type}
 variable {U G : Type _} {τ : G → Type}
 variable {D : Type _}
 variable {N : Type _} {V : Type}
+variable {S : Type}
 
 /-- Combine a left row and a right row into a row over the disjoint-union schema
 `Sum.elim σ τ`.  This is the dependent counterpart of `Sum.elim`: at `Sum.inl h`
@@ -290,6 +295,45 @@ noncomputable def pivot [Fintype N] (T : Table (K × N) Unit (fun _ => V)) :
 
 /-- A table is functional when every key holds at most one nested row. -/
 def Functional (T : Table K H σ) : Prop := ∀ k, (T.rows k).card ≤ 1
+
+/-- Tag a row with a source value `s` in a fresh column `Sum.inr ()` (domain `S`). -/
+def addTag (s : S) (f : Row H σ) : Row (H ⊕ Unit) (Sum.elim σ (fun _ => S)) :=
+  Row.elim f (fun _ => some s)
+
+/-- Drop the tag column, projecting back to the original columns. -/
+def dropTag (f : Row (H ⊕ Unit) (Sum.elim σ (fun _ => S))) : Row H σ :=
+  fun h => f (Sum.inl h)
+
+@[simp] theorem addTag_inr (s : S) (f : Row H σ) :
+    addTag s f (Sum.inr ()) = some s := rfl
+
+@[simp] theorem dropTag_addTag (s : S) (f : Row H σ) : dropTag (addTag s f) = f := rfl
+
+/-- def:tagged-bind.  Bind two tables, recording each row's source in a new
+column: `T₀`'s rows are tagged `s₀`, `T₁`'s `s₁`.  It is `bind` of two
+tag-`map`s, so its content is the plain bind plus the source column. -/
+def taggedBind (s₀ s₁ : S) (T₀ T₁ : Table K H σ) :
+    Table K (H ⊕ Unit) (Sum.elim σ (fun _ => S)) :=
+  bind (map (fun _ f => {addTag s₀ f}) T₀) (map (fun _ f => {addTag s₁ f}) T₁)
+
+/-- def:tagged-split.  Recover the rows of source `s`: keep those whose tag
+column is `some s`, dropping the tag.  A `map`, hence split-safe; it inverts
+`taggedBind` (`taggedSplit_taggedBind_left`). -/
+def taggedSplit [DecidableEq S]
+    (T : Table K (H ⊕ Unit) (Sum.elim σ (fun _ => S))) (s : S) : Table K H σ :=
+  map (fun _ f =>
+    let v : Cell S := f (Sum.inr ())
+    match v with
+    | some w => if w = s then {dropTag f} else 0
+    | none => 0) T
+
+/-- A nested row is *substantive* when at least one column is present; the
+chapter's minimality assumption forbids all-missing nested rows. -/
+def Substantive (f : Row H σ) : Prop := ∃ h, f h ≠ none
+
+/-- A table is minimal when every nested row is substantive (the chapter's
+standing well-formedness assumption, so `card` counts only real rows). -/
+def Minimal (T : Table K H σ) : Prop := ∀ k, ∀ f ∈ T.rows k, Substantive f
 
 /-- The two halves of a split are disjoint. -/
 theorem split_disjoint (s : K → Bool) (T : Table K H σ) :
@@ -557,5 +601,48 @@ theorem pivot_unpivot [Fintype N] [Nonempty N] {T : Table K N (fun _ => V)}
     simp only [pivot]
     rw [if_neg hguard]
     simp [unpivot, hf, Multiset.map_singleton]
+
+/-! ### Tagged bind / split: reversibility -/
+
+/-- `Multiset.bind` with `singleton` is the identity (the monad return law). -/
+theorem bind_singleton_id {α : Type _} (s : Multiset α) : s.bind (fun a => {a}) = s := by
+  have := Multiset.bind_singleton (f := id) (s := s)
+  simpa using this
+
+/-- `taggedSplit` inverts `taggedBind`: recovering source `s₀` (with distinct
+tags) gives back `T₀`.  `T₀`'s rows, tagged `s₀`, are kept and untagged;
+`T₁`'s rows, tagged `s₁ ≠ s₀`, are filtered out. -/
+theorem taggedSplit_taggedBind_left [DecidableEq S] {s₀ s₁ : S} (hne : s₀ ≠ s₁)
+    (T₀ T₁ : Table K H σ) :
+    taggedSplit (taggedBind s₀ s₁ T₀ T₁) s₀ = T₀ := by
+  apply Table.ext_rows
+  intro k
+  simp [taggedSplit, taggedBind, map, bind, Multiset.add_bind, Multiset.bind_map,
+        Multiset.bind_singleton, bind_singleton_id, Multiset.bind_zero, Ne.symm hne]
+
+/-- Symmetrically, recovering source `s₁` gives back `T₁`. -/
+theorem taggedSplit_taggedBind_right [DecidableEq S] {s₀ s₁ : S} (hne : s₀ ≠ s₁)
+    (T₀ T₁ : Table K H σ) :
+    taggedSplit (taggedBind s₀ s₁ T₀ T₁) s₁ = T₁ := by
+  apply Table.ext_rows
+  intro k
+  simp [taggedSplit, taggedBind, map, bind, Multiset.add_bind, Multiset.bind_map,
+        Multiset.bind_singleton, bind_singleton_id, Multiset.bind_zero, hne]
+
+/-! ### Minimality (the chapter's no-all-missing-row assumption) -/
+
+/-- `bind` preserves minimality: a row of the union is a row of one summand. -/
+theorem Minimal.bind {T₀ T₁ : Table K H σ} (h₀ : Minimal T₀) (h₁ : Minimal T₁) :
+    Minimal (bind T₀ T₁) := by
+  intro k f hf
+  rcases Multiset.mem_add.mp hf with hf | hf
+  · exact h₀ k f hf
+  · exact h₁ k f hf
+
+/-- `split` preserves minimality: each half's rows are a subset of `T`'s. -/
+theorem Minimal.split (s : K → Bool) {T : Table K H σ} (h : Minimal T) :
+    Minimal (split s T).1 ∧ Minimal (split s T).2 := by
+  refine ⟨fun k f hf => ?_, fun k f hf => ?_⟩ <;>
+    (cases hs : s k <;> simp [split, hs] at hf <;> exact h k f hf)
 
 end Mensura
