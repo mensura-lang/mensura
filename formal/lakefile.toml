@@ -1,0 +1,17 @@
+# Lean formalization of the Mensura data-handling algebra.
+# See docs/decisions/0008-formalize-algebra-in-lean.md for why this lives here.
+
+name = "mensura"
+defaultTargets = ["Mensura"]
+
+# Mathlib pinned to the tag matching `lean-toolchain` (v4.31.0) so the prebuilt
+# olean cache (`lake exe cache get`) is available and builds stay reproducible.
+# Bump this rev and `lean-toolchain` together.
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "v4.31.0"
+
+[[lean_lib]]
+name = "Mensura"

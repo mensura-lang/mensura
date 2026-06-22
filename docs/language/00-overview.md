@@ -19,7 +19,8 @@ typing rules attached to each operation.
 ## Design pillars
 
 1. **Tables are the central object.** A Mensura table is the indexed table
-   of Chapter 5 of <https://zenodo.org/records/18815798>: a tuple
+   of Chapter 5 of Data Science Project: An Inductive Learning Approach
+   (F. A. N. Verri, 2026; doi: 10.5281/zenodo.14498010): a tuple
    `(K, H, c)` of index columns, non-index columns, and a cell function.
    Rows are entities, identified by their index tuple; cells may carry
    tuples of values (cardinality) and missing values are first-class.
