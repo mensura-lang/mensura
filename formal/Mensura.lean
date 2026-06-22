@@ -10,3 +10,4 @@ chapter maps to a definition here, with the `\label` recorded in a doc comment.
 -/
 
 import Mensura.Table
+import Mensura.Completeness
