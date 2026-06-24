@@ -1,11 +1,19 @@
-# Grammar (unit, store, and shape subset)
+# Grammar
 
-This document specifies the concrete surface grammar Mensura's parser
-accepts *today*.  It grows one feature at a time; the current subset covers
-`unit` declarations, the basic form of `store` declarations, and `shape`
-declarations (with an optional unit clause and `Unit`/`string` parameters,
-the latter interpolated into attribute names) claimed through the `:`
-conformance clause on stores.
+This document specifies the surface grammar of Mensura.  Most of it is the
+grammar the parser accepts *today*, and it grows one feature at a time: the
+implemented subset covers `unit` declarations, the basic form of `store`
+declarations, and `shape` declarations (with an optional unit clause and
+`Unit`/`string` parameters, the latter interpolated into attribute names)
+claimed through the `:` conformance clause on stores.
+
+The final section, the expression sublanguage, is specified *ahead of the
+parser*.  It is the grammar for the one expression language of
+`06-expressions.md` (and
+`docs/decisions/0007-single-expression-sublanguage.md`), written here so the
+declaration grammar and the expression grammar live in one place, but it is
+not yet implemented.  When the parser grows expressions, this is the grammar
+it implements.
 
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
@@ -217,12 +225,106 @@ renders the templated attribute name to `birthdate`, which the store carries.
 `domain` blocks); they parse but are rejected by the resolver until compound
 support lands.
 
+## Expression grammar (specified ahead of the parser)
+
+The expression sublanguage is defined in `06-expressions.md`; this section
+gives its concrete LL(1) grammar.  It is one grammar, shared by every site
+that evaluates an expression (`when:`, `where:`, `@auto(...)`, and the
+pipeline operations); a site adds only a context of names and an expected
+result type, neither of which is syntax.
+
+```ebnf
+expr        = pipe_expr ;
+
+pipe_expr   = or_expr  { "|>" or_expr } ;
+or_expr     = and_expr { "or" and_expr } ;
+and_expr    = not_expr { "and" not_expr } ;
+not_expr    = "not" not_expr | cmp_expr ;
+cmp_expr    = add_expr [ cmp_op add_expr | "is" presence ] ;
+cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" ;
+presence    = "known" | "missing" ;
+add_expr    = mul_expr { ( "+" | "-" ) mul_expr } ;
+mul_expr    = unary_expr { ( "*" | "/" ) unary_expr } ;
+unary_expr  = "-" unary_expr | pow_expr ;
+pow_expr    = app_expr [ "^" unary_expr ] ;
+app_expr    = postfix { postfix } ;
+postfix     = primary { "." ident } ;
+primary     = number | string | ident | lambda | group ;
+lambda      = "|" [ ident { "," ident } ] "|" or_expr ;
+group       = "(" [ expr { "," expr } ] ")" ;
+```
+
+The terminals `number`, `string`, and `ident` are lexer tokens.  Boolean
+literals (`true`, `false`) and the word operators (`or`, `and`, `not`, `in`,
+`is`, `known`, `missing`) are `ident` tokens recognized by their text in the
+positions shown; see the reserved-words note below.  `"|>"` is a single
+token, a new one: the lexer emits `|` as `Pipe` today and must munch `|>`
+maximally, with the closing-bar caveat in `06-expressions.md`.  All other
+operator tokens (`== != < <= > >= + - * / ^ . | ( ) ,`) the lexer already
+emits.  The `NxE` measured literal (`10x3`) is a separate token reserved for
+the physical-units feature and does not appear in this subset.
+
+### Why the expression grammar is LL(1)
+
+- **Precedence is layered, not recovered by backtracking.**  Each level is a
+  left-recursion-free loop (`{ op operand }`) or a single optional
+  (`[ op operand ]`) over the next-tighter level, so the operator token at
+  hand decides whether to continue.  From loosest to tightest: `|>`, `or`,
+  `and`, `not`, the comparisons, `+ -`, `* /`, unary `-`, `^`, application,
+  member access.
+- **`not_expr`**: the ident `not` selects the prefix branch; any other token
+  starts `cmp_expr`.  One token decides.
+- **`cmp_expr`**: after the left operand, a comparison operator (or the ident
+  `in`) opens the comparison branch and the ident `is` opens the presence
+  branch; any other token ends the production, so comparisons do not chain.
+  `in` and `is` are distinct idents, so one token picks the branch.
+- **`pow_expr`**: `^` is right-associative because its right operand is a
+  `unary_expr`.  That is also why `2^-3` is `2^(-3)`, while `-2^2` is
+  `-(2^2)` (the leading `-` is a `unary_expr` wrapping the whole `pow_expr`).
+- **`app_expr` (the application spine)**: the loop consumes another
+  `postfix` while the current token can start one, namely a `number`,
+  `string`, `(`, `|` (a lambda), or an `ident` that is *not* a reserved word
+  (below).  It stops on any operator, on `|>` (a different token from `|`),
+  and on `)` and `,`.  A `|` starts a lambda argument; a `|>` never does, so
+  a pipe always ends the spine and is handled by `pipe_expr`.
+- **`primary`**: `number`, `string`, and `ident` are distinct tokens; `(`
+  opens a `group`; `|` opens a `lambda`.  One token decides.
+- **`group`**: after `(`, the first `expr` is parsed, then a `,` means a
+  tuple (more elements follow) and a `)` means a grouping.  The decision is
+  the one token after the first element, a normal repetition rather than
+  backtracking.  `()` is the empty tuple.
+- **`lambda`**: `|` opens it, an optional comma-separated ident list gives the
+  parameters, a closing `|` ends them, and the body is an `or_expr`.  The
+  body deliberately excludes a top-level `|>`, so
+  `data |> filter |r| r.x > 0 |> map g` composes as
+  `(data |> filter (|r| r.x > 0)) |> map g`; a pipe *inside* a lambda body
+  must be parenthesized.  A lambda that is not the last argument of an
+  application must also be parenthesized, since its body extends maximally.
+
+### Reserved words in expressions
+
+Combining juxtaposition application with word operators forces a small,
+local exception to the lexer's keyword-freedom: inside an expression the
+words `or`, `and`, `not`, `in`, `is`, `known`, and `missing` are
+**reserved** and cannot name a value.  This is unavoidable with one token of
+lookahead, since after an operand an ident could otherwise be read either as
+the next argument (juxtaposition) or as an infix operator, and only
+reservation resolves the choice.  The reservation is local to the expression
+sublanguage; elsewhere these words remain ordinary identifiers, as the
+keyword-free lexer intends.
+
 ## Forward references
 
 - Numeric and predicate parameter kinds, and the parameter list on function
   signatures.
 - Compound units, `domain` resolution, and foreign keys.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
-- Physical-unit and precision types.
-- `device`, `view`, transforms, and pipeline operations, each of
-  which extends this grammar and gets its own section here.
+- Physical-unit and precision types, including the `NxE` measured literal and
+  the unit grammar.
+- The named `enum` declaration (`enum Status { "active", "inactive" }`) that
+  replaces the inline `enum(...)` type, and the move of type-parameter
+  application from `Tabular(Person)` to `Tabular[Person]` (freeing `( )` for
+  grouping and tuples).  Both are settled in `06-expressions.md` but are a
+  separate change that also touches the parser and the worked examples.
+- `device`, `view`, transforms, and the pipeline operations, which build on
+  the expression grammar above and each get their own section here.
