@@ -278,10 +278,9 @@ A membership test over a multi-valued column:
   and aggregates each site admits (`now`, `env`, `lookup`, `prev`,
   `next`, `sum`, `mean`, `min`, `max`, `count`, `any`, `all`, ...) is
   fixed per site as those sites are specified, not by this document.
-- **Grammar and ADR follow-ups.**  The expression productions are added
-  to `04-grammar.md`; the named `enum` declaration replaces inline
-  `enum(...)` there; and the authorization examples in
+- **ADR follow-up.**  The authorization examples in
   `docs/decisions/0005-identity-and-authorization.md`, written today as
-  `lookup(principal)` and `@auto(auth.id)`, are re-spelled to
-  juxtaposition (`lookup principal`, `@auto (auth.id)`).
+  `lookup(principal)` and `@auto(auth.id)`, are still to be re-spelled to
+  juxtaposition (`lookup principal`, `@auto (auth.id)`).  (The expression
+  productions and the named `enum` declaration now live in `04-grammar.md`.)
 ```

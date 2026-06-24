@@ -37,10 +37,12 @@ store Students : PersonRecord {
   const { admission: date }
 }
 
+enum Rank { "assistant", "associate", "full" }
+
 store Faculty : PersonRecord {
   unit { Person }
   const { admission: date }
-  var   { rank: enum("assistant", "associate", "full") }
+  var   { rank: Rank }
 }
 
 fn count(t: PersonRecord) -> number { ... }
@@ -68,7 +70,7 @@ optional `unit { ... }` clause, and any number of `const` and `var`
 blocks.
 
 ```
-shape ShapeName(p1: T1, p2: T2, ...) {
+shape ShapeName[p1: T1, p2: T2, ...] {
   unit { ... }        // optional
   const { ... }
   var   { ... }
@@ -118,19 +120,19 @@ A shape takes a single parameter list.  Every parameter is written
   interpolated into attribute names within the shape body.
 
 ```
-shape NumericCol(U: Unit, col: string) {
+shape NumericCol[U: Unit, col: string] {
   unit { U }
   const { `{col}`: number }
 }
 
-shape Ageable(date_field: string) {
+shape Ageable[date_field: string] {
   const { `{date_field}`: date }
 }
 ```
 
-`NumericCol(Person, "height")` is "a table of `Person` with at least a
+`NumericCol[Person, "height"]` is "a table of `Person` with at least a
 `const` attribute named `height` of type `number`."  `Ageable` is
-unit-agnostic: `Ageable("birthdate")` is "any table with a `const`
+unit-agnostic: `Ageable["birthdate"]` is "any table with a `const`
 attribute named `birthdate` of type `date`," whatever its unit.
 
 The list is a **telescope**: parameters are positional, and a later
@@ -160,7 +162,7 @@ the same attribute as the bare `a`.  Backticks add one capability:
 inside them, `{param}` interpolates a `string` parameter.
 
 ```
-shape NormalizedCol(U: Unit, col: string) {
+shape NormalizedCol[U: Unit, col: string] {
   unit { U }
   const {
     `{col}`:    number
@@ -203,7 +205,7 @@ store name.  The clause may list one or more shapes, separated by
 commas, with their arguments supplied:
 
 ```
-store Students : PersonRecord, NumericCol(Person, "height") {
+store Students : PersonRecord, NumericCol[Person, "height"] {
   unit { Person }
   const {
     admission: date
@@ -243,7 +245,7 @@ The unit and value parameters a function is generic over sit in the
 ```
 fn count(t: PersonRecord) -> number { ... }
 
-fn normalize(U: Unit, col: string, t: NumericCol(U, col)) -> NormalizedCol(U, col) {
+fn normalize(U: Unit, col: string, t: NumericCol[U, col]) -> NormalizedCol[U, col] {
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
 }
 ```
@@ -252,7 +254,7 @@ There is one list, not a separate "generics" list and "value" list.
 What a parameter *is* follows from its annotation: a parameter
 annotated with `Unit` or a primitive type is a compile-time argument,
 resolved and erased before run time; a parameter annotated with a
-**shape** (a table type, such as `NumericCol(U, col)`) is a run-time
+**shape** (a table type, such as `NumericCol[U, col]`) is a run-time
 table value.  Because the list is a telescope, a table parameter's type
 may mention the unit and value parameters declared before it, which is
 how `normalize` threads one unit identity through both its input and
@@ -265,12 +267,16 @@ let standardised = normalize(Person, "height", Students);
 ```
 
 The compiler resolves `U` and `col`, verifies that `Students` conforms
-to `NumericCol(Person, "height")`, and then `standardised` has type
-`NormalizedCol(Person, "height")`.
+to `NumericCol[Person, "height"]`, and then `standardised` has type
+`NormalizedCol[Person, "height"]`.
 
-Functions and transforms are a later implementation slice; the
-parameter form above is settled, but only shape declarations and the
-store conformance clause are implemented today.
+Functions and transforms are a later implementation slice: only shape
+declarations and the store conformance clause are implemented today.  Shape
+*type application* uses square brackets (`NumericCol[U, col]`), as shown.  The
+parentheses in the `fn` signatures and call sites above are provisional: how
+function signatures and calls delimit their arguments (brackets, the
+juxtaposition application of the expression sublanguage, or otherwise) is part
+of the deferred function-syntax design.
 
 ## What shapes do not contain
 
@@ -296,8 +302,8 @@ Nothing else.
 
 In this version, the result type of a function is exactly what the
 function declares.  If `normalize` declares its return type as
-`NormalizedCol(U, col)`, the value cannot be passed to a function
-expecting `NumericCol(U, col)`, even though structurally a
+`NormalizedCol[U, col]`, the value cannot be passed to a function
+expecting `NumericCol[U, col]`, even though structurally a
 `NormalizedCol` already contains everything a `NumericCol` requires.
 
 The reason is that **sub-shape relationships** (the rule "every
@@ -323,16 +329,16 @@ shape PersonRecord {
   const { admission: date }
 }
 
-shape Ageable(date_field: string) {
+shape Ageable[date_field: string] {
   const { `{date_field}`: date }
 }
 
-shape NumericCol(U: Unit, col: string) {
+shape NumericCol[U: Unit, col: string] {
   unit { U }
   const { `{col}`: number }
 }
 
-shape NormalizedCol(U: Unit, col: string) {
+shape NormalizedCol[U: Unit, col: string] {
   unit { U }
   const {
     `{col}`:    number
@@ -340,7 +346,7 @@ shape NormalizedCol(U: Unit, col: string) {
   }
 }
 
-store Students : PersonRecord, Ageable("birthdate"), NumericCol(Person, "height") {
+store Students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"] {
   unit { Person }
   const {
     admission: date
@@ -349,18 +355,18 @@ store Students : PersonRecord, Ageable("birthdate"), NumericCol(Person, "height"
   }
 }
 
-fn normalize(U: Unit, col: string, t: NumericCol(U, col)) -> NormalizedCol(U, col) {
+fn normalize(U: Unit, col: string, t: NumericCol[U, col]) -> NormalizedCol[U, col] {
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
 }
 
 let standardised = normalize(Person, "height", Students);
-// standardised has type NormalizedCol(Person, "height")
+// standardised has type NormalizedCol[Person, "height"]
 ```
 
 `Students` is a basic store of `Person`, claiming conformance to three
-shapes: `PersonRecord` (a concrete-unit contract), `Ageable("birthdate")`
+shapes: `PersonRecord` (a concrete-unit contract), `Ageable["birthdate"]`
 (a unit-agnostic contract that also fits a `Department` store keyed on
-`"foundation_day"`), and `NumericCol(Person, "height")` (the structural
+`"foundation_day"`), and `NumericCol[Person, "height"]` (the structural
 contract demanded by `normalize`).  All claims are checked at the store
 declaration site.
 

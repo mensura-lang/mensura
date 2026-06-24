@@ -41,10 +41,12 @@ A store declaration consists of a name, a unit reference, an optional
 `domain` block, and any number of `const` and `var` blocks.
 
 ```
+enum Status { "active", "inactive" }
+
 store Persons {
   unit { Person }
   const { birthdate: date }
-  var   { status: enum("active", "inactive") }
+  var   { status: Status }
 }
 ```
 
@@ -221,6 +223,10 @@ unit Enrollment {
   course: Course
 }
 
+enum Weekday {
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
+}
+
 store Departments {
   unit { Department }
   const { name: string }
@@ -243,7 +249,7 @@ store Courses {
     department: Departments
   }
   const {
-    weekday: enum("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+    weekday: Weekday
   }
 }
 
