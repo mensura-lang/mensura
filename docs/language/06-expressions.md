@@ -51,9 +51,15 @@ parenthesized group and means the same as `f x`.
 
 Each bracket has exactly one role:
 
-- **`( )`** is grouping and tuples only.  `(e)` is `e`; `(a, b)` is a
-  two-tuple, a genuine product value (this is the form a merge consumes,
-  for example `(train, test)`).
+- **`( )`** is for grouping and product values.  `(e)` is `e`; `(a, b)` is a
+  positional **tuple**, a genuine product value (the form a merge consumes,
+  for example `(train, test)`); and `(.a = x, .b = y)` is a labeled
+  **record**, where the leading `.` marks a field.  A `( )` is *either*
+  all-positional or all-labeled, never mixed.
+- **`{ }`** is for blocks and declaration bodies, never a value.  In
+  expression position it is a statement block (`let` / `assert` statements and
+  an optional result), which is why `completeness_check { ... }` is just
+  `completeness_check` applied to a block.
 - **`[ ]`** is a parameter list at a declaration site, such as
   `Tabular[Person]` or `FeatureWindow[U]`.  It does not appear in
   expressions.
@@ -71,8 +77,12 @@ The atomic values are:
   runtime configuration selects.  Ordinary arithmetic applies to them.
 - **Strings**: `"text"`.
 - **Booleans**: `true`, `false`.
-- **Tuples**: `(a, b, ...)`, products of values.
-- **Lambdas**: `|x| e` and `|x, y| e` (see below).
+- **Tuples**: `(a, b, ...)`, positional products of values.
+- **Records**: `(.a = x, .b = y)`, labeled products; a field may carry an
+  explicit type, `(.a : T = x)`.  `:` is typing, `=` is the value, matching
+  every other binder (`name [: Type] = value`).
+- **Lambdas**: `|x| e` and `|x, y| e` (see below); an optional return type is
+  written `|x| : T e`.
 - **Names**: an identifier resolved against the site's context.
 
 Member access is written `a.b.c` and binds tighter than application, so
