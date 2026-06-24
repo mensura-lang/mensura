@@ -6,7 +6,7 @@
 //! on the `Ident` text in the position where they are expected.
 
 use crate::ast::{
-    DomainEntry, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
+    DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
     ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl,
 };
 use crate::token::{Span, Token, TokenKind};
@@ -124,9 +124,28 @@ impl<'a> Parser<'a> {
             Ok(Item::Store(self.parse_store_decl()?))
         } else if self.at_keyword("shape") {
             Ok(Item::Shape(self.parse_shape_decl()?))
+        } else if self.at_keyword("enum") {
+            Ok(Item::Enum(self.parse_enum_decl()?))
         } else {
-            Err(self.error("expected a `unit`, `store`, or `shape` declaration"))
+            Err(self.error("expected a `unit`, `store`, `shape`, or `enum` declaration"))
         }
+    }
+
+    fn parse_enum_decl(&mut self) -> Result<EnumDecl, ParseError> {
+        let start = self.cur_span().start;
+        self.pos += 1; // `enum`
+        let name = self.expect_ident("an enum name")?;
+        self.expect(&TokenKind::LBrace, "`{` to open the enum body")?;
+        let mut variants = vec![self.expect_str("an enum variant string")?];
+        while self.eat(&TokenKind::Comma) {
+            variants.push(self.expect_str("an enum variant string")?);
+        }
+        let end = self.expect(&TokenKind::RBrace, "`}` to close the enum")?;
+        Ok(EnumDecl {
+            name,
+            variants,
+            span: Span::new(start, end.end),
+        })
     }
 
     fn parse_unit_decl(&mut self) -> Result<UnitDecl, ParseError> {
@@ -239,19 +258,19 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse one conformance entry: a shape name with an optional positional
-    /// argument list, e.g. `Tabular(Person)` or `PersonRecord`.
+    /// argument list, e.g. `Tabular[Person]` or `PersonRecord`.
     fn parse_shape_ref(&mut self, what: &str) -> Result<ShapeRef, ParseError> {
         let name = self.expect_ident(what)?;
         let mut args = Vec::new();
         let mut end = name.span.end;
-        if self.check(&TokenKind::LParen) {
-            self.pos += 1; // `(`
+        if self.check(&TokenKind::LBracket) {
+            self.pos += 1; // `[`
             args.push(self.parse_shape_arg()?);
             while self.eat(&TokenKind::Comma) {
                 args.push(self.parse_shape_arg()?);
             }
             end = self
-                .expect(&TokenKind::RParen, "`)` to close the argument list")?
+                .expect(&TokenKind::RBracket, "`]` to close the argument list")?
                 .end;
         }
         Ok(ShapeRef {
@@ -285,20 +304,20 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse an optional `(name: Kind, ...)` shape parameter list.  Returns an
-    /// empty vector when absent.  An empty `()` is rejected.
+    /// Parse an optional `[name: Kind, ...]` shape parameter list.  Returns an
+    /// empty vector when absent.  An empty `[]` is rejected.
     fn parse_param_list(&mut self) -> Result<Vec<ShapeParam>, ParseError> {
         let mut params = Vec::new();
-        if self.check(&TokenKind::LParen) {
-            self.pos += 1; // `(`
-            if self.check(&TokenKind::RParen) {
-                return Err(self.error("empty parameter list; omit the `()`"));
+        if self.check(&TokenKind::LBracket) {
+            self.pos += 1; // `[`
+            if self.check(&TokenKind::RBracket) {
+                return Err(self.error("empty parameter list; omit the `[]`"));
             }
             params.push(self.parse_param()?);
             while self.eat(&TokenKind::Comma) {
                 params.push(self.parse_param()?);
             }
-            self.expect(&TokenKind::RParen, "`)` to close the parameter list")?;
+            self.expect(&TokenKind::RBracket, "`]` to close the parameter list")?;
         }
         Ok(params)
     }
@@ -385,23 +404,10 @@ impl<'a> Parser<'a> {
         Ok(Field { name, ty, span })
     }
 
+    /// Parse a type: a single identifier (a primitive, a unit reference, or a
+    /// named `enum`).  Which it is, is the resolver's decision.
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
-        if self.at_keyword("enum") {
-            let start = self.cur_span().start;
-            self.pos += 1; // `enum`
-            self.expect(&TokenKind::LParen, "`(` after `enum`")?;
-            let mut variants = vec![self.expect_str("an enum variant string")?];
-            while self.eat(&TokenKind::Comma) {
-                variants.push(self.expect_str("an enum variant string")?);
-            }
-            let end = self.expect(&TokenKind::RParen, "`)` to close the enum")?;
-            Ok(TypeExpr::Enum {
-                variants,
-                span: Span::new(start, end.end),
-            })
-        } else {
-            Ok(TypeExpr::Named(self.expect_ident("a type")?))
-        }
+        Ok(TypeExpr::Named(self.expect_ident("a type")?))
     }
 }
 
@@ -529,18 +535,25 @@ mod tests {
     }
 
     #[test]
-    fn parses_enum_type() {
-        let src = r#"store S { unit { U } var { status: enum("active", "inactive") } }"#;
+    fn parses_enum_declaration_and_reference() {
+        let src = r#"
+            enum Status { "active", "inactive" }
+            store S { unit { U } var { status: Status } }
+        "#;
         let program = parse_str(src).unwrap();
-        let Item::Store(s) = &program.items[0] else {
+
+        let Item::Enum(e) = &program.items[0] else {
+            panic!("expected an enum declaration");
+        };
+        assert_eq!(e.name.name, "Status");
+        let values: Vec<&str> = e.variants.iter().map(|v| v.value.as_str()).collect();
+        assert_eq!(values, ["active", "inactive"]);
+
+        let Item::Store(s) = &program.items[1] else {
             panic!("expected a store");
         };
         match &s.vars[0].ty {
-            TypeExpr::Enum { variants, .. } => {
-                let values: Vec<&str> = variants.iter().map(|v| v.value.as_str()).collect();
-                assert_eq!(values, ["active", "inactive"]);
-            }
-            other => panic!("expected an enum type, got {other:?}"),
+            TypeExpr::Named(id) => assert_eq!(id.name, "Status"),
         }
     }
 
@@ -624,7 +637,7 @@ mod tests {
 
     #[test]
     fn parses_unit_parameter_shape() {
-        let program = parse_str("shape Tabular(U: Unit) { unit { U } }").unwrap();
+        let program = parse_str("shape Tabular[U: Unit] { unit { U } }").unwrap();
         let Item::Shape(shape) = &program.items[0] else {
             panic!("expected a shape");
         };
@@ -647,7 +660,7 @@ mod tests {
 
     #[test]
     fn parses_parametric_conformance() {
-        let program = parse_str("store S : Tabular(Person) { unit { Person } }").unwrap();
+        let program = parse_str("store S : Tabular[Person] { unit { Person } }").unwrap();
         let Item::Store(store) = &program.items[0] else {
             panic!("expected a store");
         };
@@ -661,10 +674,10 @@ mod tests {
     #[test]
     fn parses_string_argument_and_template() {
         let src = r#"
-            shape Ageable(date_field: string) {
+            shape Ageable[date_field: string] {
               const { `{date_field}`: date }
             }
-            store Persons : Ageable("birthdate") {
+            store Persons : Ageable["birthdate"] {
               unit { Person }
               const { birthdate: date }
             }
@@ -693,7 +706,7 @@ mod tests {
 
     #[test]
     fn parses_mixed_template_segments() {
-        let program = parse_str("shape S(col: string) { const { `{col}_z`: number } }").unwrap();
+        let program = parse_str("shape S[col: string] { const { `{col}_z`: number } }").unwrap();
         let Item::Shape(shape) = &program.items[0] else {
             panic!("expected a shape");
         };
@@ -711,7 +724,7 @@ mod tests {
 
     #[test]
     fn empty_parameter_list_is_an_error() {
-        let err = parse_str("shape Bad() { unit { U } }").unwrap_err();
+        let err = parse_str("shape Bad[] { unit { U } }").unwrap_err();
         assert!(err.message.contains("empty parameter list"));
     }
 
@@ -758,13 +771,13 @@ mod tests {
 
     #[test]
     fn empty_enum_is_an_error() {
-        let err = parse_str("unit U { x: enum() }").unwrap_err();
+        let err = parse_str(r#"enum Status { }"#).unwrap_err();
         assert!(err.message.contains("enum variant"));
     }
 
     #[test]
     fn junk_at_top_level_is_an_error() {
         let err = parse_str("wat X { }").unwrap_err();
-        assert!(err.message.contains("`unit`, `store`, or `shape`"));
+        assert!(err.message.contains("`unit`, `store`, `shape`, or `enum`"));
     }
 }
