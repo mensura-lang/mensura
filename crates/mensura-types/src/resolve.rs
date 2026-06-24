@@ -13,8 +13,8 @@
 use std::collections::{HashMap, HashSet};
 
 use mensura_syntax::{
-    Field, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeRef, Span, StoreDecl,
-    TypeExpr, UnitDecl, is_identifier,
+    EnumDecl, Field, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeRef, Span,
+    StoreDecl, TypeExpr, UnitDecl, is_identifier,
 };
 
 use crate::model::{Column, ColumnRole, ColumnType, Schema};
@@ -101,11 +101,12 @@ fn check_case(name: &str, span: Span, case: Case, what: &str, errors: &mut Vec<R
 pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
-    // Pass 1: collect unit, store, and shape names (separate namespaces).
+    // Pass 1: collect unit, store, shape, and enum names (separate namespaces).
     let mut units: HashMap<&str, &UnitDecl> = HashMap::new();
     let mut store_names: HashSet<&str> = HashSet::new();
     let mut stores: Vec<&StoreDecl> = Vec::new();
     let mut shapes: HashMap<&str, &ShapeDecl> = HashMap::new();
+    let mut enums: HashMap<&str, &EnumDecl> = HashMap::new();
 
     for item in &program.items {
         match item {
@@ -151,13 +152,31 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                     ));
                 }
             }
+            Item::Enum(e) => {
+                check_case(&e.name.name, e.name.span, Case::Pascal, "enum", &mut errors);
+                let mut seen = HashSet::new();
+                for v in &e.variants {
+                    if !seen.insert(v.value.as_str()) {
+                        errors.push(ResolveError::new(
+                            format!("duplicate enum variant `{}`", v.value),
+                            v.span,
+                        ));
+                    }
+                }
+                if enums.insert(&e.name.name, e).is_some() {
+                    errors.push(ResolveError::new(
+                        format!("duplicate enum `{}`", e.name.name),
+                        e.name.span,
+                    ));
+                }
+            }
         }
     }
 
     // Pass 2: resolve each shape's structure, for conformance checks below.
     let mut resolved_shapes: HashMap<&str, ResolvedShape> = HashMap::new();
     for (name, sh) in &shapes {
-        match resolve_shape(sh, &units) {
+        match resolve_shape(sh, &units, &enums) {
             Ok(rs) => {
                 resolved_shapes.insert(name, rs);
             }
@@ -168,7 +187,7 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     // Pass 3: resolve each store, then check the shapes it claims.
     let mut schemas = Vec::new();
     for s in &stores {
-        match resolve_store(s, &units) {
+        match resolve_store(s, &units, &enums) {
             Ok(schema) => {
                 check_conformance(s, &schema, &shapes, &resolved_shapes, &units, &mut errors);
                 schemas.push(schema);
@@ -187,6 +206,7 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
 fn resolve_store(
     s: &StoreDecl,
     units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
 ) -> Result<Schema, Vec<ResolveError>> {
     let Some(unit) = units.get(s.unit.name.as_str()) else {
         return Err(vec![ResolveError::new(
@@ -217,6 +237,7 @@ fn resolve_store(
             f,
             ColumnRole::Index,
             units,
+            enums,
         );
     }
     for f in &s.consts {
@@ -227,6 +248,7 @@ fn resolve_store(
             f,
             ColumnRole::Const,
             units,
+            enums,
         );
     }
     for f in &s.vars {
@@ -237,6 +259,7 @@ fn resolve_store(
             f,
             ColumnRole::Var,
             units,
+            enums,
         );
     }
 
@@ -291,6 +314,7 @@ struct ResolvedShape {
 fn resolve_shape(
     sh: &ShapeDecl,
     units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
 ) -> Result<ResolvedShape, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
@@ -394,7 +418,7 @@ fn resolve_shape(
                     ));
                 }
             }
-            match resolve_type(&a.ty, units) {
+            match resolve_type(&a.ty, units, enums) {
                 Ok(ty) => attrs.push(ResolvedAttr {
                     name: a.name.clone(),
                     ty,
@@ -588,8 +612,8 @@ fn render_template(name: &NameTemplate, str_bind: &HashMap<&str, &str>) -> Strin
     out
 }
 
-/// Render a conformance claim for diagnostics: `Tabular(Person)`,
-/// `Ageable("birthdate")`, or, with no arguments, just `PersonRecord`.
+/// Render a conformance claim for diagnostics: `Tabular[Person]`,
+/// `Ageable["birthdate"]`, or, with no arguments, just `PersonRecord`.
 fn shape_ref_label(r: &ShapeRef) -> String {
     if r.args.is_empty() {
         r.name.name.clone()
@@ -603,7 +627,7 @@ fn shape_ref_label(r: &ShapeRef) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("{}({})", r.name.name, args)
+        format!("{}[{}]", r.name.name, args)
     }
 }
 
@@ -621,14 +645,7 @@ fn type_name(ty: &ColumnType) -> String {
         ColumnType::Number => "number".into(),
         ColumnType::Bool => "bool".into(),
         ColumnType::Date => "date".into(),
-        ColumnType::Enum(variants) => {
-            let inner = variants
-                .iter()
-                .map(|v| format!("\"{v}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("enum({inner})")
-        }
+        ColumnType::Enum { name, .. } => name.clone(),
     }
 }
 
@@ -639,6 +656,7 @@ fn add_column(
     field: &Field,
     role: ColumnRole,
     units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
 ) {
     // Units and stores carry no parameters, so a field name must render to a
     // plain identifier with no interpolation.
@@ -661,7 +679,7 @@ fn add_column(
     if role != ColumnRole::Index {
         check_case(&name, field.name.span, Case::Snake, "attribute", errors);
     }
-    match resolve_type(&field.ty, units) {
+    match resolve_type(&field.ty, units, enums) {
         Ok(ct) => columns.push(Column {
             name,
             ty: ct,
@@ -703,6 +721,7 @@ fn literal_field_name(name: &NameTemplate) -> Result<String, ResolveError> {
 fn resolve_type(
     ty: &TypeExpr,
     units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
 ) -> Result<ColumnType, ResolveError> {
     match ty {
         TypeExpr::Named(id) => match id.name.as_str() {
@@ -710,6 +729,13 @@ fn resolve_type(
             "number" => Ok(ColumnType::Number),
             "bool" => Ok(ColumnType::Bool),
             "date" => Ok(ColumnType::Date),
+            other if enums.contains_key(other) => {
+                let e = enums[other];
+                Ok(ColumnType::Enum {
+                    name: e.name.name.clone(),
+                    variants: e.variants.iter().map(|v| v.value.clone()).collect(),
+                })
+            }
             other if units.contains_key(other) => Err(ResolveError::new(
                 format!("compound fields are not yet supported (references unit `{other}`)"),
                 id.span,
@@ -719,20 +745,6 @@ fn resolve_type(
                 id.span,
             )),
         },
-        TypeExpr::Enum { variants, .. } => {
-            let mut seen = HashSet::new();
-            for v in variants {
-                if !seen.insert(v.value.as_str()) {
-                    return Err(ResolveError::new(
-                        format!("duplicate enum variant `{}`", v.value),
-                        v.span,
-                    ));
-                }
-            }
-            Ok(ColumnType::Enum(
-                variants.iter().map(|v| v.value.clone()).collect(),
-            ))
-        }
     }
 }
 
@@ -755,6 +767,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             unit Department { code: string }
+            enum Status { "active", "inactive" }
 
             store departments {
               unit { Department }
@@ -768,7 +781,7 @@ mod tests {
             store students {
               unit { Person }
               const { admission: date }
-              var   { status: enum("active", "inactive") }
+              var   { status: Status }
             }
         "#;
         let schemas = resolve_str(src).expect("should resolve");
@@ -789,7 +802,10 @@ mod tests {
                 (
                     "status",
                     ColumnRole::Var,
-                    &ColumnType::Enum(vec!["active".into(), "inactive".into()]),
+                    &ColumnType::Enum {
+                        name: "Status".into(),
+                        variants: vec!["active".into(), "inactive".into()],
+                    },
                 ),
             ]
         );
@@ -873,7 +889,7 @@ mod tests {
 
     #[test]
     fn duplicate_enum_variant_is_rejected() {
-        let src = r#"unit U { id: string } store s { unit { U } var { c: enum("a", "a") } }"#;
+        let src = r#"enum Bad { "a", "a" }"#;
         let errs = errors(src);
         assert!(errs[0].message.contains("duplicate enum variant `a`"));
     }
@@ -904,6 +920,7 @@ mod tests {
     fn conforming_store_resolves() {
         let src = r#"
             unit Person { id: string }
+            enum Status { "active", "inactive" }
             shape PersonRecord {
               unit { Person }
               const { admission: date }
@@ -911,7 +928,7 @@ mod tests {
             store students : PersonRecord {
               unit { Person }
               const { admission: date }
-              var   { status: enum("active", "inactive") }
+              var   { status: Status }
             }
         "#;
         // The store carries an extra attribute (`status`); conformance only
@@ -1017,8 +1034,8 @@ mod tests {
     fn unit_parameter_shape_conforms() {
         let src = r#"
             unit Person { id: string }
-            shape Tabular(U: Unit) { unit { U } }
-            store persons : Tabular(Person) { unit { Person } const { birthdate: date } }
+            shape Tabular[U: Unit] { unit { U } }
+            store persons : Tabular[Person] { unit { Person } const { birthdate: date } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -1040,8 +1057,8 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             unit Course { code: string }
-            shape Tabular(U: Unit) { unit { U } }
-            store s : Tabular(Course) { unit { Person } }
+            shape Tabular[U: Unit] { unit { U } }
+            store s : Tabular[Course] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| e.message.contains("tabulates `Course`")
@@ -1053,7 +1070,7 @@ mod tests {
         // `Tabular` declares one parameter; claiming it with none is an error.
         let src = r#"
             unit Person { id: string }
-            shape Tabular(U: Unit) { unit { U } }
+            shape Tabular[U: Unit] { unit { U } }
             store s : Tabular { unit { Person } }
         "#;
         let errs = errors(src);
@@ -1069,7 +1086,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape PersonRecord { unit { Person } }
-            store s : PersonRecord(Person) { unit { Person } }
+            store s : PersonRecord[Person] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1083,8 +1100,8 @@ mod tests {
     fn unknown_unit_argument_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Tabular(U: Unit) { unit { U } }
-            store s : Tabular(Ghost) { unit { Person } }
+            shape Tabular[U: Unit] { unit { U } }
+            store s : Tabular[Ghost] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1097,7 +1114,7 @@ mod tests {
     fn duplicate_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape D(U: Unit, U: Unit) { unit { U } }
+            shape D[U: Unit, U: Unit] { unit { U } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1111,7 +1128,7 @@ mod tests {
         // `Unit` and `string` are supported; other parameter types are not.
         let src = r#"
             unit Person { id: string }
-            shape Weighted(n: number) { unit { Person } }
+            shape Weighted[n: number] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1127,14 +1144,14 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             unit Department { code: string }
-            shape Ageable(date_field: string) {
+            shape Ageable[date_field: string] {
               const { `{date_field}`: date }
             }
-            store persons : Ageable("birthdate") {
+            store persons : Ageable["birthdate"] {
               unit { Person }
               const { birthdate: date }
             }
-            store departments : Ageable("foundation_day") {
+            store departments : Ageable["foundation_day"] {
               unit { Department }
               const { foundation_day: date }
             }
@@ -1146,13 +1163,13 @@ mod tests {
     fn interpolated_template_conforms() {
         let src = r#"
             unit Person { id: string }
-            shape NormalizedCol(col: string) {
+            shape NormalizedCol[col: string] {
               const {
                 `{col}`:   number
                 `{col}_z`: number
               }
             }
-            store students : NormalizedCol("height") {
+            store students : NormalizedCol["height"] {
               unit { Person }
               const {
                 height:   number
@@ -1167,8 +1184,8 @@ mod tests {
     fn missing_interpolated_attribute_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Ageable(date_field: string) { const { `{date_field}`: date } }
-            store persons : Ageable("birthdate") { unit { Person } }
+            shape Ageable[date_field: string] { const { `{date_field}`: date } }
+            store persons : Ageable["birthdate"] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1181,8 +1198,8 @@ mod tests {
     fn string_argument_for_unit_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Tabular(U: Unit) { unit { U } }
-            store s : Tabular("Person") { unit { Person } }
+            shape Tabular[U: Unit] { unit { U } }
+            store s : Tabular["Person"] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1195,8 +1212,8 @@ mod tests {
     fn unit_argument_for_string_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Ageable(date_field: string) { const { `{date_field}`: date } }
-            store persons : Ageable(birthdate) { unit { Person } const { birthdate: date } }
+            shape Ageable[date_field: string] { const { `{date_field}`: date } }
+            store persons : Ageable[birthdate] { unit { Person } const { birthdate: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1209,7 +1226,7 @@ mod tests {
     fn template_referencing_unknown_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Bad(col: string) { const { `{other}`: number } }
+            shape Bad[col: string] { const { `{other}`: number } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1313,7 +1330,7 @@ mod tests {
     fn non_snake_string_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Ageable(dateField: string) { const { `{dateField}`: date } }
+            shape Ageable[dateField: string] { const { `{dateField}`: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1328,8 +1345,8 @@ mod tests {
         // must not be flagged.
         let src = r#"
             unit Person { id: string }
-            shape Tabular(U: Unit) { unit { U } }
-            store persons : Tabular(Person) { unit { Person } const { birthdate: date } }
+            shape Tabular[U: Unit] { unit { U } }
+            store persons : Tabular[Person] { unit { Person } const { birthdate: date } }
         "#;
         assert!(resolve_str(src).is_ok());
     }

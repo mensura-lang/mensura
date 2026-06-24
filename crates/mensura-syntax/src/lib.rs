@@ -9,7 +9,7 @@ pub mod parser;
 pub mod token;
 
 pub use ast::{
-    DomainEntry, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
+    DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
     ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl,
 };
 pub use lexer::{LexError, is_identifier, tokenize};

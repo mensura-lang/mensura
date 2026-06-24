@@ -24,11 +24,15 @@ shape Named {
 // A `string` parameter names the date field age is measured from, so the same
 // contract fits `Person` (born on `birthdate`) and `Department` (founded on
 // `foundation_day`).
-shape Ageable(date_field: string) {
+shape Ageable[date_field: string] {
   const { `{date_field}`: date }
 }
 
-store departments : Named, Ageable("foundation_day") {
+// A named enumerated type: a fixed set of string-literal values, referenced by
+// name below.
+enum Status { "active", "inactive" }
+
+store departments : Named, Ageable["foundation_day"] {
   unit { Department }
   const {
     name: string
@@ -36,7 +40,7 @@ store departments : Named, Ageable("foundation_day") {
   }
 }
 
-store persons : Ageable("birthdate") {
+store persons : Ageable["birthdate"] {
   unit { Person }
   const { birthdate: date }
   var { last_name: string }
@@ -45,5 +49,5 @@ store persons : Ageable("birthdate") {
 store students {
   unit { Person }
   const { admission: date }
-  var { status: enum("active", "inactive") }
+  var { status: Status }
 }

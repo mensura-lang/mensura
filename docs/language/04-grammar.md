@@ -57,15 +57,17 @@ string literal and `template` a backtick template token.  Punctuation tokens
 ```ebnf
 program       = { item } EOF ;
 
-item          = unit_decl | store_decl | shape_decl ;
+item          = unit_decl | store_decl | shape_decl | enum_decl ;
 
 unit_decl     = "unit" ident "{" { field } "}" ;
 field         = ident ":" type ;
 
+enum_decl     = "enum" ident "{" string { "," string } "}" ;
+
 store_decl    = "store" ident [ conforms ] "{" unit_clause { store_block } "}" ;
 conforms      = ":" shape_ref { "," shape_ref } ;
 shape_ref     = ident [ args ] ;
-args          = "(" arg { "," arg } ")" ;
+args          = "[" arg { "," arg } "]" ;
 arg           = ident | string ;
 unit_clause   = "unit" "{" ident "}" ;
 store_block   = const_block | var_block | domain_block ;
@@ -76,7 +78,7 @@ domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
 
 shape_decl    = "shape" ident [ params ] "{" [ unit_clause ] { shape_block } "}" ;
-params        = "(" param { "," param } ")" ;
+params        = "[" param { "," param } "]" ;
 param         = ident ":" ident ;
 shape_block   = shape_const | shape_var ;
 shape_const   = "const" "{" { shape_attr } "}" ;
@@ -84,25 +86,27 @@ shape_var     = "var" "{" { shape_attr } "}" ;
 shape_attr    = attr_name ":" type ;
 attr_name     = ident | template ;
 
-type          = enum_type | named_type ;
-enum_type     = "enum" "(" string { "," string } ")" ;
+type          = named_type ;
 named_type    = ident ;
 ```
 
 ## Why this is LL(1)
 
 - **`item`**: the parser peeks one token.  `unit` selects `unit_decl`,
-  `store` selects `store_decl`, `shape` selects `shape_decl`; the three
-  FIRST sets are disjoint.
+  `store` selects `store_decl`, `shape` selects `shape_decl`, `enum` selects
+  `enum_decl`; the four FIRST sets are disjoint.
+- **`enum_decl`**: `enum` selects it; the name, `{`, and the string-literal
+  variants follow unambiguously.  An empty `{ }` is rejected (an enum needs at
+  least one variant).
 - **`conforms`**: after a store name the next token is either `:` (the
   clause is present) or `{` (it is absent).  One token decides.
-- **`shape_ref`**: after the shape name, `(` opens an argument list and any
+- **`shape_ref`**: after the shape name, `[` opens an argument list and any
   other token (`,` or `{`) ends the reference.  One token decides.
 - **`arg`**: an `ident` (a unit name) and a `string` literal are distinct
   tokens, so the argument's form is fixed by the current token.
 - **`attr_name`**: a shape attribute name is an `ident` or a `template`
   token, again distinct, so one token decides.
-- **`params`**: after a shape name, `(` opens the parameter list and `{`
+- **`params`**: after a shape name, `[` opens the parameter list and `{`
   skips it.  One token decides.
 - **`shape_decl` body**: the optional `unit_clause` is taken when the body
   opens with the `unit` keyword, and skipped otherwise.  One token decides.
@@ -112,12 +116,9 @@ named_type    = ident ;
 - **`shape_block` loop**: as `store_block`, minus `domain`; a `domain` word
   in a shape body is a parse error (shapes carry no foreign-key resolution).
 - **`field` / `attr` loops**: a loop continues on `ident` and ends on `}`.
-- **`type`**: the word `enum` selects `enum_type`; any other `ident` selects
-  `named_type`.  The decision is made on the current token alone (the `(`
-  that must follow `enum` is checked after committing, not used to decide).
-  Enum variants are **string literals**, so their values are explicit and may
-  contain characters that are not valid identifiers (`"in-progress"`, spaces,
-  accents); this also matches how categorical values are stored and matched.
+- **`type`**: a type is a single `ident`: a primitive (`string`, `number`,
+  ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
+  decision, not the parser's; the parser commits on the lone identifier.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -137,15 +138,24 @@ subset.
   Repeated `const`/`var` blocks are allowed and merged by the resolver.
 - **A shape's unit clause is optional.**  When present it comes first, as in
   a store; when absent the shape is unit-agnostic.  A shape claimed with
-  arguments (`Tabular(Person)`, `Ageable("birthdate")`) binds its parameters
+  arguments (`Tabular[Person]`, `Ageable["birthdate"]`) binds its parameters
   positionally: a unit name fills a `Unit` parameter, a string literal a
   `string` parameter.  Numeric and predicate parameter kinds are rejected by
   the resolver as "not yet supported".
 - **Backtick names interpolate `string` parameters.**  A shape attribute name
   may be a template such as `` `{col}_z` ``; its `{param}` holes must name
   `string` parameters, and the rendered name must be a valid identifier.
-- **`enum` is positional.**  `enum` is a keyword only in `type` position; it
-  cannot be a unit or store name there.
+- **Brackets are for parameters, parentheses are not used here.**  Shape
+  parameter lists (`Tabular[U: Unit]`) and conformance arguments
+  (`Tabular[Person]`) use `[ ]`, leaving `( )` free for grouping and tuples in
+  the expression sublanguage.  No declaration form uses `( )`.
+- **`enum` is a top-level declaration.**  An enumerated type is declared once,
+  `enum Name { "v1", "v2" }`, and referenced by name in a field's type.  Its
+  name is a type (PascalCase); its variants are **string literals**, so their
+  values are explicit and may contain characters that are not valid
+  identifiers (`"in-progress"`, spaces, accents), which also matches how
+  categorical values are stored and matched.  `enum` is a keyword only in
+  declaration position.
 - **`domain` is parsed, not yet resolved.**  The grammar accepts `domain`
   blocks and unit-reference field types so the surface stays stable, but the
   current resolver rejects compound units and `domain` blocks as "not yet
@@ -153,16 +163,17 @@ subset.
 
 ## Types in this subset
 
-`named_type` is one of the recognized primitive types, otherwise it is read
-as a reference to a unit (a compound field, deferred):
+`named_type` is one of the recognized primitive types, the name of a declared
+`enum`, otherwise it is read as a reference to a unit (a compound field,
+deferred):
 
-| Type        | Meaning                                   |
-|-------------|-------------------------------------------|
-| `string`    | text                                      |
-| `number`    | numeric (integer or real)                 |
-| `bool`      | boolean                                   |
-| `date`      | calendar date (ISO 8601)                  |
-| `enum(...)` | one of a fixed set of string-literal values |
+| Type     | Meaning                                          |
+|----------|--------------------------------------------------|
+| `string` | text                                             |
+| `number` | numeric (integer or real)                        |
+| `bool`   | boolean                                          |
+| `date`   | calendar date (ISO 8601)                         |
+| `Name`   | a declared `enum`: one of its string variants    |
 
 Physical-unit types (dimensional quantities, precision) are a separate,
 larger feature with their own design doc and are not in this subset.
@@ -185,13 +196,18 @@ store Departments {
   const { name: string }
 }
 
-store Persons : Ageable("birthdate") {
+enum Status {
+  "active", "inactive"
+}
+
+store Persons : Ageable["birthdate"] {
   unit { Person }
   const { birthdate: date }
   var   { last_name: string }
+  var   { status: Status }
 }
 
-store Students : PersonRecord, Tabular(Person) {
+store Students : PersonRecord, Tabular[Person] {
   unit { Person }
   const { admission: date }
 }
@@ -201,7 +217,7 @@ shape PersonRecord {
   const { admission: date }
 }
 
-shape Tabular(U: Unit) {
+shape Tabular[U: Unit] {
   unit { U }
 }
 
@@ -209,16 +225,17 @@ shape Named {
   const { name: string }
 }
 
-shape Ageable(date_field: string) {
+shape Ageable[date_field: string] {
   const { `{date_field}`: date }
 }
 ```
 
 `Students` claims the concrete-unit shape `PersonRecord` and the
-unit-parameter shape `Tabular(Person)`; the resolver checks the store's unit
+unit-parameter shape `Tabular[Person]`; the resolver checks the store's unit
 and `admission` attribute against the former and binds `U := Person` for the
-latter.  `Persons` claims `Ageable("birthdate")`: the `string` argument
-renders the templated attribute name to `birthdate`, which the store carries.
+latter.  `Persons` claims `Ageable["birthdate"]`: the `string` argument
+renders the templated attribute name to `birthdate`, which the store carries,
+and its `status` is the named `enum Status`.
 `Named` is unit-agnostic (no unit clause): any store carrying a
 `const name: string` conforms.  `Courses` and `StudentGrades` from
 `02-stores.md` are compound (their units reference other units and they carry
@@ -321,10 +338,5 @@ keyword-free lexer intends.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Physical-unit and precision types, including the `NxE` measured literal and
   the unit grammar.
-- The named `enum` declaration (`enum Status { "active", "inactive" }`) that
-  replaces the inline `enum(...)` type, and the move of type-parameter
-  application from `Tabular(Person)` to `Tabular[Person]` (freeing `( )` for
-  grouping and tuples).  Both are settled in `06-expressions.md` but are a
-  separate change that also touches the parser and the worked examples.
 - `device`, `view`, transforms, and the pipeline operations, which build on
   the expression grammar above and each get their own section here.
