@@ -66,6 +66,13 @@ all deploy-configuration concerns, read by `mensura serve`.  The language
 program is identical across a REST-only deployment and one that also speaks
 MQTT and gRPC.
 
+It follows that a surface should carry no wire path in source.  The leaning
+is therefore to drop proposal.md's `endpoint: "/people"` strings: a surface is
+referenced by its (snake_case) name, and the deterministic translation below
+plus the deploy config produce the actual path or topic.  This is the
+direction, not yet final; it is settled together with the M4 surface, where
+the `store`/`collect`/`endpoint` exposure syntax is fixed.
+
 ### Wire names are translated deterministically
 
 A surface or field has one canonical Mensura name; each transport projects it

@@ -41,5 +41,9 @@ pub enum ColumnType {
     Number,
     Bool,
     Date,
-    Enum(Vec<String>),
+    /// A named enumerated type: its declared name and its string variants.
+    Enum {
+        name: String,
+        variants: Vec<String>,
+    },
 }

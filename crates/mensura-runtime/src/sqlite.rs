@@ -86,7 +86,7 @@ fn column_type_sql(ty: &ColumnType, col: &str) -> String {
         ColumnType::Number => "NUMERIC".to_string(),
         ColumnType::Bool => "INTEGER".to_string(),
         ColumnType::Date => "TEXT".to_string(),
-        ColumnType::Enum(variants) => {
+        ColumnType::Enum { variants, .. } => {
             let list = variants
                 .iter()
                 .map(|v| quote_str(v))
@@ -144,7 +144,8 @@ mod tests {
     fn create_table_sql_for_enum_has_check() {
         let src = r#"
             unit U { id: string }
-            store s { unit { U } var { status: enum("active", "inactive") } }
+            enum Status { "active", "inactive" }
+            store s { unit { U } var { status: Status } }
         "#;
         let sql = create_table_sql(&schema(src, "s"));
         assert!(sql.contains("\"status\" TEXT CHECK (\"status\" IN ('active', 'inactive'))"));
@@ -180,7 +181,8 @@ mod tests {
     fn enum_check_constraint_is_enforced() {
         let src = r#"
             unit U { id: string }
-            store s { unit { U } var { status: enum("active", "inactive") } }
+            enum Status { "active", "inactive" }
+            store s { unit { U } var { status: Status } }
         "#;
         let mut db = SqliteBackend::open_in_memory().unwrap();
         db.ensure_store(&schema(src, "s")).unwrap();

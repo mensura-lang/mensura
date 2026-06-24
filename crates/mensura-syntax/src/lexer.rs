@@ -3,7 +3,7 @@
 //! It scans a `&str` into a [`Lexed`]: a `Vec<Token>` terminated by
 //! [`TokenKind::Eof`], plus a side channel of comment [`Trivia`].  Whitespace
 //! is skipped outright; comments are kept out of the token stream but recorded
-//! on the trivia channel (see ADR 0007) so tooling can highlight them without
+//! on the trivia channel (see ADR 0009) so tooling can highlight them without
 //! the parser ever stepping over them.  On the first malformed token it
 //! returns a [`LexError`] with the offending [`Span`]; error recovery
 //! (reporting many errors at once) is a later concern.
@@ -32,7 +32,7 @@ impl LexError {
 pub struct Lexed {
     /// The tokens, ending in [`TokenKind::Eof`].  Comments never appear here.
     pub tokens: Vec<Token>,
-    /// Comments, in source order.  See ADR 0007.
+    /// Comments, in source order.  See ADR 0009.
     pub trivia: Vec<Trivia>,
 }
 
@@ -130,7 +130,7 @@ impl<'a> Lexer<'a> {
 
     /// Skip whitespace, and record `//` line comments on the trivia channel.
     ///
-    /// Comments stay out of the token stream but are kept (ADR 0007); a
+    /// Comments stay out of the token stream but are kept (ADR 0009); a
     /// comment span runs from the `//` up to, but not including, the newline.
     fn skip_trivia(&mut self) {
         loop {

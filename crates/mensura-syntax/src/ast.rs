@@ -18,6 +18,7 @@ pub enum Item {
     Unit(UnitDecl),
     Store(StoreDecl),
     Shape(ShapeDecl),
+    Enum(EnumDecl),
 }
 
 /// An identifier together with where it appeared.
@@ -39,6 +40,18 @@ pub struct StrLit {
 pub struct UnitDecl {
     pub name: Ident,
     pub fields: Vec<Field>,
+    pub span: Span,
+}
+
+/// `enum Name { "variant", ... }`
+///
+/// A named enumerated type: a fixed set of string-literal variants, referenced
+/// by name in a field's type position.  Its name is a type (PascalCase); its
+/// variants are unconstrained string literals.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumDecl {
+    pub name: Ident,
+    pub variants: Vec<StrLit>,
     pub span: Span,
 }
 
@@ -68,7 +81,7 @@ pub struct StoreDecl {
 }
 
 /// One entry in a `:` conformance clause: a shape name with positional
-/// arguments, e.g. `Tabular(Person)`, `Ageable("birthdate")`, or the
+/// arguments, e.g. `Tabular[Person]`, `Ageable["birthdate"]`, or the
 /// parameter-free `PersonRecord`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeRef {
@@ -96,7 +109,7 @@ impl ShapeArg {
     }
 }
 
-/// `shape Name [(params)] { [unit { U }] (const|var block)* }`
+/// `shape Name [[params]] { [unit { U }] (const|var block)* }`
 ///
 /// A structural contract: an optional unit plus the attributes a conforming
 /// store must carry.  Shapes hold no `domain` block, no policy, and no
@@ -160,12 +173,13 @@ pub struct DomainEntry {
 }
 
 /// A type expression in a field or attribute.
+///
+/// A primitive name (`string`, `number`, ...), a unit reference, or a named
+/// `enum` type.  All three are a single identifier in type position; the
+/// resolver decides which it is.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeExpr {
-    /// A primitive name (`string`, `number`, ...) or a unit reference.
     Named(Ident),
-    /// `enum("a", "b", ...)` with one or more string-literal variants.
-    Enum { variants: Vec<StrLit>, span: Span },
 }
 
 impl TypeExpr {
@@ -173,7 +187,6 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(id) => id.span,
-            TypeExpr::Enum { span, .. } => *span,
         }
     }
 }

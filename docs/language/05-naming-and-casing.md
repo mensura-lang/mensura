@@ -23,17 +23,19 @@ Declared names split into two classes by what they denote.
   `foundation_day`, `date_field`.
 
 A shape parameter follows its kind, since the type/term split applies to it
-too.  A `Unit` parameter is a type parameter (like `U` in `Tabular(U: Unit)`
-or `FeatureWindow<U>`), so it is PascalCase.  A `string` parameter names a
-value (like `date_field` in `Ageable(date_field: string)`), so it is
+too.  A `Unit` parameter is a type parameter (like `U` in `Tabular[U: Unit]`
+or `FeatureWindow[U]`), so it is PascalCase.  A `string` parameter names a
+value (like `date_field` in `Ageable[date_field: string]`), so it is
 snake_case.
 
 `view` is deferred: views are underdefined (they are both type-like and
 served), so no rule is enforced on `view` names yet, and they may stay
 PascalCase for now.
 
-Enum variants are string literals (`enum("active", "inactive")`), not
-identifiers, so they are unconstrained.
+An `enum` is a named type, so its name is PascalCase (`Status`), like a
+`unit` or `shape`.  Its variants are string literals
+(`enum Status { "active", "inactive" }`), not identifiers, so the variant
+values themselves are unconstrained.
 
 ### Why two classes
 

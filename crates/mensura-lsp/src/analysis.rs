@@ -170,20 +170,22 @@ fn highlight_program(builder: &mut TokenBuilder, program: &Program) {
                     highlight_field(builder, field);
                 }
             }
+            Item::Enum(decl) => {
+                builder.push(decl.name.span, TYPE_TY);
+                for variant in &decl.variants {
+                    builder.push(variant.span, ENUM_MEMBER_TY);
+                }
+            }
         }
     }
 }
 
 fn highlight_field(builder: &mut TokenBuilder, field: &mensura_syntax::Field) {
     highlight_name(builder, &field.name);
-    match &field.ty {
-        TypeExpr::Named(id) => builder.push(id.span, TYPE_TY),
-        TypeExpr::Enum { variants, .. } => {
-            for variant in variants {
-                builder.push(variant.span, ENUM_MEMBER_TY);
-            }
-        }
-    }
+    // A field type is a single identifier (primitive, unit, or named enum);
+    // named enum variants are highlighted at the `enum` declaration.
+    let TypeExpr::Named(id) = &field.ty;
+    builder.push(id.span, TYPE_TY);
 }
 
 /// Highlight an attribute name.  A plain identifier is one `property` span; a
@@ -386,7 +388,7 @@ mod tests {
 
     #[test]
     fn enum_variants_are_enum_members_not_strings() {
-        let toks = types_at(r#"unit U { s: enum("a", "b") }"#);
+        let toks = types_at(r#"enum Status { "active", "inactive" }"#);
         let kinds: Vec<u32> = toks.iter().map(|t| t.3).collect();
         // The two variants are enum members; no plain string token survives.
         assert_eq!(kinds.iter().filter(|&&k| k == ENUM_MEMBER_TY).count(), 2);
@@ -414,7 +416,7 @@ mod tests {
         // `shape`/`var` keywords; `Sized`, `string`, `number` types; the
         // declared param `c` and the `{c}` template hole are both parameters;
         // the literal `_z` template segment is a property.
-        let toks = types_at("shape Sized(c: string) { var { `{c}_z`: number } }");
+        let toks = types_at("shape Sized[c: string] { var { `{c}_z`: number } }");
         let kinds: Vec<u32> = toks.iter().map(|t| t.3).collect();
         assert!(kinds.contains(&KEYWORD_TY));
         assert!(kinds.contains(&TYPE_TY));

@@ -13,9 +13,11 @@ the language is.
 
 ## Source material
 
-- Chapter 5 of <https://zenodo.org/records/18815798>: defines indexed
-  tables, split-invariance, and the core algebra.  Authoritative for the
-  mathematical foundations.
+- The book's Chapter 5 defines indexed tables, split-invariance, and the
+  core algebra.  Authoritative for the mathematical foundations.  Cite as:
+  F. A. N. Verri (2026). Data Science Project: An Inductive Learning Approach.
+  Version v1.0.0. Victoria, British Columbia, Canada: Leanpub. doi:
+  10.5281/zenodo.14498010. url: https://leanpub.com/dsp.
 - `proposal.md`: the language vision and the college case study.
   Authoritative for surface syntax intent and the store/collect/auth model.
 - `../../postdoc_relatorio_2025/main.tex`: the postdoc report that scopes

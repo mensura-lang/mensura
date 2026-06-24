@@ -64,7 +64,8 @@ either observed (cardinality 1) or not (cardinality 0).  This is
 Wickham's rule that each row is one observation, restated as a
 property of the unit.
 
-The chapter's algebra (Chapter 5 of <https://zenodo.org/records/18815798>)
+The chapter's algebra (Chapter 5 of Data Science Project: An Inductive
+Learning Approach, F. A. N. Verri, 2026, doi: 10.5281/zenodo.14498010)
 allows row cardinality greater than 1, where one row of an indexed
 table can carry tuples of values per cell.  Mensura accepts this as a
 *transient state inside the algebra*: an operation like `project` can

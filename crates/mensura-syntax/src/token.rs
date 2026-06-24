@@ -105,7 +105,7 @@ impl Token {
 /// Trivia is text that is meaningful to a reader and to tooling but not to the
 /// grammar: comments today, and only line comments so far.  It rides a
 /// separate channel from the token stream (see [`crate::lexer::Lexed`]) so the
-/// parser never has to step over it.  See ADR 0007.
+/// parser never has to step over it.  See ADR 0009.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriviaKind {
     /// A `//` line comment, up to but not including the newline.
