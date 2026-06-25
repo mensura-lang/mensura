@@ -5,6 +5,7 @@
 //! - `lex`   -- print the token stream of a source file (a lexer debug aid).
 //! - `check` -- typecheck a program without touching a database.
 //! - `run`   -- typecheck a program and create its stores in a database.
+//! - `lsp`   -- run the language server over stdio.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -41,6 +42,8 @@ enum Command {
         #[arg(long, default_value = ":memory:")]
         db: PathBuf,
     },
+    /// Run the language server, speaking LSP over stdio.
+    Lsp,
 }
 
 fn main() -> ExitCode {
@@ -49,6 +52,17 @@ fn main() -> ExitCode {
         Command::Lex { file } => cmd_lex(&file),
         Command::Check { file } => cmd_check(&file),
         Command::Run { file, db } => cmd_run(&file, &db),
+        Command::Lsp => cmd_lsp(),
+    }
+}
+
+fn cmd_lsp() -> ExitCode {
+    match mensura_lsp::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: language server: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

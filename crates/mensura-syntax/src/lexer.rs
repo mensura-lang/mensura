@@ -1,11 +1,14 @@
 //! A hand-written, dependency-free lexer for Mensura.
 //!
-//! It scans a `&str` into a `Vec<Token>` terminated by [`TokenKind::Eof`].
-//! Whitespace and `//` line comments are skipped.  On the first malformed
-//! token it returns a [`LexError`] with the offending [`Span`]; error
-//! recovery (reporting many errors at once) is a later concern.
+//! It scans a `&str` into a [`Lexed`]: a `Vec<Token>` terminated by
+//! [`TokenKind::Eof`], plus a side channel of comment [`Trivia`].  Whitespace
+//! is skipped outright; comments are kept out of the token stream but recorded
+//! on the trivia channel (see ADR 0011) so tooling can highlight them without
+//! the parser ever stepping over them.  On the first malformed token it
+//! returns a [`LexError`] with the offending [`Span`]; error recovery
+//! (reporting many errors at once) is a later concern.
 
-use crate::token::{Span, Token, TokenKind};
+use crate::token::{Span, Token, TokenKind, Trivia, TriviaKind};
 use unicode_xid::UnicodeXID;
 
 /// A lexing failure, located by a source span.
@@ -24,9 +27,25 @@ impl LexError {
     }
 }
 
-/// Tokenize `src` into a vector of tokens ending in [`TokenKind::Eof`].
-pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
+/// The full lexer output: the token stream and the comment trivia channel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lexed {
+    /// The tokens, ending in [`TokenKind::Eof`].  Comments never appear here.
+    pub tokens: Vec<Token>,
+    /// Comments, in source order.  See ADR 0011.
+    pub trivia: Vec<Trivia>,
+}
+
+/// Lex `src` into its [`Lexed`] token stream and trivia channel.
+pub fn lex(src: &str) -> Result<Lexed, LexError> {
     Lexer::new(src).run()
+}
+
+/// Tokenize `src` into a vector of tokens ending in [`TokenKind::Eof`],
+/// discarding trivia.  A convenience over [`lex`] for callers that only need
+/// the token stream.
+pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
+    lex(src).map(|lexed| lexed.tokens)
 }
 
 /// True if `s` is a valid Mensura identifier: a UAX#31 identifier, augmented
@@ -45,11 +64,17 @@ struct Lexer<'a> {
     src: &'a str,
     /// Current byte offset into `src`.
     pos: usize,
+    /// Comments collected so far, in source order.
+    trivia: Vec<Trivia>,
 }
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Lexer { src, pos: 0 }
+        Lexer {
+            src,
+            pos: 0,
+            trivia: Vec::new(),
+        }
     }
 
     /// The current character without consuming it.
@@ -72,14 +97,17 @@ impl<'a> Lexer<'a> {
         Some(c)
     }
 
-    fn run(mut self) -> Result<Vec<Token>, LexError> {
+    fn run(mut self) -> Result<Lexed, LexError> {
         let mut tokens = Vec::new();
         loop {
             self.skip_trivia();
             let start = self.pos;
             let Some(c) = self.peek() else {
                 tokens.push(Token::new(TokenKind::Eof, Span::new(start, start)));
-                return Ok(tokens);
+                return Ok(Lexed {
+                    tokens,
+                    trivia: self.trivia,
+                });
             };
             // Identifiers follow UAX#31, augmented with a leading `_` (the
             // common language profile, as in Rust).  XID_Continue excludes
@@ -100,7 +128,10 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Skip whitespace and `//` line comments.
+    /// Skip whitespace, and record `//` line comments on the trivia channel.
+    ///
+    /// Comments stay out of the token stream but are kept (ADR 0011); a
+    /// comment span runs from the `//` up to, but not including, the newline.
     fn skip_trivia(&mut self) {
         loop {
             match self.peek() {
@@ -108,12 +139,17 @@ impl<'a> Lexer<'a> {
                     self.bump();
                 }
                 Some('/') if self.peek2() == Some('/') => {
+                    let start = self.pos;
                     while let Some(c) = self.peek() {
                         if c == '\n' {
                             break;
                         }
                         self.bump();
                     }
+                    self.trivia.push(Trivia::new(
+                        TriviaKind::LineComment,
+                        Span::new(start, self.pos),
+                    ));
                 }
                 _ => return,
             }
@@ -331,10 +367,39 @@ mod tests {
     }
 
     #[test]
-    fn whitespace_and_comments_are_skipped() {
+    fn whitespace_and_comments_are_skipped_from_the_token_stream() {
         let toks = tokenize("  // a comment\n\t  // another\n").unwrap();
         assert_eq!(toks.len(), 1);
         assert_eq!(toks[0].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn comments_are_recorded_on_the_trivia_channel() {
+        let src = "unit U {} // trailing\n// leading\n";
+        let lexed = lex(src).unwrap();
+        // The token stream is unaffected by the comments: `unit U { }` plus Eof.
+        let kinds: Vec<&TokenKind> = lexed.tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Ident("unit".into()),
+                &TokenKind::Ident("U".into()),
+                &TokenKind::LBrace,
+                &TokenKind::RBrace,
+                &TokenKind::Eof,
+            ]
+        );
+        // Both comments are on the trivia channel, in source order, spanning
+        // the `//` up to (not including) the newline.
+        assert_eq!(lexed.trivia.len(), 2);
+        assert!(
+            lexed
+                .trivia
+                .iter()
+                .all(|t| t.kind == TriviaKind::LineComment)
+        );
+        assert_eq!(lexed.trivia[0].span.slice(src), "// trailing");
+        assert_eq!(lexed.trivia[1].span.slice(src), "// leading");
     }
 
     #[test]

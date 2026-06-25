@@ -15,6 +15,6 @@ pub use ast::{
     ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl,
 };
 pub use expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
-pub use lexer::{LexError, is_identifier, tokenize};
-pub use parser::{ParseError, parse, parse_expr};
-pub use token::{Span, Token, TokenKind};
+pub use lexer::{LexError, Lexed, is_identifier, lex, tokenize};
+pub use parser::{ParseError, Parsed, parse, parse_expr, parse_with_meta};
+pub use token::{Span, Token, TokenKind, Trivia, TriviaKind};
