@@ -7,13 +7,13 @@ declarations, and `shape` declarations (with an optional unit clause and
 `Unit`/`string` parameters, the latter interpolated into attribute names)
 claimed through the `:` conformance clause on stores.
 
-The final section, the expression sublanguage, is specified *ahead of the
-parser*.  It is the grammar for the one expression language of
-`06-expressions.md` (and
-`docs/decisions/0007-single-expression-sublanguage.md`), written here so the
-declaration grammar and the expression grammar live in one place, but it is
-not yet implemented.  When the parser grows expressions, this is the grammar
-it implements.
+The final section, the expression sublanguage, is the grammar for the one
+expression language of `06-expressions.md` (and
+`docs/decisions/0007-single-expression-sublanguage.md`), kept here so the
+declaration grammar and the expression grammar live in one place.  The parser
+now implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`),
+though no declaration site hosts an expression yet; the hosting sites (`when:`,
+`where:`, `@auto`, the pipeline operations) land with their own features.
 
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
@@ -242,7 +242,7 @@ and its `status` is the named `enum Status`.
 `domain` blocks); they parse but are rejected by the resolver until compound
 support lands.
 
-## Expression grammar (specified ahead of the parser)
+## Expression grammar
 
 The expression sublanguage is defined in `06-expressions.md`; this section
 gives its concrete LL(1) grammar.  It is one grammar, shared by every site
