@@ -41,8 +41,8 @@ deferred to a follow-up.
 Tokens come from the lexer (`crates/mensura-syntax/src/lexer.rs`).  The lexer
 emits every word as an `Ident`; it knows no keywords.  **Keywords are
 contextual**: the parser recognizes words such as `unit`, `store`, `shape`,
-`const`, `var`, `domain`, and `enum` by their text *in the position where
-they are expected*, not by reserving them globally.
+`const`, `var`, `domain`, `enum`, and `view` by their text *in the position
+where they are expected*, not by reserving them globally.
 
 A backtick-delimited **template** (`` `{col}_z` ``) lexes to a single token
 carrying its raw inner text; the parser splits it into literal and `{param}`
@@ -57,7 +57,7 @@ string literal and `template` a backtick template token.  Punctuation tokens
 ```ebnf
 program       = { item } EOF ;
 
-item          = unit_decl | store_decl | shape_decl | enum_decl ;
+item          = unit_decl | store_decl | shape_decl | enum_decl | view_decl ;
 
 unit_decl     = "unit" ident "{" { field } "}" ;
 field         = ident ":" type ;
@@ -86,6 +86,8 @@ shape_var     = "var" "{" { shape_attr } "}" ;
 shape_attr    = attr_name ":" type ;
 attr_name     = ident | template ;
 
+view_decl     = "view" ident [ conforms ] block ;
+
 type          = named_type [ "?" ] ;
 named_type    = ident ;
 ```
@@ -94,7 +96,12 @@ named_type    = ident ;
 
 - **`item`**: the parser peeks one token.  `unit` selects `unit_decl`,
   `store` selects `store_decl`, `shape` selects `shape_decl`, `enum` selects
-  `enum_decl`; the four FIRST sets are disjoint.
+  `enum_decl`, `view` selects `view_decl`; the five FIRST sets are disjoint.
+- **`view_decl`**: after the view name the next token is either `:` (a
+  `conforms` clause is present) or `{` (it is absent and the `block` body
+  opens).  One token decides.  The body is the expression-grammar `block`
+  (below), whose own `}` terminates it, so no new declaration grammar is
+  needed; a view hosts an ordinary pipeline expression.
 - **`enum_decl`**: `enum` selects it; the name, `{`, and the string-literal
   variants follow unambiguously.  An empty `{ }` is rejected (an enum needs at
   least one variant).
@@ -387,5 +394,7 @@ identifiers, as the keyword-free lexer intends.
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.
-- `device`, `view`, and transforms, which host pipelines and each get their
-  own section here; and the streaming operations (`sliding_window`, `latest`).
+- `view` declarations host a pipeline and are specified in
+  `10-views.md` (the `view_decl` production above is their grammar).  `device`
+  and transforms, which also host or feed pipelines, and the streaming
+  operations (`sliding_window`, `latest`), each get their own section here.

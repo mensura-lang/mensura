@@ -28,9 +28,14 @@ or `FeatureWindow[U]`), so it is PascalCase.  A `string` parameter names a
 value (like `date_field` in `Ageable[date_field: string]`), so it is
 snake_case.
 
-`view` is deferred: views are underdefined (they are both type-like and
-served), so no rule is enforced on `view` names yet, and they may stay
-PascalCase for now.
+A `view` is a materialized, queried resource, like a `store` or `collect`: it
+is defined by a pipeline and exposed over a wire
+(`docs/decisions/0012-view-hosting.md`, `10-views.md`), not a type that
+classifies rows.  It therefore takes the term convention, **snake_case**
+(`temperature_summary`, `feature_window`), and its wire names are derived by the
+same transport translation below.  A view may *claim* a shape to constrain its
+output, but the shape is the type, not the view; the view itself is the
+resource.
 
 An `enum` is a named type, so its name is PascalCase (`Status`), like a
 `unit` or `shape`.  Its variants are string literals
@@ -84,8 +89,8 @@ The convention is a **hard compile-time error**, not a warning.  The resolver
 (`crates/mensura-types/src/resolve.rs`) rejects a name in the wrong class and
 collects the diagnostic alongside the others rather than failing fast, so a
 single run reports every violation.  A `unit` or `shape` whose name is not
-PascalCase, or a `store`, `collect`, attribute, or parameter whose name is not
-snake_case, is a resolution error.
+PascalCase, or a `store`, `collect`, `view`, attribute, or parameter whose name
+is not snake_case, is a resolution error.
 
 Enforcing rather than warning is what lets wire-name translation be
 total and deterministic: every declared name is in a known case, so its REST,

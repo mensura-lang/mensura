@@ -47,7 +47,10 @@ Three properties follow and are fixed at the unit level:
   configure.  Row cardinality greater than 1 is allowed only as a transient
   state *inside* the algebra (between `project` and a later `ungroup` or
   `aggregate`); it is ill-formed at any unit boundary (`store`, `collect`,
-  `view`, a signature promising a tabulation of a unit).
+  `view`, a signature promising a tabulation of a unit).  The `view` case is
+  narrowed by `docs/decisions/0012-view-hosting.md`: a view is a unit boundary
+  only when it claims a unit-fixing shape; a bare view is a general materialized
+  table whose cardinality may be `bag`.
 - **References are typed by unit, not by string.**  An index field's type may
   be another unit; its value is then the identity of an observation of that
   unit.  A unit with at least one unit-reference field is **compound**; one

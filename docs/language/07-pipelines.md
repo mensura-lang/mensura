@@ -336,6 +336,7 @@ cost of dropping disjointness.  It type-checks.
   and its `?` marker are settled in ADR 0010.)
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
-- **Hosting and streaming.**  `transform`/`view` declarations that host
-  pipelines, and the streaming operations (`sliding_window`, `latest`,
-  reactive `on` blocks), extend this grammar and get their own sections.
+- **Hosting and streaming.**  `view` declarations that host pipelines are
+  specified in `10-views.md`.  The other hosting sites (`transform`, `collect`,
+  `device`) and the streaming operations (`sliding_window`, `latest`, reactive
+  `on` blocks) extend this grammar and get their own sections.
