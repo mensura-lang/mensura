@@ -1,0 +1,11 @@
+[package]
+name = "mensura-highlight"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Source classification for Mensura highlighting, shared by the LSP and the book."
+
+[dependencies]
+mensura-syntax = { workspace = true }
+mensura-types = { workspace = true }

@@ -4,7 +4,9 @@ members = [
     "crates/mensura-syntax",
     "crates/mensura-types",
     "crates/mensura-runtime",
+    "crates/mensura-highlight",
     "crates/mensura-lsp",
+    "crates/mensura-mdbook",
     "crates/mensura-cli",
 ]
 
@@ -18,6 +20,7 @@ repository = "https://github.com/mensura-lang/mensura"
 mensura-syntax = { path = "crates/mensura-syntax" }
 mensura-types = { path = "crates/mensura-types" }
 mensura-runtime = { path = "crates/mensura-runtime" }
+mensura-highlight = { path = "crates/mensura-highlight" }
 mensura-lsp = { path = "crates/mensura-lsp" }
 unicode-xid = "0.2"
 clap = { version = "4", features = ["derive"] }

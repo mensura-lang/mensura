@@ -52,12 +52,16 @@ mensura/
     toolkit/            -- design docs for the subcommands and the backend
     examples/           -- worked examples that must compile (validate design)
     decisions/          -- ADR-style notes for non-obvious choices
+  book/                 -- the Mensura book (mdBook, hosted on GitHub Pages);
+                           ```mensura examples are highlighted and check-gated
   crates/
     mensura-syntax/     -- lexer, parser, AST
     mensura-types/      -- name resolution, the resolved Schema, the hooks
     mensura-runtime/    -- SQLite storage backend and the processing layer
+    mensura-highlight/  -- source classification shared by the LSP and the book
+    mensura-lsp/        -- the `mensura lsp` backend
+    mensura-mdbook/     -- the `mdbook-mensura` preprocessor (book highlighting)
     mensura-cli/        -- the `mensura` binary
-    mensura-lsp/        -- the `mensura lsp` backend (planned)
   formal/               -- Lean 4 formalization of the algebra (Mathlib-backed);
                            see decisions/0008
 ```

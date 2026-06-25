@@ -1,0 +1,62 @@
+/* Colors for Mensura code blocks emitted by the mdbook-mensura preprocessor.
+ * The preprocessor wraps each token in a `mn-<kind>` span (no inline styles),
+ * so the palette lives here and is themed alongside the rest of the book.
+ * See docs/toolkit/03-book-highlighting.md. */
+
+pre.mensura {
+  /* Match mdBook's own code blocks; the block is already highlighted, so
+   * highlight.js leaves it alone (the nohighlight class). */
+  overflow-x: auto;
+}
+
+pre.mensura code.mn-code {
+  display: block;
+}
+
+/* Light themes (the default). */
+.mn-comment { color: #9aa0a6; font-style: italic; }
+.mn-keyword { color: #a626a4; }
+.mn-type { color: #4078f2; }
+.mn-property { color: #383a42; }
+.mn-parameter { color: #b76b01; }
+.mn-string { color: #50a14f; }
+.mn-number { color: #986801; }
+.mn-enum-member { color: #c18401; }
+.mn-operator { color: #7a7f87; }
+
+/* Dark themes: coal, navy, ayu. */
+.coal .mn-comment,
+.navy .mn-comment,
+.ayu .mn-comment { color: #7d828a; }
+
+.coal .mn-keyword,
+.navy .mn-keyword,
+.ayu .mn-keyword { color: #c678dd; }
+
+.coal .mn-type,
+.navy .mn-type,
+.ayu .mn-type { color: #61afef; }
+
+.coal .mn-property,
+.navy .mn-property,
+.ayu .mn-property { color: #d7dae0; }
+
+.coal .mn-parameter,
+.navy .mn-parameter,
+.ayu .mn-parameter { color: #e5a04c; }
+
+.coal .mn-string,
+.navy .mn-string,
+.ayu .mn-string { color: #98c379; }
+
+.coal .mn-number,
+.navy .mn-number,
+.ayu .mn-number { color: #d19a66; }
+
+.coal .mn-enum-member,
+.navy .mn-enum-member,
+.ayu .mn-enum-member { color: #e5c07b; }
+
+.coal .mn-operator,
+.navy .mn-operator,
+.ayu .mn-operator { color: #9aa0a6; }

@@ -1,0 +1,12 @@
+unit Person {
+  id: string
+}
+
+shape Ageable[date_field: string] {
+  const { `{date_field}`: date }
+}
+
+store persons : Ageable["birthdate"] {
+  unit { Person }
+  const { birthdate: date }
+}

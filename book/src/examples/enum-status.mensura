@@ -1,0 +1,11 @@
+unit Machine {
+  id: string
+}
+
+enum MachineStatus { "operational", "degraded", "failure" }
+
+store machines {
+  unit { Machine }
+  const { commissioned: date }
+  var   { status: MachineStatus }
+}

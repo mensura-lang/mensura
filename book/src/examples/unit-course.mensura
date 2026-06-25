@@ -1,0 +1,4 @@
+unit Course {
+  name: string
+  year: number
+}

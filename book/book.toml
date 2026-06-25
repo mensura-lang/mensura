@@ -1,0 +1,17 @@
+[book]
+title = "The Mensura Book"
+authors = ["Filipe A. N. Verri"]
+language = "en"
+src = "src"
+
+# Highlight and check-gate every ```mensura block against the real compiler.
+# Runs after `links` so {{#include}} snippets are expanded first.
+# See docs/toolkit/03-book-highlighting.md.
+[preprocessor.mensura]
+command = "cargo run --quiet --package mensura-mdbook --"
+after = ["links"]
+
+[output.html]
+additional-css = ["mensura-highlight.css"]
+git-repository-url = "https://github.com/mensura-lang/mensura"
+edit-url-template = "https://github.com/mensura-lang/mensura/edit/main/book/{path}"

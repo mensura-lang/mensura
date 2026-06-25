@@ -1,13 +1,15 @@
 [package]
-name = "mensura-lsp"
+name = "mensura-mdbook"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The `mensura lsp` language server backend."
+description = "An mdBook preprocessor that highlights and check-gates Mensura code blocks."
+
+[[bin]]
+name = "mdbook-mensura"
+path = "src/main.rs"
 
 [dependencies]
 mensura-highlight = { workspace = true }
-lsp-server = { workspace = true }
-lsp-types = { workspace = true }
 serde_json = { workspace = true }

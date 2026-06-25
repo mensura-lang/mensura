@@ -1,0 +1,13 @@
+// A minimal Mensura program: one unit, one store.
+// Every word here is an ordinary identifier; the leading `unit` and `store`
+// are recognised by position, not because they are reserved keywords.
+
+unit Sensor {
+  id: string
+}
+
+store readings {
+  unit { Sensor }
+  const { installed: date }
+  var   { label: string }
+}
