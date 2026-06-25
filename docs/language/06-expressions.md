@@ -281,6 +281,8 @@ A membership test over such a bag:
 
 ## Forward references and open questions
 
+- **Consolidated rules.**  The expression rules above are collected, with the
+  pipeline and completeness rules, in `09-typing-reference.md` (the M0 freeze).
 - **Measured SI values.**  The `NxE` literal (`10x3`), the attachment of
   a unit by juxtaposition (`10x3 m`, with no `SI(...)` constructor), the
   unit grammar (`m/s^2` under ordinary operator precedence, with no

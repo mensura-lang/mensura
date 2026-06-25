@@ -68,8 +68,8 @@ mensura/
 
 ## Status: where we are
 
-- **Design.**  `docs/language/00-overview` through `08-lineage`, ADRs
-  0001-0009, and `docs/toolkit/00-storage-backend.md` exist.  The core is
+- **Design.**  `docs/language/00-overview` through `09-typing-reference`, ADRs
+  0001-0011, and `docs/toolkit/00-storage-backend.md` exist.  The core is
   specified: units, stores, shapes, the LL(1) grammar, naming, the expression
   sublanguage, the pipeline primitives, and lineage/disjointness.  The table
   type is `Table<Qs, C>` (a row of qualifiers plus content); sampling,
@@ -98,6 +98,16 @@ remains is captured per milestone below.
 Output: a versioned typing-rule reference collecting the rules from the design
 docs into one place, detailed enough that two people implementing independently
 would build compatible compilers.
+
+Status: a first freeze candidate exists at `docs/language/09-typing-reference.md`.
+It makes the four tracked properties explicit in `Table<Qs, C>` (cardinality and
+totality in the content `C`; completeness and disjointness, the latter via a
+lineage tag hierarchy, in a concrete closed `Qs`) and freezes the pipeline
+algebra with Tier A / Tier B and split-invariance.  It defers the extensible
+qualifier meta-calculus (ADR 0004), the sampling and dependency qualifiers, and
+`08-lineage.md`'s predicate-region elaboration of disjointness.  This narrows the
+meta-calculus scope ADR 0004 anticipated for M0; reconciling that ADR is a
+follow-up.  The companion LL(1) grammar proof remains the open M0 item.
 
 - Core grammar in EBNF, proven LL(1) (no left recursion, disjoint FIRST sets,
   FIRST/FOLLOW disjoint at every nullable production), including the expression

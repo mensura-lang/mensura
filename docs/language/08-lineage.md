@@ -11,6 +11,13 @@ The ROADMAP names this document `05-lineage.md` in its planning list; the
 actual `docs/language/` sequence has since filled `05` with
 `naming-and-casing.md`, so the lineage document lands here at `08`.
 
+The M0 freeze (`09-typing-reference.md`) tracks disjointness with a **lineage
+hierarchy** (a tag tree, decided structurally), its section 9.  The
+**predicate-region elaboration** specified below (the symbolic key-predicate
+region, the linear-arithmetic decidable fragment, and the full
+`disjointness_check` / `@disjoint_partition` surface) is deferred; in the frozen
+core, `assert` / `assume` cover anything the hierarchy cannot decide.
+
 ## What this document adds
 
 `07-pipelines.md` makes two properties first-class beyond plain content:

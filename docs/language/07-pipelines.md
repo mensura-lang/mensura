@@ -318,6 +318,11 @@ cost of dropping disjointness.  It type-checks.
 
 ## Forward references and open questions
 
+- **Consolidated rules.**  The per-primitive rules above are collected, with the
+  expression and completeness rules, in `09-typing-reference.md` (the M0
+  freeze), which makes the four tracked properties (cardinality, totality,
+  completeness, and disjointness via a lineage hierarchy) explicit in
+  `Table<Qs, C>`.
 - **Named sugar.**  `filter`, `mutate`, `select`, `aggregate`,
   `group`/`ungroup`/`project`, window functions (`rank`, `cumsum`), and
   `tagged_bind`/`tagged_split` are sugar over the primitives above and get

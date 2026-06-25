@@ -10,7 +10,8 @@ temporal data, biased sub-sampling, broken split-invariance, unit
 mismatches, and so on.
 
 The language is small. The novelty is not in the surface syntax but in the
-typing rules attached to each operation.
+typing rules attached to each operation.  Those rules are collected, for the
+settled core, in `docs/language/09-typing-reference.md`.
 
 ## Motto
 
