@@ -55,10 +55,15 @@ pub fn create_table_sql(schema: &Schema) -> String {
         .columns
         .iter()
         .map(|c| {
+            // A total column is `NOT NULL`; an optional one (`?`) is nullable
+            // (ADR 0010, `docs/toolkit/00-storage-backend.md`).  Index columns
+            // are always total, so the primary key is non-null too.
+            let null = if c.optional { "" } else { " NOT NULL" };
             format!(
-                "  {} {}",
+                "  {} {}{}",
                 quote_ident(&c.name),
-                column_type_sql(&c.ty, &c.name)
+                column_type_sql(&c.ty, &c.name),
+                null
             )
         })
         .collect();
@@ -136,8 +141,25 @@ mod tests {
         let sql = create_table_sql(&schema(PERSONS, "persons"));
         assert_eq!(
             sql,
-            "CREATE TABLE IF NOT EXISTS \"persons\" (\n  \"id\" TEXT,\n  \"birthdate\" TEXT,\n  \"last_name\" TEXT,\n  PRIMARY KEY (\"id\")\n);"
+            "CREATE TABLE IF NOT EXISTS \"persons\" (\n  \"id\" TEXT NOT NULL,\n  \"birthdate\" TEXT NOT NULL,\n  \"last_name\" TEXT NOT NULL,\n  PRIMARY KEY (\"id\")\n);"
         );
+    }
+
+    #[test]
+    fn optional_column_is_nullable() {
+        // A `?` attribute is nullable; total columns keep `NOT NULL` (ADR 0010).
+        let src = r#"
+            unit Person { id: string }
+            store persons {
+              unit { Person }
+              var { last_name: string? }
+              var { status: string }
+            }
+        "#;
+        let sql = create_table_sql(&schema(src, "persons"));
+        assert!(sql.contains("\"last_name\" TEXT,"));
+        assert!(sql.contains("\"status\" TEXT NOT NULL"));
+        assert!(sql.contains("\"id\" TEXT NOT NULL"));
     }
 
     #[test]

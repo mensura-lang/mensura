@@ -432,9 +432,26 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a type: a single identifier (a primitive, a unit reference, or a
-    /// named `enum`).  Which it is, is the resolver's decision.
+    /// named `enum`), optionally followed by a `?` optional marker.  Which the
+    /// base type is, is the resolver's decision; the `?` makes the value
+    /// optional (ADR 0010).  One token of lookahead takes a single `?` if
+    /// present, so the marker preserves LL(1).
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
-        Ok(TypeExpr::Named(self.expect_ident("a type")?))
+        let name = self.expect_ident("a type")?;
+        let optional = if self.check(&TokenKind::Question) {
+            let span = self.cur_span();
+            self.pos += 1;
+            Some(span)
+        } else {
+            None
+        };
+        let end = optional.map_or(name.span.end, |s| s.end);
+        let span = Span::new(name.span.start, end);
+        Ok(TypeExpr {
+            name,
+            optional,
+            span,
+        })
     }
 
     // --- expression sublanguage ---------------------------------------------
@@ -994,9 +1011,30 @@ mod tests {
         let Item::Store(s) = &program.items[1] else {
             panic!("expected a store");
         };
-        match &s.vars[0].ty {
-            TypeExpr::Named(id) => assert_eq!(id.name, "Status"),
-        }
+        assert_eq!(s.vars[0].ty.name.name, "Status");
+        assert!(!s.vars[0].ty.is_optional());
+    }
+
+    #[test]
+    fn parses_optional_type_marker() {
+        let src = r#"
+            store S {
+              unit { U }
+              var { last_service: date? }
+              var { vibration: number }
+            }
+        "#;
+        let program = parse_str(src).unwrap();
+        let Item::Store(s) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        // `date?` is optional and its span covers the `?`.
+        let opt = &s.vars[0].ty;
+        assert_eq!(opt.name.name, "date");
+        assert!(opt.is_optional());
+        assert_eq!(opt.span().slice(src), "date?");
+        // A bare type stays total.
+        assert!(!s.vars[1].ty.is_optional());
     }
 
     #[test]

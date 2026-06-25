@@ -1,0 +1,12 @@
+// A `?` marks an optional value (it may be missing in an observed row);
+// const and var may be optional, a bare type stays total (ADR 0010).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  const { commissioned: date }
+  var   { last_service: date? }
+  var   { vibration: number }
+}

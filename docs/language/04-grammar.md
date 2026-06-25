@@ -122,9 +122,10 @@ named_type    = ident ;
   A trailing `?` makes the value **optional** (it may be missing in an
   observed row; see ADR 0010 and `02-stores.md`).  After the identifier
   the parser peeks one token and takes a single `?` if present, so the
-  optional marker preserves LL(1).  The `?` is a punctuation token; the
-  keyword-free lexer needs it added, which is implementation follow-up,
-  not a grammar concern.
+  optional marker preserves LL(1).  The `?` is a punctuation token the
+  lexer emits, and `parse_type` carries it on the `TypeExpr`; the resolver
+  rejects `?` on an index field (whether a row exists is cardinality, a
+  separate axis) and threads totality onto each resolved column.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -180,6 +181,10 @@ deferred):
 | `bool`   | boolean                                          |
 | `date`   | calendar date (ISO 8601)                         |
 | `Name`   | a declared `enum`: one of its string variants    |
+
+A trailing `?` (e.g. `date?`) makes any of these **optional**: the value may
+be missing in an observed row (ADR 0010).  Without it the value is total
+(known).  `?` is not allowed on an index field.
 
 Physical-unit types (dimensional quantities, precision) are a separate,
 larger feature with their own design doc and are not in this subset.

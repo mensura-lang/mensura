@@ -425,6 +425,15 @@ mod tests {
     }
 
     #[test]
+    fn question_marks_an_optional_type() {
+        // `date?` lexes as a type ident followed by the `?` optional marker.
+        assert_eq!(
+            kinds("date?"),
+            vec![TokenKind::Ident("date".into()), TokenKind::Question]
+        );
+    }
+
+    #[test]
     fn string_literal_with_escapes() {
         assert_eq!(
             kinds(r#""machine_1" "a\"b\n""#),
