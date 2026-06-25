@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed.
+Accepted.  Realized in `docs/language/06-expressions.md` and the expression
+grammar in `docs/language/04-grammar.md`.
 
 ## Context
 

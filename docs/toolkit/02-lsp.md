@@ -37,7 +37,7 @@ source --lex--> tokens (+ trivia) --parse--> AST --resolve--> Schema
                         (highlight)         (highlight)        (publish)
 ```
 
-Every stage already carries byte-offset spans: `Token`, `Trivia` (ADR 0009),
+Every stage already carries byte-offset spans: `Token`, `Trivia` (ADR 0011),
 each AST node, `LexError`, `ParseError`, and `ResolveError`.  The server's job
 is span translation and protocol plumbing, not language analysis.
 
@@ -145,10 +145,10 @@ unclassified (default text).  This guarantees a file mid-edit, with a syntax
 error, still gets reasonable highlighting instead of going blank.
 
 **Comments (both tiers).**  Comments come from the lexer's trivia channel
-(ADR 0009), independent of whether the parse succeeded, so they always color.
+(ADR 0011), independent of whether the parse succeeded, so they always color.
 Every `Trivia` span becomes a `comment` token.
 
-This split is the load-bearing reason ADR 0009 records comments on a side
+This split is the load-bearing reason ADR 0011 records comments on a side
 channel rather than discarding them: it is the only source of comment spans,
 and it is available even when the parser is not.
 
@@ -201,7 +201,7 @@ flow through the editor's standard diagnostic UI.
 ## Forward references
 
 - Hover revealing a binding's full type (`ROADMAP.md`, M5: the type quadruple).
-  Doc comments (ADR 0009) attach to the declaration they precede and show in
+  Doc comments (ADR 0011) attach to the declaration they precede and show in
   hover, the rustdoc / Javadoc pattern.
 - Completion, goto-definition, and find-references.
 - Incremental document sync and semantic-token deltas / range requests.

@@ -64,6 +64,9 @@ pub enum TokenKind {
     Question,
     At,
     Pipe,
+    /// `|>`, the pipe operator.  A maximal-munch token: `|` glued to `>` is
+    /// always the pipe, never a closing lambda bar followed by `>`.
+    PipeArrow,
 
     // Operators.
     Eq,
@@ -105,7 +108,7 @@ impl Token {
 /// Trivia is text that is meaningful to a reader and to tooling but not to the
 /// grammar: comments today, and only line comments so far.  It rides a
 /// separate channel from the token stream (see [`crate::lexer::Lexed`]) so the
-/// parser never has to step over it.  See ADR 0009.
+/// parser never has to step over it.  See ADR 0011.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriviaKind {
     /// A `//` line comment, up to but not including the newline.

@@ -95,6 +95,19 @@ observation.  Each attribute has a name and a type.  The type may be
 a primitive (`string`, `number`, `date`, ...) or a unit reference, in
 the same way unit index fields can be either.
 
+A value is **total** by default: in an observed row every attribute is
+known.  Marking the type with a trailing `?` makes the value
+**optional**, so it may be missing even when the row is present:
+
+```
+var { last_service: date? }
+```
+
+Whether a value may be missing is independent of how many rows a key has
+(its cardinality); `?` is the only per-attribute control over it, and an
+index field is always known, so `?` is not allowed there.  The default
+and the marker are decided in `docs/decisions/0010-attribute-totality.md`.
+
 When an attribute is a unit reference, the `domain` block must also
 resolve it.  The `domain` block does not distinguish between index
 unit-references and attribute unit-references; both are unit-reference
@@ -198,8 +211,11 @@ A store declaration cannot contain:
 - **Pipeline operations.**  Filtering, projecting, mutating, joining
   belong to views and transforms (treated in the algebra document),
   not to store declarations.
-- **Cardinality declarations.**  The 0-or-1 rule is universal at
-  unit boundaries (`01-units.md`), and a store is a unit boundary.
+- **Row-cardinality declarations.**  The 0-or-1 rule for rows is
+  universal at unit boundaries (`01-units.md`), and a store is a unit
+  boundary, so a store never declares how many rows a key has.  Whether a
+  *value* may be missing is a separate axis, declared per attribute with
+  `?` (see Attributes above).
 
 ## Worked example
 

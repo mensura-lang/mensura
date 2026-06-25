@@ -3,7 +3,7 @@
 //! It scans a `&str` into a [`Lexed`]: a `Vec<Token>` terminated by
 //! [`TokenKind::Eof`], plus a side channel of comment [`Trivia`].  Whitespace
 //! is skipped outright; comments are kept out of the token stream but recorded
-//! on the trivia channel (see ADR 0009) so tooling can highlight them without
+//! on the trivia channel (see ADR 0011) so tooling can highlight them without
 //! the parser ever stepping over them.  On the first malformed token it
 //! returns a [`LexError`] with the offending [`Span`]; error recovery
 //! (reporting many errors at once) is a later concern.
@@ -32,7 +32,7 @@ impl LexError {
 pub struct Lexed {
     /// The tokens, ending in [`TokenKind::Eof`].  Comments never appear here.
     pub tokens: Vec<Token>,
-    /// Comments, in source order.  See ADR 0009.
+    /// Comments, in source order.  See ADR 0011.
     pub trivia: Vec<Trivia>,
 }
 
@@ -130,7 +130,7 @@ impl<'a> Lexer<'a> {
 
     /// Skip whitespace, and record `//` line comments on the trivia channel.
     ///
-    /// Comments stay out of the token stream but are kept (ADR 0009); a
+    /// Comments stay out of the token stream but are kept (ADR 0011); a
     /// comment span runs from the `//` up to, but not including, the newline.
     fn skip_trivia(&mut self) {
         loop {
@@ -279,7 +279,14 @@ impl<'a> Lexer<'a> {
             '.' => TokenKind::Dot,
             '?' => TokenKind::Question,
             '@' => TokenKind::At,
-            '|' => TokenKind::Pipe,
+            '|' => {
+                if self.peek() == Some('>') {
+                    self.bump();
+                    TokenKind::PipeArrow
+                } else {
+                    TokenKind::Pipe
+                }
+            }
             '+' => TokenKind::Plus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
@@ -446,6 +453,48 @@ mod tests {
                 TokenKind::Lt,
                 TokenKind::Gt,
             ]
+        );
+    }
+
+    #[test]
+    fn pipe_arrow_munches_maximally() {
+        // `|>` is one token; a lone `|` stays a Pipe (a lambda bar).
+        assert_eq!(kinds("a |> b"), {
+            vec![
+                TokenKind::Ident("a".into()),
+                TokenKind::PipeArrow,
+                TokenKind::Ident("b".into()),
+            ]
+        });
+        // The closing-bar caveat: `|x|>0` glues the second bar to `>`.
+        assert_eq!(
+            kinds("|x|>0"),
+            vec![
+                TokenKind::Pipe,
+                TokenKind::Ident("x".into()),
+                TokenKind::PipeArrow,
+                TokenKind::Int(0),
+            ]
+        );
+        // A space splits them back into a closing bar and a `>`.
+        assert_eq!(
+            kinds("|x| > 0"),
+            vec![
+                TokenKind::Pipe,
+                TokenKind::Ident("x".into()),
+                TokenKind::Pipe,
+                TokenKind::Gt,
+                TokenKind::Int(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn question_marks_an_optional_type() {
+        // `date?` lexes as a type ident followed by the `?` optional marker.
+        assert_eq!(
+            kinds("date?"),
+            vec![TokenKind::Ident("date".into()), TokenKind::Question]
         );
     }
 

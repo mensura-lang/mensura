@@ -1,4 +1,4 @@
-# 0009: Lexer trivia channel
+# 0011: Lexer trivia channel
 
 ## Status
 

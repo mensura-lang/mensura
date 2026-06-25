@@ -365,6 +365,40 @@ theorem bind_assoc (T₀ T₁ T₂ : Table K H σ) :
   simp only [bind]
   exact add_assoc _ _ _
 
+/-- `bind` weakens disjointness: a merge is disjoint from a third table iff
+*both* of its parts are.  Multiset union can only grow a table's support, so
+binding can only *lose* a disjointness fact (binding in a table that overlaps
+`T₂` destroys `Disjoint _ T₂`).  This backs the `bind` propagation rule in
+`docs/language/08-lineage.md`. -/
+theorem bind_disjoint_iff (T₀ T₁ T₂ : Table K H σ) :
+    Disjoint (bind T₀ T₁) T₂ ↔ Disjoint T₀ T₂ ∧ Disjoint T₁ T₂ := by
+  -- A multiset sum is empty exactly when both summands are.
+  have hadd : ∀ s t : Multiset (Row H σ), s + t = 0 ↔ s = 0 ∧ t = 0 := by
+    intro s t
+    constructor
+    · intro hst
+      have hc : Multiset.card s + Multiset.card t = 0 := by
+        rw [← Multiset.card_add, hst, Multiset.card_zero]
+      rw [Nat.add_eq_zero_iff] at hc
+      exact ⟨Multiset.card_eq_zero.mp hc.1, Multiset.card_eq_zero.mp hc.2⟩
+    · rintro ⟨hs, ht⟩
+      simp [hs, ht]
+  constructor
+  · intro h
+    refine ⟨fun k => ?_, fun k => ?_⟩
+    · rcases h k with hk | hk
+      · exact Or.inl ((hadd _ _).mp hk).1
+      · exact Or.inr hk
+    · rcases h k with hk | hk
+      · exact Or.inl ((hadd _ _).mp hk).2
+      · exact Or.inr hk
+  · rintro ⟨h₀, h₁⟩ k
+    rcases h₀ k with hk₀ | hk₀
+    · rcases h₁ k with hk₁ | hk₁
+      · exact Or.inl ((hadd _ _).mpr ⟨hk₀, hk₁⟩)
+      · exact Or.inr hk₁
+    · exact Or.inr hk₀
+
 /-- `map` is a bind-homomorphism, since `Multiset.bind` distributes over union. -/
 theorem map_bindHom (φ : K → Row H σ → Multiset (Row H' σ')) :
     BindHom (map φ) := by

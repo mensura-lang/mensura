@@ -11,7 +11,7 @@ use lsp_types::{
 };
 
 use mensura_syntax::{
-    Item, NameSeg, NameTemplate, Program, ShapeArg, Span, TokenKind, TypeExpr, lex, parse_with_meta,
+    Item, NameSeg, NameTemplate, Program, ShapeArg, Span, TokenKind, lex, parse_with_meta,
 };
 use mensura_types::resolve;
 
@@ -182,10 +182,11 @@ fn highlight_program(builder: &mut TokenBuilder, program: &Program) {
 
 fn highlight_field(builder: &mut TokenBuilder, field: &mensura_syntax::Field) {
     highlight_name(builder, &field.name);
-    // A field type is a single identifier (primitive, unit, or named enum);
-    // named enum variants are highlighted at the `enum` declaration.
-    let TypeExpr::Named(id) = &field.ty;
-    builder.push(id.span, TYPE_TY);
+    // The base type name is a single identifier (primitive, unit, or named
+    // enum); named enum variants are highlighted at the `enum` declaration.  A
+    // trailing `?` optional marker is a `Question` token, colored as an
+    // operator by the token stream.
+    builder.push(field.ty.name.span, TYPE_TY);
 }
 
 /// Highlight an attribute name.  A plain identifier is one `property` span; a

@@ -7,13 +7,13 @@ declarations, and `shape` declarations (with an optional unit clause and
 `Unit`/`string` parameters, the latter interpolated into attribute names)
 claimed through the `:` conformance clause on stores.
 
-The final section, the expression sublanguage, is specified *ahead of the
-parser*.  It is the grammar for the one expression language of
-`06-expressions.md` (and
-`docs/decisions/0007-single-expression-sublanguage.md`), written here so the
-declaration grammar and the expression grammar live in one place, but it is
-not yet implemented.  When the parser grows expressions, this is the grammar
-it implements.
+The final section, the expression sublanguage, is the grammar for the one
+expression language of `06-expressions.md` (and
+`docs/decisions/0007-single-expression-sublanguage.md`), kept here so the
+declaration grammar and the expression grammar live in one place.  The parser
+now implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`),
+though no declaration site hosts an expression yet; the hosting sites (`when:`,
+`where:`, `@auto`, the pipeline operations) land with their own features.
 
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
@@ -86,7 +86,7 @@ shape_var     = "var" "{" { shape_attr } "}" ;
 shape_attr    = attr_name ":" type ;
 attr_name     = ident | template ;
 
-type          = named_type ;
+type          = named_type [ "?" ] ;
 named_type    = ident ;
 ```
 
@@ -119,6 +119,13 @@ named_type    = ident ;
 - **`type`**: a type is a single `ident`: a primitive (`string`, `number`,
   ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
   decision, not the parser's; the parser commits on the lone identifier.
+  A trailing `?` makes the value **optional** (it may be missing in an
+  observed row; see ADR 0010 and `02-stores.md`).  After the identifier
+  the parser peeks one token and takes a single `?` if present, so the
+  optional marker preserves LL(1).  The `?` is a punctuation token the
+  lexer emits, and `parse_type` carries it on the `TypeExpr`; the resolver
+  rejects `?` on an index field (whether a row exists is cardinality, a
+  separate axis) and threads totality onto each resolved column.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -174,6 +181,10 @@ deferred):
 | `bool`   | boolean                                          |
 | `date`   | calendar date (ISO 8601)                         |
 | `Name`   | a declared `enum`: one of its string variants    |
+
+A trailing `?` (e.g. `date?`) makes any of these **optional**: the value may
+be missing in an observed row (ADR 0010).  Without it the value is total
+(known).  `?` is not allowed on an index field.
 
 Physical-unit types (dimensional quantities, precision) are a separate,
 larger feature with their own design doc and are not in this subset.
@@ -242,7 +253,7 @@ and its `status` is the named `enum Status`.
 `domain` blocks); they parse but are rejected by the resolver until compound
 support lands.
 
-## Expression grammar (specified ahead of the parser)
+## Expression grammar
 
 The expression sublanguage is defined in `06-expressions.md`; this section
 gives its concrete LL(1) grammar.  It is one grammar, shared by every site
@@ -266,20 +277,40 @@ unary_expr  = "-" unary_expr | pow_expr ;
 pow_expr    = app_expr [ "^" unary_expr ] ;
 app_expr    = postfix { postfix } ;
 postfix     = primary { "." ident } ;
-primary     = number | string | ident | lambda | group ;
-lambda      = "|" [ ident { "," ident } ] "|" or_expr ;
-group       = "(" [ expr { "," expr } ] ")" ;
+primary     = number | string | ident | lambda | paren | block ;
+lambda      = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr ;
+
+paren       = "(" ( record_body | tuple_body ) ")" ;
+record_body = field { "," field } ;
+field       = "." ident [ ":" type ] "=" expr ;
+tuple_body  = [ expr { "," expr } ] ;
+
+block       = "{" [ stmt { ";" stmt } [ ";" ] ] "}" ;
+stmt        = let_stmt | assert_stmt | expr ;
+let_stmt    = "let" ident [ ":" type ] "=" expr ;
+assert_stmt = "assert" expr ;
 ```
 
 The terminals `number`, `string`, and `ident` are lexer tokens.  Boolean
-literals (`true`, `false`) and the word operators (`or`, `and`, `not`, `in`,
-`is`, `known`, `missing`) are `ident` tokens recognized by their text in the
-positions shown; see the reserved-words note below.  `"|>"` is a single
-token, a new one: the lexer emits `|` as `Pipe` today and must munch `|>`
-maximally, with the closing-bar caveat in `06-expressions.md`.  All other
-operator tokens (`== != < <= > >= + - * / ^ . | ( ) ,`) the lexer already
-emits.  The `NxE` measured literal (`10x3`) is a separate token reserved for
-the physical-units feature and does not appear in this subset.
+literals (`true`, `false`) and the word operators and statement keywords
+(`or`, `and`, `not`, `in`, `is`, `known`, `missing`, `let`, `assert`) are
+`ident` tokens recognized by their text in the positions shown; see the
+reserved-words note below.  `"|>"` is a single token, a new one: the lexer
+emits `|` as `Pipe` today and must munch `|>` maximally, with the closing-bar
+caveat in `06-expressions.md`.  All other punctuation (`== != < <= > >= + - *
+/ ^ . | ( ) { } [ ] : ; ,`) the lexer already emits, so the records, blocks,
+and ascriptions here need no new tokens.  The `NxE` measured literal (`10x3`)
+is a separate token reserved for the physical-units feature and does not
+appear in this subset.
+
+`paren` covers grouping, tuples, and records: `(e)` is grouping, `(a, b)` a
+positional tuple, and `(.a = x, .b = y)` a labeled record.  A `( )` is *either*
+all-positional *or* all-labeled, never mixed.  `block` is a statement block
+(`let`/`assert` statements and an optional trailing result expression),
+separated by `;`.  Records moved into `( )` means a `{ }` in expression
+position is *always* a block, so `completeness_check { assert ... }` is just
+`completeness_check` applied to a block, with no special grammar.  Field, let,
+and lambda-return ascriptions reuse the declaration grammar's `type`.
 
 ### Why the expression grammar is LL(1)
 
@@ -305,30 +336,43 @@ the physical-units feature and does not appear in this subset.
   and on `)` and `,`.  A `|` starts a lambda argument; a `|>` never does, so
   a pipe always ends the spine and is handled by `pipe_expr`.
 - **`primary`**: `number`, `string`, and `ident` are distinct tokens; `(`
-  opens a `group`; `|` opens a `lambda`.  One token decides.
-- **`group`**: after `(`, the first `expr` is parsed, then a `,` means a
-  tuple (more elements follow) and a `)` means a grouping.  The decision is
-  the one token after the first element, a normal repetition rather than
-  backtracking.  `()` is the empty tuple.
+  opens a `paren`; `{` opens a `block`; `|` opens a `lambda`.  One token
+  decides.
+- **`paren`**: after `(`, the next token chooses the body - `.` opens a
+  `record_body` (labeled fields), anything else begins a `tuple_body` whose
+  first element is an expression; then `,` continues a tuple and `)` ends a
+  grouping.  Since an expression never starts with `.`, the record/tuple
+  choice is one token; `()` is the empty tuple.  A record field is
+  `.name [: Type] = value`, so within a field the `:` and `=` are fixed by
+  position.
+- **`block`**: `{` opens it; each statement is dispatched on its first token
+  (`let` -> `let_stmt`, `assert` -> `assert_stmt`, otherwise a result
+  `expr`); `;` separates statements and `}` ends.  This is the only `{ }` in
+  expression position, so there is no record-versus-block ambiguity (records
+  are `( )`).  As with `unit`'s two roles, a declaration body `{ ... }` is
+  reached from a different parser state and never confused with a block.
 - **`lambda`**: `|` opens it, an optional comma-separated ident list gives the
-  parameters, a closing `|` ends them, and the body is an `or_expr`.  The
-  body deliberately excludes a top-level `|>`, so
-  `data |> filter |r| r.x > 0 |> map g` composes as
-  `(data |> filter (|r| r.x > 0)) |> map g`; a pipe *inside* a lambda body
-  must be parenthesized.  A lambda that is not the last argument of an
-  application must also be parenthesized, since its body extends maximally.
+  parameters, a closing `|` ends them, then an optional `: Type` return
+  ascription, then the body, an `or_expr`.  The `:` after the closing `|`
+  decides whether a return type is present; the `type` grammar never starts
+  with `(` or `{`, so it cannot swallow the body.  The body deliberately
+  excludes a top-level `|>`, so `data |> map |r| r.x |> next g` composes as
+  `(data |> map (|r| r.x)) |> next g`; a pipe *inside* a lambda body must be
+  parenthesized.  A lambda that is not the last argument of an application
+  must also be parenthesized, since its body extends maximally.
 
 ### Reserved words in expressions
 
 Combining juxtaposition application with word operators forces a small,
 local exception to the lexer's keyword-freedom: inside an expression the
 words `or`, `and`, `not`, `in`, `is`, `known`, and `missing` are
-**reserved** and cannot name a value.  This is unavoidable with one token of
-lookahead, since after an operand an ident could otherwise be read either as
-the next argument (juxtaposition) or as an infix operator, and only
-reservation resolves the choice.  The reservation is local to the expression
-sublanguage; elsewhere these words remain ordinary identifiers, as the
-keyword-free lexer intends.
+**reserved** and cannot name a value, and inside a `block` the statement
+keywords `let` and `assert` are reserved in statement position.  This is
+unavoidable with one token of lookahead, since after an operand an ident
+could otherwise be read either as the next argument (juxtaposition) or as an
+infix operator, and only reservation resolves the choice.  The reservation is
+local to the expression sublanguage; elsewhere these words remain ordinary
+identifiers, as the keyword-free lexer intends.
 
 ## Forward references
 
@@ -338,5 +382,10 @@ keyword-free lexer intends.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Physical-unit and precision types, including the `NxE` measured literal and
   the unit grammar.
-- `device`, `view`, transforms, and the pipeline operations, which build on
-  the expression grammar above and each get their own section here.
+- The pipeline operations (`map`, `group_map`, `extend_key`/`shrink_key`,
+  joins, `split`/`bind`, `unpivot`/`pivot`, `completeness_check`) are
+  specified in `07-pipelines.md`; they are builtins applied through the
+  expression grammar above (record literals, blocks, juxtaposition) and add no
+  new grammar.
+- `device`, `view`, and transforms, which host pipelines and each get their
+  own section here; and the streaming operations (`sliding_window`, `latest`).

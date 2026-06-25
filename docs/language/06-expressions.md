@@ -10,7 +10,8 @@ is the decision recorded in `docs/decisions/0007-single-expression-sublanguage.m
 
 This document defines the expression sublanguage: how values are written
 and combined, what the operators are and how they bind, and how the
-multiset-valued cells of the table model surface in expressions.  The
+multiset of rows at a key, and the possibly missing values inside them,
+surface in expressions.  The
 concrete LL(1) grammar lives in `04-grammar.md`; this document is about
 meaning and shape, and quotes grammar only where it clarifies a design
 choice.  Casing of names follows `05-naming-and-casing.md`.  The
@@ -51,9 +52,15 @@ parenthesized group and means the same as `f x`.
 
 Each bracket has exactly one role:
 
-- **`( )`** is grouping and tuples only.  `(e)` is `e`; `(a, b)` is a
-  two-tuple, a genuine product value (this is the form a merge consumes,
-  for example `(train, test)`).
+- **`( )`** is for grouping and product values.  `(e)` is `e`; `(a, b)` is a
+  positional **tuple**, a genuine product value (the form a merge consumes,
+  for example `(train, test)`); and `(.a = x, .b = y)` is a labeled
+  **record**, where the leading `.` marks a field.  A `( )` is *either*
+  all-positional or all-labeled, never mixed.
+- **`{ }`** is for blocks and declaration bodies, never a value.  In
+  expression position it is a statement block (`let` / `assert` statements and
+  an optional result), which is why `completeness_check { ... }` is just
+  `completeness_check` applied to a block.
 - **`[ ]`** is a parameter list at a declaration site, such as
   `Tabular[Person]` or `FeatureWindow[U]`.  It does not appear in
   expressions.
@@ -71,8 +78,12 @@ The atomic values are:
   runtime configuration selects.  Ordinary arithmetic applies to them.
 - **Strings**: `"text"`.
 - **Booleans**: `true`, `false`.
-- **Tuples**: `(a, b, ...)`, products of values.
-- **Lambdas**: `|x| e` and `|x, y| e` (see below).
+- **Tuples**: `(a, b, ...)`, positional products of values.
+- **Records**: `(.a = x, .b = y)`, labeled products; a field may carry an
+  explicit type, `(.a : T = x)`.  `:` is typing, `=` is the value, matching
+  every other binder (`name [: Type] = value`).
+- **Lambdas**: `|x| e` and `|x, y| e` (see below); an optional return type is
+  written `|x| : T e`.
 - **Names**: an identifier resolved against the site's context.
 
 Member access is written `a.b.c` and binds tighter than application, so
@@ -136,47 +147,59 @@ layering implies:
   parenthesized, `f (-x)`.  This is the one ambiguity juxtaposition
   introduces, and it is resolved in favour of the binary reading.
 
-## Cardinality: cells are multisets
+## Cardinality and missing values
 
-In the table model a cell holds a **multiset** of values, so every
-expression value carries a **cardinality**.  Absence and multiplicity
-are the two ends of the same axis:
+A table keys a **multiset of nested rows**: at a key there may be no row
+(`card 0`, "not sampled"), one row, or several.  That row count is the
+**cardinality**, and it is the only multiset in the model.  A single
+value inside a row is **not** a multiset: each value is either **known**
+or **missing**, always 0 or 1 (`Cell = Option` in
+`formal/Mensura/Table.lean`).  Cardinality (how many rows) and
+missingness (whether a value is there) are orthogonal axes.
 
-- an empty cell-multiset is a **missing value** (cardinality 0),
-- a singleton is an ordinary single value (cardinality 1),
-- two or more values is a **multi-valued** cell (cardinality 2 or more).
-
-The cardinality of a column access comes from the content schema: a
-column declared single-valued reads at cardinality 1, a multi-valued
-column (tags, repeated readings) reads as a bag.  Operators state what
-cardinality they accept, and the language never silently bridges the
-gap:
+A value-scoped expression runs at one row, so a bare column read there is
+a single value.  A group-scoped expression (a `|g|` lambda, see
+`07-pipelines.md`) sees the whole bag of rows at a key, so a column read
+there is the **bag** of that column's values across the rows.  Operators
+state what they accept on each axis, and the language never silently
+bridges either gap:
 
 - **Scalar operators** (`+ - * / ^`, the comparisons, `and`/`or`/`not`)
-  require their operands to be **cardinality 1**.  Applying a scalar
-  operator to a multi-valued cell is a **hard type error**, not an
-  implicit fold.  `r.temperature > 30` is well-typed only when
-  `temperature` is single-valued.
-- **Bag combinators** are the explicit way to consume a multiset.
-  Membership `v in r.tags` tests the bag; `count`, `any`, and `all`
-  summarize it; the aggregates `sum`, `mean`, `min`, `max` reduce it to
-  a single value.  These return cardinality 1.  A literal is
-  cardinality 1.
+  require **a single known value**: cardinality 1 and not missing.
+  Applying one to a bag, or to a value that may be missing, is a **hard
+  type error**, not an implicit fold or default.  `r.temperature > 30`
+  is well-typed only when `temperature` is read at one row and is total
+  (known).
+- **Bag combinators** are the explicit way to consume a bag.  Membership
+  `v in g.tags` tests it; `count`, `any`, and `all` summarize it; the
+  aggregates `sum`, `mean`, `min`, `max` reduce it to one value.  These
+  return a single value.  A literal is a single value.
 
 So a bag is always collapsed deliberately, by reduction
-(`mean r.readings > 30`) or by quantification (`any (|x| x > 30)
-r.readings`), and never by accident.
+(`mean g.readings > 30`) or by quantification (`any (|x| x > 30)
+g.readings`), and never by accident.  A possibly missing value is
+eliminated just as deliberately, by a default or coalesce, by an
+aggregate defined over missingness, or by narrowing (below); it never
+silently propagates.  Values are **total** (always known) by default; an
+**optional** value, one that may be missing, is written with a `?` on
+its type (ADR 0010).
 
-### Missing values, and the row
+### Known and missing values, and the row
 
-`is known` and `is missing` test the **value** in a cell: `is missing`
-is the empty cell-multiset, `is known` its complement.  They apply to
-values only.
+`is missing` tests whether a value is **missing**, `is known` whether it
+is present.  They apply to values only.  An **optional** value is the one
+place either may hold; on a **total** value `is known` is always true.
+
+`is known` **narrows**: inside the branch guarded by `r.x is known`, and
+on every row after a table-level `filter (|r| r.x is known)`, the optional
+`x` is treated as total, so a scalar operator may then use it.  This is
+the third way to establish that a value is known, alongside a default or
+coalesce and an aggregate defined over missingness (ADR 0010).
 
 A *row* (an entity) being absent is a different thing: it is the key
-having no rows at all, "not sampled."  A value-scoped expression never
-observes this, because it only ever runs where a row exists, so
-**testing a row for missingness is not allowed** at the expression
+having no rows at all (`card 0`), "not sampled."  A value-scoped
+expression never observes this, because it only ever runs where a row
+exists, so **testing a row for absence is not allowed** at the expression
 level for now.  The intended future form is a row-cardinality operator,
 `#row == 0` for "not sampled," reserved but not specified here.
 
@@ -242,18 +265,18 @@ A derived value over a single row (the lambda binds the row; `mass` and
 |r| r.mass / r.height ^ 2
 ```
 
-A predicate that reduces a multi-valued cell before comparing (a scalar
-comparison on the bag `r.readings` would be a type error; `mean`
-collapses it first):
+A predicate that reduces a bag before comparing (a group-scoped lambda;
+`g.readings` is the bag of readings across the group, so a scalar
+comparison on it would be a type error and `mean` collapses it first):
 
 ```
-|r| mean r.readings > 30
+|g| mean g.readings > 30
 ```
 
-A membership test over a multi-valued column:
+A membership test over such a bag:
 
 ```
-|r| "staff" in r.roles
+|g| "staff" in g.roles
 ```
 
 ## Forward references and open questions

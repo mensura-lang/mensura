@@ -45,7 +45,7 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
   (rusqlite, `bundled`).  A `Schema` maps to `CREATE TABLE` (index columns as
   the primary key, `enum` as `TEXT CHECK`).  Storage mapping and the
   storage-versus-processing (DBSP) split are in
-  `docs/toolkit/03-storage-backend.md`.
+  `docs/toolkit/00-storage-backend.md`.
 - `mensura-cli`: the `mensura` binary.  `mensura lex <file>` dumps tokens;
   `mensura run <file> [--db <path>]` typechecks and creates the stores
   (`--db` defaults to an in-memory database).
@@ -71,6 +71,12 @@ are string literals.  Worked examples live in `docs/examples/*.mensura`.
 
 - Every language- or tooling-level feature lands as a design document under
   `docs/` *before* any code.  Code is the encoding of an agreed-upon spec.
+- Doc numbering is **per-folder**, not a global sequence.  `docs/language/`
+  and `docs/toolkit/` each carry their own 2-digit reading order starting at
+  `00`; the same number in two folders is fine because the path
+  disambiguates.  `docs/decisions/` is the exception: a 4-digit, append-only
+  ADR series that is never renumbered (a superseded ADR keeps its number).
+  Cite docs by path or name, never by bare number.
 - Do not create new top-level files without a clear place for them in the
   repository layout described in `ROADMAP.md`.
 - Before each commit, run `cargo fmt --all` and `cargo test --workspace`.

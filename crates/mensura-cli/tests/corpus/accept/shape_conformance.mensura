@@ -1,0 +1,14 @@
+// A store that claims a concrete-unit shape and satisfies it.
+unit Person {
+  id: string
+}
+
+shape PersonRecord {
+  unit { Person }
+  const { admission: date }
+}
+
+store students : PersonRecord {
+  unit { Person }
+  const { admission: date }
+}

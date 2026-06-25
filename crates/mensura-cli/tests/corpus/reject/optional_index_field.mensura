@@ -1,0 +1,10 @@
+// Rejected at resolve: an index field is always known; whether the row exists
+// is cardinality, a separate axis from value missingness, so `?` is not
+// allowed on an index field (ADR 0010).
+unit Machine {
+  id: string?
+}
+
+store readings {
+  unit { Machine }
+}
