@@ -243,7 +243,14 @@ impl<'a> Lexer<'a> {
             '.' => TokenKind::Dot,
             '?' => TokenKind::Question,
             '@' => TokenKind::At,
-            '|' => TokenKind::Pipe,
+            '|' => {
+                if self.peek() == Some('>') {
+                    self.bump();
+                    TokenKind::PipeArrow
+                } else {
+                    TokenKind::Pipe
+                }
+            }
             '+' => TokenKind::Plus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
@@ -380,6 +387,39 @@ mod tests {
                 TokenKind::BangEq,
                 TokenKind::Lt,
                 TokenKind::Gt,
+            ]
+        );
+    }
+
+    #[test]
+    fn pipe_arrow_munches_maximally() {
+        // `|>` is one token; a lone `|` stays a Pipe (a lambda bar).
+        assert_eq!(kinds("a |> b"), {
+            vec![
+                TokenKind::Ident("a".into()),
+                TokenKind::PipeArrow,
+                TokenKind::Ident("b".into()),
+            ]
+        });
+        // The closing-bar caveat: `|x|>0` glues the second bar to `>`.
+        assert_eq!(
+            kinds("|x|>0"),
+            vec![
+                TokenKind::Pipe,
+                TokenKind::Ident("x".into()),
+                TokenKind::PipeArrow,
+                TokenKind::Int(0),
+            ]
+        );
+        // A space splits them back into a closing bar and a `>`.
+        assert_eq!(
+            kinds("|x| > 0"),
+            vec![
+                TokenKind::Pipe,
+                TokenKind::Ident("x".into()),
+                TokenKind::Pipe,
+                TokenKind::Gt,
+                TokenKind::Int(0),
             ]
         );
     }
