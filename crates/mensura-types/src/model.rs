@@ -22,6 +22,11 @@ pub struct Column {
     pub name: String,
     pub ty: ColumnType,
     pub role: ColumnRole,
+    /// Value totality (ADR 0010): `false` is total (every value known, the
+    /// default), `true` is optional (the value may be missing, written with a
+    /// trailing `?`).  Orthogonal to cardinality; index columns are never
+    /// optional.
+    pub optional: bool,
     pub span: Span,
 }
 

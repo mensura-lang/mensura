@@ -24,4 +24,7 @@ store machines : Commissioned {
   unit { Machine }
   const { commissioned: date }
   var   { status: MachineStatus }
+  // Optional value (`?`): a machine never serviced has no last-service date.
+  // The value is missing, not absent; the row still exists (ADR 0010).
+  var   { last_service: date? }
 }

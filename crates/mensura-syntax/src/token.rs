@@ -64,6 +64,9 @@ pub enum TokenKind {
     Question,
     At,
     Pipe,
+    /// `|>`, the pipe operator.  A maximal-munch token: `|` glued to `>` is
+    /// always the pipe, never a closing lambda bar followed by `>`.
+    PipeArrow,
 
     // Operators.
     Eq,

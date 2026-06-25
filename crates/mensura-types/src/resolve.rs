@@ -299,6 +299,8 @@ struct ResolvedAttr {
     name: NameTemplate,
     ty: ColumnType,
     role: ColumnRole,
+    /// Value totality demanded of a conforming store's column (ADR 0010).
+    optional: bool,
 }
 
 /// A shape resolved for conformance: its parameters in order (with kinds),
@@ -423,6 +425,7 @@ fn resolve_shape(
                     name: a.name.clone(),
                     ty,
                     role,
+                    optional: a.ty.is_optional(),
                 }),
                 Err(e) => errors.push(e),
             }
@@ -592,6 +595,17 @@ fn check_conformance(
                     ),
                     claim.span,
                 )),
+                Some(have) if have.optional != attr.optional => errors.push(ResolveError::new(
+                    format!(
+                        "store `{}` claims `{}`: attribute `{}` is `{}` in the shape but `{}` in the store",
+                        s.name.name,
+                        shape_ref_label(claim),
+                        want,
+                        totality_word(attr.optional),
+                        totality_word(have.optional)
+                    ),
+                    claim.span,
+                )),
                 Some(_) => {}
             }
         }
@@ -639,6 +653,11 @@ fn role_word(role: ColumnRole) -> &'static str {
     }
 }
 
+/// The total/optional axis as a word for diagnostics (ADR 0010).
+fn totality_word(optional: bool) -> &'static str {
+    if optional { "optional" } else { "total" }
+}
+
 fn type_name(ty: &ColumnType) -> String {
     match ty {
         ColumnType::String => "string".into(),
@@ -679,11 +698,22 @@ fn add_column(
     if role != ColumnRole::Index {
         check_case(&name, field.name.span, Case::Snake, "attribute", errors);
     }
+    // An index field is always known: whether the row exists at all is
+    // cardinality, a separate axis from value missingness (ADR 0010).  `?` on
+    // an index field is rejected; `const`/`var` may be optional.
+    let is_index = role == ColumnRole::Index;
+    if is_index && let Some(span) = field.ty.optional {
+        errors.push(ResolveError::new(
+            format!("an index field cannot be optional: drop the `?` on `{name}`"),
+            span,
+        ));
+    }
     match resolve_type(&field.ty, units, enums) {
         Ok(ct) => columns.push(Column {
             name,
             ty: ct,
             role,
+            optional: field.ty.is_optional() && !is_index,
             span: field.name.span,
         }),
         Err(e) => errors.push(e),
@@ -723,28 +753,30 @@ fn resolve_type(
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
 ) -> Result<ColumnType, ResolveError> {
-    match ty {
-        TypeExpr::Named(id) => match id.name.as_str() {
-            "string" => Ok(ColumnType::String),
-            "number" => Ok(ColumnType::Number),
-            "bool" => Ok(ColumnType::Bool),
-            "date" => Ok(ColumnType::Date),
-            other if enums.contains_key(other) => {
-                let e = enums[other];
-                Ok(ColumnType::Enum {
-                    name: e.name.name.clone(),
-                    variants: e.variants.iter().map(|v| v.value.clone()).collect(),
-                })
-            }
-            other if units.contains_key(other) => Err(ResolveError::new(
-                format!("compound fields are not yet supported (references unit `{other}`)"),
-                id.span,
-            )),
-            other => Err(ResolveError::new(
-                format!("unknown type `{other}`"),
-                id.span,
-            )),
-        },
+    // Resolve only the base type here; optionality (`?`) is read from the
+    // `TypeExpr` by the caller, which knows the column's role (an index field
+    // may not be optional; ADR 0010).
+    let id = &ty.name;
+    match id.name.as_str() {
+        "string" => Ok(ColumnType::String),
+        "number" => Ok(ColumnType::Number),
+        "bool" => Ok(ColumnType::Bool),
+        "date" => Ok(ColumnType::Date),
+        other if enums.contains_key(other) => {
+            let e = enums[other];
+            Ok(ColumnType::Enum {
+                name: e.name.name.clone(),
+                variants: e.variants.iter().map(|v| v.value.clone()).collect(),
+            })
+        }
+        other if units.contains_key(other) => Err(ResolveError::new(
+            format!("compound fields are not yet supported (references unit `{other}`)"),
+            id.span,
+        )),
+        other => Err(ResolveError::new(
+            format!("unknown type `{other}`"),
+            id.span,
+        )),
     }
 }
 
@@ -1014,6 +1046,67 @@ mod tests {
             errs.iter()
                 .any(|e| e.message.contains("`const` in the shape but `var`"))
         );
+    }
+
+    #[test]
+    fn optional_attribute_resolves() {
+        // A `?` makes the column optional; a bare type stays total (ADR 0010).
+        let src = r#"
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              var { last_service: date? }
+              var { vibration: number }
+            }
+        "#;
+        let schemas = resolve_str(src).expect("should resolve");
+        let readings = schemas.iter().find(|s| s.store == "readings").unwrap();
+        let by = |n: &str| readings.columns.iter().find(|c| c.name == n).unwrap();
+        assert!(by("last_service").optional);
+        assert!(!by("vibration").optional);
+        // The index is total even though `?` was not (and may not be) written.
+        assert!(!by("id").optional);
+    }
+
+    #[test]
+    fn optional_index_field_is_rejected() {
+        // Whether a row exists is cardinality, not value missingness; `?` on an
+        // index field is a hard error (ADR 0010).
+        let src = r#"
+            unit Machine { id: string? }
+            store readings { unit { Machine } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("index field cannot be optional"))
+        );
+    }
+
+    #[test]
+    fn totality_mismatch_in_conformance_is_rejected() {
+        // A shape demanding a total attribute is not satisfied by an optional
+        // store column, and vice versa.
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord { unit { Person } const { admission: date } }
+            store students : PersonRecord { unit { Person } const { admission: date? } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`total` in the shape but `optional`"))
+        );
+    }
+
+    #[test]
+    fn optional_attribute_conforms_when_shape_agrees() {
+        let src = r#"
+            unit Person { id: string }
+            shape PersonRecord { unit { Person } const { nickname: string? } }
+            store students : PersonRecord { unit { Person } const { nickname: string? } }
+        "#;
+        resolve_str(src).expect("matching totality should conform");
     }
 
     #[test]

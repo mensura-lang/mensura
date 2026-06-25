@@ -63,6 +63,10 @@ A store becomes exactly one table.
 - **Primary key**: the index columns, as a single composite `PRIMARY KEY`.
   This enforces the 0-or-1 cardinality rule of `docs/language/01-units.md` at
   the storage level: one row per index tuple.
+- **Nullability**: a total attribute (the default) is `NOT NULL`; an optional
+  one (declared with a trailing `?`, ADR 0010) is nullable.  Index columns are
+  always total, so the primary key is non-null too (this also sidesteps
+  SQLite's legacy nullable-primary-key quirk).
 - **Creation**: `CREATE TABLE IF NOT EXISTS`.  The backend first checks
   `sqlite_master` so it can report `Created` versus `AlreadyExists`.  It does
   *not* reconcile an existing table whose shape differs from the schema; that
@@ -90,7 +94,7 @@ unit Person {
 store Persons {
   unit { Person }
   const { birthdate: date }
-  var   { last_name: string }
+  var   { last_name: string? }
 }
 ```
 
@@ -98,12 +102,15 @@ materializes as:
 
 ```sql
 CREATE TABLE IF NOT EXISTS "Persons" (
-  "id"        TEXT,
-  "birthdate" TEXT,
+  "id"        TEXT NOT NULL,
+  "birthdate" TEXT NOT NULL,
   "last_name" TEXT,
   PRIMARY KEY ("id")
 );
 ```
+
+`last_name` is optional (`string?`), so its column is nullable; the total
+columns carry `NOT NULL`.
 
 ## Backend choice: rusqlite with bundled SQLite
 

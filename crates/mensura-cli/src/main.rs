@@ -2,8 +2,9 @@
 //!
 //! Subcommands are added milestone by milestone (see `ROADMAP.md`):
 //!
-//! - `lex`  -- print the token stream of a source file (a lexer debug aid).
-//! - `run`  -- typecheck a program and create its stores in a database.
+//! - `lex`   -- print the token stream of a source file (a lexer debug aid).
+//! - `check` -- typecheck a program without touching a database.
+//! - `run`   -- typecheck a program and create its stores in a database.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -26,6 +27,11 @@ enum Command {
         /// The Mensura source file to tokenize.
         file: PathBuf,
     },
+    /// Typecheck a program without creating any stores.
+    Check {
+        /// The Mensura source file to check.
+        file: PathBuf,
+    },
     /// Typecheck a program and create its stores in a database.
     Run {
         /// The Mensura source file to run.
@@ -41,6 +47,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Lex { file } => cmd_lex(&file),
+        Command::Check { file } => cmd_check(&file),
         Command::Run { file, db } => cmd_run(&file, &db),
     }
 }
@@ -64,33 +71,27 @@ fn cmd_lex(path: &Path) -> ExitCode {
     }
 }
 
+fn cmd_check(path: &Path) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::FAILURE;
+    };
+    match frontend(path, &src) {
+        Ok(schemas) => {
+            let n = schemas.len();
+            let noun = if n == 1 { "store" } else { "stores" };
+            println!("ok: {n} {noun}");
+            ExitCode::SUCCESS
+        }
+        Err(()) => ExitCode::FAILURE,
+    }
+}
+
 fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
     let Some(src) = read_source(path) else {
         return ExitCode::FAILURE;
     };
-
-    let tokens = match tokenize(&src) {
-        Ok(tokens) => tokens,
-        Err(err) => {
-            report(path, &src, &err.message, err.span);
-            return ExitCode::FAILURE;
-        }
-    };
-    let program = match parse(&tokens) {
-        Ok(program) => program,
-        Err(err) => {
-            report(path, &src, &err.message, err.span);
-            return ExitCode::FAILURE;
-        }
-    };
-    let schemas = match mensura_types::resolve(&program) {
-        Ok(schemas) => schemas,
-        Err(errors) => {
-            for err in &errors {
-                report(path, &src, &err.message, err.span);
-            }
-            return ExitCode::FAILURE;
-        }
+    let Ok(schemas) = frontend(path, &src) else {
+        return ExitCode::FAILURE;
     };
 
     let in_memory = db_path.as_os_str() == ":memory:";
@@ -128,6 +129,31 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The shared compiler frontend: lex, parse, and resolve `src`, reporting every
+/// diagnostic to stderr.  Returns the resolved schemas on success, or `Err(())`
+/// once diagnostics have been printed.  Both `check` and `run` build on it.
+fn frontend(path: &Path, src: &str) -> Result<Vec<mensura_types::Schema>, ()> {
+    let tokens = match tokenize(src) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            report(path, src, &err.message, err.span);
+            return Err(());
+        }
+    };
+    let program = match parse(&tokens) {
+        Ok(program) => program,
+        Err(err) => {
+            report(path, src, &err.message, err.span);
+            return Err(());
+        }
+    };
+    mensura_types::resolve(&program).map_err(|errors| {
+        for err in &errors {
+            report(path, src, &err.message, err.span);
+        }
+    })
 }
 
 fn read_source(path: &Path) -> Option<String> {

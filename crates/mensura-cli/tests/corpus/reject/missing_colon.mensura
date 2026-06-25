@@ -1,0 +1,4 @@
+// Rejected at parse: a field needs a `:` before its type.
+unit U {
+  id string
+}

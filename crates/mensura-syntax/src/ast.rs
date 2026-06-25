@@ -174,19 +174,29 @@ pub struct DomainEntry {
 
 /// A type expression in a field or attribute.
 ///
-/// A primitive name (`string`, `number`, ...), a unit reference, or a named
-/// `enum` type.  All three are a single identifier in type position; the
-/// resolver decides which it is.
+/// The base type is a single identifier: a primitive name (`string`,
+/// `number`, ...), a unit reference, or a named `enum`; the resolver decides
+/// which it is.  A trailing `?` marks the value optional (it may be missing in
+/// an observed row); see ADR 0010 and `docs/language/02-stores.md`.
 #[derive(Clone, Debug, PartialEq)]
-pub enum TypeExpr {
-    Named(Ident),
+pub struct TypeExpr {
+    /// The base type name.
+    pub name: Ident,
+    /// The span of the trailing `?` optional marker, if present.  `None` means
+    /// the value is total (known in every observed row, the default).
+    pub optional: Option<Span>,
+    /// The source span of the whole type expression, covering the `?` if any.
+    pub span: Span,
 }
 
 impl TypeExpr {
     /// The source span of the whole type expression.
     pub fn span(&self) -> Span {
-        match self {
-            TypeExpr::Named(id) => id.span,
-        }
+        self.span
+    }
+
+    /// Whether the value may be missing (`?` was written).
+    pub fn is_optional(&self) -> bool {
+        self.optional.is_some()
     }
 }

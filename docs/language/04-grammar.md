@@ -7,13 +7,13 @@ declarations, and `shape` declarations (with an optional unit clause and
 `Unit`/`string` parameters, the latter interpolated into attribute names)
 claimed through the `:` conformance clause on stores.
 
-The final section, the expression sublanguage, is specified *ahead of the
-parser*.  It is the grammar for the one expression language of
-`06-expressions.md` (and
-`docs/decisions/0007-single-expression-sublanguage.md`), written here so the
-declaration grammar and the expression grammar live in one place, but it is
-not yet implemented.  When the parser grows expressions, this is the grammar
-it implements.
+The final section, the expression sublanguage, is the grammar for the one
+expression language of `06-expressions.md` (and
+`docs/decisions/0007-single-expression-sublanguage.md`), kept here so the
+declaration grammar and the expression grammar live in one place.  The parser
+now implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`),
+though no declaration site hosts an expression yet; the hosting sites (`when:`,
+`where:`, `@auto`, the pipeline operations) land with their own features.
 
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
@@ -122,9 +122,10 @@ named_type    = ident ;
   A trailing `?` makes the value **optional** (it may be missing in an
   observed row; see ADR 0010 and `02-stores.md`).  After the identifier
   the parser peeks one token and takes a single `?` if present, so the
-  optional marker preserves LL(1).  The `?` is a punctuation token; the
-  keyword-free lexer needs it added, which is implementation follow-up,
-  not a grammar concern.
+  optional marker preserves LL(1).  The `?` is a punctuation token the
+  lexer emits, and `parse_type` carries it on the `TypeExpr`; the resolver
+  rejects `?` on an index field (whether a row exists is cardinality, a
+  separate axis) and threads totality onto each resolved column.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -180,6 +181,10 @@ deferred):
 | `bool`   | boolean                                          |
 | `date`   | calendar date (ISO 8601)                         |
 | `Name`   | a declared `enum`: one of its string variants    |
+
+A trailing `?` (e.g. `date?`) makes any of these **optional**: the value may
+be missing in an observed row (ADR 0010).  Without it the value is total
+(known).  `?` is not allowed on an index field.
 
 Physical-unit types (dimensional quantities, precision) are a separate,
 larger feature with their own design doc and are not in this subset.
@@ -248,7 +253,7 @@ and its `status` is the named `enum Status`.
 `domain` blocks); they parse but are rejected by the resolver until compound
 support lands.
 
-## Expression grammar (specified ahead of the parser)
+## Expression grammar
 
 The expression sublanguage is defined in `06-expressions.md`; this section
 gives its concrete LL(1) grammar.  It is one grammar, shared by every site
