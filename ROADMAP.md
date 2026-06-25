@@ -25,7 +25,7 @@ milestones below.
   SQLite (`rusqlite`, in `mensura-runtime`); pipelines and views are evaluated
   by an incremental, DBSP-style processing layer, which is what the streaming
   and `on_change`-refresh targets need.  The split is specified in
-  `docs/toolkit/03-storage-backend.md`.
+  `docs/toolkit/00-storage-backend.md`.
 - **CLI shape:** a single `mensura` binary with subcommands, added
   milestone-by-milestone:
   - `mensura check <file>`: typecheck only.
@@ -65,7 +65,7 @@ mensura/
 ## Status: where we are
 
 - **Design.**  `docs/language/00-overview` through `08-lineage`, ADRs
-  0004-0009, and `docs/toolkit/03-storage-backend.md` exist.  The core is
+  0004-0009, and `docs/toolkit/00-storage-backend.md` exist.  The core is
   specified: units, stores, shapes, the LL(1) grammar, naming, the expression
   sublanguage, the pipeline primitives, and lineage/disjointness.  The table
   type is `Table<Qs, C>` (a row of qualifiers plus content); sampling,
@@ -135,7 +135,7 @@ Output: `mensura run` materializes a Tier A view from stores, end to end
 (non-streaming first).
 
 - `mensura-runtime`: the DBSP-style processing layer over the SQLite storage
-  backend (`docs/toolkit/03-storage-backend.md`).
+  backend (`docs/toolkit/00-storage-backend.md`).
 - Implement the Tier A primitives at runtime (`map`/`filter`/`group_map`/
   `left_join`/...), reading from and writing to stores.
 - Disjointness and completeness proven at compile time, then trusted at
