@@ -25,6 +25,11 @@ mathematically and, more to the point, about the mistakes they make
 > `docs/language/07-pipelines.md` and `docs/language/08-lineage.md`, each backed
 > by a machine-checked proof in `formal/`.
 
+The operations used below (`map`, `group_map`, `shrink_key`, `split`, `bind`,
+`pivot`, and the rest) are introduced one line each in
+[The kernel operations](the-kernel.md); this chapter assumes you have met them
+there.
+
 A useful framing before the details.  Formalizations of data-handling algebras
 answer two questions: *can I express this operation?* and *can I run it
 efficiently?*  A schema is enough for both.  These three properties answer a
@@ -138,6 +143,10 @@ let (train, test) = enrollments |> split |k| hash k < 0.8   // Disjoint by const
 let model         = train |> fit logistic_regression
 let score         = test  |> evaluate model                 // demands Disjoint train test
 ```
+
+Here `fit` and `evaluate` are learning operations, not part of the kernel; their
+typing is the subject of a later design round, and what fixes them is precisely
+this demand that their two tables be disjoint.
 
 The fact survives a whole pipeline because every split-invariant (Tier A)
 operation preserves it, and such operations compose: a disjointness fact

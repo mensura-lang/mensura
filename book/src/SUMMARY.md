@@ -16,6 +16,7 @@
 
 # Concepts
 
+- [The kernel operations](concepts/the-kernel.md)
 - [What the types track](concepts/what-the-types-track.md)
 
 ---

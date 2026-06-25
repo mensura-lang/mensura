@@ -25,10 +25,10 @@ repository; this book cross-links to them but stands on its own.
 
 ## What you can do today
 
-Mensura is early.  This book documents only what the toolchain actually
-compiles, and every example in it is checked by the real compiler when the
-book is built: if an example here stops compiling, the build fails.  So
-nothing in these pages is aspirational.
+Mensura is early.  The *Getting started* and *Modelling data* chapters document
+only what the toolchain actually compiles: every example in them is checked by
+the real compiler when the book is built, so if one stops compiling the build
+fails, and nothing in those chapters is aspirational.
 
 Today that means **modelling data**: declaring the *units* that identify your
 entities and the *stores* that hold their attributes, and creating those stores
@@ -36,6 +36,11 @@ in a database.  The chapters that compute over stored data (expressions,
 pipelines, the leak-free validation that motivates the whole language) are
 being built and will arrive here as they land.  The [What's next](whats-next.md)
 page tracks the frontier.
+
+The *Concepts* chapters are different: they preview the design ahead of the
+implementation, to explain what makes Mensura distinct before the syntax has
+landed.  Their snippets are marked as design previews and are not compiled; each
+such page says so at the top.
 
 ## How to read it
 
