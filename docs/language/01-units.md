@@ -80,6 +80,12 @@ The practical consequence: if your data has cardinality greater than 1
 for the chosen indexes, the unit's identity criterion is wrong.  Add
 the disambiguating column to the index, or split the unit.
 
+This row cardinality (how many rows a key has, 0 for "not sampled") is a
+different axis from whether a *value* is missing.  An index field is
+always known, so it never carries the `?` optional marker; only `const`
+and `var` values may be missing
+(`docs/decisions/0010-attribute-totality.md`).
+
 ## Compositional units
 
 An index field's type may be another unit.  When it is, the value of

@@ -63,6 +63,13 @@ store (`Students : PersonRecord`) all use the one colon for "has this
 type."  A store is a structural subtype of every shape it claims: it
 has everything the shape requires, possibly more.
 
+Attribute types may carry the `?` optional marker like any other type
+(`docs/decisions/0010-attribute-totality.md`).  Totality
+participates in the subtyping: a total attribute satisfies an optional
+requirement, since a known value is an acceptable optional one, but an
+optional store attribute does *not* satisfy a total requirement, because
+the shape promises the value is always known.
+
 ## Shape declaration
 
 A shape declaration consists of a name, an optional parameter list, an
