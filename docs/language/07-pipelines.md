@@ -31,11 +31,14 @@ threads four kinds of property:
 - **Content** (`C`): the schema, namely the index (key) columns and the
   non-index columns with their domains.  Reindexing moves columns between the
   key and the non-key part.
-- **Cardinality**: how many values a cell holds, and (per key) how many rows an
-  entity has.  Cardinality is part of the content type (`06-expressions.md`);
-  operations transform it predictably, and some operations *demand* a
-  particular cardinality (scalar operators want card 1, `pivot` wants
-  `card <= 1`).
+- **Cardinality**: how many nested rows share a key (none, one, or a bag).
+  Cardinality is part of the content type (`06-expressions.md`); operations
+  transform it predictably, and some operations *demand* a particular
+  cardinality (`pivot` wants at most one row per key, `card <= 1`).
+- **Totality**: whether each non-index value is known or may be missing
+  (`Cell = Option`).  A value is total unless its type is marked `?` (ADR
+  0010); `left_join` makes its right columns optional, and a default, an
+  aggregate, or an `is known` narrowing makes a column total again.
 - **Completeness**: whether a partition is fully present, that is, whether
   every group over some key has all of its rows.  Completeness is what makes a
   key-shrinking operation sound.  It is established (by a check, a source
@@ -45,9 +48,9 @@ threads four kinds of property:
   document does not re-specify those rules, but it notes where an operation
   imposes a qualifier-level precondition.
 
-The two properties this document makes first-class, beyond plain content, are
-**cardinality** and **completeness**: every operation below states how it
-affects each.
+The properties this document makes first-class, beyond plain content, are
+**cardinality**, **totality**, and **completeness**: every operation below
+states how it affects each one it changes.
 
 ## Composition
 
@@ -74,7 +77,8 @@ obligation to be admitted.
 ## The primitives
 
 Each entry gives the surface form, the parameters, the effect on **content**,
-on **cardinality**, and on **completeness**, the Tier, and the backing theorem.
+on **cardinality**, on **completeness** (and on **totality** where the
+operation changes it), the Tier, and the backing theorem.
 Throughout, `|r| ...` is a lambda over a single row, `|g| ...` a lambda over a
 group (a row whose cells are bags), and a bare column name (`machine`) is a
 reference to a column of the current schema.
@@ -148,10 +152,11 @@ readings |> left_join machines (|r| r.machine)
 Joins the current table against a fixed right table; the lambda maps a left row
 to the right table's key.  Content: the right table's columns are added.
 Cardinality: preserved when the right table is functional (`card <= 1` per
-key); a right table with several rows per key multiplies them in.  Completeness:
-preserved on the left; `left_join` keeps unmatched left rows (their right
-columns missing), `inner_join` drops them.  Tier A (`leftJoin_splitSafe`,
-`innerJoin_splitSafe`).
+key); a right table with several rows per key multiplies them in.  Totality:
+`left_join` makes the added right columns **optional**, since an unmatched left
+row is kept with them missing; `inner_join` drops unmatched rows, so it adds no
+optionality.  Completeness: preserved on the left.  Tier A
+(`leftJoin_splitSafe`, `innerJoin_splitSafe`).
 
 ### `split` / `bind` - partition and merge
 
@@ -238,18 +243,22 @@ fact about its input.  Completeness is established in one of three ways:
 `assume { ... }` remains the escape hatch: it admits a Tier B operation by
 fiat, locally and visibly, when the obligation cannot be discharged.
 
-## Cardinality and the type
+## Cardinality, totality, and the type
 
-Cardinality is carried in the content type and threaded by every operation
-above.  The rules that consume it are stated in `06-expressions.md`: a scalar
-operator requires its operands at card 1, and the bag combinators (`sum`,
-`mean`, `count`, `any`, `all`, `in`) are the explicit way to bring a
-cardinality-many cell down to one.  At the pipeline level the same currency
-pays for `pivot`: its attribute form is admitted only at `card <= 1`.  How a
-cardinality is written in a type (card 1 versus 0-or-1 versus many) is the
-content/types document's job; this document specifies how each operation
-*changes* cardinality and where one is *demanded*, and leans on inference for
-the rest.
+Two orthogonal per-column properties are carried in the content type and
+threaded by every operation above: **cardinality** (how many rows share a key)
+and **totality** (whether a value is known or may be missing, `Cell = Option`).
+The rules that consume them are stated in `06-expressions.md`: a scalar
+operator requires a **single known value** (`card 1` and not missing), the bag
+combinators (`sum`, `mean`, `count`, `any`, `all`, `in`) bring a many-row bag
+down to one value, and a missing value is made known by a default, an
+aggregate, or an `is known` narrowing.  At the pipeline level `pivot`'s
+attribute form is admitted only at `card <= 1` (at most one row per key).  ADR
+0010 settles the total/optional axis and its `?` marker; how a *cardinality* is
+written in a type (`card 1` versus `0-or-1` versus many) stays the
+content/types document's job.  This document specifies how each operation
+*changes* these properties and where one is *demanded*, and leans on inference
+for the rest.
 
 ## Qualifiers and purity
 
@@ -318,7 +327,8 @@ cost of dropping disjointness.  It type-checks.
   expression-level conditionals, collection literals, and (for windows)
   ordering; those are specified before the sugar that uses them.
 - **The cardinality-type notation.**  How card 1 / 0-or-1 / many is written in
-  a `Type` is the content/types document.
+  a `Type` is the content/types document.  (The orthogonal total/optional axis
+  and its `?` marker are settled in ADR 0010.)
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
 - **Hosting and streaming.**  `transform`/`view` declarations that host

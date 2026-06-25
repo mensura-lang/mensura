@@ -22,8 +22,10 @@ typing rules attached to each operation.
    of Chapter 5 of Data Science Project: An Inductive Learning Approach
    (F. A. N. Verri, 2026; doi: 10.5281/zenodo.14498010): a tuple
    `(K, H, c)` of index columns, non-index columns, and a cell function.
-   Rows are entities, identified by their index tuple; cells may carry
-   tuples of values (cardinality) and missing values are first-class.
+   Rows are entities, identified by their index tuple; a key may carry
+   several rows (cardinality), and individual values may be missing.
+   Values are total by default, with optional ones marked `?` (see
+   `docs/decisions/0010-attribute-totality.md`).
 
 2. **The type of a table is `Table<Qs, C>`.** A table binding carries a row
    of **qualifiers** `Qs` and a **content** schema `C`, both checked at

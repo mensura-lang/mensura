@@ -86,7 +86,7 @@ shape_var     = "var" "{" { shape_attr } "}" ;
 shape_attr    = attr_name ":" type ;
 attr_name     = ident | template ;
 
-type          = named_type ;
+type          = named_type [ "?" ] ;
 named_type    = ident ;
 ```
 
@@ -119,6 +119,12 @@ named_type    = ident ;
 - **`type`**: a type is a single `ident`: a primitive (`string`, `number`,
   ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
   decision, not the parser's; the parser commits on the lone identifier.
+  A trailing `?` makes the value **optional** (it may be missing in an
+  observed row; see ADR 0010 and `02-stores.md`).  After the identifier
+  the parser peeks one token and takes a single `?` if present, so the
+  optional marker preserves LL(1).  The `?` is a punctuation token; the
+  keyword-free lexer needs it added, which is implementation follow-up,
+  not a grammar concern.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
