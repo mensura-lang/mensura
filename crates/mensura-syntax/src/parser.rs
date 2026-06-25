@@ -9,6 +9,7 @@ use crate::ast::{
     DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
     ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl,
 };
+use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
 
 /// A parse failure, located by a source span.
@@ -22,6 +23,32 @@ pub struct ParseError {
 /// [`Program`].
 pub fn parse(tokens: &[Token]) -> Result<Program, ParseError> {
     Parser { tokens, pos: 0 }.parse_program()
+}
+
+/// Parse a token slice (lexer output, ending in [`TokenKind::Eof`]) as a single
+/// expression, per the expression grammar in `docs/language/04-grammar.md`.
+///
+/// The whole input must be one expression: trailing tokens are an error.  This
+/// is the entry the future expression-hosting sites (`when:`, `where:`,
+/// `@auto`, pipeline operations) and the test corpus exercise.
+pub fn parse_expr(tokens: &[Token]) -> Result<Expr, ParseError> {
+    let mut parser = Parser { tokens, pos: 0 };
+    let expr = parser.parse_expr_inner()?;
+    if !parser.at_eof() {
+        return Err(parser.error("unexpected token after expression"));
+    }
+    Ok(expr)
+}
+
+/// The words reserved inside an expression: they are operators or presence
+/// keywords and so can never name a value.  See the "Reserved words in
+/// expressions" note in `docs/language/04-grammar.md`.  `let` and `assert` are
+/// reserved only in statement position and are handled there, not here.
+fn is_expr_reserved(word: &str) -> bool {
+    matches!(
+        word,
+        "or" | "and" | "not" | "in" | "is" | "known" | "missing"
+    )
 }
 
 struct Parser<'a> {
@@ -409,6 +436,421 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
         Ok(TypeExpr::Named(self.expect_ident("a type")?))
     }
+
+    // --- expression sublanguage ---------------------------------------------
+    //
+    // One method per grammar production in `docs/language/04-grammar.md`,
+    // layered loosest-binding to tightest.  Each level is a left-recursion-free
+    // loop or a single optional over the next-tighter level, so one token of
+    // lookahead decides whether to continue.
+
+    /// `expr = pipe_expr`.
+    fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
+        self.parse_pipe()
+    }
+
+    /// `pipe_expr = or_expr { "|>" or_expr }`, left-associative.
+    fn parse_pipe(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_or()?;
+        while self.check(&TokenKind::PipeArrow) {
+            self.pos += 1;
+            let rhs = self.parse_or()?;
+            lhs = self.binary(BinOp::Pipe, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    /// `or_expr = and_expr { "or" and_expr }`.
+    fn parse_or(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_and()?;
+        while self.at_keyword("or") {
+            self.pos += 1;
+            let rhs = self.parse_and()?;
+            lhs = self.binary(BinOp::Or, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    /// `and_expr = not_expr { "and" not_expr }`.
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_not()?;
+        while self.at_keyword("and") {
+            self.pos += 1;
+            let rhs = self.parse_not()?;
+            lhs = self.binary(BinOp::And, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    /// `not_expr = "not" not_expr | cmp_expr`.
+    fn parse_not(&mut self) -> Result<Expr, ParseError> {
+        if self.at_keyword("not") {
+            let start = self.cur_span().start;
+            self.pos += 1;
+            let inner = self.parse_not()?;
+            let span = Span::new(start, inner.span.end);
+            Ok(Expr {
+                kind: ExprKind::Unary(UnOp::Not, Box::new(inner)),
+                span,
+            })
+        } else {
+            self.parse_cmp()
+        }
+    }
+
+    /// `cmp_expr = add_expr [ cmp_op add_expr | "is" presence ]`.
+    /// Non-associative: at most one comparison or presence test.
+    fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
+        let lhs = self.parse_add()?;
+        if self.at_keyword("is") {
+            self.pos += 1;
+            let pres = if self.at_keyword("known") {
+                self.pos += 1;
+                Presence::Known
+            } else if self.at_keyword("missing") {
+                self.pos += 1;
+                Presence::Missing
+            } else {
+                return Err(self.error("expected `known` or `missing` after `is`"));
+            };
+            let end = self.tokens[self.pos - 1].span.end;
+            let span = Span::new(lhs.span.start, end);
+            return Ok(Expr {
+                kind: ExprKind::Presence(Box::new(lhs), pres),
+                span,
+            });
+        }
+        let op = match self.cur_kind() {
+            TokenKind::EqEq => Some(BinOp::Eq),
+            TokenKind::BangEq => Some(BinOp::Ne),
+            TokenKind::Lt => Some(BinOp::Lt),
+            TokenKind::LtEq => Some(BinOp::Le),
+            TokenKind::Gt => Some(BinOp::Gt),
+            TokenKind::GtEq => Some(BinOp::Ge),
+            TokenKind::Ident(s) if s == "in" => Some(BinOp::In),
+            _ => None,
+        };
+        match op {
+            Some(op) => {
+                self.pos += 1;
+                let rhs = self.parse_add()?;
+                Ok(self.binary(op, lhs, rhs))
+            }
+            None => Ok(lhs),
+        }
+    }
+
+    /// `add_expr = mul_expr { ("+" | "-") mul_expr }`.
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_mul()?;
+        loop {
+            let op = match self.cur_kind() {
+                TokenKind::Plus => BinOp::Add,
+                TokenKind::Minus => BinOp::Sub,
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_mul()?;
+            lhs = self.binary(op, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    /// `mul_expr = unary_expr { ("*" | "/") unary_expr }`.
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_unary()?;
+        loop {
+            let op = match self.cur_kind() {
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::Slash => BinOp::Div,
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_unary()?;
+            lhs = self.binary(op, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    /// `unary_expr = "-" unary_expr | pow_expr`.
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        if self.check(&TokenKind::Minus) {
+            let start = self.cur_span().start;
+            self.pos += 1;
+            let inner = self.parse_unary()?;
+            let span = Span::new(start, inner.span.end);
+            Ok(Expr {
+                kind: ExprKind::Unary(UnOp::Neg, Box::new(inner)),
+                span,
+            })
+        } else {
+            self.parse_pow()
+        }
+    }
+
+    /// `pow_expr = app_expr [ "^" unary_expr ]`, right-associative through the
+    /// `unary_expr` right operand.
+    fn parse_pow(&mut self) -> Result<Expr, ParseError> {
+        let base = self.parse_app()?;
+        if self.check(&TokenKind::Caret) {
+            self.pos += 1;
+            let rhs = self.parse_unary()?;
+            Ok(self.binary(BinOp::Pow, base, rhs))
+        } else {
+            Ok(base)
+        }
+    }
+
+    /// `app_expr = postfix { postfix }`, application by juxtaposition,
+    /// left-associative.
+    fn parse_app(&mut self) -> Result<Expr, ParseError> {
+        let mut e = self.parse_postfix()?;
+        while self.at_postfix_start() {
+            let arg = self.parse_postfix()?;
+            let span = Span::new(e.span.start, arg.span.end);
+            e = Expr {
+                kind: ExprKind::App(Box::new(e), Box::new(arg)),
+                span,
+            };
+        }
+        Ok(e)
+    }
+
+    /// True when the current token can begin a `postfix` (a primary), so the
+    /// application spine should consume another argument.  A `|` opens a lambda
+    /// argument; `|>` (a distinct token) never does, so a pipe ends the spine.
+    fn at_postfix_start(&self) -> bool {
+        match self.cur_kind() {
+            TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::Str(_)
+            | TokenKind::LParen
+            | TokenKind::LBrace
+            | TokenKind::Pipe => true,
+            TokenKind::Ident(s) => !is_expr_reserved(s),
+            _ => false,
+        }
+    }
+
+    /// `postfix = primary { "." ident }`, member access, the tightest binding.
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut e = self.parse_primary()?;
+        while self.check(&TokenKind::Dot) {
+            self.pos += 1;
+            let field = self.expect_ident("a field name after `.`")?;
+            let span = Span::new(e.span.start, field.span.end);
+            e = Expr {
+                kind: ExprKind::Member(Box::new(e), field),
+                span,
+            };
+        }
+        Ok(e)
+    }
+
+    /// `primary = number | string | ident | lambda | paren | block`.
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        let span = self.cur_span();
+        let kind = self.cur_kind().clone();
+        match kind {
+            TokenKind::Int(n) => {
+                self.pos += 1;
+                Ok(Expr {
+                    kind: ExprKind::Int(n),
+                    span,
+                })
+            }
+            TokenKind::Float(f) => {
+                self.pos += 1;
+                Ok(Expr {
+                    kind: ExprKind::Float(f),
+                    span,
+                })
+            }
+            TokenKind::Str(s) => {
+                self.pos += 1;
+                Ok(Expr {
+                    kind: ExprKind::Str(s),
+                    span,
+                })
+            }
+            TokenKind::Ident(s) => {
+                if is_expr_reserved(&s) {
+                    return Err(self.error(format!("`{s}` is a reserved operator, not a value")));
+                }
+                let kind = match s.as_str() {
+                    "true" => ExprKind::Bool(true),
+                    "false" => ExprKind::Bool(false),
+                    _ => ExprKind::Name(s),
+                };
+                self.pos += 1;
+                Ok(Expr { kind, span })
+            }
+            TokenKind::Pipe => self.parse_lambda(),
+            TokenKind::LParen => self.parse_paren(),
+            TokenKind::LBrace => self.parse_block_expr(),
+            _ => Err(self.error("expected an expression")),
+        }
+    }
+
+    /// `lambda = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr`.  The
+    /// body is an `or_expr`, so a top-level `|>` inside a lambda must be
+    /// parenthesized.
+    fn parse_lambda(&mut self) -> Result<Expr, ParseError> {
+        let start = self.cur_span().start;
+        self.pos += 1; // opening `|`
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::Pipe) {
+            params.push(self.expect_ident("a lambda parameter")?);
+            while self.eat(&TokenKind::Comma) {
+                params.push(self.expect_ident("a lambda parameter")?);
+            }
+        }
+        self.expect(&TokenKind::Pipe, "`|` to close the lambda parameters")?;
+        let ret = if self.eat(&TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_or()?;
+        let span = Span::new(start, body.span.end);
+        Ok(Expr {
+            kind: ExprKind::Lambda {
+                params,
+                ret,
+                body: Box::new(body),
+            },
+            span,
+        })
+    }
+
+    /// `paren = "(" ( record_body | tuple_body ) ")"`.  A leading `.` selects a
+    /// record; otherwise a tuple body, whose single-element form `(e)` is plain
+    /// grouping and reduces to `e`.
+    fn parse_paren(&mut self) -> Result<Expr, ParseError> {
+        let start = self.cur_span().start;
+        self.pos += 1; // `(`
+        if self.check(&TokenKind::RParen) {
+            let end = self.cur_span().end;
+            self.pos += 1;
+            return Ok(Expr {
+                kind: ExprKind::Tuple(Vec::new()),
+                span: Span::new(start, end),
+            });
+        }
+        if self.check(&TokenKind::Dot) {
+            let mut fields = vec![self.parse_record_field()?];
+            while self.eat(&TokenKind::Comma) {
+                fields.push(self.parse_record_field()?);
+            }
+            let end = self
+                .expect(&TokenKind::RParen, "`)` to close the record")?
+                .end;
+            return Ok(Expr {
+                kind: ExprKind::Record(fields),
+                span: Span::new(start, end),
+            });
+        }
+        let mut elems = vec![self.parse_expr_inner()?];
+        while self.eat(&TokenKind::Comma) {
+            elems.push(self.parse_expr_inner()?);
+        }
+        let end = self
+            .expect(&TokenKind::RParen, "`)` to close the group")?
+            .end;
+        if elems.len() == 1 {
+            // Grouping: `(e)` is `e`.
+            Ok(elems.pop().unwrap())
+        } else {
+            Ok(Expr {
+                kind: ExprKind::Tuple(elems),
+                span: Span::new(start, end),
+            })
+        }
+    }
+
+    /// `field = "." ident [ ":" type ] "=" expr`, one labeled record field.
+    fn parse_record_field(&mut self) -> Result<RecordField, ParseError> {
+        let start = self.expect(&TokenKind::Dot, "`.` to start a record field")?;
+        let name = self.expect_ident("a field name")?;
+        let ty = if self.eat(&TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Eq, "`=` after the field name")?;
+        let value = self.parse_expr_inner()?;
+        let span = Span::new(start.start, value.span.end);
+        Ok(RecordField {
+            name,
+            ty,
+            value,
+            span,
+        })
+    }
+
+    /// A `block` in expression position.
+    fn parse_block_expr(&mut self) -> Result<Expr, ParseError> {
+        let block = self.parse_block()?;
+        let span = block.span;
+        Ok(Expr {
+            kind: ExprKind::Block(block),
+            span,
+        })
+    }
+
+    /// `block = "{" [ stmt { ";" stmt } [ ";" ] ] "}"`.
+    fn parse_block(&mut self) -> Result<Block, ParseError> {
+        let start = self.expect(&TokenKind::LBrace, "`{` to open the block")?;
+        let mut stmts = Vec::new();
+        if !self.check(&TokenKind::RBrace) {
+            stmts.push(self.parse_stmt()?);
+            while self.eat(&TokenKind::Semi) {
+                if self.check(&TokenKind::RBrace) {
+                    break; // an optional trailing `;`
+                }
+                stmts.push(self.parse_stmt()?);
+            }
+        }
+        let end = self
+            .expect(&TokenKind::RBrace, "`}` to close the block")?
+            .end;
+        Ok(Block {
+            stmts,
+            span: Span::new(start.start, end),
+        })
+    }
+
+    /// `stmt = let_stmt | assert_stmt | expr`.  `let` and `assert` are reserved
+    /// only here, in statement position.
+    fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
+        if self.at_keyword("let") {
+            self.pos += 1;
+            let name = self.expect_ident("a name after `let`")?;
+            let ty = if self.eat(&TokenKind::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            self.expect(&TokenKind::Eq, "`=` in a `let` binding")?;
+            let value = self.parse_expr_inner()?;
+            Ok(Stmt::Let { name, ty, value })
+        } else if self.at_keyword("assert") {
+            self.pos += 1;
+            let e = self.parse_expr_inner()?;
+            Ok(Stmt::Assert(e))
+        } else {
+            Ok(Stmt::Expr(self.parse_expr_inner()?))
+        }
+    }
+
+    /// Build a binary node spanning from its left to its right operand.
+    fn binary(&self, op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+        let span = Span::new(lhs.span.start, rhs.span.end);
+        Expr {
+            kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+            span,
+        }
+    }
 }
 
 /// Split the raw inner text of a backtick template into literal and `{param}`
@@ -779,5 +1221,267 @@ mod tests {
     fn junk_at_top_level_is_an_error() {
         let err = parse_str("wat X { }").unwrap_err();
         assert!(err.message.contains("`unit`, `store`, `shape`, or `enum`"));
+    }
+
+    // --- expression sublanguage ---------------------------------------------
+
+    use crate::expr::{BinOp, Expr, ExprKind, Presence, Stmt, UnOp};
+
+    fn expr(src: &str) -> Expr {
+        let tokens = tokenize(src).expect("should lex");
+        parse_expr(&tokens).unwrap_or_else(|e| panic!("should parse `{src}`: {}", e.message))
+    }
+
+    fn expr_err(src: &str) -> ParseError {
+        let tokens = tokenize(src).expect("should lex");
+        parse_expr(&tokens).expect_err("should not parse")
+    }
+
+    /// A compact s-expression rendering so precedence and associativity are
+    /// asserted by shape rather than by deep pattern matches.
+    fn sexpr(e: &Expr) -> String {
+        match &e.kind {
+            ExprKind::Int(n) => n.to_string(),
+            ExprKind::Float(f) => f.to_string(),
+            ExprKind::Str(s) => format!("{s:?}"),
+            ExprKind::Bool(b) => b.to_string(),
+            ExprKind::Name(s) => s.clone(),
+            ExprKind::Member(b, f) => format!("(. {} {})", sexpr(b), f.name),
+            ExprKind::App(f, x) => format!("(app {} {})", sexpr(f), sexpr(x)),
+            ExprKind::Unary(op, x) => {
+                let op = match op {
+                    UnOp::Not => "not",
+                    UnOp::Neg => "neg",
+                };
+                format!("({op} {})", sexpr(x))
+            }
+            ExprKind::Binary(op, a, b) => {
+                let op = match op {
+                    BinOp::Pipe => "|>",
+                    BinOp::Or => "or",
+                    BinOp::And => "and",
+                    BinOp::Eq => "==",
+                    BinOp::Ne => "!=",
+                    BinOp::Lt => "<",
+                    BinOp::Le => "<=",
+                    BinOp::Gt => ">",
+                    BinOp::Ge => ">=",
+                    BinOp::In => "in",
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                    BinOp::Pow => "^",
+                };
+                format!("({op} {} {})", sexpr(a), sexpr(b))
+            }
+            ExprKind::Presence(x, p) => {
+                let p = match p {
+                    Presence::Known => "known",
+                    Presence::Missing => "missing",
+                };
+                format!("(is-{p} {})", sexpr(x))
+            }
+            ExprKind::Lambda { params, body, .. } => {
+                let ps: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                format!("(lam [{}] {})", ps.join(" "), sexpr(body))
+            }
+            ExprKind::Tuple(es) => {
+                let es: Vec<String> = es.iter().map(sexpr).collect();
+                format!("(tuple {})", es.join(" "))
+            }
+            ExprKind::Record(fs) => {
+                let fs: Vec<String> = fs
+                    .iter()
+                    .map(|f| format!("{}={}", f.name.name, sexpr(&f.value)))
+                    .collect();
+                format!("(record {})", fs.join(" "))
+            }
+            ExprKind::Block(b) => {
+                let ss: Vec<String> = b
+                    .stmts
+                    .iter()
+                    .map(|s| match s {
+                        Stmt::Let { name, value, .. } => {
+                            format!("let {}={}", name.name, sexpr(value))
+                        }
+                        Stmt::Assert(e) => format!("assert {}", sexpr(e)),
+                        Stmt::Expr(e) => sexpr(e),
+                    })
+                    .collect();
+                format!("(block {})", ss.join("; "))
+            }
+        }
+    }
+
+    #[test]
+    fn atoms_and_names() {
+        assert_eq!(sexpr(&expr("42")), "42");
+        assert_eq!(sexpr(&expr("3.14")), "3.14");
+        assert_eq!(sexpr(&expr(r#""text""#)), "\"text\"");
+        assert_eq!(sexpr(&expr("true")), "true");
+        assert_eq!(sexpr(&expr("false")), "false");
+        assert_eq!(sexpr(&expr("machine")), "machine");
+    }
+
+    #[test]
+    fn arithmetic_precedence_and_associativity() {
+        // `*` binds tighter than `+`; both are left-associative.
+        assert_eq!(sexpr(&expr("1 + 2 * 3")), "(+ 1 (* 2 3))");
+        assert_eq!(sexpr(&expr("1 - 2 - 3")), "(- (- 1 2) 3)");
+        assert_eq!(sexpr(&expr("a / b / c")), "(/ (/ a b) c)");
+    }
+
+    #[test]
+    fn power_is_right_associative_and_below_unary_minus() {
+        // `^` binds tighter than unary minus: `-2^2` is `-(2^2)`.
+        assert_eq!(sexpr(&expr("-2^2")), "(neg (^ 2 2))");
+        // `^` is right-associative; its right operand may be a unary `-`.
+        assert_eq!(sexpr(&expr("2^3^2")), "(^ 2 (^ 3 2))");
+        assert_eq!(sexpr(&expr("2^-3")), "(^ 2 (neg 3))");
+    }
+
+    #[test]
+    fn application_binds_tighter_than_operators() {
+        // `f x + g y` is `(f x) + (g y)`.
+        assert_eq!(sexpr(&expr("f x + g y")), "(+ (app f x) (app g y))");
+        // Application is left-associative: `f x y` is `(f x) y`.
+        assert_eq!(sexpr(&expr("f x y")), "(app (app f x) y)");
+    }
+
+    #[test]
+    fn member_access_binds_tightest() {
+        // `f a.b` is `f (a.b)`.
+        assert_eq!(sexpr(&expr("f a.b")), "(app f (. a b))");
+        assert_eq!(sexpr(&expr("a.b.c")), "(. (. a b) c)");
+    }
+
+    #[test]
+    fn subtraction_versus_negated_argument() {
+        // `f - x` is subtraction; a negated argument must be parenthesized.
+        assert_eq!(sexpr(&expr("f - x")), "(- f x)");
+        assert_eq!(sexpr(&expr("f (-x)")), "(app f (neg x))");
+    }
+
+    #[test]
+    fn boolean_and_comparison_layering() {
+        // `not` sits below the comparisons: `not a == b` is `not (a == b)`.
+        assert_eq!(sexpr(&expr("not a == b")), "(not (== a b))");
+        // `and` binds tighter than `or`.
+        assert_eq!(sexpr(&expr("a or b and c")), "(or a (and b c))");
+    }
+
+    #[test]
+    fn comparisons_do_not_chain() {
+        let err = expr_err("a < b < c");
+        assert!(err.message.contains("after expression"), "{}", err.message);
+    }
+
+    #[test]
+    fn presence_tests() {
+        assert_eq!(sexpr(&expr("r.rul is known")), "(is-known (. r rul))");
+        assert_eq!(sexpr(&expr("x is missing")), "(is-missing x)");
+        let err = expr_err("x is whatever");
+        assert!(err.message.contains("`known` or `missing`"));
+    }
+
+    #[test]
+    fn membership_uses_in() {
+        assert_eq!(
+            sexpr(&expr(r#""staff" in r.roles"#)),
+            "(in \"staff\" (. r roles))"
+        );
+    }
+
+    #[test]
+    fn pipe_is_loosest_and_left_associative() {
+        assert_eq!(sexpr(&expr("a |> b |> c")), "(|> (|> a b) c)");
+        // The pipe is looser than application: `data |> filter p`.
+        assert_eq!(sexpr(&expr("data |> filter p")), "(|> data (app filter p))");
+    }
+
+    #[test]
+    fn lambda_body_extends_maximally_and_excludes_pipe() {
+        // `map |r| r.x` applies `map` to the lambda; the body grabs `r.x`.
+        assert_eq!(sexpr(&expr("map |r| r.x")), "(app map (lam [r] (. r x)))");
+        // A top-level `|>` ends the lambda body rather than entering it.
+        assert_eq!(
+            sexpr(&expr("data |> map |r| r.x |> g")),
+            "(|> (|> data (app map (lam [r] (. r x)))) g)"
+        );
+    }
+
+    #[test]
+    fn multi_parameter_lambda_and_return_type() {
+        assert_eq!(sexpr(&expr("|a, b| a + b")), "(lam [a b] (+ a b))");
+        // A return ascription parses and does not swallow the body.
+        let e = expr("|x| : number x + 1");
+        assert_eq!(sexpr(&e), "(lam [x] (+ x 1))");
+    }
+
+    #[test]
+    fn glued_closing_bar_and_gt_is_a_parse_error() {
+        // `|x|>0` lexes the second bar glued to `>`; the lambda has no closing
+        // bar, so it is rejected (write `|x| > 0` in a comparison instead).
+        let err = expr_err("|x|>0");
+        assert!(err.message.contains("close the lambda"), "{}", err.message);
+    }
+
+    #[test]
+    fn grouping_tuples_and_empty_tuple() {
+        // `(e)` is grouping and reduces to `e`.
+        assert_eq!(sexpr(&expr("(1 + 2)")), "(+ 1 2)");
+        // Grouping overrides precedence.
+        assert_eq!(sexpr(&expr("(1 + 2) * 3")), "(* (+ 1 2) 3)");
+        assert_eq!(sexpr(&expr("(a, b)")), "(tuple a b)");
+        assert_eq!(sexpr(&expr("()")), "(tuple )");
+    }
+
+    #[test]
+    fn records_with_optional_ascription() {
+        assert_eq!(sexpr(&expr("(.a = x, .b = y)")), "(record a=x b=y)");
+        assert_eq!(sexpr(&expr("(.a : number = 1)")), "(record a=1)");
+    }
+
+    #[test]
+    fn blocks_with_let_and_assert() {
+        assert_eq!(
+            sexpr(&expr("{ let x = 1; assert x > 0; x }")),
+            "(block let x=1; assert (> x 0); x)"
+        );
+        // A `{ }` in expression position is always a block, and applying a name
+        // to it is ordinary juxtaposition: `completeness_check { assert p }`.
+        assert_eq!(
+            sexpr(&expr("completeness_check { assert p }")),
+            "(app completeness_check (block assert p))"
+        );
+        // Trailing `;` is allowed.
+        assert_eq!(sexpr(&expr("{ let x = 1; }")), "(block let x=1)");
+    }
+
+    #[test]
+    fn reserved_words_cannot_name_values() {
+        assert!(expr_err("and").message.contains("reserved operator"));
+    }
+
+    #[test]
+    fn worked_examples_from_the_spec() {
+        // The authorization predicate from `06-expressions.md`.
+        assert_eq!(
+            sexpr(&expr(
+                r#"principal.kind == "device" and "temperature-sensor" in principal.roles"#
+            )),
+            "(and (== (. principal kind) \"device\") (in \"temperature-sensor\" (. principal roles)))"
+        );
+        // A derived value over a single row.
+        assert_eq!(
+            sexpr(&expr("|r| r.mass / r.height ^ 2")),
+            "(lam [r] (/ (. r mass) (^ (. r height) 2)))"
+        );
+        // A bag reduced before comparison.
+        assert_eq!(
+            sexpr(&expr("|r| mean r.readings > 30")),
+            "(lam [r] (> (app mean (. r readings)) 30))"
+        );
     }
 }
