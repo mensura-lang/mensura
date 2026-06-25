@@ -1,0 +1,12 @@
+// Basic units, a named enum, and a store over primitive attributes.
+unit Machine {
+  id: string
+}
+
+enum MachineStatus { "operational", "failure" }
+
+store machines {
+  unit { Machine }
+  const { commissioned: date }
+  var   { status: MachineStatus }
+}

@@ -1,0 +1,20 @@
+// Rejected at resolve: compound stores (a `domain` block) are not yet
+// supported in the basic scope.
+unit Person {
+  id: string
+}
+
+unit Enrollment {
+  id: string
+}
+
+store students {
+  unit { Person }
+  const { admission: date }
+}
+
+store grades {
+  unit { Enrollment }
+  domain { student: students }
+  const { class_id: string }
+}

@@ -1,0 +1,2 @@
+// Rejected at parse: an enum needs at least one variant.
+enum Status { }

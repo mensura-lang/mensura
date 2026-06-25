@@ -1,0 +1,9 @@
+// Rejected at resolve: a store name must be snake_case
+// (docs/language/05-naming-and-casing.md).
+unit U {
+  id: string
+}
+
+store TempReadings {
+  unit { U }
+}
