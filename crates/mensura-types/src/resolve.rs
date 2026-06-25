@@ -1247,6 +1247,18 @@ mod tests {
         assert_eq!(schemas.len(), 3);
     }
 
+    #[test]
+    fn fleet_monitoring_example_resolves() {
+        // The fleet-monitoring example grows milestone by milestone; its
+        // compilable subset must keep resolving.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/examples/fleet-monitoring.mensura");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let schemas = resolve_str(&src).expect("example should resolve");
+        assert_eq!(schemas.len(), 1);
+    }
+
     // --- Casing convention (docs/language/05-naming-and-casing.md) ---
 
     #[test]

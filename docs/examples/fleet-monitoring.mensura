@@ -1,0 +1,27 @@
+// Fleet monitoring: the machine registry for a streaming
+// predictive-maintenance example.  This file grows as the language does; today
+// it holds only what the current implementation compiles (scalar-index units,
+// named enums, shapes, and basic stores).
+//
+// Still to come, milestone by milestone:
+//   M3  dimensional sensor units and precision (temperature, vibration, ...)
+//   M4  device declarations and ingestion (sensor readings land in stores)
+//   M5  windowed feature views and incremental refresh
+//   M6  the leak-free remaining-useful-life pipeline and its validation
+
+unit Machine {
+  id: string
+}
+
+enum MachineStatus { "operational", "degraded", "failure" }
+
+// A unit-agnostic structural contract: any store of commissioned equipment.
+shape Commissioned {
+  const { commissioned: date }
+}
+
+store machines : Commissioned {
+  unit { Machine }
+  const { commissioned: date }
+  var   { status: MachineStatus }
+}
