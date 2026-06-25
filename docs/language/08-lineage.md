@@ -130,7 +130,7 @@ Tier A pipeline carries a disjointness fact end to end.  Per primitive:
 | `left_join` / `inner_join` | fixed-right, key-preserving | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
 | `unpivot` | names move into the key | preserved | `unpivot_preservesDisjoint` |
 | `split` | region splits by `pred` / `not pred` | established | `split_disjoint` |
-| `bind` | regions union | weakened (see below) | `bind` def + `bind_split` |
+| `bind` | regions union | weakened (see below) | `bind_disjoint_iff` |
 | `shrink_key` | key coarsens, rows merge | **not preserved** | `project_not_preservesDisjoint` |
 | index `pivot` | names leave the key | not preserved | `pivot_not_splitInvariant` |
 
@@ -145,9 +145,8 @@ must have been disjoint from `c`:
 Disjoint (bind a b) c   iff   Disjoint a c  and  Disjoint b c
 ```
 
-(a direct consequence of the `bind` and `Disjoint` definitions; it is the only
-disjointness lemma this document needs that is not yet named in `Table.lean`,
-and is listed as a proof obligation below).  So merging can only *grow* a
+(proved as `bind_disjoint_iff` in `Table.lean`, a direct consequence of the
+`bind` and `Disjoint` definitions).  So merging can only *grow* a
 region and therefore only *lose* disjointness facts: binding in a table that
 overlaps `c` destroys `Disjoint _ c`.  This is the precise content of "the
 property is changed by merge".  Note that `bind` itself is total and always
@@ -279,10 +278,9 @@ the one hook the ADR singles out.
 
 ## Open questions and proof obligations
 
-- **`bind` weakening lemma.**  `Disjoint (bind a b) c  iff  Disjoint a c and
-  Disjoint b c` follows directly from the definitions but is not yet a named
-  theorem in `formal/Mensura/Table.lean`; it should be added to back the
-  propagation rule for `bind`.
+- **`bind` weakening lemma** (discharged).  `Disjoint (bind a b) c  iff
+  Disjoint a c and Disjoint b c` is proved as `bind_disjoint_iff` in
+  `formal/Mensura/Table.lean`, backing the propagation rule for `bind`.
 - **Region re-expression across key changes.**  Whether any key change admits a
   sound automatic transport of the region (rather than always dropping the
   fact) is open; the safe default specified here is to drop and re-establish.
