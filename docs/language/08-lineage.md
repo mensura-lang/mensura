@@ -90,7 +90,9 @@ let (train, test) = data |> split |k| hash k < threshold
 Each `assert` is a boolean expression over the two regions; together they
 witness that the supports do not overlap.  As with `completeness_check`, the
 fact must hold where it is consumed, so the check is placed ahead of the
-consuming operation.
+consuming operation.  The surface of the check itself (in particular whether
+`disjoint_on` must name an identity/key column, and how its assertion language
+relates to the key-predicate region) is deferred; see the open questions.
 
 **By annotation: `@disjoint_partition`.**  A source store may declare that it
 is one block of a named partition, establishing the fact globally so no
@@ -287,7 +289,17 @@ the one hook the ADR singles out.
 - **`fit`/`evaluate` typing.**  The learning operations that *demand*
   disjointness are not yet specified; their typing rules belong in a future
   operations document and should cite this one for the demanded fact.
-- **Naming.**  This document uses "disjointness", matching `Table.lean`'s
-  `Disjoint`; the working branch name uses "disjointedness".  Settle the
-  spelling before the term is used normatively, alongside the ADR 0004
-  "qualifier" naming question.
+- **`disjointness_check` surface and the key it checks** (deferred).  The check
+  is sketched here (`disjointness_check { assert disjoint_on <col> }`) but not
+  worked out.  The open design point: the lineage region is a predicate over
+  the *key*, yet `disjoint_on` names a column that need not be the key.  A
+  future round must settle whether `disjoint_on` requires an identity/key
+  column (so the check reduces to predicate disjointness over the region), or
+  whether the region generalizes to non-key supports, and how the assertion
+  language inside the block (`disjoint_on`, and any region combinators) is
+  defined.  Until then the check reads as established-by-assertion, like
+  `assume`, but with a column named.
+- **Naming** (settled: "disjointness").  This document, and the term going
+  forward, use "disjointness", matching `Table.lean`'s `Disjoint`.  The earlier
+  working-branch spelling "disjointedness" is dropped.  (The ADR 0004
+  "qualifier" naming question is separate and still open.)
