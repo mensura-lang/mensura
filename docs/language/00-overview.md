@@ -25,34 +25,36 @@ typing rules attached to each operation.
    Rows are entities, identified by their index tuple; cells may carry
    tuples of values (cardinality) and missing values are first-class.
 
-2. **The type of a table is a quadruple `Table<S, D, L, C>`.** Every table
-   binding carries four orthogonal properties, all checked at compile
-   time:
+2. **The type of a table is `Table<Qs, C>`.** A table binding carries a row
+   of **qualifiers** `Qs` and a **content** schema `C`, both checked at
+   compile time. The qualifiers are defined in the standard library rather
+   than baked into the language (see
+   `docs/decisions/0004-qualifier-mechanism.md`); the canonical ones are:
 
-   - `S`, **sampling**: how the rows came to be in this table (Exhaustive,
+   - **sampling**: how the rows came to be in this table (Exhaustive,
      Representative, Biased, …). Determines what statistical claims are
      defensible.
-   - `D`, **dependency**: whether rows are independent, grouped, ordered,
+   - **dependency**: whether rows are independent, grouped, ordered,
      temporal, or otherwise structured. Determines which split and CV
      strategies are sound.
-   - `L`, **lineage**: the provenance tree of the table within a pipeline,
-     used by the *disjointness solver* to prove that two tables share no
-     entities (the precondition of `bind`, of valid train/test splits, of
-     leak-free joins).
-   - `C`, **content**: the schema, namely index columns, non-index columns,
-     their domains, units, and semantic types.
+   - **lineage**: the provenance a table carries through a pipeline; its
+     *disjointness* constraint hook proves that two tables share no entities,
+     which is what licenses leak-free train/test validation (see
+     `docs/language/08-lineage.md`).
 
-   Operations are typed as transformations on the quadruple. Every
-   primitive has a typing rule that says how each component flows.
+   `C`, the **content**, is the schema: index columns, non-index columns,
+   their domains, units, cardinality, and semantic types. Operations are
+   typed as transformations on `Qs` and `C`; every primitive carries rules
+   for how each qualifier propagates and how the content changes.
 
 3. **Split-invariance is the default.** Chapter 5's Tier A operations
-   (`bind`, `split`, `pivot`/`unpivot`, `select`, `filter`, `mutate`,
-   `aggregate`, `ungroup`, `left_join` against a fixed table) are
-   split-invariant by construction and require no extra ceremony. Tier B
-   operations (`project`/`group`, inner `join`, grouped/arranged variants
-   of `mutate` and `filter`) break split-invariance and require an explicit
-   `completeness_check { … }` block, or a `complete_over` annotation on
-   their source, to be admissible.
+   (`bind`, `split`, `unpivot`, the attribute form of `pivot`, `select`,
+   `filter`, `mutate`, `aggregate`, `ungroup`, and `left_join`/`inner_join`
+   against a fixed table) are split-invariant by construction and require no
+   extra ceremony. The Tier B operations (`project`/`group`, which shrinks the
+   key, and the index form of `pivot`) break split-invariance and require an
+   explicit `completeness_check { … }` stage, or a `complete_over` annotation
+   on their source, to be admissible. See `docs/language/07-pipelines.md`.
 
 4. **Indexes and units are part of the type.** Each table declares its
    index columns, and each column declares its domain, including physical
@@ -80,8 +82,9 @@ typing rules attached to each operation.
 
 - A core algebra for data handling (the operations of Chapter 5, with
   their typing rules).
-- The four-component type system (`Table<S, D, L, C>`) and a disjointness
-  solver over lineage trees.
+- The `Table<Qs, C>` type (qualifiers plus content), with sampling,
+  dependency, and lineage as standard-library qualifiers, and the
+  disjointness constraint hook over lineage.
 - A Polars-backed interpreter sufficient to run typed pipelines
   end-to-end.
 - Compile-time prevention of the specific bug classes the postdoc report

@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed.
+Accepted.  The table type is `Table<Qs, C>` throughout the language docs, and
+the lineage qualifier's disjointness hook is worked out in
+`docs/language/08-lineage.md`.
 
 ## Context
 
@@ -157,20 +159,21 @@ Neutral:
   "facet", "property", "trait", "channel", "aspect".  Settle this
   before any spec text uses it normatively.
 
-## Cross-cutting changes if accepted
+## Cross-cutting changes
 
-These follow from the decision but are not part of this ADR; each is
-its own task.
+These follow from the decision; each is its own task, and several are now
+done.
 
-- ROADMAP M0 deliverables grow: the meta-calculus and the four
+- ROADMAP M0 deliverables grow: the meta-calculus and the canonical
   standard-library qualifiers must each be specified before M0 ends.
-- `docs/language/02-types.md` is replaced (or split) into a document
-  on the qualifier framework and a set of documents on the
-  standard-library qualifiers.
-- `docs/language/00-overview.md` pillar 2 is rewritten: the table
-  type is `Table<Qs, C>`, with the four canonical qualifiers in the
-  standard library, not in the language.
-- `docs/language/05-lineage.md` and
-  `docs/language/06-sampling-dependency.md` become documents *about
-  specific standard-library qualifiers*, written against the
-  framework rather than as language features.
+  (ROADMAP itself is not yet rewritten to this framing.)
+- The type model is given by this ADR (the qualifier framework) together with
+  `00-overview.md`, `06-expressions.md`, and `07-pipelines.md` (content and
+  cardinality); there is no separate `02-types.md`.
+- `docs/language/00-overview.md` pillar 2 has been rewritten: the table type
+  is `Table<Qs, C>`, with the canonical qualifiers in the standard library,
+  not in the language.  (Done.)
+- The standard-library qualifiers become documents written against this
+  framework: lineage is specified in `docs/language/08-lineage.md` (its
+  disjointness hook is the first concrete instance); the sampling and
+  dependency qualifier documents remain to be written.

@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed.
+Accepted.  Specified in `docs/language/07-pipelines.md`, with the lineage
+follow-up in `docs/language/08-lineage.md`.
 
 ## Context
 
