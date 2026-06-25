@@ -87,7 +87,9 @@ Negative:
 - The lineage disjointness solver moves from being a core feature to
   being a `std::lineage` constraint hook.  The hook interface
   becomes load-bearing and must be specified carefully (decidability,
-  fallback, error reporting).
+  fallback, error reporting).  `docs/language/08-lineage.md` works this
+  hook out in full as the first concrete qualifier, modeling disjointness
+  on completeness's establish/propagate/demand/assume surface.
 - The LSP and the diagnostics renderer must display arbitrary
   qualifiers, not four hard-coded ones.  Hover tooltips and error
   messages need a uniform protocol every qualifier participates in.

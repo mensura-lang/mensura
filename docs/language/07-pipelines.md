@@ -177,7 +177,8 @@ the union is complete over a key iff both inputs are.  Tier A.
 
 Disjointness itself (the precondition for *not* leaking across a split) is a
 lineage-qualifier matter, tracked in `Qs`, not an algebra precondition on
-`bind`.
+`bind`.  How that fact is established, propagated, demanded, and assumed is
+specified in `08-lineage.md`.
 
 ### `unpivot` / `pivot` - reshape long and wide
 
@@ -257,7 +258,8 @@ combinators of ADR 0004; this document does not re-state those rules per
 operation.  Two qualifier-level preconditions are worth flagging because they
 sit next to operations here: window-shaped `group_map` returns need an ordering
 from the dependency qualifier, and leak-free use of `bind` is governed by the
-lineage qualifier (disjointness), not by the algebra.
+lineage qualifier (disjointness, specified in `08-lineage.md`), not by the
+algebra.
 
 Every operation is pure and lazy, as everything in the expression sublanguage
 is.  A pipeline is a description of a table; the hosting site
