@@ -14,6 +14,10 @@
 - [Stores and attributes](modelling/stores.md)
 - [Shapes](modelling/shapes.md)
 
+# Concepts
+
+- [What the types track](concepts/what-the-types-track.md)
+
 ---
 
 [What's next](whats-next.md)

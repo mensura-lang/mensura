@@ -1,0 +1,11 @@
+<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" rx="26" fill="#16252C"/>
+  <!-- mark, clean letterform; two brass accents only -->
+  <g transform="translate(38,22) scale(0.258)">
+    <polyline points="20,305 20,20 100,200.9 180,20 180,305" fill="none"
+              stroke="#FAFBFC" stroke-width="40" stroke-linejoin="miter" stroke-linecap="butt"/>
+    <g fill="#E0B262">
+      <rect x="-20" y="40" width="20" height="6"/><rect x="200" y="250" width="20" height="6"/>
+    </g>
+  </g>
+</svg>
