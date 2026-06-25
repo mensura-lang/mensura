@@ -65,7 +65,7 @@ mensura/
 ## Status: where we are
 
 - **Design.**  `docs/language/00-overview` through `08-lineage`, ADRs
-  0004-0009, and `docs/toolkit/00-storage-backend.md` exist.  The core is
+  0001-0009, and `docs/toolkit/00-storage-backend.md` exist.  The core is
   specified: units, stores, shapes, the LL(1) grammar, naming, the expression
   sublanguage, the pipeline primitives, and lineage/disjointness.  The table
   type is `Table<Qs, C>` (a row of qualifiers plus content); sampling,
