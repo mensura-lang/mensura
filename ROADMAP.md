@@ -1,268 +1,270 @@
 # Mensura roadmap
 
-A phased plan for building the Mensura language and its tooling. The goal is a
+A phased plan for building the Mensura language and its tooling.  The goal is a
 language that encodes data-handling, sampling, dependency, and lineage
-properties into the type system so that semantic mistakes (data leakage, wrong
-CV strategy for temporal data, biased training sets, broken split-invariance)
-become compile errors.
+properties into the type system so that semantic mistakes (data leakage, the
+wrong CV strategy for temporal data, biased training sets, broken
+split-invariance, unit mismatches) become compile errors.
+
+The plan is aimed at one driving application: a **streaming
+predictive-maintenance service over a fleet of devices**.  Reaching it end to
+end (dimensional sensor units, device ingestion over the wire, windowed
+features, incrementally refreshed views, and a leak-free temporal/grouped
+validation pipeline served behind endpoints) is the North Star that orders the
+milestones below.
 
 ## Implementation choices (decided)
 
 - **Host language:** Rust.
-- **Parser:** hand-written recursive descent over an LL(1) grammar. No parser
-  generator, no backtracking, one token of lookahead. The grammar in
-  `docs/language/01-syntax.md` must be specified as LL(1); any construct that
-  cannot be expressed in LL(1) must be reworked at the syntax level rather
-  than handled by the parser.
-- **Runtime backend:** Apache Arrow + Polars. Mensura is interpreted on top of
-  a Polars `LazyFrame`-shaped runtime, at least until the language stabilizes.
-- **CLI shape:** a single `mensura` binary with subcommands. Subcommands are
-  added milestone-by-milestone (examples only, not decided):
-  - `mensura check <file>` — typecheck only
-  - `mensura run <file>` — typecheck + execute
-  - `mensura test [<filter>]` — run language tests and endpoint tests
-  - `mensura fmt <file>` — format
-  - `mensura repl` — interactive REPL
-  - `mensura lsp` — language server (speaks LSP over stdio)
-  - `mensura serve <file>` — run a Mensura program as a web service
-    (stores/collect endpoints)
-  - `mensura migrate <from> <to>` — generate a migration plan between two
-    schema revisions
-- **Specs first.** Every language- or tooling-level feature lands as a design
-  document under `docs/` before code. Code is the encoding of an agreed-upon
+- **Parser:** hand-written recursive descent over an LL(1) grammar.  No parser
+  generator, no backtracking, one token of lookahead.  The grammar in
+  `docs/language/04-grammar.md` must be LL(1); any construct that cannot be
+  expressed in LL(1) is reworked at the syntax level rather than handled by the
+  parser.
+- **Backend: storage and processing are split.**  Stores are persisted in
+  SQLite (`rusqlite`, in `mensura-runtime`); pipelines and views are evaluated
+  by an incremental, DBSP-style processing layer, which is what the streaming
+  and `on_change`-refresh targets need.  The split is specified in
+  `docs/toolkit/03-storage-backend.md`.
+- **CLI shape:** a single `mensura` binary with subcommands, added
+  milestone-by-milestone:
+  - `mensura check <file>`: typecheck only.
+  - `mensura run <file>`: typecheck and execute.
+  - `mensura test [<filter>]`: run language and endpoint tests.
+  - `mensura fmt <file>`: format.
+  - `mensura repl`: interactive REPL.
+  - `mensura lsp`: language server (LSP over stdio).
+  - `mensura serve <file>`: run a program as a web service (store and
+    `collect` endpoints).
+  - `mensura migrate <from> <to>`: generate a migration plan between two schema
+    revisions.
+- **Specs first.**  Every language- or tooling-level feature lands as a design
+  document under `docs/` before code.  Code is the encoding of an agreed-upon
   spec, not the place where decisions get made.
 
-## Repository layout (proposed)
+## Repository layout
 
 ```
 mensura/
   ROADMAP.md            -- this file
   docs/
     language/           -- language design documents (one per concept)
-    toolkit/            -- design docs for mensura subcommands
-    examples/           -- worked examples used to validate the design
+    toolkit/            -- design docs for the subcommands and the backend
+    examples/           -- worked examples that must compile (validate design)
     decisions/          -- ADR-style notes for non-obvious choices
-  crates/               -- once implementation begins
+  crates/
     mensura-syntax/     -- lexer, parser, AST
-    mensura-types/      -- type checker, disjointness solver
-    mensura-runtime/    -- Polars-backed interpreter
+    mensura-types/      -- name resolution, the resolved Schema, the hooks
+    mensura-runtime/    -- SQLite storage backend and the processing layer
     mensura-cli/        -- the `mensura` binary
-    mensura-lsp/        -- the `mensura lsp` subcommand backend
-  formal/               -- Lean 4 formalization of the data-handling algebra
-                           (Mathlib-backed); see decisions/0008
+    mensura-lsp/        -- the `mensura lsp` backend (planned)
+  formal/               -- Lean 4 formalization of the algebra (Mathlib-backed);
+                           see decisions/0008
 ```
 
-## Pre-M0 — Design docs only
+## Status: where we are
 
-No code yet. The output of this phase is a `docs/` tree thick enough that
-implementation becomes mechanical.
+- **Design.**  `docs/language/00-overview` through `08-lineage`, ADRs
+  0004-0009, and `docs/toolkit/03-storage-backend.md` exist.  The core is
+  specified: units, stores, shapes, the LL(1) grammar, naming, the expression
+  sublanguage, the pipeline primitives, and lineage/disjointness.  The table
+  type is `Table<Qs, C>` (a row of qualifiers plus content); sampling,
+  dependency, and lineage are standard-library qualifiers, not language slots
+  (ADR 0004).
+- **Calculus.**  The data-handling algebra is mechanized in Lean 4 under
+  `formal/`: split-safety and its composition, completeness, the split-safe
+  `pivotAttr` with its reversibility, and the `bind` disjointness lemma.
+- **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
+  -> SQLite` is built for the "basic" subset: scalar-index units, stores with
+  primitive and `enum` attributes, shapes, and named enums.  Expressions,
+  pipelines, and the lineage hook are specified ahead of the parser and are not
+  yet implemented.  Compound units, foreign-key (`domain`) resolution, and
+  physical-unit/precision types are deferred.
+- **Design docs still to write** (each ahead of its milestone, per specs
+  first): physical units and precision; measure semantics (additivity);
+  devices and `collect`; ingestion endpoints; streaming windows and refresh; ML
+  signatures and validation; the serving/transport integration; and the
+  toolkit docs for the CLI, diagnostics, and LSP.
 
-Minimum set of documents before M0 ends:
+The original design-only phase is essentially complete for the core; what
+remains is captured per milestone below.
 
-- `docs/language/00-overview.md` — what Mensura is, its design pillars,
-  what is in and out of scope.
-- `docs/language/01-syntax.md` — surface grammar (informal, EBNF-ish).
-- `docs/language/02-types.md` — the type quadruple
-  `Table<Sampling, Dependency, Lineage, Content>` and its subtyping.
-- `docs/language/03-units-and-tables.md` — units, indexes, measures, targets,
-  relates; constants vs. variables; the `is` schema-extension form.
-- `docs/language/04-operations.md` — the algebra. Tier A (split-invariant) and
-  Tier B (require completeness checks). Each operation gets a typing rule.
-- `docs/language/05-lineage.md` — lineage trees and the disjointness solver.
-- `docs/language/06-sampling-dependency.md` — the sampling and dependency
-  hierarchies, where they propagate, where they require `assume`.
-- `docs/language/07-stores-and-collect.md` — `store` vs. `collect`, the
-  CRUD/REST mapping, what properties each derives from its mechanism.
-- `docs/language/08-streaming.md` — windows, embeddings, reactive `on` blocks,
-  snapshots.
-- `docs/language/09-flexibility.md` — `assume`, store-derived properties,
-  the policy on where the language deliberately stops checking.
-- `docs/toolkit/00-cli.md` — the `mensura` binary and its subcommands.
-- `docs/toolkit/01-diagnostics.md` — error model and how types show up in
-  diagnostics (this is a feature, not a polish item).
-- `docs/toolkit/02-lsp.md` — what the LSP exposes; hovering must reveal the
-  full type quadruple.
-- `docs/decisions/0001-rust-polars-interpreter.md`
-- `docs/decisions/0002-no-defaults-policy.md`
-- `docs/decisions/0003-cli-subcommand-shape.md`
+## M0 - Calculus and spec freeze
 
-Validation criterion: every code example in the book's Chapter 5, the proposal,
-and the postdoc report can be transcribed to Mensura syntax and the docs say
-unambiguously whether each one type-checks.
+Output: a versioned typing-rule reference collecting the rules from the design
+docs into one place, detailed enough that two people implementing independently
+would build compatible compilers.
 
-## M0 — Calculus & spec freeze
+- Core grammar in EBNF, proven LL(1) (no left recursion, disjoint FIRST sets,
+  FIRST/FOLLOW disjoint at every nullable production), including the expression
+  productions.  The freeze is contingent on this proof.
+- The `Table<Qs, C>` type and the qualifier framework (ADR 0004): the
+  propagation combinators and the constraint-hook interface.
+- Typing rules for the pipeline primitives (`map`, `group_map`,
+  `extend_key`/`shrink_key`, `left_join`/`inner_join`, `split`/`bind`,
+  `unpivot`/`pivot`), with their cardinality and completeness effects.
+- The disjointness constraint hook over the lineage qualifier
+  (`docs/language/08-lineage.md`).
+- A must-accept / must-reject test suite derived from the book's Chapter 5 and
+  the worked examples.
 
-Output: a versioned spec document collecting the rules from the design docs
-into a single typing-rule reference. No implementation, but the spec is
-detailed enough that two people implementing independently would build
-compatible compilers.
+The algebra underpinning the freeze is mechanized in Lean 4 (done; see
+`docs/decisions/0008-formalize-algebra-in-lean.md`); the split-safety results
+are proved there before the calculus is declared stable.
 
-Specifically:
+## M1 - Frontend for the core language
 
-- Core grammar in EBNF, proven LL(1): no left recursion, disjoint FIRST sets
-  at every alternative, and FIRST/FOLLOW disjoint wherever a nullable
-  production appears. The freeze is contingent on this proof.
-- Type quadruple `Table<S, D, L, C>` with subtyping rules.
-- Typing rules for: `partition`, `filter`, `sample`, `with_ordering`,
-  `temporal_split`, `bind` (tagged), `split` (tagged), `select`, `mutate`,
-  `aggregate`, `ungroup`, `pivot` / `unpivot`, `left_join`,
-  `tumbling_window`, `sliding_window`, `embed`.
-- Disjointness solver semantics over lineage trees.
-- A working definition of split-invariance for binary operations (closes the
-  open question in the book's Chapter 5).
-- Completeness propagation rules for `collect`-sourced data.
-- A test suite of "must accept" and "must reject" programs, derived from the
-  examples in the chapter and the postdoc report.
+Output: `mensura check file.mensura` accepts or rejects programs over the whole
+core language, with span-based diagnostics.
 
-The algebra underpinning this freeze is mechanized in Lean 4 under `formal/`
-(see `docs/decisions/0008-formalize-algebra-in-lean.md`). The split-invariance
-results, in particular, are proved there before the calculus is declared
-stable.
+- `mensura-syntax`: extend the parser past the declaration subset to the
+  expression sublanguage and the pipeline primitives (record literals,
+  statement blocks, `|>`, `|x|` lambdas), per `04-grammar.md`.
+- `mensura-types`: type-check expressions and pipelines over `Table<Qs, C>`,
+  including cardinality, completeness, and the disjointness hook.  Predicate
+  disjointness has a decidable fragment (linear arithmetic over numeric key
+  fields) and falls back to `assume` outside it.
+- `mensura-cli`: the `check` subcommand.
+- Diagnostics with source spans and suggested fixes where possible.
 
-## M1 — Frontend: parse + typecheck (no execution)
+Validation: the M0 suite classifies every example correctly.
 
-Output: `mensura check file.mensura` accepts/rejects programs with span-based
-diagnostics.
+## M2 - Processing runtime and the first pipeline
 
-- `mensura-syntax`: lexer, hand-written recursive-descent LL(1) parser, AST,
-  pretty-printer. One token of lookahead; no backtracking.
-- `mensura-types`: name resolution (two-pass), type-checker over the
-  quadruple, disjointness solver. Predicate disjointness has a decidable
-  fragment (linear arithmetic over numeric fields) and falls back to `assume`
-  outside it.
-- `mensura-cli`: just the `check` subcommand to start.
-- Diagnostics with source spans, suggested fixes where possible.
+Output: `mensura run` materializes a Tier A view from stores, end to end
+(non-streaming first).
 
-Validation: the M0 test suite classifies every example correctly.
+- `mensura-runtime`: the DBSP-style processing layer over the SQLite storage
+  backend (`docs/toolkit/03-storage-backend.md`).
+- Implement the Tier A primitives at runtime (`map`/`filter`/`group_map`/
+  `left_join`/...), reading from and writing to stores.
+- Disjointness and completeness proven at compile time, then trusted at
+  runtime.
 
-## M2 — Vertical slice: end-to-end ML pipeline
+This is the "first working language" milestone; narrow on purpose.
 
-Output: the concise pipeline at the end of `mensura.tex` (load → partition →
-random-forest train → evaluate) actually runs end-to-end.
+## M3 - Physical units, precision, and measure semantics
 
-- `mensura-runtime`: Polars-backed runtime for `Table`. `LazyFrame` underneath
-  most operations.
-- Implement `load`, `partition`, `filter`, `sample`, `evaluate` at runtime.
-- Wire one ML algorithm (random forest, via `linfa` or `smartcore`) with its
-  typed signature.
-- `mensura run` subcommand.
-- Disjointness proven at compile time, then trusted at runtime.
+Output: dimensional quantities are first-class, and unit mismatch is a compile
+error.
 
-This is the "first working language" milestone. Narrow on purpose.
+- Design docs first: physical units and precision; measure semantics.
+- Dimensional unit algebra: SI base units and derived units (for example
+  `length / time^2`), with unit checking and conversion.
+- `NxE` precision literals (integer significand, signed exponent) carrying
+  significance.
+- Measure-semantics annotations (`@additive`, `@semiadditive`, `@foldable`)
+  that gate which window rollups are valid.
 
-## M3 — Algebra surface (chapter Tier A + Tier B)
+## M4 - Devices, collect, and ingestion
 
-Output: every operation in the book's Chapter 5 is a language primitive, with
-correct typing.
+Output: device readings land in stores under a typed ingestion path.
 
-- Tier A: tagged `bind`/`split`, `pivot`/`unpivot`, `select`, `filter`,
-  `mutate`, `aggregate`, `ungroup`, `left_join`.
-- Tier B: `project`/`group`, inner `join`, grouped/arranged variants of
-  `mutate`/`filter`. Each requires `completeness_check { ... }` or a
-  `complete_over` annotation on its source.
-- `transform` and `view` blocks compile to typed pipelines.
-- `is` schema-extension form with its required derivation transform.
+- Design docs first: devices and `collect`; ingestion (the `insert`/`update`/
+  `set`/`where`/`case` forms).
+- `device` and `collect` declarations; `collect` is complete by mechanism
+  (overview pillar 7).
+- Store ingestion via the CLI or as a library; the over-the-wire transport is
+  wired in M7.
 
-## M4 — Stores, endpoints, auth (the proposal.md scope)
+## M5 - Streaming and reactive
 
-Optional for the academic deliverable; required for the language to be
-usable as a backend platform. Defer the decision to fork this off as a
-separate `mensura-server` project until after M3.
+Output: windowed, incrementally refreshed views over device streams.
 
-Output: the college case study from `proposal.md` runs as a web service.
+- Design doc first: streaming windows and refresh.
+- `sliding_window` and tumbling windows, `latest`, window-closedness, and
+  `on_change` / incremental refresh through the processing layer.
+- Per-window sampling inference (Exhaustive when the fleet is fully covered,
+  Biased or Representative otherwise).
+- The temporal and dependency typing rules, and temporal referential integrity
+  (the "outlives" constraint), extending `docs/language/08-lineage.md`.
+
+## M6 - ML strategies and validation
+
+Output: the type system catches the full bug-class catalogue the project
+promises to prevent, and the leak-free predictive-maintenance pipeline
+computes.
+
+- Design doc first: ML signatures and validation.
+- Model signatures (`fit`, `predict`, `evaluate`) as typed primitives
+  (`random_forest`, `arima`, `mixed_effects`, ...), each with its structural
+  input requirements.
+- Validation strategies (k-fold, stratified, temporal, grouped), each with a
+  disjointness proof; feature/label separation via shapes and lineage;
+  censoring via `is known`.
+- A showcase suite in which leakage, the wrong CV on temporal data, unit
+  mismatch, and group leak are each a compile error.
+
+## M7 - Serving, transport, and auth (the North Star)
+
+Output: the streaming predictive-maintenance service runs end to end.
 
 Design settled ahead of implementation:
-`docs/decisions/0005-identity-and-authorization.md` (federated SPIFFE
-identity, unified `auth {}`, RBAC plus bounded ABAC),
-`docs/decisions/0006-transport-agnostic-surface.md` (core stays
-wire-agnostic, deploy config owns transport selection), and
-`docs/language/05-naming-and-casing.md` (canonical names and wire
-translation).
+`docs/decisions/0005-identity-and-authorization.md` (federated identity, a
+unified `auth {}`, RBAC plus bounded ABAC) and
+`docs/decisions/0006-transport-agnostic-surface.md` (the core stays
+wire-agnostic; deploy config owns transport selection).  Naming and wire
+translation are in `docs/language/05-naming-and-casing.md`.
 
-- `store` and `collect` with auto-generated REST endpoints.
-- Auditing (`@audited`), versioning (`@versioned`), auto-fields (`@auto`),
-  creation-control (`@allowcreate`).
-- OAuth integration as specified in the proposal.
-- `mensura test` runs both language-level tests and endpoint tests.
-- Permission-flow analysis to catch missing permissions at compile time
-  (resolving the proposal's `XXX`).
-- `mensura serve` subcommand.
-
-## M5 — Tooling
-
-Run in parallel with M3, not after — the LSP is what makes the type system
-visibly useful and is essential for any demo.
-
-- `mensura lsp`: hover (showing the full type quadruple),
-  diagnostics, completion, goto-def, find-references. Hovering on any
-  binding must reveal sampling, dependency, lineage, content.
-- `mensura fmt`.
-- `mensura repl` for exploratory work.
-- `mensura migrate`: diff two schema revisions (typically two git commits)
-  and emit a migration plan. Initial version targets schema diffs only;
-  data-migration scaffolding comes later.
-
-## M6 — Reactive & streaming
-
-Output: the IoT pipeline from `streaming.tex` runs.
-
-- `store` declarations with `endpoint`, `temporal`, `fleet`, `mode
-  append_only`, `report_interval`.
-- Per-window sampling inference: Exhaustive when the fleet is fully covered,
-  Biased / Representative otherwise.
-- `tumbling_window`, `sliding_window`, `embed` with their dependency-typing
-  rules.
-- `on store.every(...)` reactive blocks.
-- `snapshot` for consistency under retraining.
-- The $\bot$ (not observed) vs. `?` (missing) distinction surfaced in the
-  type system.
-
-## M7 — ML strategies & validation
-
-Output: the type system catches the full bug-class catalog the project
-promises to prevent.
-
-- Algorithm signatures encoded as typeclasses/traits: `random_forest`,
-  `arima`, `mixed_effects`, etc., each with its structural input
-  requirements.
-- Validation strategies: k-fold, stratified, temporal, grouped — each with a
-  disjointness proof.
-- Metrics typed by content (regression vs. classification, etc.).
-- "Showcase test suite": leakage, wrong-CV-on-temporal, unit mismatch,
-  group-leak. Each must be a compile error.
+- Auto-generated REST and MQTT endpoints for stores, `collect`, and views.
+- Device identity, RBAC, and compile-time permission-flow analysis.
+- Change-control annotations (`@audited`, `@versioned`, `@auto`,
+  `@allowcreate`).
+- Live views served with `on_change` refresh.
+- `mensura serve`, and `mensura test` over language and endpoint tests.
 
 ## Cross-cutting (continuous)
 
-- Documentation site generated from `docs/` and code comments.
-- Examples repo: college case study (M4), IoT case study (M6), ML validation
-  case study (M7).
-- Benchmark suite vs. pandas/Polars/tidyverse on equivalent workloads —
-  feeds the eventual paper.
-- ADR-style decision log under `docs/decisions/` for any non-obvious choice
+- **Tooling.**  `mensura lsp` (hover reveals the full `Table<Qs, C>` type:
+  every qualifier and the content), `mensura fmt`, `mensura repl`, and
+  `mensura migrate` (schema diffs first, data-migration scaffolding later).
+  The LSP runs in parallel from about M1; typed feedback in an editor is the
+  language's main user-facing claim, not a polish item.
+- **Examples discipline.**  Worked examples live in `docs/examples/`, grow
+  incrementally (one milestone's features at a time), and are kept compiling:
+  each is exercised by a resolve/run test (as `committed_example_resolves` does
+  for `college-stores.mensura`), so a milestone that breaks an example fails
+  CI.  A college case study and a streaming fleet example are the running
+  integration tests.
+- **Diagnostics** are a feature, not polish; the error model gets its own
+  toolkit design doc.
+- **Benchmarks** against pandas/Polars/tidyverse on equivalent workloads, to
+  feed the eventual paper.
+- **Decision log.**  ADRs under `docs/decisions/` for any non-obvious choice
   made during implementation.
 
 ## Suggested execution order
 
 ```
-Pre-M0  ──►  M0  ──►  M1  ──►  M2  ──┬──►  M3  ──┐
-                                     │           ├──►  M6  ──►  M7
-                                     └──►  M5  ──┘
-                                     M4 (optional, parallel after M2)
+M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 ──► M6 ──► M7
+              │
+              └──► tooling (LSP, fmt, repl) in parallel from ~M1
 ```
 
-M5 (LSP and tooling) starts as soon as M2 is demoable — typed feedback in an
-editor is the language's main user-facing claim, not a polish item.
+Units (M3) precede streaming (M5) because window rollups are gated by measure
+semantics; streaming precedes ML validation (M6) because the features are
+windowed; serving (M7) is last because it puts the whole typed pipeline behind
+endpoints.
 
-## Open questions to resolve before M0 freezes
+## Validation criterion
 
-1. **Is M4 in scope as a Mensura goal, or a separate project?** The postdoc
-   report scopes the academic work to ML validation; M4 (web service /
-   endpoints / auth) goes well beyond that. Two viable answers: keep M4 as a
-   `mensura-server` companion project, or accept that Mensura is a
-   general-purpose data-handling language and absorb M4 into the core.
-2. **`assume` only, or also an `exploratory` mode?** Recommendation: only
-   `assume`, no mode. Every relaxation is local, visible, and auditable.
-3. **Scope of split-invariance for binary operations.** The chapter leaves
-   this open and conjectures inner join is unsafe. M0 must close this
-   formally — without it, the typing rules for `bind` and `join` cannot be
-   written precisely.
+Every example in the book's Chapter 5 and the worked case studies in
+`docs/examples/` transcribes to Mensura, and the docs say unambiguously whether
+each type-checks.  The per-milestone must-accept / must-reject suite classifies
+them correctly, and every `docs/examples/` file compiles.
+
+## Open questions
+
+1. **`assume` only, or also an `exploratory` mode?**  Recommendation: only
+   `assume`, no mode.  Every relaxation is local, visible, and auditable.
+2. **How much of the serving surface forks into a companion project?**  The
+   core language is usable without the web surface; whether `mensura serve` and
+   the transport layer live here or in a `mensura-server` companion is settled
+   when M7 is scoped.
+3. **Decidability bounds of the qualifier hooks.**  The disjointness hook has a
+   decidable fragment with an `assume` fallback (`08-lineage.md`); whether
+   other `std` qualifiers stay inside a decidable fragment is open (ADR 0004).
+
+The earlier open question on split-invariance for binary operations is closed
+by the Lean formalization: `bind` is total and split-safe, and the Tier A / Tier
+B boundary is proved.
