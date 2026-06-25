@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="mensura-lockup.svg" alt="Mensura" width="480">
+</p>
+
 # Mensura
 
 A statically typed language for data handling.
