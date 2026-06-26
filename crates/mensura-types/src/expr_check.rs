@@ -101,6 +101,17 @@ impl Context {
         }
     }
 
+    /// Bind a group lambda's parameter (e.g. `g`) to a record whose fields are
+    /// the table's columns as bags (section 5.4).
+    pub fn group(param: &str, table: &TableType) -> Context {
+        let mut names = BTreeMap::new();
+        names.insert(param.to_string(), group_record(table));
+        Context {
+            names,
+            aggregates: builtin_aggregates(),
+        }
+    }
+
     pub fn lookup(&self, name: &str) -> Option<&Ty> {
         self.names.get(name)
     }
@@ -155,6 +166,21 @@ fn row_record(table: &TableType) -> Ty {
     Ty::Record(fields)
 }
 
+/// A group view of a table: every cell is a bag (section 5.4, "`|g|` sees the
+/// whole bag at a key").
+fn group_record(table: &TableType) -> Ty {
+    let mut fields = BTreeMap::new();
+    for col in table.content.index.iter().chain(&table.content.columns) {
+        fields.insert(
+            col.name.clone(),
+            Ty::Bag {
+                domain: col.domain.clone(),
+            },
+        );
+    }
+    Ty::Record(fields)
+}
+
 /// Type an expression, collecting all diagnostics (parallels
 /// `resolve(&Program) -> Result<Vec<Schema>, Vec<ResolveError>>`).
 pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
@@ -172,6 +198,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Member(base, field) => type_member(ctx, base, field),
         ExprKind::Binary(op, lhs, rhs) => type_binary(ctx, *op, lhs, rhs, expr.span),
         ExprKind::Unary(op, operand) => type_unary(ctx, *op, operand, expr.span),
+        ExprKind::App(func, arg) => type_app(ctx, func, arg, expr.span),
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -199,6 +226,64 @@ fn type_member(ctx: &Context, base: &Expr, field: &Ident) -> Result<Ty, Vec<Type
             "member access on a non-record value",
             field.span,
         )]),
+    }
+}
+
+/// Application. The only form typed this increment is an aggregate applied to a
+/// bag (section 5.4); any other application is deferred.
+fn type_app(ctx: &Context, func: &Expr, arg: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
+    if let ExprKind::Name(name) = &func.kind {
+        if let Some(agg) = ctx.aggregate(name) {
+            return type_aggregate(ctx, agg, name, arg);
+        }
+    }
+    Err(vec![TypeError::new("unsupported in this increment", span)])
+}
+
+/// A bag combinator: it reduces or summarizes a bag to a single known value
+/// (section 5.4). The Total result is what lets the value feed a scalar operator
+/// (section 5.5).
+fn type_aggregate(ctx: &Context, agg: Agg, name: &str, arg: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let domain = match type_expr(ctx, arg)? {
+        Ty::Bag { domain } => domain,
+        _ => {
+            return Err(vec![TypeError::new(
+                format!("`{name}` expects a bag"),
+                arg.span,
+            )]);
+        }
+    };
+    match agg {
+        Agg::Sum | Agg::Mean | Agg::Min | Agg::Max => {
+            if domain == ColumnType::Number {
+                Ok(number_total())
+            } else {
+                Err(vec![TypeError::new(
+                    format!(
+                        "`{name}` expects a numeric bag, found a bag of {}",
+                        domain_name(&domain)
+                    ),
+                    arg.span,
+                )])
+            }
+        }
+        Agg::Count => Ok(number_total()),
+        Agg::Any | Agg::All => {
+            if domain == ColumnType::Bool {
+                Ok(Ty::Value {
+                    domain: ColumnType::Bool,
+                    opt: Optionality::Total,
+                })
+            } else {
+                Err(vec![TypeError::new(
+                    format!(
+                        "`{name}` expects a bag of booleans, found a bag of {}",
+                        domain_name(&domain)
+                    ),
+                    arg.span,
+                )])
+            }
+        }
     }
 }
 
@@ -486,6 +571,10 @@ mod tests {
         Context::row("r", &sample_table())
     }
 
+    fn group_ctx() -> Context {
+        Context::group("g", &sample_table())
+    }
+
     fn num_total() -> Ty {
         Ty::Value {
             domain: ColumnType::Number,
@@ -609,5 +698,53 @@ mod tests {
         let ctx = row_ctx();
         let errs = ty_of(&ctx, "r.machine < \"z\"").expect_err("string ordering");
         assert!(errs[0].message.contains("number"));
+    }
+
+    #[test]
+    fn group_columns_are_bags() {
+        let ctx = group_ctx();
+        assert_eq!(
+            ty_of(&ctx, "g.readings"),
+            Ok(Ty::Bag {
+                domain: ColumnType::Number
+            })
+        );
+    }
+
+    #[test]
+    fn reducing_aggregates_return_total_values() {
+        let ctx = group_ctx();
+        assert_eq!(ty_of(&ctx, "mean g.readings"), Ok(num_total()));
+        assert_eq!(ty_of(&ctx, "count g.note"), Ok(num_total()));
+        // The canonical accept (09 §5.4): an aggregate yields a known value, so
+        // the scalar comparison is well-typed.
+        assert_eq!(ty_of(&ctx, "mean g.readings > 30"), Ok(Ty::Bool));
+    }
+
+    #[test]
+    fn any_all_consume_bool_bags() {
+        let ctx = group_ctx();
+        let bool_total = Ty::Value {
+            domain: ColumnType::Bool,
+            opt: Optionality::Total,
+        };
+        assert_eq!(ty_of(&ctx, "any g.flag"), Ok(bool_total.clone()));
+        assert_eq!(ty_of(&ctx, "all g.flag"), Ok(bool_total));
+    }
+
+    #[test]
+    fn scalar_on_a_bag_is_rejected() {
+        let ctx = group_ctx();
+        let errs = ty_of(&ctx, "g.readings + 1").expect_err("scalar on bag");
+        assert!(errs[0].message.contains("found a bag"));
+    }
+
+    #[test]
+    fn aggregate_domain_is_checked() {
+        let ctx = group_ctx();
+        let errs = ty_of(&ctx, "mean g.note").expect_err("non-numeric bag");
+        assert!(errs[0].message.contains("numeric bag"));
+        let errs = ty_of(&ctx, "any g.readings").expect_err("non-bool bag");
+        assert!(errs[0].message.contains("booleans"));
     }
 }
