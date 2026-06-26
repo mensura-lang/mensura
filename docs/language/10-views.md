@@ -86,24 +86,29 @@ A view is **not** forced to any particular cardinality.  It is a general
 materialized table: `bag` results are admitted.  This is the deliberate point
 where a view differs from the unit boundary of
 `docs/decisions/0001-unit-as-identity-discipline.md`: that 0-or-1 rule binds
-anything *promising a tabulation of a unit*, and a bare view promises no such
-thing.  A view opts into the unit discipline only by claiming a unit-fixing
-shape (next section); see `docs/decisions/0012-view-hosting.md`.
+anything *promising a tabulation of a unit*, and a view promises no such thing.
+A view does **not** enforce the `singletons` discipline, and a shape claim does
+not impose it either (next section); a dedicated syntax for requiring
+`singletons` on a view is deferred to a later round.  See
+`docs/decisions/0012-view-hosting.md`.
 
 ## Constraining a view with a shape
 
-The optional `: Shape` clause is the one structural constraint a view may carry,
-and it is how a view is pinned to a unit when that is wanted.
+The optional `: Shape` clause is the one structural constraint a view may carry.
+It constrains the view's output **content** only, never its cardinality.
 
 - **A unit-fixing shape** such as `Tabular[Machine]` requires the view's output
-  to be a tabulation of `Machine`: its index columns must be `Machine`'s index
-  (`03-shapes.md`, "The unit clause").  Claiming it makes the view a unit
-  boundary, and at that boundary the cardinality is expected to be `singletons`,
-  recovering the discipline of ADR 0001 for views that want it.
+  to carry `Machine`'s index columns as its index (`03-shapes.md`, "The unit
+  clause").  This is a check on the *structure* of the result; it does **not**
+  impose the 0-or-1 cardinality of ADR 0001.  A view that claims it may still be
+  `bag` if the pipeline leaves it so.
 - **A content shape** such as `Named` requires the output to carry the named
   columns, regardless of unit.
 - **No clause** leaves the view a free table of whatever shape the pipeline
   produces; nothing beyond the algebra constrains it.
+
+Enforcing `singletons` on a view (the 0-or-1 unit discipline) is a separate
+concern that a shape claim does not cover; the syntax for it is deferred.
 
 The check is the existing store conformance check, run against the computed
 output schema rather than a declared one.  This is the sense in which
@@ -125,9 +130,11 @@ view machine_temperature : Tabular[Machine] {
 
 `extend_key` adds `machine` to the key (content: index grows; cardinality and
 completeness preserved); `group_map` reduces each group to one record, so the
-result is `singletons` per `(..., machine)` key.  All Tier A, so it composes
-safely.  The view claims `Tabular[Machine]`, so the boundary check confirms the
-output is a tabulation of `Machine`.
+result is `singletons` per `(..., machine)` key (a fact the pipeline produces,
+not one the view imposes).  All Tier A, so it composes safely.  The view claims
+`Tabular[Machine]`, so the conformance check confirms the output's index is
+`Machine`'s; the `singletons` cardinality here comes from the `group_map`, not
+from the shape.
 
 **Split and re-merge, with a `let` fork.**
 
@@ -151,6 +158,9 @@ composes freely and carries the four properties end to end
 rounds, each ahead of the milestone that needs it (`ROADMAP.md`, "specs first"),
 and are noted here only so the scope is unambiguous:
 
+- **Enforcing `singletons`.**  A syntax that requires a view's output to be
+  0-or-1 per key (the unit discipline of ADR 0001).  No clause does this in this
+  round; a shape claim checks content, not cardinality.
 - **Tier B inside a view.**  Hosting `shrink_key` and the index form of `pivot`
   in a view body, and discharging their completeness obligation
   (`completeness_check`, `@complete_over`, a `collect` source, or `assume`) at

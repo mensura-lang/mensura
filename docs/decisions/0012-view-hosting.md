@@ -38,12 +38,14 @@ is, and whether a view is constrained at its boundary.
   `bag`; it is a general materialized table.  The 0-or-1 unit-boundary rule of
   `docs/decisions/0001-unit-as-identity-discipline.md` binds only a table
   *promising a tabulation of a unit*, and a bare view promises none.
-- **Unit and structure constraints are opt-in via a shape.**  The optional `:`
-  conformance clause is the one structural check a view may carry, run against
-  the computed output schema with the existing store conformance check
-  (`03-shapes.md`).  A unit-fixing shape (`Tabular[Machine]`) makes the view a
-  tabulation of that unit, recovering the ADR 0001 discipline (and its
-  `singletons` expectation) for views that want it.
+- **Structure constraints are opt-in via a shape; cardinality is not
+  constrained.**  The optional `:` conformance clause is the one structural
+  check a view may carry, run against the computed output schema with the
+  existing store conformance check (`03-shapes.md`).  A unit-fixing shape
+  (`Tabular[Machine]`) requires the output to carry that unit's index columns,
+  but it checks *content* only: it does **not** impose the ADR 0001 `singletons`
+  discipline.  Enforcing 0-or-1 cardinality on a view is left to a dedicated
+  future syntax (open questions).
 - **Tier A only, this round.**  A view body admits the split-safe Tier A kernel.
   Hosting the Tier B operations and discharging their completeness obligation,
   lineage-demanding sites, streaming/refresh, serving, and runtime
@@ -66,11 +68,12 @@ Positive:
 
 Negative:
 
-- A view that *should* tabulate a unit is only checked to do so if it claims a
-  unit-fixing shape; forget the shape and the looser `bag` view type-checks.
-  The opt-in is deliberate but shifts that guarantee onto the author.
+- There is no way, this round, to require a view to be a proper unit tabulation
+  (0-or-1 per key): a shape checks the index structure but not the cardinality,
+  so a `bag` view always type-checks.  The guarantee returns only when the
+  deferred `singletons` syntax lands.
 - `00-overview.md` and ADR 0001 describe `view` as a unit boundary; this ADR
-  narrows that to "a view that promises a tabulation of a unit", which those
+  drops that for the bare `view` (cardinality may be `bag`), which those
   documents now cross-reference.
 
 Neutral:
@@ -82,9 +85,10 @@ Neutral:
 
 1. **Mandatory `unit { U }` clause and a `singletons` boundary**, mirroring a
    store exactly and enforcing ADR 0001 on every view.  Rejected: it forbids
-   the common `bag`-shaped derived table for no algebraic reason, and the
-   unit/cardinality guarantee is still available on demand through a unit-fixing
-   shape.
+   the common `bag`-shaped derived table for no algebraic reason.  The
+   `singletons` guarantee is not folded into shape conformance either; it is
+   deferred to its own syntax so that requiring it stays an explicit, separate
+   choice.
 2. **`const`/`var` blocks on a view**, declaring its columns like a store.
    Rejected: a view's content is computed by the pipeline (pillar 7); enumerating
    it would duplicate the algebra's output and invite mismatch.
@@ -97,6 +101,9 @@ Neutral:
 
 ## Open questions
 
+- **Enforcing `singletons`.**  The syntax by which a view requires its output to
+  be 0-or-1 per key (the ADR 0001 unit discipline), since neither a bare view
+  nor a shape claim imposes it.
 - **Materialization semantics.**  How `mensura run` computes and refreshes a
   view over the storage backend (the DBSP-style processing layer, M2).
 - **Views reading views.**  Acyclicity of a view dependency graph and how a
