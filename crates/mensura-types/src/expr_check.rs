@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use mensura_syntax::{Expr, ExprKind, Ident, Span};
+use mensura_syntax::{BinOp, Expr, ExprKind, Ident, Span, UnOp};
 
 use crate::model::ColumnType;
 use crate::table::TableType;
@@ -170,6 +170,8 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Bool(_) => Ok(Ty::Bool),
         ExprKind::Name(name) => type_name(ctx, name, expr.span),
         ExprKind::Member(base, field) => type_member(ctx, base, field),
+        ExprKind::Binary(op, lhs, rhs) => type_binary(ctx, *op, lhs, rhs, expr.span),
+        ExprKind::Unary(op, operand) => type_unary(ctx, *op, operand, expr.span),
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -197,6 +199,105 @@ fn type_member(ctx: &Context, base: &Expr, field: &Ident) -> Result<Ty, Vec<Type
             "member access on a non-record value",
             field.span,
         )]),
+    }
+}
+
+fn type_binary(
+    ctx: &Context,
+    op: BinOp,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => {
+            let mut errs = require_value(ctx, lhs, &ColumnType::Number, "an arithmetic operator");
+            errs.extend(require_value(
+                ctx,
+                rhs,
+                &ColumnType::Number,
+                "an arithmetic operator",
+            ));
+            if errs.is_empty() {
+                Ok(number_total())
+            } else {
+                Err(errs)
+            }
+        }
+        _ => Err(vec![TypeError::new("unsupported in this increment", span)]),
+    }
+}
+
+fn type_unary(ctx: &Context, op: UnOp, operand: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
+    match op {
+        UnOp::Neg => {
+            let errs = require_value(ctx, operand, &ColumnType::Number, "negation");
+            if errs.is_empty() {
+                Ok(number_total())
+            } else {
+                Err(errs)
+            }
+        }
+        _ => Err(vec![TypeError::new("unsupported in this increment", span)]),
+    }
+}
+
+fn number_total() -> Ty {
+    Ty::Value {
+        domain: ColumnType::Number,
+        opt: Optionality::Total,
+    }
+}
+
+/// Require `operand` to be a single known value of `want` (the scalar rule,
+/// section 5.3). Returns the collected errors (empty if it satisfies the rule).
+fn require_value(ctx: &Context, operand: &Expr, want: &ColumnType, what: &str) -> Vec<TypeError> {
+    let ty = match type_expr(ctx, operand) {
+        Ok(ty) => ty,
+        Err(errs) => return errs,
+    };
+    match &ty {
+        Ty::Value {
+            domain,
+            opt: Optionality::Total,
+        } if domain == want => Vec::new(),
+        Ty::Value {
+            opt: Optionality::Optional,
+            ..
+        } => vec![TypeError::new(
+            format!("{what} expects a known value; this value may be missing"),
+            operand.span,
+        )],
+        Ty::Bag { .. } => vec![TypeError::new(
+            format!("{what} expects a single value, found a bag"),
+            operand.span,
+        )],
+        Ty::Value { domain, .. } => vec![TypeError::new(
+            format!(
+                "{what} expects a {}, found a {}",
+                domain_name(want),
+                domain_name(domain)
+            ),
+            operand.span,
+        )],
+        Ty::Bool => vec![TypeError::new(
+            format!("{what} expects a {}, found a boolean", domain_name(want)),
+            operand.span,
+        )],
+        Ty::Record(_) => vec![TypeError::new(
+            format!("{what} expects a {}, found a row", domain_name(want)),
+            operand.span,
+        )],
+    }
+}
+
+fn domain_name(domain: &ColumnType) -> &'static str {
+    match domain {
+        ColumnType::String => "string",
+        ColumnType::Number => "number",
+        ColumnType::Bool => "bool",
+        ColumnType::Date => "date",
+        ColumnType::Enum { .. } => "enum",
     }
 }
 
@@ -322,5 +423,27 @@ mod tests {
         let ctx = row_ctx();
         let errs = ty_of(&ctx, "r.temperature.x").expect_err("not a record");
         assert!(errs[0].message.contains("non-record"));
+    }
+
+    #[test]
+    fn scalar_arithmetic_on_known_numbers() {
+        let ctx = row_ctx();
+        assert_eq!(ty_of(&ctx, "r.temperature + 1"), Ok(num_total()));
+        assert_eq!(ty_of(&ctx, "2 ^ 3"), Ok(num_total()));
+        assert_eq!(ty_of(&ctx, "-r.temperature"), Ok(num_total()));
+    }
+
+    #[test]
+    fn scalar_on_optional_is_rejected() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.peak + 1").expect_err("optional operand");
+        assert!(errs[0].message.contains("known value"));
+    }
+
+    #[test]
+    fn scalar_on_wrong_domain_is_rejected() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.machine + 1").expect_err("domain mismatch");
+        assert!(errs[0].message.contains("number"));
     }
 }
