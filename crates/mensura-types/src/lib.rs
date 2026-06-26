@@ -5,10 +5,12 @@
 //! for what a store is and `docs/toolkit/03-storage-backend.md` for how a
 //! `Schema` becomes a table.
 
+pub mod expr_check;
 pub mod model;
 pub mod resolve;
 pub mod table;
 
+pub use expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 pub use model::{Column, ColumnRole, ColumnType, Schema};
 pub use resolve::{ResolveError, resolve};
 pub use table::{
