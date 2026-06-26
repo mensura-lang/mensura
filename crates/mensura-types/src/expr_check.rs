@@ -838,4 +838,13 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn binary_collects_both_operand_errors() {
+        // Like `resolve`, type_expr reports all diagnostics, not just the first:
+        // an unknown column on the left and an optional value on the right.
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.bogus + r.note").expect_err("two errors");
+        assert_eq!(errs.len(), 2);
+    }
 }
