@@ -1,17 +1,11 @@
-<p align="center">
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/mensura-lockup-dark.svg">
-    <img src="assets/mensura-lockup.svg" alt="Mensura" width="480">
+    <img src="assets/mensura-lockup.svg" alt="Mensura: measure twice, run once" width="480">
   </picture>
-</p>
+</h1>
 
-# Mensura
-
-A statically typed language for data handling.
-
-*Measure twice, run once.*
-
-## What it is
+<p align="center">A statically typed language for data handling.</p>
 
 Mensura is a programming language in which the type system encodes properties
 of the *data*, not just the shape of values.  A Mensura table type records how
