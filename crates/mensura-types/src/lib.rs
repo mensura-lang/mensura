@@ -11,4 +11,4 @@ pub mod table;
 
 pub use model::{Column, ColumnRole, ColumnType, Schema};
 pub use resolve::{ResolveError, resolve};
-pub use table::Cardinality;
+pub use table::{Branch, Cardinality, Lineage, Side, SplitId};
