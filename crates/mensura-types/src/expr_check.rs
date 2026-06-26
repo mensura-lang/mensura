@@ -224,11 +224,30 @@ fn type_binary(
                 Err(errs)
             }
         }
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            let mut errs = require_value(ctx, lhs, &ColumnType::Number, "a comparison");
+            errs.extend(require_value(ctx, rhs, &ColumnType::Number, "a comparison"));
+            if errs.is_empty() {
+                Ok(Ty::Bool)
+            } else {
+                Err(errs)
+            }
+        }
+        BinOp::Eq | BinOp::Ne => type_equality(ctx, lhs, rhs),
+        BinOp::And | BinOp::Or => {
+            let mut errs = require_bool(ctx, lhs, "a boolean operator");
+            errs.extend(require_bool(ctx, rhs, "a boolean operator"));
+            if errs.is_empty() {
+                Ok(Ty::Bool)
+            } else {
+                Err(errs)
+            }
+        }
         _ => Err(vec![TypeError::new("unsupported in this increment", span)]),
     }
 }
 
-fn type_unary(ctx: &Context, op: UnOp, operand: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
+fn type_unary(ctx: &Context, op: UnOp, operand: &Expr, _span: Span) -> Result<Ty, Vec<TypeError>> {
     match op {
         UnOp::Neg => {
             let errs = require_value(ctx, operand, &ColumnType::Number, "negation");
@@ -238,7 +257,90 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr, span: Span) -> Result<Ty,
                 Err(errs)
             }
         }
-        _ => Err(vec![TypeError::new("unsupported in this increment", span)]),
+        UnOp::Not => {
+            let errs = require_bool(ctx, operand, "`not`");
+            if errs.is_empty() {
+                Ok(Ty::Bool)
+            } else {
+                Err(errs)
+            }
+        }
+    }
+}
+
+/// `==` / `!=`: both sides must be known values of the same domain, with the
+/// enum-vs-string-literal exception of section 5.6.
+fn type_equality(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = Vec::new();
+    let lt = collect_ty(type_expr(ctx, lhs), &mut errs);
+    let rt = collect_ty(type_expr(ctx, rhs), &mut errs);
+    let (Some(lt), Some(rt)) = (lt, rt) else {
+        return Err(errs);
+    };
+
+    if let Some(res) = enum_vs_literal(&lt, rhs) {
+        return res;
+    }
+    if let Some(res) = enum_vs_literal(&rt, lhs) {
+        return res;
+    }
+
+    match (
+        as_known_value(&lt, "a comparison", lhs.span),
+        as_known_value(&rt, "a comparison", rhs.span),
+    ) {
+        (Ok(ld), Ok(rd)) if ld == rd => Ok(Ty::Bool),
+        (Ok(ld), Ok(rd)) => Err(vec![TypeError::new(
+            format!(
+                "a comparison expects matching domains, found a {} and a {}",
+                domain_name(&ld),
+                domain_name(&rd)
+            ),
+            lhs.span,
+        )]),
+        (ld, rd) => {
+            if let Err(e) = ld {
+                errs.extend(e);
+            }
+            if let Err(e) = rd {
+                errs.extend(e);
+            }
+            Err(errs)
+        }
+    }
+}
+
+fn collect_ty(result: Result<Ty, Vec<TypeError>>, errs: &mut Vec<TypeError>) -> Option<Ty> {
+    match result {
+        Ok(ty) => Some(ty),
+        Err(e) => {
+            errs.extend(e);
+            None
+        }
+    }
+}
+
+/// The section 5.6 exception: an enum value compared to a string literal,
+/// validating the literal against the variant set. `None` if `value` is not an
+/// enum or `other` is not a string literal.
+fn enum_vs_literal(value: &Ty, other: &Expr) -> Option<Result<Ty, Vec<TypeError>>> {
+    let Ty::Value {
+        domain: ColumnType::Enum { name, variants },
+        opt: Optionality::Total,
+    } = value
+    else {
+        return None;
+    };
+    let ExprKind::Str(lit) = &other.kind else {
+        return None;
+    };
+    if variants.iter().any(|v| v == lit) {
+        Some(Ok(Ty::Bool))
+    } else {
+        Some(Err(vec![TypeError::new(
+            format!("`{lit}` is not a variant of `{name}`"),
+            other.span,
+        )]))
     }
 }
 
@@ -249,43 +351,75 @@ fn number_total() -> Ty {
     }
 }
 
-/// Require `operand` to be a single known value of `want` (the scalar rule,
-/// section 5.3). Returns the collected errors (empty if it satisfies the rule).
+/// The domain of `ty` if it is a single known value, else a located error
+/// (the scalar rule, section 5.3).
+fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<TypeError>> {
+    match ty {
+        Ty::Value {
+            domain,
+            opt: Optionality::Total,
+        } => Ok(domain.clone()),
+        Ty::Value {
+            opt: Optionality::Optional,
+            ..
+        } => Err(vec![TypeError::new(
+            format!("{what} expects a known value; this value may be missing"),
+            span,
+        )]),
+        Ty::Bag { .. } => Err(vec![TypeError::new(
+            format!("{what} expects a single value, found a bag"),
+            span,
+        )]),
+        Ty::Bool => Err(vec![TypeError::new(
+            format!("{what} expects a value, found a boolean"),
+            span,
+        )]),
+        Ty::Record(_) => Err(vec![TypeError::new(
+            format!("{what} expects a value, found a row"),
+            span,
+        )]),
+    }
+}
+
+/// Require `operand` to be a single known value of `want` (section 5.3).
 fn require_value(ctx: &Context, operand: &Expr, want: &ColumnType, what: &str) -> Vec<TypeError> {
     let ty = match type_expr(ctx, operand) {
         Ok(ty) => ty,
         Err(errs) => return errs,
     };
-    match &ty {
-        Ty::Value {
-            domain,
-            opt: Optionality::Total,
-        } if domain == want => Vec::new(),
-        Ty::Value {
-            opt: Optionality::Optional,
-            ..
-        } => vec![TypeError::new(
-            format!("{what} expects a known value; this value may be missing"),
-            operand.span,
-        )],
-        Ty::Bag { .. } => vec![TypeError::new(
-            format!("{what} expects a single value, found a bag"),
-            operand.span,
-        )],
-        Ty::Value { domain, .. } => vec![TypeError::new(
+    match as_known_value(&ty, what, operand.span) {
+        Err(errs) => errs,
+        Ok(domain) if &domain == want => Vec::new(),
+        Ok(domain) => vec![TypeError::new(
             format!(
                 "{what} expects a {}, found a {}",
                 domain_name(want),
-                domain_name(domain)
+                domain_name(&domain)
             ),
             operand.span,
         )],
-        Ty::Bool => vec![TypeError::new(
-            format!("{what} expects a {}, found a boolean", domain_name(want)),
+    }
+}
+
+/// Require `operand` to be a known boolean (section 5.3). Accepts both a
+/// predicate result and a total `bool` column read.
+fn require_bool(ctx: &Context, operand: &Expr, what: &str) -> Vec<TypeError> {
+    match type_expr(ctx, operand) {
+        Err(errs) => errs,
+        Ok(Ty::Bool) => Vec::new(),
+        Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt: Optionality::Total,
+        }) => Vec::new(),
+        Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt: Optionality::Optional,
+        }) => vec![TypeError::new(
+            format!("{what} expects a known value; this value may be missing"),
             operand.span,
         )],
-        Ty::Record(_) => vec![TypeError::new(
-            format!("{what} expects a {}, found a row", domain_name(want)),
+        Ok(_) => vec![TypeError::new(
+            format!("{what} expects a boolean"),
             operand.span,
         )],
     }
@@ -444,6 +578,36 @@ mod tests {
     fn scalar_on_wrong_domain_is_rejected() {
         let ctx = row_ctx();
         let errs = ty_of(&ctx, "r.machine + 1").expect_err("domain mismatch");
+        assert!(errs[0].message.contains("number"));
+    }
+
+    #[test]
+    fn comparisons_and_bools_are_bool() {
+        let ctx = row_ctx();
+        assert_eq!(ty_of(&ctx, "r.temperature > 30"), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "r.status == \"active\""), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "true and false"), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "not true"), Ok(Ty::Bool));
+    }
+
+    #[test]
+    fn enum_literal_typo_is_rejected() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.status == \"activ\"").expect_err("bad variant");
+        assert!(errs[0].message.contains("not a variant of `Status`"));
+    }
+
+    #[test]
+    fn comparison_on_optional_is_rejected() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.peak > 30").expect_err("optional");
+        assert!(errs[0].message.contains("known value"));
+    }
+
+    #[test]
+    fn ordering_is_number_only() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.machine < \"z\"").expect_err("string ordering");
         assert!(errs[0].message.contains("number"));
     }
 }
