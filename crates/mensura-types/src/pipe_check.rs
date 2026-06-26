@@ -14,7 +14,9 @@ use mensura_syntax::{BinOp, Expr, ExprKind, Span};
 
 use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
-use crate::table::{Cardinality, Column, Content, Qualifiers, TableType, Totality};
+use crate::table::{
+    Cardinality, Column, Content, Lineage, Qualifiers, SplitId, TableType, Totality,
+};
 
 /// The type of a table-valued (pipeline) expression.
 #[derive(Clone, Debug, PartialEq)]
@@ -96,6 +98,7 @@ fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy,
         "extend_key" => op_extend_key(input, &args, head.span),
         "map" => op_map(input, &args, head.span),
         "group_map" => op_group_map(input, &args, head.span),
+        "split" => op_split(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
 }
@@ -142,6 +145,36 @@ fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec
             lineage: table.qualifiers.lineage,
         },
     }))
+}
+
+/// `split |k| pred` (section 6.5, Tier A): route each key to one side of a pair
+/// by a predicate over the key. Adds sibling lineage tags; content, cardinality,
+/// and completeness are unchanged on both sides.
+fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let table = expect_table(input, span)?;
+    let (param, body) = single_lambda(args, "split", span)?;
+    let ctx = Context::key(param, &table);
+    if type_expr(&ctx, body)? != Ty::Bool {
+        return Err(error("`split`'s predicate must be a boolean", body.span));
+    }
+    let id = SplitId(span.start as u32);
+    let (left, right) = table.qualifiers.lineage.split(id);
+    Ok(PipeTy::Pair(
+        with_lineage(&table, left),
+        with_lineage(&table, right),
+    ))
+}
+
+fn with_lineage(table: &TableType, lineage: Lineage) -> TableType {
+    TableType {
+        content: table.content.clone(),
+        qualifiers: Qualifiers {
+            cardinality: table.qualifiers.cardinality,
+            totality: table.qualifiers.totality.clone(),
+            completeness: table.qualifiers.completeness,
+            lineage,
+        },
+    }
 }
 
 /// Extract the single one-parameter lambda an operation expects, returning its
@@ -438,5 +471,32 @@ mod tests {
         let errs = pipe_ty(&s, "readings |> group_map |g| (.m = mean g.machine)")
             .expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
+    }
+
+    #[test]
+    fn split_yields_disjoint_halves() {
+        let s = sample_sources();
+        let PipeTy::Pair(a, b) = pipe_ty(&s, "readings |> split |k| k.ts > 100").expect("ok")
+        else {
+            panic!("split yields a pair");
+        };
+        assert!(a.qualifiers.lineage.disjoint(&b.qualifiers.lineage));
+        assert_eq!(a.content, b.content);
+        assert_eq!(a.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn split_rejects_non_bool_predicate() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> split |k| k.ts").expect_err("non-bool");
+        assert!(errs[0].message.contains("must be a boolean"));
+    }
+
+    #[test]
+    fn split_predicate_sees_only_index() {
+        let s = sample_sources();
+        // `machine` is a column, not in the index, so it is unknown in the key.
+        let errs = pipe_ty(&s, "readings |> split |k| k.machine == \"m1\"").expect_err("unknown");
+        assert!(errs[0].message.contains("unknown column `machine`"));
     }
 }
