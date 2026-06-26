@@ -14,7 +14,7 @@ use mensura_syntax::{BinOp, Expr, ExprKind, Span};
 
 use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
-use crate::table::{Column, Content, Qualifiers, TableType, Totality};
+use crate::table::{Cardinality, Column, Content, Qualifiers, TableType, Totality};
 
 /// The type of a table-valued (pipeline) expression.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +95,7 @@ fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy,
     match op.as_str() {
         "extend_key" => op_extend_key(input, &args, head.span),
         "map" => op_map(input, &args, head.span),
+        "group_map" => op_group_map(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
 }
@@ -114,6 +115,28 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
         },
         qualifiers: Qualifiers {
             cardinality: table.qualifiers.cardinality,
+            totality,
+            completeness: table.qualifiers.completeness,
+            lineage: table.qualifiers.lineage,
+        },
+    }))
+}
+
+/// `group_map |g| record` (section 6.2, Tier A): summarize each group to one
+/// record. A single-record return yields `Singletons`; the index, completeness,
+/// and lineage are preserved. (Bag/window returns are deferred.)
+fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let table = expect_table(input, span)?;
+    let (param, body) = single_lambda(args, "group_map", span)?;
+    let ctx = Context::group(param, &table);
+    let (columns, totality) = record_to_content(&ctx, body, "group_map")?;
+    Ok(PipeTy::Table(TableType {
+        content: Content {
+            index: table.content.index,
+            columns,
+        },
+        qualifiers: Qualifiers {
+            cardinality: Cardinality::Singletons,
             totality,
             completeness: table.qualifiers.completeness,
             lineage: table.qualifiers.lineage,
@@ -390,5 +413,30 @@ mod tests {
         // `peak` is optional, so a scalar on it is rejected by expr_check.
         let errs = pipe_ty(&s, "readings |> map |r| (.x = r.peak + 1)").expect_err("optional");
         assert!(errs[0].message.contains("known value"));
+    }
+
+    #[test]
+    fn group_map_summarizes_to_singletons() {
+        let s = sample_sources();
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine \
+                 |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)",
+            )
+            .expect("ok"),
+        );
+        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.columns.iter().any(|c| c.name == "temp_mean"));
+        assert!(t.content.columns.iter().any(|c| c.name == "temp_max"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn group_map_rejects_non_numeric_aggregate() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> group_map |g| (.m = mean g.machine)")
+            .expect_err("non-numeric");
+        assert!(errs[0].message.contains("numeric bag"));
     }
 }
