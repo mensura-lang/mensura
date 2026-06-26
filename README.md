@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="mensura-lockup.svg" alt="Mensura" width="480">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mensura-lockup-dark.svg">
+    <img src="assets/mensura-lockup.svg" alt="Mensura" width="480">
+  </picture>
 </p>
 
 # Mensura
