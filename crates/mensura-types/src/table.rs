@@ -6,6 +6,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::model::ColumnType;
+
 /// Table-scoped cardinality qualifier: the two-value chain
 /// `Singletons` (card <= 1) <= `Bag` (card 0..many) (`09` section 3.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +177,48 @@ impl Totality {
     }
 }
 
+/// Table-scoped completeness qualifier (`09` section 3.4): whether each key's
+/// bag holds all its possible rows. A `collect` source is `Complete` by
+/// mechanism; a bare `store` is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Completeness {
+    Complete,
+    Incomplete,
+}
+
+/// A type-level structural column: a name and its domain. This is `C`-side
+/// structure only; totality lives in the column-scoped [`Totality`] qualifier,
+/// not here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Column {
+    pub name: String,
+    pub domain: ColumnType,
+}
+
+/// The content `C` (`09` section 3.1): pure structure, no propagated facts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Content {
+    pub index: Vec<Column>,
+    pub columns: Vec<Column>,
+}
+
+/// The qualifier row `Qs` (`09` section 1): the four tracked properties, each at
+/// its scope. Concrete and closed in the M0 freeze.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Qualifiers {
+    pub cardinality: Cardinality,
+    pub totality: Totality,
+    pub completeness: Completeness,
+    pub lineage: Lineage,
+}
+
+/// `Table<Qs, C>`: structure plus scoped qualifiers (ADR 0013).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableType {
+    pub content: Content,
+    pub qualifiers: Qualifiers,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +266,30 @@ mod tests {
 
         t.narrow("temp");
         assert!(t.is_total("temp"));
+    }
+
+    #[test]
+    fn table_type_is_structure_plus_qualifiers() {
+        let t = TableType {
+            content: Content {
+                index: vec![Column {
+                    name: "id".to_string(),
+                    domain: ColumnType::Number,
+                }],
+                columns: vec![Column {
+                    name: "name".to_string(),
+                    domain: ColumnType::String,
+                }],
+            },
+            qualifiers: Qualifiers {
+                cardinality: Cardinality::Singletons,
+                totality: Totality::all_total(),
+                completeness: Completeness::Incomplete,
+                lineage: Lineage::root(),
+            },
+        };
+        assert_eq!(t.content.index.len(), 1);
+        assert_eq!(t.content.columns[0].domain, ColumnType::String);
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 }
