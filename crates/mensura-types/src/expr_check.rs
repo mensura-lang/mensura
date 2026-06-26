@@ -199,6 +199,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Binary(op, lhs, rhs) => type_binary(ctx, *op, lhs, rhs, expr.span),
         ExprKind::Unary(op, operand) => type_unary(ctx, *op, operand, expr.span),
         ExprKind::App(func, arg) => type_app(ctx, func, arg, expr.span),
+        ExprKind::Presence(base, _) => type_presence(ctx, base, expr.span),
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -365,6 +366,18 @@ fn type_membership(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<Type
             errs.extend(e);
             Err(errs)
         }
+    }
+}
+
+/// `is known` / `is missing` (section 5.5): apply to a value, yield `Bool`.
+/// Narrowing is deferred, so `is known` does not change the value's totality.
+fn type_presence(ctx: &Context, base: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
+    match type_expr(ctx, base)? {
+        Ty::Value { .. } => Ok(Ty::Bool),
+        _ => Err(vec![TypeError::new(
+            "`is known` / `is missing` apply to a value",
+            span,
+        )]),
     }
 }
 
@@ -797,5 +810,32 @@ mod tests {
         assert!(errs[0].message.contains("`in`"));
         let errs = ty_of(&ctx, "30 in 40").expect_err("rhs not a bag");
         assert!(errs[0].message.contains("expects a bag"));
+    }
+
+    #[test]
+    fn presence_tests_are_bool() {
+        let ctx = row_ctx();
+        assert_eq!(ty_of(&ctx, "r.note is missing"), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "r.temperature is known"), Ok(Ty::Bool));
+    }
+
+    #[test]
+    fn presence_on_a_row_is_rejected() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r is known").expect_err("presence on a row");
+        assert!(!errs.is_empty());
+    }
+
+    #[test]
+    fn deferred_nodes_error_without_panicking() {
+        let ctx = row_ctx();
+        for src in ["x |> y", "(1, 2)", "(.a = 1)", "{ 1 }", "f r"] {
+            let errs = ty_of(&ctx, src).expect_err("deferred node");
+            assert!(
+                errs[0].message.contains("unsupported"),
+                "expected `unsupported` for {src:?}, got {:?}",
+                errs[0].message
+            );
+        }
     }
 }
