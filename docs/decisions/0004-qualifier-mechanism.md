@@ -4,7 +4,9 @@
 
 Accepted.  The table type is `Table<Qs, C>` throughout the language docs, and
 the lineage qualifier's disjointness hook is worked out in
-`docs/language/08-lineage.md`.
+`docs/language/08-lineage.md`.  `docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`
+redraws the `C`/`Qs` boundary (structure versus scoped qualifier) without
+changing this decision.
 
 ## Context
 
@@ -143,6 +145,10 @@ Neutral:
   of columns with domains; the rest of the qualifiers are values in
   lattices.  This ADR keeps C separate.  Should this be revisited if
   the framework turns out to subsume schemas cheaply?
+  (`docs/decisions/0013-qualifier-scope-and-the-content-boundary.md` keeps C
+  separate and answers the boundary question: C is pure structure, and every
+  tracked property, including cardinality and totality once grouped with
+  content, is a scoped qualifier in Qs.)
 - **Composition of independent qualifiers.**  Are qualifiers fully
   orthogonal (each row entry propagates independently), or are there
   primitives where two qualifiers interact (a privacy budget reduced
