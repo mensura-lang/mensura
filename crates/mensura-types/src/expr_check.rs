@@ -232,12 +232,14 @@ fn type_member(ctx: &Context, base: &Expr, field: &Ident) -> Result<Ty, Vec<Type
 /// Application. The only form typed this increment is an aggregate applied to a
 /// bag (section 5.4); any other application is deferred.
 fn type_app(ctx: &Context, func: &Expr, arg: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
-    if let ExprKind::Name(name) = &func.kind {
-        if let Some(agg) = ctx.aggregate(name) {
-            return type_aggregate(ctx, agg, name, arg);
-        }
+    let aggregate = match &func.kind {
+        ExprKind::Name(name) => ctx.aggregate(name).map(|agg| (agg, name.as_str())),
+        _ => None,
+    };
+    match aggregate {
+        Some((agg, name)) => type_aggregate(ctx, agg, name, arg),
+        None => Err(vec![TypeError::new("unsupported in this increment", span)]),
     }
-    Err(vec![TypeError::new("unsupported in this increment", span)])
 }
 
 /// A bag combinator: it reduces or summarizes a bag to a single known value
@@ -328,7 +330,41 @@ fn type_binary(
                 Err(errs)
             }
         }
+        BinOp::In => type_membership(ctx, lhs, rhs),
         _ => Err(vec![TypeError::new("unsupported in this increment", span)]),
+    }
+}
+
+/// `value in bag` (section 5.4): the left side must be a known value matching
+/// the bag's element domain; the right side must be a bag. Returns `Bool`.
+fn type_membership(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = Vec::new();
+    let lt = collect_ty(type_expr(ctx, lhs), &mut errs);
+    let rt = collect_ty(type_expr(ctx, rhs), &mut errs);
+    let (Some(lt), Some(rt)) = (lt, rt) else {
+        return Err(errs);
+    };
+    let elem = match rt {
+        Ty::Bag { domain } => domain,
+        _ => {
+            errs.push(TypeError::new("`in` expects a bag on the right", rhs.span));
+            return Err(errs);
+        }
+    };
+    match as_known_value(&lt, "`in`", lhs.span) {
+        Ok(domain) if domain == elem => Ok(Ty::Bool),
+        Ok(domain) => Err(vec![TypeError::new(
+            format!(
+                "`in` expects a {} value to match the bag, found a {}",
+                domain_name(&elem),
+                domain_name(&domain)
+            ),
+            lhs.span,
+        )]),
+        Err(e) => {
+            errs.extend(e);
+            Err(errs)
+        }
     }
 }
 
@@ -746,5 +782,20 @@ mod tests {
         assert!(errs[0].message.contains("numeric bag"));
         let errs = ty_of(&ctx, "any g.readings").expect_err("non-bool bag");
         assert!(errs[0].message.contains("booleans"));
+    }
+
+    #[test]
+    fn membership_tests_a_bag() {
+        let ctx = group_ctx();
+        assert_eq!(ty_of(&ctx, "30 in g.readings"), Ok(Ty::Bool));
+    }
+
+    #[test]
+    fn membership_requires_a_bag_and_matching_domain() {
+        let ctx = group_ctx();
+        let errs = ty_of(&ctx, "\"x\" in g.readings").expect_err("domain mismatch");
+        assert!(errs[0].message.contains("`in`"));
+        let errs = ty_of(&ctx, "30 in 40").expect_err("rhs not a bag");
+        assert!(errs[0].message.contains("expects a bag"));
     }
 }
