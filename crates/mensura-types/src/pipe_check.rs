@@ -15,7 +15,7 @@ use mensura_syntax::{BinOp, Expr, ExprKind, Span};
 use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
 use crate::table::{
-    Cardinality, Column, Content, Lineage, Qualifiers, SplitId, TableType, Totality,
+    Cardinality, Column, Completeness, Content, Lineage, Qualifiers, SplitId, TableType, Totality,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -99,6 +99,7 @@ fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy,
         "map" => op_map(input, &args, head.span),
         "group_map" => op_group_map(input, &args, head.span),
         "split" => op_split(input, &args, head.span),
+        "bind" => op_bind(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
 }
@@ -163,6 +164,51 @@ fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         with_lineage(&table, left),
         with_lineage(&table, right),
     ))
+}
+
+/// `bind` (section 6.5, Tier A): the union of a pair of tables of the same
+/// schema. Cardinality is `Singletons` iff both inputs are and their lineages
+/// are disjoint, else `Bag`; completeness holds iff both inputs are complete;
+/// the lineage tag-sets union.
+fn op_bind(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    if !args.is_empty() {
+        return Err(error("`bind` takes no arguments", span));
+    }
+    let (a, b) = match input {
+        PipeTy::Pair(a, b) => (a, b),
+        PipeTy::Table(_) => return Err(error("`bind` expects a pair of tables", span)),
+    };
+    if a.content != b.content {
+        return Err(error(
+            "`bind` requires both tables to have the same schema",
+            span,
+        ));
+    }
+    let disjoint = a.qualifiers.lineage.disjoint(&b.qualifiers.lineage);
+    let cardinality = if a.qualifiers.cardinality == Cardinality::Singletons
+        && b.qualifiers.cardinality == Cardinality::Singletons
+        && disjoint
+    {
+        Cardinality::Singletons
+    } else {
+        Cardinality::Bag
+    };
+    let completeness = if a.qualifiers.completeness == Completeness::Complete
+        && b.qualifiers.completeness == Completeness::Complete
+    {
+        Completeness::Complete
+    } else {
+        Completeness::Incomplete
+    };
+    Ok(PipeTy::Table(TableType {
+        content: a.content,
+        qualifiers: Qualifiers {
+            cardinality,
+            totality: a.qualifiers.totality,
+            completeness,
+            lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
+        },
+    }))
 }
 
 fn with_lineage(table: &TableType, lineage: Lineage) -> TableType {
@@ -498,5 +544,26 @@ mod tests {
         // `machine` is a column, not in the index, so it is unknown in the key.
         let errs = pipe_ty(&s, "readings |> split |k| k.machine == \"m1\"").expect_err("unknown");
         assert!(errs[0].message.contains("unknown column `machine`"));
+    }
+
+    #[test]
+    fn bind_reconstructs_disjoint_split() {
+        let s = sample_sources();
+        let t = table_of(pipe_ty(&s, "readings |> split |k| k.ts > 100 |> bind").expect("ok"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn bind_of_overlapping_inputs_is_a_bag() {
+        let s = sample_sources();
+        let t = table_of(pipe_ty(&s, "(readings, readings) |> bind").expect("ok"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    #[test]
+    fn bind_requires_a_pair() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> bind").expect_err("not a pair");
+        assert!(errs[0].message.contains("expects a pair"));
     }
 }
