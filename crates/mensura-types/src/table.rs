@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::model::ColumnType;
+use crate::model::{ColumnRole, ColumnType, Schema};
 
 /// Table-scoped cardinality qualifier: the two-value chain
 /// `Singletons` (card <= 1) <= `Bag` (card 0..many) (`09` section 3.2).
@@ -219,6 +219,43 @@ pub struct TableType {
     pub qualifiers: Qualifiers,
 }
 
+impl TableType {
+    /// Present a resolved store schema to the pipeline as a table value
+    /// (`docs/language/10-views.md`, "Sources resolve by name"). A store is a
+    /// unit tabulation (ADR 0001): `Singletons`, index columns total, non-index
+    /// columns optional per their declared `?`. A bare store is `Incomplete`
+    /// (only a `collect` is complete by mechanism, `09` section 8) and untagged.
+    pub fn from_store(schema: &Schema) -> TableType {
+        let mut index = Vec::new();
+        let mut columns = Vec::new();
+        let mut totality = Totality::all_total();
+        for col in &schema.columns {
+            let structural = Column {
+                name: col.name.clone(),
+                domain: col.ty.clone(),
+            };
+            match col.role {
+                ColumnRole::Index => index.push(structural),
+                ColumnRole::Const | ColumnRole::Var => {
+                    if col.optional {
+                        totality.mark_optional(col.name.clone());
+                    }
+                    columns.push(structural);
+                }
+            }
+        }
+        TableType {
+            content: Content { index, columns },
+            qualifiers: Qualifiers {
+                cardinality: Cardinality::Singletons,
+                totality,
+                completeness: Completeness::Incomplete,
+                lineage: Lineage::root(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +328,49 @@ mod tests {
         assert_eq!(t.content.index.len(), 1);
         assert_eq!(t.content.columns[0].domain, ColumnType::String);
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    use crate::model::Column as StorageColumn;
+    use mensura_syntax::Span;
+
+    fn col(name: &str, ty: ColumnType, role: ColumnRole, optional: bool) -> StorageColumn {
+        StorageColumn {
+            name: name.to_string(),
+            ty,
+            role,
+            optional,
+            span: Span::new(0, 0),
+        }
+    }
+
+    #[test]
+    fn from_store_lifts_structure_and_qualifiers() {
+        let schema = Schema {
+            store: "readings".to_string(),
+            unit: "Machine".to_string(),
+            columns: vec![
+                col("machine", ColumnType::String, ColumnRole::Index, false),
+                col("temperature", ColumnType::Number, ColumnRole::Var, false),
+                col("note", ColumnType::String, ColumnRole::Var, true),
+            ],
+            span: Span::new(0, 0),
+        };
+
+        let t = TableType::from_store(&schema);
+
+        // Structure: index vs non-index split by role.
+        assert_eq!(t.content.index.len(), 1);
+        assert_eq!(t.content.index[0].name, "machine");
+        assert_eq!(t.content.columns.len(), 2);
+
+        // Qualifiers: store boundary is singletons, incomplete, untagged.
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
+
+        // Totality: the optional column is recorded; the index never is.
+        assert!(t.qualifiers.totality.is_optional("note"));
+        assert!(t.qualifiers.totality.is_total("temperature"));
+        assert!(t.qualifiers.totality.is_total("machine"));
     }
 }
