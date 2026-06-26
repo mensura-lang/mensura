@@ -7,6 +7,8 @@
 
 pub mod model;
 pub mod resolve;
+pub mod table;
 
 pub use model::{Column, ColumnRole, ColumnType, Schema};
 pub use resolve::{ResolveError, resolve};
+pub use table::Cardinality;
