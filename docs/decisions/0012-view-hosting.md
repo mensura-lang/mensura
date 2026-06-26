@@ -78,6 +78,10 @@ Negative:
 
 Neutral:
 
+- The dropped cardinality boundary is specific to views as *derived* tables.
+  `store` and `collect` are unchanged: they promise a tabulation of a unit, so
+  the ADR 0001 0-or-1 rule still binds them (and the storage index->PRIMARY KEY
+  mapping still relies on it).  The asymmetry is intentional, not an oversight.
 - Whether `collect` and `device` host pipelines the same way is left to their
   own documents; this ADR settles `view` only.
 

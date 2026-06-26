@@ -92,6 +92,13 @@ not impose it either (next section); a dedicated syntax for requiring
 `singletons` on a view is deferred to a later round.  See
 `docs/decisions/0012-view-hosting.md`.
 
+This relaxation is specific to views, which are *derived* tables.  A `store` and
+a `collect` stay strictly 0-or-1 at their boundary (ADR 0001): they promise a
+tabulation of a unit, so the unit's identity discipline binds them.  A
+`bag`-shaped result belongs in a view, not a store; if several rows genuinely
+share a key, the unit is too coarse and wants a finer index, not a relaxed
+store.
+
 ## Constraining a view with a shape
 
 The optional `: Shape` clause is the one structural constraint a view may carry.
