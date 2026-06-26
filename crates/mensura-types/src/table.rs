@@ -140,6 +140,41 @@ impl Lineage {
     }
 }
 
+/// Column-scoped totality qualifier (`09` section 3.3, ADR 0010): which
+/// non-index columns may be missing. A column is total (always known) by
+/// default; `optional` lists the exceptions. Index columns are always total and
+/// never appear here.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Totality {
+    optional: BTreeSet<String>,
+}
+
+impl Totality {
+    /// Every column total (the default).
+    pub fn all_total() -> Totality {
+        Totality::default()
+    }
+
+    pub fn is_optional(&self, column: &str) -> bool {
+        self.optional.contains(column)
+    }
+
+    pub fn is_total(&self, column: &str) -> bool {
+        !self.is_optional(column)
+    }
+
+    /// Make a column optional (e.g. a `left_join` added it as possibly missing).
+    pub fn mark_optional(&mut self, column: impl Into<String>) {
+        self.optional.insert(column.into());
+    }
+
+    /// Narrow an optional column back to total (`is known`, a default, or a
+    /// missingness-aware aggregate; ADR 0010).
+    pub fn narrow(&mut self, column: &str) {
+        self.optional.remove(column);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +209,18 @@ mod tests {
         let (b, _) = Lineage::root().split(SplitId(2));
         // No common split: cannot be decided disjoint structurally.
         assert!(!a.disjoint(&b));
+    }
+
+    #[test]
+    fn totality_defaults_total_and_narrows() {
+        let mut t = Totality::all_total();
+        assert!(t.is_total("temp"));
+
+        t.mark_optional("temp");
+        assert!(t.is_optional("temp"));
+        assert!(!t.is_total("temp"));
+
+        t.narrow("temp");
+        assert!(t.is_total("temp"));
     }
 }
