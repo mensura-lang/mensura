@@ -700,4 +700,36 @@ mod tests {
         let errs = pipe_ty(&s, "readings |> left_join machines (|l| l.ts)").expect_err("domain");
         assert!(errs[0].message.contains("key domain"));
     }
+
+    // The two worked examples from docs/language/10-views.md, end to end.
+
+    #[test]
+    fn worked_example_machine_temperature() {
+        let s = sample_sources();
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine \
+                 |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)",
+            )
+            .expect("machine_temperature types"),
+        );
+        assert!(t.content.index.iter().any(|c| c.name == "ts"));
+        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert_eq!(t.content.columns.len(), 2);
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn worked_example_full_dataset_reconstructs() {
+        let s = sample_sources();
+        let whole = table_of(pipe_ty(&s, "readings").expect("source"));
+        let rebound = table_of(
+            pipe_ty(&s, "readings |> split |k| k.ts > 100 |> bind").expect("full_dataset"),
+        );
+        // Binding the disjoint split halves reconstructs the schema and keeps
+        // `singletons` (bind_split, 09 §11).
+        assert_eq!(rebound.content, whole.content);
+        assert_eq!(rebound.qualifiers.cardinality, Cardinality::Singletons);
+    }
 }
