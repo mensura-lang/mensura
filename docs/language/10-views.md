@@ -68,19 +68,22 @@ view feature_window : Tabular[Machine] {
 ## Properties at the view boundary
 
 A view computes a full `Table<Qs, C>` for its result (`09-typing-reference.md`,
-section 1) and that is the view's type.  All four tracked properties are
-threaded through the hosted pipeline and surface on the view:
+section 1) and that is the view's type.  The pipeline yields the structure `C`,
+and all four tracked properties, scoped qualifiers in `Qs`
+(`docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`), are threaded
+through it and surface on the view:
 
 - **Content** (`C`): the index and non-index columns the pipeline yields, with
-  their domains.
-- **Cardinality** (in `C`): `singletons` or `bag`, as the pipeline leaves it.  A
-  summarizing view that ends in a single-record `group_map` is `singletons`; a
-  view that ends in a `bag`-shaped stage is `bag`.
-- **Totality** (per column, in `C`): a value is total unless an operation made
-  it optional (a `left_join` leaves its added columns optional until a default
-  or an `is known` narrowing restores them; ADR 0010).
-- **Completeness** and **lineage** (in `Qs`): carried as the Tier A operations
-  carry them (`09-typing-reference.md`, sections 8 and 9).
+  their domains.  This is the pure structure; the qualifiers below describe it.
+- **Cardinality** (table-scoped qualifier): `singletons` or `bag`, as the
+  pipeline leaves it.  A summarizing view that ends in a single-record
+  `group_map` is `singletons`; a view that ends in a `bag`-shaped stage is
+  `bag`.
+- **Totality** (column-scoped qualifier): a value is total unless an operation
+  made it optional (a `left_join` leaves its added columns optional until a
+  default or an `is known` narrowing restores them; ADR 0010).
+- **Completeness** and **lineage** (table-scoped qualifiers): carried as the
+  Tier A operations carry them (`09-typing-reference.md`, sections 8 and 9).
 
 A view is **not** forced to any particular cardinality.  It is a general
 materialized table: `bag` results are admitted.  This is the deliberate point

@@ -18,17 +18,23 @@ and freezes the algebra that threads them:
 
 - the pipeline algebra (the eight primitives), split-invariance, and the
   Tier A / Tier B boundary;
-- **cardinality** and **totality**, carried in the content `C`;
-- **completeness** and **disjointness** (via a lineage hierarchy), carried in a
-  concrete `Qs`.
+- **cardinality** (table-scoped) and **totality** (column-scoped), carried as
+  qualifiers in `Qs`;
+- **completeness** and **disjointness** (via a lineage hierarchy), table-scoped
+  qualifiers in `Qs`.
 
 It deliberately defers the **extensible qualifier meta-calculus** of
 `docs/decisions/0004-qualifier-mechanism.md` (user-definable qualifiers, the
 rule-combinator DSL) and the two qualifiers with no rules yet written,
 **sampling** and **dependency**.  In the frozen core `Qs` is therefore
-**concrete and closed**: it holds exactly the two built-in facts above, not an
-open, user-extensible row.  When the meta-calculus arrives, completeness and
-lineage may be re-expressed as qualifiers and the open row reinstated.
+**concrete and closed**: it holds exactly the four built-in qualifiers above
+(cardinality, totality, completeness, lineage), not an open, user-extensible
+row.  The boundary between `Qs` and the content `C` is structure versus
+propagated fact, and a qualifier's **scope** (table or column) is a field of the
+qualifier, not what selects its group
+(`docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`).  When the
+meta-calculus arrives, this closed set may be opened to user-defined qualifiers
+and the row made extensible again.
 
 For disjointness it adopts the **lineage hierarchy** model (a tag tree, decided
 structurally) and defers `08-lineage.md`'s heavier predicate-region elaboration
@@ -58,34 +64,45 @@ content is not.  Snippets here are illustrative and are not check-gated (only
 
 ## 1.  The table type `Table<Qs, C>`
 
-Every table has type `Table<Qs, C>` (ADR 0004).  This freeze makes both parts
-concrete and closed, and pins each of the four properties to one of them by
-**arity**: per-column and per-key facts describe the data shape and live in `C`;
-table-level coverage and provenance facts live in `Qs`.
+Every table has type `Table<Qs, C>` (ADR 0004).  The boundary between the two
+parts is **structure versus propagated fact**
+(`docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`): `C` is the
+pure structure of the data, and `Qs` is every fact threaded through the algebra,
+each a **qualifier** with a declared **scope**.  This freeze makes both parts
+concrete and closed.
 
 ```
 Table<Qs, C>
 
-C   data shape
+C   structure (what the data is)
       index columns
-      non-index columns:  each with a domain and a totality (total | optional)
-      cardinality:        singletons (card <= 1)  |  bag (card 0..many)
+      non-index columns
+      column domains
 
-Qs  coverage and provenance facts (concrete and closed in this freeze)
-      completeness:  whether each key's bag holds all its possible rows
-      lineage:       a hierarchy of tags, the carrier for disjointness
+Qs  qualifiers (propagated facts; concrete and closed in this freeze)
+      cardinality   (table):   singletons (card <= 1)  |  bag (card 0..many)
+      totality      (column):  total | optional, per non-index column
+      completeness  (table):   whether each key's bag holds all its rows
+      lineage       (table):   a hierarchy of tags, the carrier for disjointness
 ```
 
-- `C` is the **content**: the index (key) columns, the non-index columns with
-  their domains and per-column **totality** (section 3.3), and the table-level
-  **cardinality** of the row-multiset (section 3.2).  Reindexing moves columns
+- `C` is the **content**: the index (key) columns, the non-index columns, and
+  their domains.  It carries nothing propagated.  Reindexing moves columns
   between the key and the non-key part.
-- `Qs` is the **fact row**.  In this freeze it is the fixed pair
-  **completeness** (section 3.4) and **lineage** (section 3.5); the extensible
-  qualifier framework, sampling, and dependency are deferred (section 13).
+- `Qs` is the **qualifier row**.  Each qualifier declares a **scope** that fixes
+  which structural node it rides: **table** (one value for the whole table,
+  possibly a universal over keys) or **column** (one value per column, spanning
+  index and non-index columns).  In this freeze `Qs` is the closed set
+  cardinality (section 3.2), totality (section 3.3), completeness (section 3.4),
+  and lineage (section 3.5); the extensible qualifier framework, sampling, and
+  dependency are deferred (section 13).
+- There is **no per-key scope**.  A fact "about keys" is either a universal over
+  all keys (table scope: cardinality, completeness, the disjointness invariant)
+  or a fact on an index column (column scope on a key column).  A value that
+  varies per runtime key-tuple is not type-level trackable (ADR 0013).
 
 The older `Table<S, D, L, C>` quadruple from the overview is subsumed:
-`Table<Qs, C>` carries the same kind of facts, but as members of `Qs` rather than
+`Table<Qs, C>` carries the same facts, now as scoped members of `Qs` rather than
 fixed type slots.
 
 ## 2.  Judgment notation
@@ -115,16 +132,19 @@ it under side conditions; an operation that *establishes* one says so.
 
 A table carries more than its rows.  Four facts are made first-class and
 threaded by every operation; the type checker rejects a pipeline that would
-violate one.  Two are content facts (in `C`), two are coverage/provenance facts
-(in `Qs`).
+violate one.  All four are qualifiers in `Qs`, distinguished by **scope** (table
+or column), not by which group they live in; `C` carries only the structure they
+qualify (ADR 0013).
 
 ### 3.1  Content schema (`C`)
 
-The index columns and the non-index columns with their domains.  This is the
-ordinary record-of-columns part of the type, refined by cardinality and totality
-below.
+The index columns and the non-index columns with their domains: the pure
+structure of the data, the ordinary record-of-columns part of the type.
+Cardinality and totality are not part of `C`; they are qualifiers in `Qs`
+(sections 3.2, 3.3).  Reindexing moves columns between the index and the
+non-index part.
 
-### 3.2  Cardinality (per key, in `C`)
+### 3.2  Cardinality (table-scoped qualifier)
 
 How many nested rows share a key.  At the type level it is a **two-value chain**:
 
@@ -134,25 +154,28 @@ singletons (card <= 1)   ⊑   bag (card 0..many)
 
 `singletons` guarantees at most one row per key (a partial function from key to
 row); `bag` allows any number, including none (`card 0`, "not sampled").
-Cardinality is a single table-level classification: it is the same bound for
-every key, so it attaches to the table, not to a column.  Operations move it
-along the chain (section 6); `singletons` is the stronger fact and never arises
-by accident.
+Cardinality is a single table-scoped classification: it is one uniform bound
+that holds for every key, so "per key" names the *subject* of the bound, not its
+scope (ADR 0013).  Operations move it along the chain (section 6); `singletons`
+is the stronger fact and never arises by accident.
 
 A third notion, **exhaustive** (every key has exactly one row), is *derived*, not
 a stored level: `exhaustive = singletons and completeness` (section 3.4).  It is
 a corollary of two properties, so the lattice needs only two points.
 
-### 3.3  Totality (per column, in `C`)
+### 3.3  Totality (column-scoped qualifier)
 
 Whether a non-index value is known or may be missing.  A cell is
 `Cell = Option` (`formal/Mensura/Table.lean`): known or missing, always 0 or 1.
 Totality is a **per-column** fact: a value is **total** (always known) by
 default, and an **optional** value carries a `?` on its type (ADR 0010).  It is
 orthogonal to cardinality: cardinality counts rows at a key, totality asks
-whether one value is present.  Index fields are always total.
+whether one value is present.  Totality is column-scoped over both index and
+non-index columns; the index requires total values, so an `extend_key` that
+promotes a column into the key demands it be total first, a constraint of the
+totality qualifier rather than a structural axiom (ADR 0013).
 
-### 3.4  Completeness (per table, in `Qs`)
+### 3.4  Completeness (table-scoped qualifier)
 
 Whether **each key's bag holds all its possible rows**.  This is the useful,
 tracked fact, and it reads uniformly across the cardinality chain:
@@ -167,7 +190,7 @@ Completeness here is a fact about the **current** key.  "Completeness over a
 yields complete bags".  It is established and consumed where `shrink_key` needs
 it (section 8), not carried on every table.
 
-### 3.5  Lineage and disjointness (per table, in `Qs`)
+### 3.5  Lineage and disjointness (table-scoped qualifier)
 
 Each table carries a **lineage hierarchy**: a tree of tags recording the splits
 it descends from.  Lineage is the carrier that makes **disjointness** (a
@@ -178,13 +201,15 @@ cannot decide are delegated to `assert` or `assume`.
 
 ## 4.  Property axes are orthogonal
 
-The four facts answer different questions and live on different axes:
+The four facts answer different questions and live on different axes, all as
+qualifiers in `Qs`:
 
-- **cardinality**: a per-key fact on the row axis (`singletons` / `bag`), in `C`;
-- **totality**: a per-column fact on the value axis (`Cell = Option`), in `C`;
-- **completeness**: a unary fact about one whole table, in `Qs`;
-- **disjointness**: a relation between two tables, carried by the per-table
-  lineage hierarchy, in `Qs`.
+- **cardinality**: the row axis (`singletons` / `bag`), a table-scoped
+  qualifier;
+- **totality**: the value axis (`Cell = Option`), a column-scoped qualifier;
+- **completeness**: a unary fact about one whole table, table-scoped;
+- **disjointness**: a relation between two tables, carried by the table-scoped
+  lineage hierarchy.
 
 They compose but do not substitute for one another, with one deliberate
 exception: `exhaustive = singletons and completeness`, so that corner is a
