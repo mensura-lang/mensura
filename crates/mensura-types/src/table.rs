@@ -117,10 +117,9 @@ impl Lineage {
         };
         for branch in first {
             let id = branch.split;
-            if let (Some(a), Some(b)) = (self.uniform_side(id), other.uniform_side(id)) {
-                if a != b {
-                    return true;
-                }
+            match (self.uniform_side(id), other.uniform_side(id)) {
+                (Some(a), Some(b)) if a != b => return true,
+                _ => {}
             }
         }
         false
