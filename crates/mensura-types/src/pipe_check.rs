@@ -89,7 +89,7 @@ fn expect_table(pipe: PipeTy, span: Span) -> Result<TableType, Vec<TypeError>> {
 }
 
 /// Apply a pipeline operation (the right side of a `|>`) to its input table.
-fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, Vec<TypeError>> {
+fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, Vec<TypeError>> {
     let (head, args) = flatten_app(op_expr);
     let ExprKind::Name(op) = &head.kind else {
         return Err(error("expected a pipeline operation", op_expr.span));
@@ -100,8 +100,116 @@ fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy,
         "group_map" => op_group_map(input, &args, head.span),
         "split" => op_split(input, &args, head.span),
         "bind" => op_bind(input, &args, head.span),
+        "left_join" => op_join(sources, input, &args, head.span, JoinKind::Left),
+        "inner_join" => op_join(sources, input, &args, head.span, JoinKind::Inner),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
+}
+
+#[derive(Clone, Copy)]
+enum JoinKind {
+    Left,
+    Inner,
+}
+
+/// `left_join` / `inner_join right (|l| key)` (section 6.4, Tier A): join a fixed
+/// right table by a key over the left row. Adds the right table's non-index
+/// columns; `left_join` makes them optional, `inner_join` keeps their totality.
+/// The right table is a store (`Singletons`, functional), so cardinality is
+/// preserved; completeness on the left and lineage are preserved.
+fn op_join(
+    sources: &Sources,
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+    kind: JoinKind,
+) -> Result<PipeTy, Vec<TypeError>> {
+    let left = expect_table(input, span)?;
+    let [right_arg, key_arg] = args else {
+        return Err(error("a join expects a right table and a key lambda", span));
+    };
+    let ExprKind::Name(right_name) = &right_arg.kind else {
+        return Err(error(
+            "a join's right side must be a source name",
+            right_arg.span,
+        ));
+    };
+    let Some(right) = sources.get(right_name) else {
+        return Err(error(
+            format!("unknown source `{right_name}`"),
+            right_arg.span,
+        ));
+    };
+    let [right_key] = right.content.index.as_slice() else {
+        return Err(error(
+            "a join's right table must have a single index column",
+            right_arg.span,
+        ));
+    };
+
+    let ExprKind::Lambda { params, body, .. } = &key_arg.kind else {
+        return Err(error(
+            "a join's second argument must be a key lambda",
+            key_arg.span,
+        ));
+    };
+    let [param] = params.as_slice() else {
+        return Err(error(
+            "a join's key lambda takes one parameter",
+            key_arg.span,
+        ));
+    };
+    let ctx = Context::row(&param.name, &left);
+    let key_ty = type_expr(&ctx, body)?;
+    match key_ty.known_value_domain() {
+        Some(domain) if *domain == right_key.domain => {}
+        Some(_) => {
+            return Err(error(
+                format!("join key does not match `{right_name}`'s key domain"),
+                body.span,
+            ));
+        }
+        None => return Err(error("a join key must be a single known value", body.span)),
+    }
+
+    let mut columns = left.content.columns.clone();
+    let mut totality = left.qualifiers.totality.clone();
+    let mut errs = Vec::new();
+    for rc in &right.content.columns {
+        let clash = columns.iter().any(|c| c.name == rc.name)
+            || left.content.index.iter().any(|c| c.name == rc.name);
+        if clash {
+            errs.push(te(
+                format!("join would duplicate column `{}`", rc.name),
+                right_arg.span,
+            ));
+            continue;
+        }
+        columns.push(rc.clone());
+        let optional = match kind {
+            JoinKind::Left => true,
+            JoinKind::Inner => right.qualifiers.totality.is_optional(&rc.name),
+        };
+        if optional {
+            totality.mark_optional(rc.name.clone());
+        }
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+
+    Ok(PipeTy::Table(TableType {
+        content: Content {
+            index: left.content.index,
+            columns,
+        },
+        qualifiers: Qualifiers {
+            cardinality: left.qualifiers.cardinality,
+            totality,
+            completeness: left.qualifiers.completeness,
+            lineage: left.qualifiers.lineage,
+        },
+    }))
 }
 
 /// `map |r| record` (section 6.1, Tier A): a per-row transform. The returned
@@ -565,5 +673,31 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> bind").expect_err("not a pair");
         assert!(errs[0].message.contains("expects a pair"));
+    }
+
+    #[test]
+    fn left_join_adds_optional_columns() {
+        let s = sample_sources();
+        let t =
+            table_of(pipe_ty(&s, "readings |> left_join machines (|l| l.machine)").expect("ok"));
+        assert!(t.content.columns.iter().any(|c| c.name == "vendor"));
+        assert!(t.qualifiers.totality.is_optional("vendor"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn inner_join_keeps_totality() {
+        let s = sample_sources();
+        let t =
+            table_of(pipe_ty(&s, "readings |> inner_join machines (|l| l.machine)").expect("ok"));
+        assert!(t.qualifiers.totality.is_total("vendor"));
+    }
+
+    #[test]
+    fn join_key_domain_must_match() {
+        let s = sample_sources();
+        // `ts` is a number, but `machines` is keyed by a string.
+        let errs = pipe_ty(&s, "readings |> left_join machines (|l| l.ts)").expect_err("domain");
+        assert!(errs[0].message.contains("key domain"));
     }
 }
