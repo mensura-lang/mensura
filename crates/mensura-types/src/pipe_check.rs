@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 
 use mensura_syntax::{BinOp, Expr, ExprKind, Span};
 
-use crate::expr_check::TypeError;
-use crate::table::TableType;
+use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
+use crate::model::ColumnType;
+use crate::table::{Column, Content, Qualifiers, TableType, Totality};
 
 /// The type of a table-valued (pipeline) expression.
 #[derive(Clone, Debug, PartialEq)]
@@ -93,7 +94,106 @@ fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy,
     };
     match op.as_str() {
         "extend_key" => op_extend_key(input, &args, head.span),
+        "map" => op_map(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
+    }
+}
+
+/// `map |r| record` (section 6.1, Tier A): a per-row transform. The returned
+/// record becomes the non-index columns; the index and cardinality are
+/// preserved.
+fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let table = expect_table(input, span)?;
+    let (param, body) = single_lambda(args, "map", span)?;
+    let ctx = Context::row(param, &table);
+    let (columns, totality) = record_to_content(&ctx, body, "map")?;
+    Ok(PipeTy::Table(TableType {
+        content: Content {
+            index: table.content.index,
+            columns,
+        },
+        qualifiers: Qualifiers {
+            cardinality: table.qualifiers.cardinality,
+            totality,
+            completeness: table.qualifiers.completeness,
+            lineage: table.qualifiers.lineage,
+        },
+    }))
+}
+
+/// Extract the single one-parameter lambda an operation expects, returning its
+/// parameter name and body.
+fn single_lambda<'a>(
+    args: &[&'a Expr],
+    op: &str,
+    span: Span,
+) -> Result<(&'a str, &'a Expr), Vec<TypeError>> {
+    let [arg] = args else {
+        return Err(error(format!("`{op}` expects one lambda argument"), span));
+    };
+    let ExprKind::Lambda { params, body, .. } = &arg.kind else {
+        return Err(error(format!("`{op}` expects a lambda"), arg.span));
+    };
+    let [param] = params.as_slice() else {
+        return Err(error(
+            format!("`{op}`'s lambda takes one parameter"),
+            arg.span,
+        ));
+    };
+    Ok((param.name.as_str(), body.as_ref()))
+}
+
+/// Type a record-returning lambda body into output columns and their totality
+/// (used by `map` and `group_map`). Each field's value is a value expression
+/// typed by `expr_check`.
+fn record_to_content(
+    ctx: &Context,
+    body: &Expr,
+    op: &str,
+) -> Result<(Vec<Column>, Totality), Vec<TypeError>> {
+    let ExprKind::Record(fields) = &body.kind else {
+        return Err(error(
+            format!("`{op}`'s lambda must return a record"),
+            body.span,
+        ));
+    };
+    let mut columns = Vec::new();
+    let mut totality = Totality::all_total();
+    let mut errs = Vec::new();
+    for field in fields {
+        match type_expr(ctx, &field.value) {
+            Err(e) => errs.extend(e),
+            Ok(ty) => match column_of(&ty) {
+                Some((domain, opt)) => {
+                    columns.push(Column {
+                        name: field.name.name.clone(),
+                        domain,
+                    });
+                    if opt == Optionality::Optional {
+                        totality.mark_optional(field.name.name.clone());
+                    }
+                }
+                None => errs.push(te(
+                    format!("field `{}` is not a single value", field.name.name),
+                    field.value.span,
+                )),
+            },
+        }
+    }
+    if errs.is_empty() {
+        Ok((columns, totality))
+    } else {
+        Err(errs)
+    }
+}
+
+/// The column domain and totality a value type contributes, or `None` for a bag
+/// or nested record (window/nested returns are deferred).
+fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
+    match ty {
+        Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
+        Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
+        Ty::Bag { .. } | Ty::Record(_) => None,
     }
 }
 
@@ -270,5 +370,25 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> extend_key bogus").expect_err("unknown column");
         assert!(errs[0].message.contains("unknown column `bogus`"));
+    }
+
+    #[test]
+    fn map_derives_columns_preserving_cardinality() {
+        let s = sample_sources();
+        let t =
+            table_of(pipe_ty(&s, "readings |> map |r| (.hot = r.temperature > 30)").expect("ok"));
+        assert!(t.content.index.iter().any(|c| c.name == "ts"));
+        assert_eq!(t.content.columns.len(), 1);
+        assert_eq!(t.content.columns[0].name, "hot");
+        assert_eq!(t.content.columns[0].domain, ColumnType::Bool);
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn map_propagates_field_errors() {
+        let s = sample_sources();
+        // `peak` is optional, so a scalar on it is rejected by expr_check.
+        let errs = pipe_ty(&s, "readings |> map |r| (.x = r.peak + 1)").expect_err("optional");
+        assert!(errs[0].message.contains("known value"));
     }
 }
