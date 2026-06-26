@@ -45,11 +45,15 @@ impl Sources {
     }
 }
 
-fn error(message: impl Into<String>, span: Span) -> Vec<TypeError> {
-    vec![TypeError {
+fn te(message: impl Into<String>, span: Span) -> TypeError {
+    TypeError {
         message: message.into(),
         span,
-    }]
+    }
+}
+
+fn error(message: impl Into<String>, span: Span) -> Vec<TypeError> {
+    vec![te(message, span)]
 }
 
 /// Type a pipeline expression, collecting all diagnostics.
@@ -82,13 +86,58 @@ fn expect_table(pipe: PipeTy, span: Span) -> Result<TableType, Vec<TypeError>> {
 }
 
 /// Apply a pipeline operation (the right side of a `|>`) to its input table.
-fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, Vec<TypeError>> {
-    let (head, _args) = flatten_app(op_expr);
+fn apply_op(_sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, Vec<TypeError>> {
+    let (head, args) = flatten_app(op_expr);
     let ExprKind::Name(op) = &head.kind else {
         return Err(error("expected a pipeline operation", op_expr.span));
     };
-    let _ = (sources, input);
-    Err(error(format!("unsupported operation `{op}`"), head.span))
+    match op.as_str() {
+        "extend_key" => op_extend_key(input, &args, head.span),
+        _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
+    }
+}
+
+/// `extend_key cols` (section 6.3, Tier A): promote each named column into the
+/// index. A column must be total to enter the key (ADR 0013); cardinality,
+/// completeness, and lineage are preserved.
+fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    if args.is_empty() {
+        return Err(error("`extend_key` needs at least one column", span));
+    }
+    let mut errs = Vec::new();
+    for arg in args {
+        let ExprKind::Name(col) = &arg.kind else {
+            errs.push(te("`extend_key` expects column names", arg.span));
+            continue;
+        };
+        if let Err(e) = promote_to_index(&mut table, col, arg.span) {
+            errs.push(e);
+        }
+    }
+    if errs.is_empty() {
+        Ok(PipeTy::Table(table))
+    } else {
+        Err(errs)
+    }
+}
+
+fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), TypeError> {
+    if table.content.index.iter().any(|c| c.name == col) {
+        return Err(te(format!("`{col}` is already in the index"), span));
+    }
+    let Some(pos) = table.content.columns.iter().position(|c| c.name == col) else {
+        return Err(te(format!("unknown column `{col}`"), span));
+    };
+    if table.qualifiers.totality.is_optional(col) {
+        return Err(te(
+            format!("`extend_key` requires `{col}` to be total; narrow it first"),
+            span,
+        ));
+    }
+    let column = table.content.columns.remove(pos);
+    table.content.index.push(column);
+    Ok(())
 }
 
 /// Decompose a curried application `f a b c` into the head `f` and the argument
@@ -160,6 +209,13 @@ mod tests {
         type_pipeline(sources, &expr)
     }
 
+    fn table_of(pipe: PipeTy) -> TableType {
+        match pipe {
+            PipeTy::Table(t) => t,
+            PipeTy::Pair(..) => panic!("expected a single table, found a pair"),
+        }
+    }
+
     #[test]
     fn source_name_is_its_table() {
         let s = sample_sources();
@@ -191,5 +247,28 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> nope").expect_err("unknown op");
         assert!(errs[0].message.contains("unsupported operation `nope`"));
+    }
+
+    #[test]
+    fn extend_key_promotes_a_total_column() {
+        let s = sample_sources();
+        let t = table_of(pipe_ty(&s, "readings |> extend_key machine").expect("ok"));
+        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "machine"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn extend_key_rejects_optional_column() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> extend_key peak").expect_err("optional");
+        assert!(errs[0].message.contains("to be total"));
+    }
+
+    #[test]
+    fn extend_key_unknown_column_errors() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> extend_key bogus").expect_err("unknown column");
+        assert!(errs[0].message.contains("unknown column `bogus`"));
     }
 }
