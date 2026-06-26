@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use mensura_syntax::{Expr, ExprKind, Span};
+use mensura_syntax::{Expr, ExprKind, Ident, Span};
 
 use crate::model::ColumnType;
 use crate::table::TableType;
@@ -169,6 +169,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         }),
         ExprKind::Bool(_) => Ok(Ty::Bool),
         ExprKind::Name(name) => type_name(ctx, name, expr.span),
+        ExprKind::Member(base, field) => type_member(ctx, base, field),
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -180,6 +181,22 @@ fn type_name(ctx: &Context, name: &str, span: Span) -> Result<Ty, Vec<TypeError>
     match ctx.lookup(name) {
         Some(ty) => Ok(ty.clone()),
         None => Err(vec![TypeError::new(format!("unknown name `{name}`"), span)]),
+    }
+}
+
+fn type_member(ctx: &Context, base: &Expr, field: &Ident) -> Result<Ty, Vec<TypeError>> {
+    match type_expr(ctx, base)? {
+        Ty::Record(fields) => match fields.get(&field.name) {
+            Some(ty) => Ok(ty.clone()),
+            None => Err(vec![TypeError::new(
+                format!("unknown column `{}`", field.name),
+                field.span,
+            )]),
+        },
+        _ => Err(vec![TypeError::new(
+            "member access on a non-record value",
+            field.span,
+        )]),
     }
 }
 
@@ -278,5 +295,32 @@ mod tests {
         let errs = ty_of(&ctx, "ghost").expect_err("unknown name");
         assert_eq!(errs.len(), 1);
         assert!(errs[0].message.contains("unknown name `ghost`"));
+    }
+
+    #[test]
+    fn member_access_reads_columns() {
+        let ctx = row_ctx();
+        assert_eq!(ty_of(&ctx, "r.temperature"), Ok(num_total()));
+        assert_eq!(
+            ty_of(&ctx, "r.note"),
+            Ok(Ty::Value {
+                domain: ColumnType::String,
+                opt: Optionality::Optional
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_column_errors() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.missing").expect_err("unknown column");
+        assert!(errs[0].message.contains("unknown column `missing`"));
+    }
+
+    #[test]
+    fn member_on_non_record_errors() {
+        let ctx = row_ctx();
+        let errs = ty_of(&ctx, "r.temperature.x").expect_err("not a record");
+        assert!(errs[0].message.contains("non-record"));
     }
 }
