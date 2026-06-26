@@ -1,9 +1,24 @@
 name: Book
 
+# The book build compiles every ```mensura example through the
+# `mensura-mdbook` preprocessor, so it must also run when the compiler crates
+# or build config change, not only when book content does.
 on:
   push:
     branches: [main]
+    paths:
+      - 'book/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/book.yml'
   pull_request:
+    paths:
+      - 'book/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/book.yml'
 
 # Allow one concurrent deployment; cancel superseded in-progress runs.
 concurrency:
