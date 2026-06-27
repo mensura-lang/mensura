@@ -1,8 +1,8 @@
 # Units and indices
 
 A **unit** is the kind of entity your rows are about.  It is Wickham's
-*observational unit* made syntactic: "Person", "Course", "Sensor" are units;
-a particular Alice or a particular sensor is an *observation* of one.  Declaring
+*observational unit* made syntactic: "Person", "Course", "Machine" are units;
+a particular Alice or a particular machine is an *observation* of one.  Declaring
 a unit introduces a name and the fields that identify one observation from
 another.
 

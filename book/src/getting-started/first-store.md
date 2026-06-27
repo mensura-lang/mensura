@@ -8,7 +8,7 @@ that holds their attributes.  Here is one in full:
 {{#include ../examples/first-store.mensura}}
 ```
 
-Save it as `readings.mensura`.  Two things are worth noticing before we run it.
+Save it as `machines.mensura`.  Two things are worth noticing before we run it.
 
 **Every word is an identifier.**  Mensura has no reserved keywords.  `unit`,
 `store`, `const`, and `var` are ordinary identifiers that the parser recognises
@@ -20,15 +20,15 @@ the rows are about.
 **Constants and variables are different.**  A store splits its non-index
 attributes into two groups:
 
-- `const` is for facts that should not change once a row exists.  A sensor's
-  installation date is a fact about that sensor.
+- `const` is for facts that should not change once a row exists.  A machine's
+  commissioning date is a fact about that machine.
 - `var` is for data that evolves.  A human-readable label can be corrected or
   updated.
 
 The distinction is part of the type, not a comment.  Later milestones attach
 auditing and versioning rules to it; for now it records intent precisely.
 
-The `id: string` inside `unit Sensor` is the unit's **index**: the field that
-identifies one sensor from another.  Index fields become the store's primary
+The `id: string` inside `unit Machine` is the unit's **index**: the field that
+identifies one machine from another.  Index fields become the store's primary
 key when it is created.  The next chapter runs this program and shows what it
 produces.

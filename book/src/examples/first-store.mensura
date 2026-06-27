@@ -2,12 +2,12 @@
 // Every word here is an ordinary identifier; the leading `unit` and `store`
 // are recognised by position, not because they are reserved keywords.
 
-unit Sensor {
+unit Machine {
   id: string
 }
 
-store readings {
-  unit { Sensor }
-  const { installed: date }
+store machines {
+  unit { Machine }
+  const { commissioned: date }
   var   { label: string }
 }

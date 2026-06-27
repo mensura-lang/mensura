@@ -10,7 +10,7 @@ errors, but touches no database.  It is the fast feedback loop and what you
 wire into CI.
 
 ```console
-$ mensura check readings.mensura
+$ mensura check machines.mensura
 ```
 
 A well-typed program prints nothing and exits zero.  When something is wrong,
@@ -18,9 +18,9 @@ A well-typed program prints nothing and exits zero.  When something is wrong,
 Suppose the store names a unit that was never declared:
 
 ```mensura,ignore
-store readings {
-  unit { Snesor }   // typo: there is no unit by this name
-  const { installed: date }
+store machines {
+  unit { Machne }   // typo: there is no unit by this name
+  const { commissioned: date }
 }
 ```
 
@@ -34,7 +34,7 @@ others behind it.
 becomes a table whose primary key is its unit's index fields.
 
 ```console
-$ mensura run readings.mensura --db readings.db
+$ mensura run machines.mensura --db machines.db
 ```
 
 The `--db` flag chooses the SQLite file to create the stores in.  Omit it and
@@ -42,7 +42,7 @@ the database is held in memory, which is handy for a quick check that a program
 not only types but also maps cleanly to storage:
 
 ```console
-$ mensura run readings.mensura
+$ mensura run machines.mensura
 ```
 
 Running never reaches the database if checking fails, so `run` is always safe
