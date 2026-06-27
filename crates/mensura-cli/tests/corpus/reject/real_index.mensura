@@ -1,0 +1,9 @@
+// Rejected at resolve: an index field must be key-eligible; a `real`
+// measurement is not an identity (ADR 0014).
+unit Reading {
+  at: real
+}
+
+store readings {
+  unit { Reading }
+}

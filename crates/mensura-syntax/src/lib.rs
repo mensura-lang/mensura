@@ -12,7 +12,7 @@ pub mod token;
 
 pub use ast::{
     DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
-    ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl,
+    ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
 };
 pub use expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 pub use lexer::{LexError, Lexed, is_identifier, lex, tokenize};

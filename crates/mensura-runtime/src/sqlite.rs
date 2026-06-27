@@ -88,7 +88,8 @@ pub fn create_table_sql(schema: &Schema) -> String {
 fn column_type_sql(ty: &ColumnType, col: &str) -> String {
     match ty {
         ColumnType::String => "TEXT".to_string(),
-        ColumnType::Number => "NUMERIC".to_string(),
+        ColumnType::Int => "INTEGER".to_string(),
+        ColumnType::Real => "REAL".to_string(),
         ColumnType::Bool => "INTEGER".to_string(),
         ColumnType::Date => "TEXT".to_string(),
         ColumnType::Enum { variants, .. } => {

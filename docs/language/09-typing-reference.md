@@ -269,17 +269,26 @@ subtraction; a negated argument must be parenthesized, `f (-x)`.
 A **scalar operator** (`+ - * / ^`, the comparisons, `and`/`or`/`not`) requires
 **a single known value**: `card 1` and not missing.  Applying one to a bag, or
 to a value that may be missing, is a hard type error, never an implicit fold or
-default (`06`, "Cardinality and missing values").  So `r.temperature > 30`
+default (`06`, "Cardinality and missing values").  So `r.temperature > 30.0`
 type-checks only when `temperature` is read at one row and is total.
+
+The scalar domain also gates which operator applies, strictly and without
+coercion (ADR 0014): numeric `number` splits into `int` and `real`; `+ - * ^`
+need matching numeric operands; `/` is `real`-only; `< <= > >=` and `min`/`max`
+take the orderable domains (`int`, `real`, `date`); and `== !=` take the
+equatable domains, so they are **not** defined on `real`.
 
 ### 5.4  Bag combinators: many to one
 
 A bag is consumed only deliberately.  The **bag combinators** are the explicit
 way: `in` tests membership, `count`/`any`/`all` summarize, and the aggregates
-`sum`/`mean`/`min`/`max` reduce.  Each returns a single value.  A group-scoped
-lambda `|g| ...` sees the whole bag at a key (so `g.credits` is the bag of
-`credits`), and a scalar comparison on a bag is a type error until a combinator
-collapses it (`mean g.readings > 30`).
+`sum`/`min`/`max` reduce (`mean` is not a primitive: it is
+`sum(x) / to_real(count(x))`; ADR 0014).  An aggregate requires a total bag;
+`count` yields `int`, `sum` preserves a numeric domain, `min`/`max` preserve an
+orderable domain, and `any`/`all` take a bag of `bool`.  Each returns a single
+value.  A group-scoped lambda `|g| ...` sees the whole bag at a key (so
+`g.credits` is the bag of `credits`), and a scalar comparison on a bag is a type
+error until a combinator collapses it (`max g.readings > 30.0`).
 
 ### 5.5  `is known` narrows
 
@@ -316,7 +325,7 @@ completeness, and lineage.
 ### 6.1  `map` (per-row transform) -- Tier A
 
 ```
-data |> map |r| (.bmi = r.mass / r.height ^ 2)
+data |> map |r| (.bmi = r.mass / r.height ^ 2.0)
 ```
 
 The lambda receives one row and returns a record.  Content: the output columns
@@ -348,9 +357,11 @@ split-safety holds regardless.
 Reindexing is one idea in two directions; the direction fixes the Tier.
 
 **`extend_key cols`** promotes non-index columns into the key.  Content: the
-named columns join the index.  Cardinality: an entity's rows are redistributed
-across the finer key, so the bound cannot grow; preserved.  Completeness:
-preserved.  Lineage: preserved.  Tier A (`ungroup_splitSafe`,
+named columns join the index.  Each promoted column must be **key-eligible**
+(equatable) and total, since it becomes part of the identity; a continuous
+`real` measurement is rejected (ADR 0014).  Cardinality: an entity's rows are
+redistributed across the finer key, so the bound cannot grow; preserved.
+Completeness: preserved.  Lineage: preserved.  Tier A (`ungroup_splitSafe`,
 `ungroup_preservesDisjoint`).
 
 **`shrink_key cols`** drops index components into the non-index part.  Content:
@@ -420,6 +431,11 @@ preserved.  Tier A (`unpivot_splitSafe`, `unpivot_preservesDisjoint`).
 - **Index form** (`name` is part of the key): not split-invariant, because a
   split can cut across the spread names; lineage dropped.  Tier B
   (`pivot_not_splitInvariant`).
+
+The spread key column (for the index form, and for `unpivot`'s inverse) must be
+**finite-enumerable**, i.e. an `enum`, since its values become column names
+(ADR 0014); `bool` is excluded because `true`/`false` as column names break the
+round-trip.
 
 So `pivot` is where cardinality tracking pays off: the attribute form
 type-checks only when the spread cell is `singletons`.

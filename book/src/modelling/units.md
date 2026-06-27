@@ -33,7 +33,7 @@ they may change, or how observations enter the system.  Those belong to a
 tabulated by several stores that carry different attributes and policies but
 agree on what the entity is.
 
-Index field types are primitives for now (`string`, `number`, `bool`, `date`).
+Index field types are the key-eligible primitives (`string`, `int`, `bool`, `date`) and named enums; a continuous `real` measurement cannot be a key (ADR 0014).
 Indices whose fields reference other units (compound units) are a later
 feature; see [What's next](../whats-next.md).  The full design lives in
 `docs/language/01-units.md`.

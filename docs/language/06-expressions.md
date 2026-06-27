@@ -167,16 +167,21 @@ bridges either gap:
 - **Scalar operators** (`+ - * / ^`, the comparisons, `and`/`or`/`not`)
   require **a single known value**: cardinality 1 and not missing.
   Applying one to a bag, or to a value that may be missing, is a **hard
-  type error**, not an implicit fold or default.  `r.temperature > 30`
+  type error**, not an implicit fold or default.  `r.temperature > 30.0`
   is well-typed only when `temperature` is read at one row and is total
-  (known).
+  (known).  Numeric splits into `int` and `real`, and operators are gated
+  by the scalar domain (ADR 0014): operands must match with no coercion,
+  `/` is `real`-only, `==`/`!=` is not defined on `real`, and ordering
+  (`< <= > >=`) and `min`/`max` apply to the orderable domains (`int`,
+  `real`, `date`).
 - **Bag combinators** are the explicit way to consume a bag.  Membership
   `v in g.tags` tests it; `count`, `any`, and `all` summarize it; the
-  aggregates `sum`, `mean`, `min`, `max` reduce it to one value.  These
-  return a single value.  A literal is a single value.
+  aggregates `sum`, `min`, `max` reduce it to one value (`mean` is
+  derived, `sum(x) / to_real(count(x))`; ADR 0014).  These return a
+  single value.  A literal is a single value.
 
 So a bag is always collapsed deliberately, by reduction
-(`mean g.readings > 30`) or by quantification (`any (|x| x > 30)
+(`max g.readings > 30.0`) or by quantification (`any (|x| x > 30)
 g.readings`), and never by accident.  A possibly missing value is
 eliminated just as deliberately, by a default or coalesce, by an
 aggregate defined over missingness, or by narrowing (below); it never
@@ -262,15 +267,15 @@ A derived value over a single row (the lambda binds the row; `mass` and
 `height` are single-valued columns):
 
 ```
-|r| r.mass / r.height ^ 2
+|r| r.mass / r.height ^ 2.0
 ```
 
 A predicate that reduces a bag before comparing (a group-scoped lambda;
 `g.readings` is the bag of readings across the group, so a scalar
-comparison on it would be a type error and `mean` collapses it first):
+comparison on it would be a type error and `max` collapses it first):
 
 ```
-|g| mean g.readings > 30
+|g| max g.readings > 30.0
 ```
 
 A membership test over such a bag:
@@ -301,7 +306,7 @@ A membership test over such a bag:
   `is known` / `is missing` exist.
 - **The builtin catalogue per context.**  Exactly which ambient names
   and aggregates each site admits (`now`, `env`, `lookup`, `prev`,
-  `next`, `sum`, `mean`, `min`, `max`, `count`, `any`, `all`, ...) is
+  `next`, `sum`, `min`, `max`, `count`, `any`, `all`, `to_real`, ...) is
   fixed per site as those sites are specified, not by this document.
 - **ADR follow-up.**  The authorization examples in
   `docs/decisions/0005-identity-and-authorization.md`, written today as

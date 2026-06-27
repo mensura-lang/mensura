@@ -188,6 +188,19 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                     builder.push(variant.span, HighlightKind::EnumMember);
                 }
             }
+            Item::View(view) => {
+                builder.push(view.name.span, HighlightKind::Type);
+                for shape_ref in &view.conforms {
+                    builder.push(shape_ref.name.span, HighlightKind::Type);
+                    for arg in &shape_ref.args {
+                        if let ShapeArg::Unit(id) = arg {
+                            builder.push(id.span, HighlightKind::Type);
+                        }
+                    }
+                }
+                // The body is a pipeline expression; its tokens are colored by
+                // the token stream, so no declaration-level spans are added here.
+            }
         }
     }
 }

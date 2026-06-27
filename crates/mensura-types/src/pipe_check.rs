@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use mensura_syntax::{BinOp, Expr, ExprKind, Span};
+use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
 
 use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
@@ -30,7 +30,7 @@ pub enum PipeTy {
 /// `10-views.md`, "Sources resolve by name").
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
-    tables: BTreeMap<String, TableType>,
+    bound: BTreeMap<String, PipeTy>,
 }
 
 impl Sources {
@@ -38,13 +38,20 @@ impl Sources {
         Sources::default()
     }
 
+    /// Add a store source, presented as a single table.
     pub fn with(mut self, name: &str, table: TableType) -> Self {
-        self.tables.insert(name.to_string(), table);
+        self.bound.insert(name.to_string(), PipeTy::Table(table));
         self
     }
 
-    fn get(&self, name: &str) -> Option<&TableType> {
-        self.tables.get(name)
+    /// Bind a name to any pipeline value (used by a view body's `let`, which may
+    /// hold a `split` pair as well as a table).
+    fn bind(&mut self, name: &str, pipe: PipeTy) {
+        self.bound.insert(name.to_string(), pipe);
+    }
+
+    fn get(&self, name: &str) -> Option<&PipeTy> {
+        self.bound.get(name)
     }
 }
 
@@ -63,7 +70,7 @@ fn error(message: impl Into<String>, span: Span) -> Vec<TypeError> {
 pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeError>> {
     match &expr.kind {
         ExprKind::Name(name) => match sources.get(name) {
-            Some(table) => Ok(PipeTy::Table(table.clone())),
+            Some(pipe) => Ok(pipe.clone()),
             None => Err(error(format!("unknown source `{name}`"), expr.span)),
         },
         ExprKind::Tuple(items) if items.len() == 2 => {
@@ -134,11 +141,20 @@ fn op_join(
             right_arg.span,
         ));
     };
-    let Some(right) = sources.get(right_name) else {
-        return Err(error(
-            format!("unknown source `{right_name}`"),
-            right_arg.span,
-        ));
+    let right = match sources.get(right_name) {
+        Some(PipeTy::Table(t)) => t,
+        Some(PipeTy::Pair(..)) => {
+            return Err(error(
+                format!("`{right_name}` is a pair of tables, not a single join target"),
+                right_arg.span,
+            ));
+        }
+        None => {
+            return Err(error(
+                format!("unknown source `{right_name}`"),
+                right_arg.span,
+            ));
+        }
     };
     let [right_key] = right.content.index.as_slice() else {
         return Err(error(
@@ -285,12 +301,15 @@ fn group_record_content(
     for field in fields {
         match type_expr(ctx, &field.value) {
             Err(e) => errs.extend(e),
-            Ok(Ty::Bag { domain }) => {
+            Ok(Ty::Bag { domain, opt }) => {
                 saw_window = true;
                 columns.push(Column {
                     name: field.name.name.clone(),
                     domain,
                 });
+                if opt == Optionality::Optional {
+                    totality.mark_optional(field.name.name.clone());
+                }
             }
             Ok(ty) => match column_of(&ty) {
                 Some((domain, opt)) => {
@@ -511,6 +530,15 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     let Some(pos) = table.content.columns.iter().position(|c| c.name == col) else {
         return Err(te(format!("unknown column `{col}`"), span));
     };
+    if !table.content.columns[pos].domain.is_key_eligible() {
+        return Err(te(
+            format!(
+                "`extend_key` cannot promote `{col}`: its type is not key-eligible \
+                 (a continuous `real` measurement is not an identity)"
+            ),
+            span,
+        ));
+    }
     if table.qualifiers.totality.is_optional(col) {
         return Err(te(
             format!("`extend_key` requires `{col}` to be total; narrow it first"),
@@ -533,6 +561,58 @@ fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
     }
     args.reverse();
     (cur, args)
+}
+
+/// Type a view body (a block hosting a pipeline, `docs/language/10-views.md`):
+/// each `let` binding extends the source environment, and the final statement
+/// is a trailing expression whose value is the materialized result. `assert`
+/// (Tier B / completeness) is deferred.
+pub fn type_view_body(sources: &Sources, block: &Block) -> Result<PipeTy, Vec<TypeError>> {
+    let mut env = sources.clone();
+    let mut errs = Vec::new();
+    let mut result: Option<PipeTy> = None;
+    let last = block.stmts.len().saturating_sub(1);
+    for (i, stmt) in block.stmts.iter().enumerate() {
+        match stmt {
+            Stmt::Let { name, value, .. } => match type_pipeline(&env, value) {
+                Ok(pipe) => env.bind(&name.name, pipe),
+                Err(e) => errs.extend(e),
+            },
+            Stmt::Assert(e) => {
+                errs.push(te("`assert` in a view body is not yet supported", e.span));
+            }
+            Stmt::Expr(e) if i == last => match type_pipeline(&env, e) {
+                Ok(pipe) => result = Some(pipe),
+                Err(er) => errs.extend(er),
+            },
+            Stmt::Expr(e) => {
+                errs.push(te(
+                    "a view body allows only `let` bindings before its final result expression",
+                    e.span,
+                ));
+            }
+        }
+    }
+    match result {
+        Some(pipe) if errs.is_empty() => Ok(pipe),
+        Some(_) => Err(errs),
+        None => {
+            errs.push(te("a view body must end in a table expression", block.span));
+            Err(errs)
+        }
+    }
+}
+
+/// Type a view body and require it to materialize a single table (a view is not
+/// a bare pair, `10-views.md`). Returns the output table type.
+pub fn type_view(sources: &Sources, body: &Block) -> Result<TableType, Vec<TypeError>> {
+    match type_view_body(sources, body)? {
+        PipeTy::Table(table) => Ok(table),
+        PipeTy::Pair(..) => Err(error(
+            "a view must materialize a single table, not a pair",
+            body.span,
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -565,11 +645,12 @@ mod tests {
             "readings",
             "Reading",
             vec![
-                scol("ts", ColumnType::Number, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
                 scol("machine", ColumnType::String, ColumnRole::Var, false),
-                scol("temperature", ColumnType::Number, ColumnRole::Var, false),
-                scol("peak", ColumnType::Number, ColumnRole::Var, true),
+                scol("temperature", ColumnType::Real, ColumnRole::Var, false),
+                scol("peak", ColumnType::Real, ColumnRole::Var, true),
                 scol("flag", ColumnType::Bool, ColumnRole::Var, false),
+                scol("note", ColumnType::String, ColumnRole::Var, true),
             ],
         );
         let machines = from_cols(
@@ -643,8 +724,17 @@ mod tests {
     #[test]
     fn extend_key_rejects_optional_column() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> extend_key peak").expect_err("optional");
+        // `note` is key-eligible (string) but optional.
+        let errs = pipe_ty(&s, "readings |> extend_key note").expect_err("optional");
         assert!(errs[0].message.contains("to be total"));
+    }
+
+    #[test]
+    fn extend_key_rejects_real_column() {
+        let s = sample_sources();
+        // `temperature` is a real measurement: not key-eligible (ADR 0014).
+        let errs = pipe_ty(&s, "readings |> extend_key temperature").expect_err("real");
+        assert!(errs[0].message.contains("key-eligible"));
     }
 
     #[test]
@@ -658,7 +748,7 @@ mod tests {
     fn map_derives_columns_preserving_cardinality() {
         let s = sample_sources();
         let t =
-            table_of(pipe_ty(&s, "readings |> map |r| (.hot = r.temperature > 30)").expect("ok"));
+            table_of(pipe_ty(&s, "readings |> map |r| (.hot = r.temperature > 30.0)").expect("ok"));
         assert!(t.content.index.iter().any(|c| c.name == "ts"));
         assert_eq!(t.content.columns.len(), 1);
         assert_eq!(t.content.columns[0].name, "hot");
@@ -681,7 +771,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> extend_key machine \
-                 |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)",
+                 |> group_map |g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
             )
             .expect("ok"),
         );
@@ -694,8 +784,8 @@ mod tests {
     #[test]
     fn group_map_rejects_non_numeric_aggregate() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> group_map |g| (.m = mean g.machine)")
-            .expect_err("non-numeric");
+        let errs =
+            pipe_ty(&s, "readings |> group_map |g| (.m = sum g.machine)").expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
     }
 
@@ -719,7 +809,7 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> group_map |g| (.m = mean g.temperature, .t = g.temperature)",
+            "readings |> group_map |g| (.m = sum g.temperature, .t = g.temperature)",
         )
         .expect_err("mixed");
         assert!(errs.iter().any(|e| e.message.contains("not a mix")));
@@ -808,7 +898,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> extend_key machine \
-                 |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)",
+                 |> group_map |g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
             )
             .expect("machine_temperature types"),
         );
@@ -829,5 +919,52 @@ mod tests {
         // `singletons` (bind_split, 09 §11).
         assert_eq!(rebound.content, whole.content);
         assert_eq!(rebound.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    fn view_body(src: &str) -> Block {
+        let toks = mensura_syntax::tokenize(src).expect("lex");
+        let program = mensura_syntax::parse(&toks).expect("parse");
+        match program.items.into_iter().next().expect("an item") {
+            mensura_syntax::Item::View(v) => v.body,
+            _ => panic!("expected a view"),
+        }
+    }
+
+    #[test]
+    fn view_body_typechecks_machine_temperature() {
+        let s = sample_sources();
+        let body = view_body(
+            "view machine_temperature { readings |> extend_key machine \
+             |> group_map |g| (.temp_max = max g.temperature) }",
+        );
+        let t = type_view(&s, &body).expect("ok");
+        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn view_body_threads_let_bindings() {
+        let s = sample_sources();
+        let body = view_body(
+            "view full_dataset { let parts = readings |> split |k| k.ts > 100; parts |> bind }",
+        );
+        let t = type_view(&s, &body).expect("ok");
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn view_must_materialize_a_single_table() {
+        let s = sample_sources();
+        let body = view_body("view bad { readings |> split |k| k.ts > 100 }");
+        let errs = type_view(&s, &body).expect_err("pair");
+        assert!(errs[0].message.contains("single table"));
+    }
+
+    #[test]
+    fn view_assert_is_deferred() {
+        let s = sample_sources();
+        let body = view_body("view bad { assert true; readings }");
+        let errs = type_view(&s, &body).expect_err("assert");
+        assert!(errs[0].message.contains("assert"));
     }
 }

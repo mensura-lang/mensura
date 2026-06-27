@@ -1,0 +1,11 @@
+// Accepted: int and real attributes (ADR 0014).  An int may index (it is a
+// discrete, equality-stable identity); a real may not, but is fine as data.
+unit Sample {
+  id: int
+}
+
+store samples {
+  unit { Sample }
+  const { score: real }
+  var   { count_seen: int }
+}

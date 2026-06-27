@@ -1,4 +1,4 @@
 unit Course {
   name: string
-  year: number
+  year: int
 }
