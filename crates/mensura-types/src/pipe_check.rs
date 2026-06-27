@@ -234,26 +234,98 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
     }))
 }
 
-/// `group_map |g| record` (section 6.2, Tier A): summarize each group to one
-/// record. A single-record return yields `Singletons`; the index, completeness,
-/// and lineage are preserved. (Bag/window returns are deferred.)
+/// `group_map |g| record` (section 6.2, Tier A): transform each group. The
+/// result cardinality is **inferred from the return**: all single-valued fields
+/// are the aggregate shape (one row per key, `Singletons`); bag-valued fields are
+/// the window shape (one output row per input row, `Bag`). The index,
+/// completeness, and lineage are preserved.
 fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (param, body) = single_lambda(args, "group_map", span)?;
     let ctx = Context::group(param, &table);
-    let (columns, totality) = record_to_content(&ctx, body, "group_map")?;
+    let (columns, totality, cardinality) = group_record_content(&ctx, body)?;
     Ok(PipeTy::Table(TableType {
         content: Content {
             index: table.content.index,
             columns,
         },
         qualifiers: Qualifiers {
-            cardinality: Cardinality::Singletons,
+            cardinality,
             totality,
             completeness: table.qualifiers.completeness,
             lineage: table.qualifiers.lineage,
         },
     }))
+}
+
+/// Type a `group_map` record body into columns, totality, and the result
+/// cardinality (section 6.2). Single-valued fields are aggregates (`Singletons`);
+/// bag-valued fields are window values (`Bag`); a mix of the two is rejected.
+fn group_record_content(
+    ctx: &Context,
+    body: &Expr,
+) -> Result<(Vec<Column>, Totality, Cardinality), Vec<TypeError>> {
+    let ExprKind::Record(fields) = &body.kind else {
+        return Err(error(
+            "`group_map`'s lambda must return a record",
+            body.span,
+        ));
+    };
+    if fields.is_empty() {
+        return Err(error(
+            "`group_map`'s record needs at least one field",
+            body.span,
+        ));
+    }
+    let mut columns = Vec::new();
+    let mut totality = Totality::all_total();
+    let mut errs = Vec::new();
+    let mut saw_aggregate = false;
+    let mut saw_window = false;
+    for field in fields {
+        match type_expr(ctx, &field.value) {
+            Err(e) => errs.extend(e),
+            Ok(Ty::Bag { domain }) => {
+                saw_window = true;
+                columns.push(Column {
+                    name: field.name.name.clone(),
+                    domain,
+                });
+            }
+            Ok(ty) => match column_of(&ty) {
+                Some((domain, opt)) => {
+                    saw_aggregate = true;
+                    columns.push(Column {
+                        name: field.name.name.clone(),
+                        domain,
+                    });
+                    if opt == Optionality::Optional {
+                        totality.mark_optional(field.name.name.clone());
+                    }
+                }
+                None => errs.push(te(
+                    format!("field `{}` is not a value or a bag", field.name.name),
+                    field.value.span,
+                )),
+            },
+        }
+    }
+    if saw_aggregate && saw_window {
+        errs.push(te(
+            "a `group_map` record must be all aggregates (one row per key) or all \
+             window values (a bag), not a mix",
+            body.span,
+        ));
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let cardinality = if saw_window {
+        Cardinality::Bag
+    } else {
+        Cardinality::Singletons
+    };
+    Ok((columns, totality, cardinality))
 }
 
 /// `split |k| pred` (section 6.5, Tier A): route each key to one side of a pair
@@ -625,6 +697,32 @@ mod tests {
         let errs = pipe_ty(&s, "readings |> group_map |g| (.m = mean g.machine)")
             .expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
+    }
+
+    #[test]
+    fn group_map_with_a_bag_field_stays_a_bag() {
+        let s = sample_sources();
+        // A bag-valued field is the window shape: one output row per input row.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> group_map |g| (.temps = g.temperature)",
+            )
+            .expect("ok"),
+        );
+        assert!(t.content.columns.iter().any(|c| c.name == "temps"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    #[test]
+    fn group_map_rejects_mixed_aggregate_and_window() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> group_map |g| (.m = mean g.temperature, .t = g.temperature)",
+        )
+        .expect_err("mixed");
+        assert!(errs.iter().any(|e| e.message.contains("not a mix")));
     }
 
     #[test]
