@@ -2,12 +2,13 @@
 
 ## Status
 
-Proposed.  Generalizes the surface of `map` to the formal row-multiset (so
+Accepted.  Generalizes the surface of `map` to the formal row-multiset (so
 filtering and row-expansion fall out, with no `filter` primitive), splits every
 pipeline lambda into a key-first form, adds `if`/`then`/`else` and a homogeneous
 collection literal `( ... )`, and reserves a `const`/`var` record-field marker.
 Touches `mensura-syntax` (grammar, AST, parser), `mensura-types` (`expr_check`,
-`pipe_check`), and the examples/corpus/tests.  Pending acceptance.
+`pipe_check`), and the examples/corpus/tests.  The implementation lands on the
+same branch/PR as this acceptance.
 
 ## Context
 
