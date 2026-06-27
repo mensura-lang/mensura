@@ -4,9 +4,10 @@
 //! This layer sits above [`crate::expr_check`]: it types a table-valued
 //! expression against a set of named [`Sources`], dispatching each `|>` stage to
 //! an operation handler that transforms the input [`TableType`]. Each operation's
-//! lambda body (`|r|` / `|g|` / `|k|`) is typed by `expr_check` against a
-//! row/group/key context derived from the input table. Like `resolve` and
-//! `expr_check`, it collects all diagnostics rather than failing fast.
+//! key-first lambda body (`|k|` / `|k, r|` / `|k, g|`, ADR 0015) is typed by
+//! `expr_check` against a key/row/group context derived from the input table.
+//! Like `resolve` and `expr_check`, it collects all diagnostics rather than
+//! failing fast.
 
 use std::collections::BTreeMap;
 
@@ -119,7 +120,7 @@ enum JoinKind {
     Inner,
 }
 
-/// `left_join` / `inner_join right (|l| key)` (section 6.4, Tier A): join a fixed
+/// `left_join` / `inner_join right (|k, l| key)` (section 6.4, Tier A): join a fixed
 /// right table by a key over the left row. Adds the right table's non-index
 /// columns; `left_join` makes them optional, `inner_join` keeps their totality.
 /// The right table is a store (`Singletons`, functional), so cardinality is
@@ -163,19 +164,8 @@ fn op_join(
         ));
     };
 
-    let ExprKind::Lambda { params, body, .. } = &key_arg.kind else {
-        return Err(error(
-            "a join's second argument must be a key lambda",
-            key_arg.span,
-        ));
-    };
-    let [param] = params.as_slice() else {
-        return Err(error(
-            "a join's key lambda takes one parameter",
-            key_arg.span,
-        ));
-    };
-    let ctx = Context::row(&param.name, &left);
+    let (params, body) = lambda_params(&[key_arg], "join", 2, key_arg.span)?;
+    let ctx = Context::row(params[0], params[1], &left);
     let key_ty = type_expr(&ctx, body)?;
     match key_ty.known_value_domain() {
         Some(domain) if *domain == right_key.domain => {}
@@ -228,21 +218,37 @@ fn op_join(
     }))
 }
 
-/// `map |r| record` (section 6.1, Tier A): a per-row transform. The returned
-/// record becomes the non-index columns; the index and cardinality are
-/// preserved.
+/// `map |k, r| collection` (section 6.1, Tier A, ADR 0015): the formal row
+/// multiset. The body yields a collection of value rows (`( )` empty drops, a
+/// bare row keeps, `(a, b)` expands, an `if` filters or branches). The non-index
+/// columns are the collection's row schema; the index is preserved; cardinality
+/// is the maximum collection size (`<= 1` keeps the input bound, `>= 2` is a
+/// `Bag`).
 fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
-    let (param, body) = single_lambda(args, "map", span)?;
-    let ctx = Context::row(param, &table);
-    let (columns, totality) = record_to_content(&ctx, body, "map")?;
+    let (params, body) = lambda_params(args, "map", 2, span)?;
+    let ctx = Context::row(params[0], params[1], &table);
+    let (schema, max_size) = row_collection(&ctx, body, &table)?;
+    let Some(schema) = schema else {
+        return Err(error(
+            "a `map` body that always drops the row cannot infer the output \
+             columns; keep at least one row in some branch",
+            body.span,
+        ));
+    };
+    let (columns, totality) = schema_to_content(schema);
+    let cardinality = if max_size <= 1 {
+        table.qualifiers.cardinality
+    } else {
+        Cardinality::Bag
+    };
     Ok(PipeTy::Table(TableType {
         content: Content {
             index: table.content.index,
             columns,
         },
         qualifiers: Qualifiers {
-            cardinality: table.qualifiers.cardinality,
+            cardinality,
             totality,
             completeness: table.qualifiers.completeness,
             lineage: table.qualifiers.lineage,
@@ -250,15 +256,220 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
     }))
 }
 
-/// `group_map |g| record` (section 6.2, Tier A): transform each group. The
+/// One column of a `map` output row, before it becomes table content.
+struct RowColumn {
+    name: String,
+    domain: ColumnType,
+    opt: Optionality,
+}
+
+/// The shared schema of the value rows a `map` body yields.
+type RowSchema = Vec<RowColumn>;
+
+/// Type a `map` body as a collection of value rows (ADR 0015), returning the
+/// shared row schema (or `None` if the body always drops) and the maximum number
+/// of output rows. `( )` is empty (0), `(a, b, ...)` expands (n), an `if`
+/// branches (max of the two), and any other body is a single row (1).
+fn row_collection(
+    ctx: &Context,
+    body: &Expr,
+    input: &TableType,
+) -> Result<(Option<RowSchema>, usize), Vec<TypeError>> {
+    match &body.kind {
+        ExprKind::Tuple(items) => {
+            if items.is_empty() {
+                return Ok((None, 0));
+            }
+            let mut errs = Vec::new();
+            let mut schema: Option<RowSchema> = None;
+            for item in items {
+                match single_row_schema(ctx, item, input) {
+                    Ok(s) => {
+                        schema = match schema {
+                            None => Some(s),
+                            Some(prev) => match unify_row_schema(&prev, &s, item.span) {
+                                Ok(merged) => Some(merged),
+                                Err(e) => {
+                                    errs.extend(e);
+                                    Some(prev)
+                                }
+                            },
+                        };
+                    }
+                    Err(e) => errs.extend(e),
+                }
+            }
+            if !errs.is_empty() {
+                return Err(errs);
+            }
+            Ok((schema, items.len()))
+        }
+        ExprKind::If { cond, then, els } => {
+            let mut errs = require_known_bool(ctx, cond);
+            let then_rc = row_collection(ctx, then, input);
+            let els_rc = row_collection(ctx, els, input);
+            let then_rc = match then_rc {
+                Ok(rc) => Some(rc),
+                Err(e) => {
+                    errs.extend(e);
+                    None
+                }
+            };
+            let els_rc = match els_rc {
+                Ok(rc) => Some(rc),
+                Err(e) => {
+                    errs.extend(e);
+                    None
+                }
+            };
+            let (Some((then_schema, then_size)), Some((els_schema, els_size))) = (then_rc, els_rc)
+            else {
+                return Err(errs);
+            };
+            if !errs.is_empty() {
+                return Err(errs);
+            }
+            // A `( )` branch adopts the other branch's schema.
+            let schema = match (then_schema, els_schema) {
+                (Some(a), Some(b)) => Some(unify_row_schema(&a, &b, body.span)?),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            Ok((schema, then_size.max(els_size)))
+        }
+        _ => Ok((Some(single_row_schema(ctx, body, input)?), 1)),
+    }
+}
+
+/// Type one value row of a `map` body: a record literal `(.a = ...)` or a value
+/// row (e.g. the parameter `r`). Anything else is not a row.
+fn single_row_schema(
+    ctx: &Context,
+    expr: &Expr,
+    input: &TableType,
+) -> Result<RowSchema, Vec<TypeError>> {
+    match &expr.kind {
+        ExprKind::Record(fields) => {
+            let mut schema = Vec::new();
+            let mut errs = Vec::new();
+            for field in fields {
+                let name = &field.name.name;
+                if input.content.index.iter().any(|c| &c.name == name) {
+                    errs.push(te(
+                        format!("a `map` row may not set the index column `{name}`"),
+                        field.name.span,
+                    ));
+                    continue;
+                }
+                match type_expr(ctx, &field.value) {
+                    Err(e) => errs.extend(e),
+                    Ok(ty) => match column_of(&ty) {
+                        Some((domain, opt)) => schema.push(RowColumn {
+                            name: name.clone(),
+                            domain,
+                            opt,
+                        }),
+                        None => errs.push(te(
+                            format!("field `{name}` is not a single value"),
+                            field.value.span,
+                        )),
+                    },
+                }
+            }
+            if errs.is_empty() {
+                Ok(schema)
+            } else {
+                Err(errs)
+            }
+        }
+        _ => match type_expr(ctx, expr)? {
+            Ty::Record(fields) => Ok(fields
+                .into_iter()
+                .filter_map(|(name, ty)| {
+                    column_of(&ty).map(|(domain, opt)| RowColumn { name, domain, opt })
+                })
+                .collect()),
+            _ => Err(error(
+                "a `map` body must yield rows: a record `(.a = ...)`, the value \
+                 row `r`, `( )` to drop, or `(a, b)` to expand",
+                expr.span,
+            )),
+        },
+    }
+}
+
+/// Unify two row schemas (the branches of an `if` or the items of an expanding
+/// collection): same columns in the same order and domains; a column optional in
+/// either side is optional in the result. A mismatch is a located error.
+fn unify_row_schema(a: &RowSchema, b: &RowSchema, span: Span) -> Result<RowSchema, Vec<TypeError>> {
+    if a.len() != b.len() {
+        return Err(error(
+            "a `map` collection's rows must share one schema (column count differs)",
+            span,
+        ));
+    }
+    let mut merged = Vec::with_capacity(a.len());
+    for (ca, cb) in a.iter().zip(b) {
+        if ca.name != cb.name || ca.domain != cb.domain {
+            return Err(error(
+                "a `map` collection's rows must share one schema (a column differs)",
+                span,
+            ));
+        }
+        let opt = if ca.opt == Optionality::Optional || cb.opt == Optionality::Optional {
+            Optionality::Optional
+        } else {
+            Optionality::Total
+        };
+        merged.push(RowColumn {
+            name: ca.name.clone(),
+            domain: ca.domain.clone(),
+            opt,
+        });
+    }
+    Ok(merged)
+}
+
+/// Lower a row schema into table content columns and their totality.
+fn schema_to_content(schema: RowSchema) -> (Vec<Column>, Totality) {
+    let mut columns = Vec::with_capacity(schema.len());
+    let mut totality = Totality::all_total();
+    for c in schema {
+        if c.opt == Optionality::Optional {
+            totality.mark_optional(c.name.clone());
+        }
+        columns.push(Column {
+            name: c.name,
+            domain: c.domain,
+        });
+    }
+    (columns, totality)
+}
+
+/// Require an expression to be a known boolean (an `if` condition), returning any
+/// diagnostics.
+fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
+    match type_expr(ctx, cond) {
+        Err(e) => e,
+        Ok(Ty::Bool) => Vec::new(),
+        Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt: Optionality::Total,
+        }) => Vec::new(),
+        Ok(_) => error("an `if` condition must be a known boolean", cond.span),
+    }
+}
+
+/// `group_map |k, g| record` (section 6.2, Tier A): transform each group. The
 /// result cardinality is **inferred from the return**: all single-valued fields
 /// are the aggregate shape (one row per key, `Singletons`); bag-valued fields are
 /// the window shape (one output row per input row, `Bag`). The index,
 /// completeness, and lineage are preserved.
 fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
-    let (param, body) = single_lambda(args, "group_map", span)?;
-    let ctx = Context::group(param, &table);
+    let (params, body) = lambda_params(args, "group_map", 2, span)?;
+    let ctx = Context::group(params[0], params[1], &table);
     let (columns, totality, cardinality) = group_record_content(&ctx, body)?;
     Ok(PipeTy::Table(TableType {
         content: Content {
@@ -352,8 +563,8 @@ fn group_record_content(
 /// and completeness are unchanged on both sides.
 fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
-    let (param, body) = single_lambda(args, "split", span)?;
-    let ctx = Context::key(param, &table);
+    let (params, body) = lambda_params(args, "split", 1, span)?;
+    let ctx = Context::key(params[0], &table);
     if type_expr(&ctx, body)? != Ty::Bool {
         return Err(error("`split`'s predicate must be a boolean", body.span));
     }
@@ -422,70 +633,33 @@ fn with_lineage(table: &TableType, lineage: Lineage) -> TableType {
     }
 }
 
-/// Extract the single one-parameter lambda an operation expects, returning its
-/// parameter name and body.
-fn single_lambda<'a>(
+/// Extract a key-first lambda's parameter names and body, requiring exactly
+/// `arity` parameters (ADR 0015): 1 for `split` (`|k|`), 2 for `map` /
+/// `group_map` / the join key (`|k, r|`). A `_` parameter is kept verbatim and
+/// binds nothing in the context (the ignored key).
+fn lambda_params<'a>(
     args: &[&'a Expr],
     op: &str,
+    arity: usize,
     span: Span,
-) -> Result<(&'a str, &'a Expr), Vec<TypeError>> {
+) -> Result<(Vec<&'a str>, &'a Expr), Vec<TypeError>> {
     let [arg] = args else {
         return Err(error(format!("`{op}` expects one lambda argument"), span));
     };
     let ExprKind::Lambda { params, body, .. } = &arg.kind else {
         return Err(error(format!("`{op}` expects a lambda"), arg.span));
     };
-    let [param] = params.as_slice() else {
+    if params.len() != arity {
+        let shape = if arity == 1 { "`|k|`" } else { "`|k, r|`" };
         return Err(error(
-            format!("`{op}`'s lambda takes one parameter"),
+            format!("`{op}`'s lambda takes {arity} parameter(s), {shape}"),
             arg.span,
         ));
-    };
-    Ok((param.name.as_str(), body.as_ref()))
-}
-
-/// Type a record-returning lambda body into output columns and their totality
-/// (used by `map` and `group_map`). Each field's value is a value expression
-/// typed by `expr_check`.
-fn record_to_content(
-    ctx: &Context,
-    body: &Expr,
-    op: &str,
-) -> Result<(Vec<Column>, Totality), Vec<TypeError>> {
-    let ExprKind::Record(fields) = &body.kind else {
-        return Err(error(
-            format!("`{op}`'s lambda must return a record"),
-            body.span,
-        ));
-    };
-    let mut columns = Vec::new();
-    let mut totality = Totality::all_total();
-    let mut errs = Vec::new();
-    for field in fields {
-        match type_expr(ctx, &field.value) {
-            Err(e) => errs.extend(e),
-            Ok(ty) => match column_of(&ty) {
-                Some((domain, opt)) => {
-                    columns.push(Column {
-                        name: field.name.name.clone(),
-                        domain,
-                    });
-                    if opt == Optionality::Optional {
-                        totality.mark_optional(field.name.name.clone());
-                    }
-                }
-                None => errs.push(te(
-                    format!("field `{}` is not a single value", field.name.name),
-                    field.value.span,
-                )),
-            },
-        }
     }
-    if errs.is_empty() {
-        Ok((columns, totality))
-    } else {
-        Err(errs)
-    }
+    Ok((
+        params.iter().map(|p| p.name.as_str()).collect(),
+        body.as_ref(),
+    ))
 }
 
 /// The column domain and totality a value type contributes, or `None` for a bag
@@ -747,8 +921,9 @@ mod tests {
     #[test]
     fn map_derives_columns_preserving_cardinality() {
         let s = sample_sources();
-        let t =
-            table_of(pipe_ty(&s, "readings |> map |r| (.hot = r.temperature > 30.0)").expect("ok"));
+        let t = table_of(
+            pipe_ty(&s, "readings |> map |k, r| (.hot = r.temperature > 30.0)").expect("ok"),
+        );
         assert!(t.content.index.iter().any(|c| c.name == "ts"));
         assert_eq!(t.content.columns.len(), 1);
         assert_eq!(t.content.columns[0].name, "hot");
@@ -760,8 +935,54 @@ mod tests {
     fn map_propagates_field_errors() {
         let s = sample_sources();
         // `peak` is optional, so a scalar on it is rejected by expr_check.
-        let errs = pipe_ty(&s, "readings |> map |r| (.x = r.peak + 1)").expect_err("optional");
+        let errs = pipe_ty(&s, "readings |> map |k, r| (.x = r.peak + 1)").expect_err("optional");
         assert!(errs[0].message.contains("known value"));
+    }
+
+    #[test]
+    fn map_keeps_the_value_row() {
+        let s = sample_sources();
+        // `|k, r| r` is the identity: the value columns are preserved, the index
+        // and cardinality unchanged (ADR 0015).
+        let t = table_of(pipe_ty(&s, "readings |> map |k, r| r").expect("ok"));
+        assert!(t.content.index.iter().any(|c| c.name == "ts"));
+        for name in ["machine", "temperature", "peak", "flag", "note"] {
+            assert!(t.content.columns.iter().any(|c| c.name == name), "{name}");
+        }
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn map_filters_by_dropping_a_branch() {
+        let s = sample_sources();
+        // `if r.flag then r else ()` keeps or drops a row: a filter, still
+        // `Singletons` (max collection size is 1).
+        let t =
+            table_of(pipe_ty(&s, "readings |> map |_, r| if r.flag then r else ()").expect("ok"));
+        assert!(t.content.columns.iter().any(|c| c.name == "temperature"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn map_expands_to_a_bag() {
+        let s = sample_sources();
+        // A two-row collection expands each input row: cardinality becomes `Bag`.
+        let t = table_of(pipe_ty(&s, "readings |> map |k, r| (r, r)").expect("ok"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    #[test]
+    fn map_that_always_drops_cannot_infer_schema() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> map |k, r| ()").expect_err("no schema");
+        assert!(errs[0].message.contains("infer the output"));
+    }
+
+    #[test]
+    fn map_row_may_not_set_the_index() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> map |k, r| (.ts = 1)").expect_err("index column");
+        assert!(errs[0].message.contains("index column `ts`"));
     }
 
     #[test]
@@ -771,7 +992,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> extend_key machine \
-                 |> group_map |g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
+                 |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
             )
             .expect("ok"),
         );
@@ -784,8 +1005,8 @@ mod tests {
     #[test]
     fn group_map_rejects_non_numeric_aggregate() {
         let s = sample_sources();
-        let errs =
-            pipe_ty(&s, "readings |> group_map |g| (.m = sum g.machine)").expect_err("non-numeric");
+        let errs = pipe_ty(&s, "readings |> group_map |k, g| (.m = sum g.machine)")
+            .expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
     }
 
@@ -796,7 +1017,7 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> group_map |g| (.temps = g.temperature)",
+                "readings |> extend_key machine |> group_map |k, g| (.temps = g.temperature)",
             )
             .expect("ok"),
         );
@@ -809,7 +1030,7 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> group_map |g| (.m = sum g.temperature, .t = g.temperature)",
+            "readings |> group_map |k, g| (.m = sum g.temperature, .t = g.temperature)",
         )
         .expect_err("mixed");
         assert!(errs.iter().any(|e| e.message.contains("not a mix")));
@@ -867,7 +1088,7 @@ mod tests {
     fn left_join_adds_optional_columns() {
         let s = sample_sources();
         let t =
-            table_of(pipe_ty(&s, "readings |> left_join machines (|l| l.machine)").expect("ok"));
+            table_of(pipe_ty(&s, "readings |> left_join machines (|_, l| l.machine)").expect("ok"));
         assert!(t.content.columns.iter().any(|c| c.name == "vendor"));
         assert!(t.qualifiers.totality.is_optional("vendor"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
@@ -876,8 +1097,9 @@ mod tests {
     #[test]
     fn inner_join_keeps_totality() {
         let s = sample_sources();
-        let t =
-            table_of(pipe_ty(&s, "readings |> inner_join machines (|l| l.machine)").expect("ok"));
+        let t = table_of(
+            pipe_ty(&s, "readings |> inner_join machines (|_, l| l.machine)").expect("ok"),
+        );
         assert!(t.qualifiers.totality.is_total("vendor"));
     }
 
@@ -885,7 +1107,7 @@ mod tests {
     fn join_key_domain_must_match() {
         let s = sample_sources();
         // `ts` is a number, but `machines` is keyed by a string.
-        let errs = pipe_ty(&s, "readings |> left_join machines (|l| l.ts)").expect_err("domain");
+        let errs = pipe_ty(&s, "readings |> left_join machines (|k, l| k.ts)").expect_err("domain");
         assert!(errs[0].message.contains("key domain"));
     }
 
@@ -898,7 +1120,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> extend_key machine \
-                 |> group_map |g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
+                 |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
             )
             .expect("machine_temperature types"),
         );
@@ -935,7 +1157,7 @@ mod tests {
         let s = sample_sources();
         let body = view_body(
             "view machine_temperature { readings |> extend_key machine \
-             |> group_map |g| (.temp_max = max g.temperature) }",
+             |> group_map |k, g| (.temp_max = max g.temperature) }",
         );
         let t = type_view(&s, &body).expect("ok");
         assert!(t.content.index.iter().any(|c| c.name == "machine"));

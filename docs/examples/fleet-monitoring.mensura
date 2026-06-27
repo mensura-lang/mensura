@@ -30,8 +30,10 @@ store machines : Commissioned {
 }
 
 // A view derives a table from stores by a pipeline (docs/language/10-views.md).
-// This one flags the machines needing attention, one row per machine; richer
-// windowed feature views arrive with streaming (M5).
+// This one keeps only the machines needing attention: the key-first `map` body
+// returns the value row when degraded and the empty collection `( )` otherwise,
+// so it filters without a `filter` primitive (ADR 0015).  Richer windowed
+// feature views arrive with streaming (M5).
 view attention_needed {
-  machines |> map |r| (.degraded = r.status == "degraded")
+  machines |> map |_, r| if r.status == "degraded" then r else ()
 }

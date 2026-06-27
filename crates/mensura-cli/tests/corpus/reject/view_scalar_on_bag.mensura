@@ -10,5 +10,5 @@ store readings {
 }
 
 view bad {
-  readings |> group_map |g| (.x = g.temperature + 1.0)
+  readings |> group_map |k, g| (.x = g.temperature + 1.0)
 }
