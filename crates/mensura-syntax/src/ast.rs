@@ -4,6 +4,7 @@
 //! Every node carries a [`Span`] so later passes can point diagnostics at the
 //! source.
 
+use crate::expr::Block;
 use crate::token::Span;
 
 /// A whole parsed source file: a sequence of top-level items.
@@ -19,6 +20,19 @@ pub enum Item {
     Store(StoreDecl),
     Shape(ShapeDecl),
     Enum(EnumDecl),
+    View(ViewDecl),
+}
+
+/// `view name [: Shape, ...] { ...block... }` (`docs/language/10-views.md`).
+/// The body is the ordinary statement block of `06-expressions.md`; it hosts a
+/// pipeline whose trailing expression is the materialized table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewDecl {
+    pub name: Ident,
+    /// The shapes claimed by the `:` conformance clause, in source order.
+    pub conforms: Vec<ShapeRef>,
+    pub body: Block,
+    pub span: Span,
 }
 
 /// An identifier together with where it appeared.

@@ -14,10 +14,12 @@ use std::collections::{HashMap, HashSet};
 
 use mensura_syntax::{
     EnumDecl, Field, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeRef, Span,
-    StoreDecl, TypeExpr, UnitDecl, is_identifier,
+    StoreDecl, TypeExpr, UnitDecl, ViewDecl, is_identifier,
 };
 
 use crate::model::{Column, ColumnRole, ColumnType, Schema};
+use crate::pipe_check::{Sources, type_view};
+use crate::table::TableType;
 
 /// A resolution failure, located by a source span.
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +109,7 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     let mut stores: Vec<&StoreDecl> = Vec::new();
     let mut shapes: HashMap<&str, &ShapeDecl> = HashMap::new();
     let mut enums: HashMap<&str, &EnumDecl> = HashMap::new();
+    let mut views: Vec<&ViewDecl> = Vec::new();
 
     for item in &program.items {
         match item {
@@ -170,6 +173,10 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                     ));
                 }
             }
+            Item::View(v) => {
+                check_case(&v.name.name, v.name.span, Case::Snake, "view", &mut errors);
+                views.push(v);
+            }
         }
     }
 
@@ -193,6 +200,22 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                 schemas.push(schema);
             }
             Err(mut errs) => errors.append(&mut errs),
+        }
+    }
+
+    // Pass 4: type-check each view's body against the store schemas presented as
+    // table sources (`docs/language/10-views.md`).  Views produce no `Schema`.
+    if !views.is_empty() {
+        let mut sources = Sources::new();
+        for schema in &schemas {
+            sources = sources.with(&schema.store, TableType::from_store(schema));
+        }
+        for v in &views {
+            if let Err(errs) = type_view(&sources, &v.body) {
+                for e in errs {
+                    errors.push(ResolveError::new(e.message, e.span));
+                }
+            }
         }
     }
 
@@ -1482,5 +1505,23 @@ mod tests {
             store 温度表 { unit { 温度 } const { 测量: string } }
         "#;
         assert!(resolve_str(src).is_ok());
+    }
+
+    #[test]
+    fn view_body_is_type_checked() {
+        let ok = r#"
+            unit Machine { id: string }
+            store readings { unit { Machine } var { temperature: real } }
+            view machine_summary { readings |> group_map |g| (.temp_max = max g.temperature) }
+        "#;
+        resolve_str(ok).expect("a valid view resolves");
+
+        let bad = r#"
+            unit Machine { id: string }
+            store readings { unit { Machine } var { temperature: real } }
+            view bad { readings |> group_map |g| (.x = g.temperature + 1.0) }
+        "#;
+        let errs = errors(bad);
+        assert!(errs.iter().any(|e| e.message.contains("bag")));
     }
 }

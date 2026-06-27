@@ -7,7 +7,7 @@
 
 use crate::ast::{
     DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
-    ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl,
+    ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
 };
 use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
@@ -193,9 +193,27 @@ impl<'a> Parser<'a> {
             Ok(Item::Shape(self.parse_shape_decl()?))
         } else if self.at_keyword("enum") {
             Ok(Item::Enum(self.parse_enum_decl()?))
+        } else if self.at_keyword("view") {
+            Ok(Item::View(self.parse_view_decl()?))
         } else {
-            Err(self.error("expected a `unit`, `store`, `shape`, or `enum` declaration"))
+            Err(self.error("expected a `unit`, `store`, `shape`, `enum`, or `view` declaration"))
         }
+    }
+
+    /// `view_decl = "view" ident [ conforms ] block` (`docs/language/10-views.md`).
+    fn parse_view_decl(&mut self) -> Result<ViewDecl, ParseError> {
+        let start = self.cur_span().start;
+        self.bump_keyword(); // `view`
+        let name = self.expect_ident("a view name")?;
+        let conforms = self.parse_conforms_clause()?;
+        let body = self.parse_block()?;
+        let end = body.span.end;
+        Ok(ViewDecl {
+            name,
+            conforms,
+            body,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_enum_decl(&mut self) -> Result<EnumDecl, ParseError> {
@@ -1034,6 +1052,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_view_declaration() {
+        let program = parse_str("view machine_temperature { readings }").expect("should parse");
+        let Item::View(v) = &program.items[0] else {
+            panic!("expected a view");
+        };
+        assert_eq!(v.name.name, "machine_temperature");
+        assert!(v.conforms.is_empty());
+        assert_eq!(v.body.stmts.len(), 1);
+    }
+
+    #[test]
+    fn parses_view_with_conformance() {
+        let program =
+            parse_str("view feature : Tabular[Machine] { readings }").expect("should parse");
+        let Item::View(v) = &program.items[0] else {
+            panic!("expected a view");
+        };
+        assert_eq!(v.conforms.len(), 1);
+        assert_eq!(v.conforms[0].name.name, "Tabular");
+    }
+
+    #[test]
     fn parses_enum_declaration_and_reference() {
         let src = r#"
             enum Status { "active", "inactive" }
@@ -1298,7 +1338,10 @@ mod tests {
     #[test]
     fn junk_at_top_level_is_an_error() {
         let err = parse_str("wat X { }").unwrap_err();
-        assert!(err.message.contains("`unit`, `store`, `shape`, or `enum`"));
+        assert!(
+            err.message
+                .contains("`unit`, `store`, `shape`, `enum`, or `view`")
+        );
     }
 
     #[test]

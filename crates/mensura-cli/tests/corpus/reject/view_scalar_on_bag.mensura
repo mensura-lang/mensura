@@ -1,0 +1,14 @@
+// Rejected: the view body applies a scalar `+` to a bag (`g.temperature` is the
+// group's bag of readings); a bag must be reduced first (09 section 5.4).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  var { temperature: real }
+}
+
+view bad {
+  readings |> group_map |g| (.x = g.temperature + 1.0)
+}

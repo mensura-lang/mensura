@@ -1,0 +1,14 @@
+// Accepted: a view that summarizes a store with a Tier A pipeline
+// (docs/language/10-views.md).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  var { temperature: real }
+}
+
+view machine_summary {
+  readings |> group_map |g| (.temp_max = max g.temperature)
+}

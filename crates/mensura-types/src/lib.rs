@@ -13,7 +13,7 @@ pub mod table;
 
 pub use expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 pub use model::{Column, ColumnRole, ColumnType, Schema};
-pub use pipe_check::{PipeTy, Sources, type_pipeline};
+pub use pipe_check::{PipeTy, Sources, type_pipeline, type_view, type_view_body};
 pub use resolve::{ResolveError, resolve};
 pub use table::{
     Branch, Cardinality, Completeness, Content, Lineage, Qualifiers, Side, SplitId, TableType,
