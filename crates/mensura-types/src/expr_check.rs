@@ -112,6 +112,17 @@ impl Context {
         }
     }
 
+    /// Bind a `split` predicate's parameter (e.g. `k`) to a record of the
+    /// table's index columns as total values (the key, `09` section 6.5).
+    pub fn key(param: &str, table: &TableType) -> Context {
+        let mut names = BTreeMap::new();
+        names.insert(param.to_string(), key_record(table));
+        Context {
+            names,
+            aggregates: builtin_aggregates(),
+        }
+    }
+
     pub fn lookup(&self, name: &str) -> Option<&Ty> {
         self.names.get(name)
     }
@@ -175,6 +186,21 @@ fn group_record(table: &TableType) -> Ty {
             col.name.clone(),
             Ty::Bag {
                 domain: col.domain.clone(),
+            },
+        );
+    }
+    Ty::Record(fields)
+}
+
+/// A key view of a table: the index columns as total values.
+fn key_record(table: &TableType) -> Ty {
+    let mut fields = BTreeMap::new();
+    for col in &table.content.index {
+        fields.insert(
+            col.name.clone(),
+            Ty::Value {
+                domain: col.domain.clone(),
+                opt: Optionality::Total,
             },
         );
     }
