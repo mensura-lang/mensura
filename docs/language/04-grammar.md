@@ -161,8 +161,8 @@ subset.
   `string` parameters, and the rendered name must be a valid identifier.
 - **Brackets are for parameters, parentheses are not used here.**  Shape
   parameter lists (`Tabular[U: Unit]`) and conformance arguments
-  (`Tabular[Person]`) use `[ ]`, leaving `( )` free for grouping and tuples in
-  the expression sublanguage.  No declaration form uses `( )`.
+  (`Tabular[Person]`) use `[ ]`, leaving `( )` free for grouping, collections,
+  and records in the expression sublanguage.  No declaration form uses `( )`.
 - **`enum` is a top-level declaration.**  An enumerated type is declared once,
   `enum Name { "v1", "v2" }`, and referenced by name in a field's type.  Its
   name is a type (PascalCase); its variants are **string literals**, so their
@@ -284,13 +284,14 @@ unary_expr  = "-" unary_expr | pow_expr ;
 pow_expr    = app_expr [ "^" unary_expr ] ;
 app_expr    = postfix { postfix } ;
 postfix     = primary { "." ident } ;
-primary     = number | string | ident | lambda | paren | block ;
+primary     = number | string | ident | lambda | conditional | paren | block ;
 lambda      = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr ;
+conditional = "if" or_expr "then" or_expr "else" or_expr ;
 
-paren       = "(" ( record_body | tuple_body ) ")" ;
+paren       = "(" ( record_body | collection_body ) ")" ;
 record_body = field { "," field } ;
-field       = "." ident [ ":" type ] "=" expr ;
-tuple_body  = [ expr { "," expr } ] ;
+field       = "." ident [ "const" | "var" ] [ ":" type ] "=" expr ;
+collection_body = [ expr { "," expr } ] ;
 
 block       = "{" [ stmt { ";" stmt } [ ";" ] ] "}" ;
 stmt        = let_stmt | assert_stmt | expr ;
@@ -310,9 +311,15 @@ and ascriptions here need no new tokens.  The `NxE` measured literal (`10x3`)
 is a separate token reserved for the physical-units feature and does not
 appear in this subset.
 
-`paren` covers grouping, tuples, and records: `(e)` is grouping, `(a, b)` a
-positional tuple, and `(.a = x, .b = y)` a labeled record.  A `( )` is *either*
-all-positional *or* all-labeled, never mixed.  `block` is a statement block
+`paren` covers grouping, the homogeneous collection, and records: `(e)` is
+grouping, `()` the empty collection, `(a, b, ...)` a collection of like values
+(the form a `map` body uses to drop or expand rows, ADR 0015), and
+`(.a = x, .b = y)` a labeled record.  A `( )` is *either* a positional
+collection *or* all-labeled, never mixed.  A record field may carry a reserved
+role marker, `(.a const = x)` or `(.a var = x)` (default `const`), and a
+heterogeneous sequence `([ ... ])` is reserved.  `conditional` is the prefix
+`if c then a else b` (`if`/`then`/`else` reserved in expressions).  `block` is
+a statement block
 (`let`/`assert` statements and an optional trailing result expression),
 separated by `;`.  Records moved into `( )` means a `{ }` in expression
 position is *always* a block, so `completeness_check { assert ... }` is just
@@ -343,15 +350,18 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   and on `)` and `,`.  A `|` starts a lambda argument; a `|>` never does, so
   a pipe always ends the spine and is handled by `pipe_expr`.
 - **`primary`**: `number`, `string`, and `ident` are distinct tokens; `(`
-  opens a `paren`; `{` opens a `block`; `|` opens a `lambda`.  One token
-  decides.
+  opens a `paren`; `{` opens a `block`; `|` opens a `lambda`; the reserved
+  ident `if` opens a `conditional`.  One token decides.
+- **`conditional`**: the reserved ident `if` selects it; `then` and `else`
+  are reserved idents that fix the two branch boundaries, so each sub-expression
+  (an `or_expr`) is delimited by one token of lookahead.
 - **`paren`**: after `(`, the next token chooses the body - `.` opens a
-  `record_body` (labeled fields), anything else begins a `tuple_body` whose
-  first element is an expression; then `,` continues a tuple and `)` ends a
-  grouping.  Since an expression never starts with `.`, the record/tuple
-  choice is one token; `()` is the empty tuple.  A record field is
-  `.name [: Type] = value`, so within a field the `:` and `=` are fixed by
-  position.
+  `record_body` (labeled fields), anything else begins a `collection_body` whose
+  first element is an expression; then `,` continues the collection and `)` ends
+  a grouping.  Since an expression never starts with `.`, the record/collection
+  choice is one token; `()` is the empty collection.  A record field is
+  `.name [const | var] [: Type] = value`; within a field the optional role
+  marker, then `:` and `=`, are fixed by position.
 - **`block`**: `{` opens it; each statement is dispatched on its first token
   (`let` -> `let_stmt`, `assert` -> `assert_stmt`, otherwise a result
   `expr`); `;` separates statements and `}` ends.  This is the only `{ }` in
@@ -363,8 +373,8 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   ascription, then the body, an `or_expr`.  The `:` after the closing `|`
   decides whether a return type is present; the `type` grammar never starts
   with `(` or `{`, so it cannot swallow the body.  The body deliberately
-  excludes a top-level `|>`, so `data |> map |r| r.x |> next g` composes as
-  `(data |> map (|r| r.x)) |> next g`; a pipe *inside* a lambda body must be
+  excludes a top-level `|>`, so `data |> map |k, r| r.x |> next g` composes as
+  `(data |> map (|k, r| r.x)) |> next g`; a pipe *inside* a lambda body must be
   parenthesized.  A lambda that is not the last argument of an application
   must also be parenthesized, since its body extends maximally.
 
@@ -372,9 +382,9 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
 
 Combining juxtaposition application with word operators forces a small,
 local exception to the lexer's keyword-freedom: inside an expression the
-words `or`, `and`, `not`, `in`, `is`, `known`, and `missing` are
-**reserved** and cannot name a value, and inside a `block` the statement
-keywords `let` and `assert` are reserved in statement position.  This is
+words `or`, `and`, `not`, `in`, `is`, `known`, `missing`, `if`, `then`, and
+`else` are **reserved** and cannot name a value, and inside a `block` the
+statement keywords `let` and `assert` are reserved in statement position.  This is
 unavoidable with one token of lookahead, since after an operand an ident
 could otherwise be read either as the next argument (juxtaposition) or as an
 infix operator, and only reservation resolves the choice.  The reservation is

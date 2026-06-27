@@ -94,26 +94,28 @@ pub struct Context {
 }
 
 impl Context {
-    /// Bind a row lambda's parameter (e.g. `r`) to a record whose fields are the
-    /// table's columns as single values carrying their totality (section 5.1).
-    pub fn row(param: &str, table: &TableType) -> Context {
+    /// Bind a row lambda's key-first parameters `|k, r|` (ADR 0015): `kname` to
+    /// the key (index columns as total values), `rname` to the value row
+    /// (non-index columns as single values carrying their totality).
+    pub fn row(kname: &str, rname: &str, table: &TableType) -> Context {
         Context {
-            names: bind(param, row_record(table)),
+            names: bind2(kname, key_record(table), rname, value_record(table)),
             aggregates: builtin_aggregates(),
         }
     }
 
-    /// Bind a group lambda's parameter (e.g. `g`) to a record whose fields are
-    /// the table's columns as bags (section 5.4).
-    pub fn group(param: &str, table: &TableType) -> Context {
+    /// Bind a group lambda's key-first parameters `|k, g|` (ADR 0015): `kname` to
+    /// the key (index columns as total values, constant within a group), `gname`
+    /// to the value columns as bags (section 5.4).
+    pub fn group(kname: &str, gname: &str, table: &TableType) -> Context {
         Context {
-            names: bind(param, group_record(table)),
+            names: bind2(kname, key_record(table), gname, group_value_record(table)),
             aggregates: builtin_aggregates(),
         }
     }
 
-    /// Bind a `split` predicate's parameter (e.g. `k`) to a record of the
-    /// table's index columns as total values (the key, `09` section 6.5).
+    /// Bind a `split` predicate's parameter `|k|` to a record of the table's
+    /// index columns as total values (the key, `09` section 6.5).
     pub fn key(param: &str, table: &TableType) -> Context {
         Context {
             names: bind(param, key_record(table)),
@@ -136,6 +138,18 @@ fn bind(param: &str, ty: Ty) -> BTreeMap<String, Ty> {
     names
 }
 
+/// Bind two key-first parameters, skipping `_` (the ignored key).
+fn bind2(a: &str, aty: Ty, b: &str, bty: Ty) -> BTreeMap<String, Ty> {
+    let mut names = BTreeMap::new();
+    if a != "_" {
+        names.insert(a.to_string(), aty);
+    }
+    if b != "_" {
+        names.insert(b.to_string(), bty);
+    }
+    names
+}
+
 fn builtin_aggregates() -> BTreeMap<String, Agg> {
     [
         ("sum", Agg::Sum),
@@ -150,19 +164,10 @@ fn builtin_aggregates() -> BTreeMap<String, Agg> {
     .collect()
 }
 
-/// A row view of a table: each column is a single value; non-index columns carry
-/// their totality, index columns are always total.
-fn row_record(table: &TableType) -> Ty {
+/// The value row `r` of a table (ADR 0015): the non-index columns as single
+/// values carrying their totality. The index columns live in the key `k`.
+fn value_record(table: &TableType) -> Ty {
     let mut fields = BTreeMap::new();
-    for col in &table.content.index {
-        fields.insert(
-            col.name.clone(),
-            Ty::Value {
-                domain: col.domain.clone(),
-                opt: Optionality::Total,
-            },
-        );
-    }
     for col in &table.content.columns {
         fields.insert(
             col.name.clone(),
@@ -175,11 +180,11 @@ fn row_record(table: &TableType) -> Ty {
     Ty::Record(fields)
 }
 
-/// A group view of a table: every cell is a bag carrying the column's totality
-/// (section 5.4, "`|g|` sees the whole bag at a key").
-fn group_record(table: &TableType) -> Ty {
+/// The group value `g` of a table (ADR 0015): the non-index columns as bags
+/// carrying their totality (section 5.4). The key columns live in `k`.
+fn group_value_record(table: &TableType) -> Ty {
     let mut fields = BTreeMap::new();
-    for col in table.content.index.iter().chain(&table.content.columns) {
+    for col in &table.content.columns {
         fields.insert(
             col.name.clone(),
             Ty::Bag {
@@ -235,6 +240,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Unary(op, operand) => type_unary(ctx, *op, operand),
         ExprKind::App(func, arg) => type_app(ctx, func, arg, expr.span),
         ExprKind::Presence(base, _) => type_presence(ctx, base, expr.span),
+        ExprKind::If { cond, then, els } => type_if(ctx, cond, then, els, expr.span),
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -665,6 +671,76 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
 
 /// Require `operand` to be a known boolean (section 5.3). Accepts both a
 /// predicate result and a total `bool` column read.
+/// `if c then a else b` (section 5, ADR 0015): `c` is a known boolean and the
+/// two branches unify to one value type, which is the result.
+fn type_if(
+    ctx: &Context,
+    cond: &Expr,
+    then: &Expr,
+    els: &Expr,
+    span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = require_bool(ctx, cond, "an `if` condition");
+    let then_ty = collect_ty(type_expr(ctx, then), &mut errs);
+    let els_ty = collect_ty(type_expr(ctx, els), &mut errs);
+    let (Some(then_ty), Some(els_ty)) = (then_ty, els_ty) else {
+        return Err(errs);
+    };
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    unify_branches(&then_ty, &els_ty, span)
+}
+
+/// Unify the two branch types of a conditional. Two values of the same domain
+/// merge (the result is optional if either branch is); otherwise the branches
+/// must be identical. A mismatch is a located error.
+fn unify_branches(then_ty: &Ty, els_ty: &Ty, span: Span) -> Result<Ty, Vec<TypeError>> {
+    match (then_ty, els_ty) {
+        (
+            Ty::Value {
+                domain: da,
+                opt: oa,
+            },
+            Ty::Value {
+                domain: db,
+                opt: ob,
+            },
+        ) if da == db => Ok(Ty::Value {
+            domain: da.clone(),
+            opt: join_opt(*oa, *ob),
+        }),
+        _ if then_ty == els_ty => Ok(then_ty.clone()),
+        _ => Err(vec![TypeError::new(
+            format!(
+                "the `if` branches must have the same type, found {} and {}",
+                describe_ty(then_ty),
+                describe_ty(els_ty)
+            ),
+            span,
+        )]),
+    }
+}
+
+/// The optional axis of a merge: optional if either input is.
+fn join_opt(a: Optionality, b: Optionality) -> Optionality {
+    if a == Optionality::Optional || b == Optionality::Optional {
+        Optionality::Optional
+    } else {
+        Optionality::Total
+    }
+}
+
+/// A short human description of a `Ty` for diagnostics.
+fn describe_ty(ty: &Ty) -> String {
+    match ty {
+        Ty::Value { domain, .. } => format!("a {}", domain_name(domain)),
+        Ty::Bag { domain, .. } => format!("a bag of {}", domain_name(domain)),
+        Ty::Bool => "a bool".to_string(),
+        Ty::Record(_) => "a record".to_string(),
+    }
+}
+
 fn require_bool(ctx: &Context, operand: &Expr, what: &str) -> Vec<TypeError> {
     match type_expr(ctx, operand) {
         Err(errs) => errs,
@@ -747,11 +823,11 @@ mod tests {
     }
 
     fn row_ctx() -> Context {
-        Context::row("r", &sample_table())
+        Context::row("k", "r", &sample_table())
     }
 
     fn group_ctx() -> Context {
-        Context::group("g", &sample_table())
+        Context::group("k", "g", &sample_table())
     }
 
     #[test]
@@ -775,6 +851,10 @@ mod tests {
             })
         );
         assert!(ty_of(&ctx, "r.missing").is_err());
+        // Key-first split (ADR 0015): the index column lives on `k`, not `r`.
+        assert_eq!(ty_of(&ctx, "k.machine"), Ok(total(ColumnType::String)));
+        let errs = ty_of(&ctx, "r.machine").expect_err("index column is not on r");
+        assert!(errs[0].message.contains("unknown column"));
     }
 
     #[test]
@@ -791,7 +871,7 @@ mod tests {
         let errs = ty_of(&ctx, "r.size + 1.0").expect_err("mixed");
         assert!(errs[0].message.contains("same type"));
         // arithmetic on a non-number.
-        assert!(ty_of(&ctx, "r.machine + 1").is_err());
+        assert!(ty_of(&ctx, "k.machine + 1").is_err());
         // optional operand.
         assert!(ty_of(&ctx, "r.peak + 1.0").is_err());
     }
@@ -813,7 +893,7 @@ mod tests {
         assert_eq!(ty_of(&ctx, "r.temperature > 30.0"), Ok(Ty::Bool));
         assert_eq!(ty_of(&ctx, "r.size < 2"), Ok(Ty::Bool));
         assert_eq!(ty_of(&ctx, "r.at < r.at"), Ok(Ty::Bool)); // date is orderable
-        let errs = ty_of(&ctx, "r.machine < \"z\"").expect_err("string not orderable");
+        let errs = ty_of(&ctx, "k.machine < \"z\"").expect_err("string not orderable");
         assert!(errs[0].message.contains("orderable"));
     }
 
@@ -821,13 +901,42 @@ mod tests {
     fn equality_excludes_real_and_validates_enum() {
         let ctx = row_ctx();
         assert_eq!(ty_of(&ctx, "r.size == 1"), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "r.machine == \"m1\""), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "k.machine == \"m1\""), Ok(Ty::Bool));
         assert_eq!(ty_of(&ctx, "r.status == \"active\""), Ok(Ty::Bool));
         assert_eq!(ty_of(&ctx, "r.at == r.at"), Ok(Ty::Bool));
         let errs = ty_of(&ctx, "r.temperature == 30.0").expect_err("real equality");
         assert!(errs[0].message.contains("not defined on real"));
         let errs = ty_of(&ctx, "r.status == \"activ\"").expect_err("bad variant");
         assert!(errs[0].message.contains("not a variant of `Status`"));
+    }
+
+    #[test]
+    fn conditional_unifies_branches() {
+        let ctx = row_ctx();
+        // Both branches a total int.
+        assert_eq!(
+            ty_of(&ctx, "if true then 1 else 2"),
+            Ok(total(ColumnType::Int))
+        );
+        // A row predicate as the condition.
+        assert_eq!(
+            ty_of(&ctx, "if r.flag then 1 else 2"),
+            Ok(total(ColumnType::Int))
+        );
+        // An optional branch makes the whole conditional optional.
+        assert_eq!(
+            ty_of(&ctx, "if r.flag then r.note else \"x\""),
+            Ok(Ty::Value {
+                domain: ColumnType::String,
+                opt: Optionality::Optional
+            })
+        );
+        // Mismatched branch domains.
+        let errs = ty_of(&ctx, "if true then 1 else \"x\"").expect_err("branch mismatch");
+        assert!(errs[0].message.contains("same type"));
+        // A non-boolean condition.
+        let errs = ty_of(&ctx, "if 1 then 1 else 2").expect_err("non-bool condition");
+        assert!(errs[0].message.contains("boolean"));
     }
 
     #[test]
@@ -880,7 +989,7 @@ mod tests {
                 opt: Optionality::Total
             })
         );
-        assert!(ty_of(&row, "to_real r.machine").is_err());
+        assert!(ty_of(&row, "to_real k.machine").is_err());
     }
 
     #[test]

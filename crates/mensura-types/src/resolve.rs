@@ -1522,14 +1522,14 @@ mod tests {
         let ok = r#"
             unit Machine { id: string }
             store readings { unit { Machine } var { temperature: real } }
-            view machine_summary { readings |> group_map |g| (.temp_max = max g.temperature) }
+            view machine_summary { readings |> group_map |k, g| (.temp_max = max g.temperature) }
         "#;
         resolve_str(ok).expect("a valid view resolves");
 
         let bad = r#"
             unit Machine { id: string }
             store readings { unit { Machine } var { temperature: real } }
-            view bad { readings |> group_map |g| (.x = g.temperature + 1.0) }
+            view bad { readings |> group_map |k, g| (.x = g.temperature + 1.0) }
         "#;
         let errs = errors(bad);
         assert!(errs.iter().any(|e| e.message.contains("bag")));

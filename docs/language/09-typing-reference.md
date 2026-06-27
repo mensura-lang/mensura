@@ -286,7 +286,7 @@ way: `in` tests membership, `count`/`any`/`all` summarize, and the aggregates
 `sum(x) / to_real(count(x))`; ADR 0014).  An aggregate requires a total bag;
 `count` yields `int`, `sum` preserves a numeric domain, `min`/`max` preserve an
 orderable domain, and `any`/`all` take a bag of `bool`.  Each returns a single
-value.  A group-scoped lambda `|g| ...` sees the whole bag at a key (so
+value.  The `g` of a group lambda `|k, g| ...` sees the whole bag at a key (so
 `g.credits` is the bag of `credits`), and a scalar comparison on a bag is a type
 error until a combinator collapses it (`max g.readings > 30.0`).
 
@@ -294,8 +294,9 @@ error until a combinator collapses it (`max g.readings > 30.0`).
 
 `is missing` / `is known` apply to values only and test the optional axis.  On a
 total value `is known` is always true.  `is known` **narrows**: inside a branch
-guarded by `r.x is known`, and on every row after `filter (|r| r.x is known)`,
-the optional `x` is treated as total, so a scalar operator may then use it.
+guarded by `r.x is known`, and on every row a `map` keeps with
+`if r.x is known then r else ()`, the optional `x` is treated as total, so a
+scalar operator may then use it.
 This is one of the three ways to make an optional value known, alongside a
 default/coalesce and an aggregate defined over missingness (ADR 0010).  Testing
 a *row* for absence (`card 0`) is not an expression-level operation for now
@@ -308,6 +309,16 @@ expression an enumerated value is compared as a string (`r.status == "active"`),
 and the checker validates the literal against the variant set, so `== "activ"`
 is a compile error (`06`, "Enumerated values").
 
+### 5.7  Conditionals
+
+`if c then a else b` (ADR 0015): the condition `c` is a known `bool`, and the
+two branches type to the same `Ty`, which is the result; if either branch is
+optional the result is optional.  A non-`bool` condition or mismatched branches
+is a type error.  The conditional is an ordinary value, valid in a field value
+(`.flag = if r.hot then 1 else 0`) and as a `map` body branch
+(`if c then r else ()`); it is the introduction site for the deferred `is
+known` narrowing.
+
 ## 6.  Pipeline primitive rules
 
 Consolidates `07-pipelines.md`.  A pipeline is an ordinary expression of table
@@ -317,33 +328,46 @@ are named with `let`, and several tables are tupled for a merge
 specifies the **primitives**; the named sugar (`filter`/`mutate`/`select`/
 `aggregate`/windows/`tagged_*`) is deferred (section 13).
 
-Throughout, `|r| ...` is a lambda over one row, `|g| ...` a lambda over a group
-(a row whose cells are bags), and a bare column name references a column of the
-current schema.  Each entry states the effect on cardinality, totality,
-completeness, and lineage.
+Pipeline lambdas are **key-first** (ADR 0015): `|k, r|` binds the key `k` (the
+index columns as single values) and the value row `r` (the non-index columns as
+single values); `|k, g|` binds `k` and the group `g` (the non-index columns as
+bags); `split`'s `|k|` binds the key alone.  `|_, r|` ignores the key.  Read the
+key with `k.id` and a value with `r.x`.  Each entry states the effect on
+cardinality, totality, completeness, and lineage.
 
-### 6.1  `map` (per-row transform) -- Tier A
+### 6.1  `map` (row multiset) -- Tier A
 
 ```
-data |> map |r| (.bmi = r.mass / r.height ^ 2.0)
+data |> map |k, r| (.bmi = r.mass / r.height ^ 2.0)   // transform
+data |> map |_, r| if r.degraded then r else ()       // filter
+data |> map |k, r| r                                  // keep (identity)
 ```
 
-The lambda receives one row and returns a record.  Content: the output columns
-are the returned record's.  Cardinality: 1:1, preserved.  Totality: as
-returned.  Completeness: preserved.  Lineage: preserved.  Tier A
-(`map_splitSafe`, `map_preservesDisjoint`).  Row-dropping (`filter`) and
-row-expanding `map` are the same primitive returning zero or many rows; they
-need expression-level conditionals and collection literals, deferred
-(section 13).
+The key-first lambda receives the key `k` and value row `r` and returns a
+**collection of value rows** (the formal `Multiset`, ADR 0015): `()` drops the
+row, a bare row or record keeps one, `(a, b, ...)` expands to several (all
+sharing one schema), and `if c then ... else ...` branches between collections
+(a `()` branch adopts the other's schema).  Content: the non-index columns are
+the collection's row schema; the **index is preserved**, so an output record may
+not name an index column.  Cardinality: the **maximum collection size** -- `<=
+1` preserves the input bound (so filtering keeps `singletons`), `>= 2` yields
+`bag`.  Totality: as returned (optional if any contributing row's field is).
+Completeness: preserved.  Lineage: preserved.  Tier A (`map_splitSafe`,
+`map_bindHom`, `map_preservesDisjoint`).
+
+Because the body is the formal multiset, **filtering and row-expansion are the
+same primitive**: there is no `filter` primitive (`filterRows_splitSafe` is
+derived), and a named `filter` may later be sugar for `if c then r else ()`.
 
 ### 6.2  `group_map` (per-key whole-group transform) -- Tier A
 
 ```
-data |> group_map |g| (.total = sum g.credits)
+data |> group_map |k, g| (.total = sum g.credits)
 ```
 
-The lambda receives the whole non-empty group at a key, presented as a row whose
-cells are bags.  Content: the output columns are the return's.  Cardinality:
+The key-first lambda receives the key `k` (a single value, constant within the
+group) and the group `g` (the non-index columns as bags).  Content: the output
+columns are the return's.  Cardinality:
 **inferred from the return** -- a single record yields `singletons` (one row per
 key, the aggregate shape, which later lets `pivot` meet its precondition); a bag
 yields `bag` (the window shape, one output row per input row).  Completeness:
@@ -378,13 +402,14 @@ must be re-established (`assert`) or assumed (section 9).  Tier B
 ### 6.4  `left_join` / `inner_join` (join a fixed table) -- Tier A
 
 ```
-readings |> left_join machines (|r| r.machine)
+readings |> left_join machines (|k, l| l.machine)
 ```
 
-Joins against a fixed right table; the lambda maps a left row to the right
-table's key.  Content: the right table's columns are added.  Cardinality:
-preserved when the right table is functional (`singletons`); a non-functional
-right table multiplies rows in, raising the bound to `bag`.  Totality:
+Joins against a fixed right table; the key-first lambda maps a left row (key `k`,
+value `l`) to the right table's key.  Content: the right table's columns are
+added.  Cardinality: preserved when the right table is functional (`singletons`);
+a non-functional right table multiplies rows in, raising the bound to `bag`.
+Totality:
 `left_join` makes the added right columns **optional** (an unmatched left row is
 kept with them missing); `inner_join` drops unmatched rows and adds no
 optionality.  Completeness: preserved on the left.  Lineage: preserved.  Tier A
@@ -489,7 +514,7 @@ operational reading of "completeness over a partial key": it is discharged where
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }   // establish over student
 |> shrink_key course                                             // consume; result complete over student
-|> group_map |g| (.total_credits = sum g.credits)               // back to singletons
+|> group_map |k, g| (.total_credits = sum g.credits)            // back to singletons
 ```
 
 Remove the check (and `@complete_over`, and `assume`) and `shrink_key` is
@@ -520,7 +545,7 @@ test, it is decidable with no solver.  What each primitive does to the tags:
 
 | operation | lineage effect | disjointness | theorem |
 | --- | --- | --- | --- |
-| `map` / `filter` / `group_map` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
+| `map` / `group_map` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
 | `extend_key` | tags carried | preserved | `ungroup_preservesDisjoint` |
 | `left_join` / `inner_join` | tags carried | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
 | `unpivot` | tags carried | preserved | `unpivot_preservesDisjoint` |
@@ -548,7 +573,7 @@ the primary split-safety / disjointness backing; section 11 has the full index.
 
 | op | content | card | total | complete | lineage | Tier | theorem |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `map` | cols := return | pres. | as ret. | pres. | carried | A | `map_splitSafe` |
+| `map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `map_splitSafe` |
 | `group_map` | cols := return | `singletons` or `bag` (per return) | as ret. | pres. | carried | A | `fiberMap_splitSafe` |
 | `extend_key` | cols join index | pres. | pres. | pres. | carried | A | `ungroup_splitSafe` |
 | `shrink_key` | key cols -> non-key | **-> bag** | pres. | **demanded** | **dropped** | B | `project_not_preservesDisjoint` |
@@ -602,8 +627,10 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 
 **Must accept:**
 
-- Summarize by an attribute (`07`): `extend_key machine |> group_map |g| ...`,
+- Summarize by an attribute (`07`): `extend_key machine |> group_map |k, g| ...`,
   all Tier A, result `singletons` per key.
+- Filter with `map` (ADR 0015): `map |_, r| if r.degraded then r else ()` keeps
+  or drops a row and stays `singletons`; `map |k, r| (r, r)` expands to `bag`.
 - Coarsen with the fact established first (`07`): `completeness_check { ... }
   |> shrink_key course |> group_map ...`.
 - Split and re-merge (`07`): `split |k| ...` then `(train, test) |> bind`
@@ -622,6 +649,9 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 - A scalar operator applied to a bag, or to an optional value without narrowing
   (`r.x > 30` where `x` is optional or read at a `bag`).
 - Comparison chaining (`a < b < c`); a mixed positional/labeled `( )`.
+- A `map` body that names an index column in its output record, or one that
+  always drops (`map |k, r| ()`, no schema to infer); an `if` with a non-`bool`
+  condition or branches of different type (ADR 0015).
 - Attribute `pivot` where the spread cell may hold more than one value (not
   `singletons`).
 
@@ -649,13 +679,16 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   derived `exhaustive`) are written in a `Type` is the content/types document's
   job (`07`, "Forward references").  The total/optional `?` axis is settled
   (ADR 0010).
-- **Named sugar.**  `filter`, `mutate`, `select`, `aggregate`, `group`/
-  `ungroup`/`project`, window functions (`rank`, `cumsum`), and `tagged_bind`/
-  `tagged_split` are sugar over the primitives (their Tier-A proofs exist,
-  section 11) and get their own round.
+- **Named sugar.**  `mutate`, `select`, `aggregate`, `group`/`ungroup`/`project`,
+  window functions (`rank`, `cumsum`), and `tagged_bind`/`tagged_split` are sugar
+  over the primitives (their Tier-A proofs exist, section 11) and get their own
+  round.  `filter` is now derivable as `map |k, r| if c then r else ()` (ADR
+  0015), so it too is sugar, not a primitive.
 - **Expression features the fuller surfaces need.**  Row-dropping and
-  row-expanding `map`, and bag-returning `group_map` (windows), need
-  expression-level conditionals, collection literals, and ordering.
+  row-expanding `map` now land (the `( )` collection and `if`/`then`/`else`, ADR
+  0015); bag-returning `group_map` (windows) still needs an ordering.  The
+  `const`/`var` record-field marker is parsed but its column-scoped meaning and
+  the view shape-conformance check are the next design.
 - **Annotation grammar.**  `@audited`, `@versioned`, `@auto`, `@complete_over`,
   `@disjoint_partition` are named here but their surface lands with the
   annotation family.

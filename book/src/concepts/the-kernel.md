@@ -26,7 +26,7 @@ Three pieces of glue thread operations together:
 
 ```mensura,ignore
 readings
-|> map |r| (.celsius = r.kelvin - 273.15)
+|> map |_, r| (.celsius = r.kelvin - 273.15)
 |> extend_key machine
 ```
 
@@ -36,7 +36,7 @@ Each is a pure function from a table to a table.
 
 | operation | what it does |
 | --- | --- |
-| `map` | per-row transform: rewrite each row independently |
+| `map` | per-row transform returning a row multiset: rewrite, drop, or expand each row (so filtering is `map` with `if c then r else ()`) |
 | `group_map` | per-key transform over a whole group (an aggregate, or a window) |
 | `extend_key` | move a non-index column *into* the key (refine the index) |
 | `shrink_key` | move a column *out* of the key (coarsen the index) |

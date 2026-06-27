@@ -64,7 +64,7 @@ cell it spreads holds at most one value:
 ```mensura,ignore
 readings
 |> extend_key machine
-|> group_map |g| (.temp_max = max g.temperature)   // card -> 1 per (.., machine)
+|> group_map |k, g| (.temp_max = max g.temperature)   // card -> 1 per (.., machine)
 |> pivot name value                                // legal: each cell is card <= 1
 ```
 
@@ -96,7 +96,7 @@ partition that is complete over the key it retains.  So completeness is
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }  // establish
 |> shrink_key course                                            // consume
-|> group_map |g| (.total_credits = sum g.credits)
+|> group_map |k, g| (.total_credits = sum g.credits)
 ```
 
 A table earns the fact in one of three ways: by **mechanism** (a `collect`
