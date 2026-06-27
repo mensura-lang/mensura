@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-<p align="center">A statically typed language for data handling.</p>
+A statically typed language for data handling.
 
 Mensura is a programming language in which the type system encodes properties
 of the *data*, not just the shape of values.  A Mensura table type records how
