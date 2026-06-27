@@ -45,7 +45,7 @@ store Faculty : PersonRecord {
   var   { rank: Rank }
 }
 
-fn count(t: PersonRecord) -> number { ... }
+fn count(t: PersonRecord) -> real { ... }
 
 let n_students = count(Students);
 let n_faculty  = count(Faculty);
@@ -73,7 +73,7 @@ the shape promises the value is always known.
 ## Shape declaration
 
 A shape declaration consists of a name, an optional parameter list, an
-optional `unit { ... }` clause, and any number of `const` and `var`
+optional `unit { ... }` clause, and any real of `const` and `var`
 blocks.
 
 ```
@@ -129,7 +129,7 @@ A shape takes a single parameter list.  Every parameter is written
 ```
 shape NumericCol[U: Unit, col: string] {
   unit { U }
-  const { `{col}`: number }
+  const { `{col}`: real }
 }
 
 shape Ageable[date_field: string] {
@@ -138,7 +138,7 @@ shape Ageable[date_field: string] {
 ```
 
 `NumericCol[Person, "height"]` is "a table of `Person` with at least a
-`const` attribute named `height` of type `number`."  `Ageable` is
+`const` attribute named `height` of type `real`."  `Ageable` is
 unit-agnostic: `Ageable["birthdate"]` is "any table with a `const`
 attribute named `birthdate` of type `date`," whatever its unit.
 
@@ -172,8 +172,8 @@ inside them, `{param}` interpolates a `string` parameter.
 shape NormalizedCol[U: Unit, col: string] {
   unit { U }
   const {
-    `{col}`:    number
-    `{col}_z`:  number
+    `{col}`:    real
+    `{col}_z`:  real
   }
 }
 ```
@@ -216,7 +216,7 @@ store Students : PersonRecord, NumericCol[Person, "height"] {
   unit { Person }
   const {
     admission: date
-    height:    number
+    height:    real
   }
 }
 ```
@@ -250,7 +250,7 @@ The unit and value parameters a function is generic over sit in the
 *same* parameter list as its table arguments, as one telescope:
 
 ```
-fn count(t: PersonRecord) -> number { ... }
+fn count(t: PersonRecord) -> real { ... }
 
 fn normalize(U: Unit, col: string, t: NumericCol[U, col]) -> NormalizedCol[U, col] {
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
@@ -342,14 +342,14 @@ shape Ageable[date_field: string] {
 
 shape NumericCol[U: Unit, col: string] {
   unit { U }
-  const { `{col}`: number }
+  const { `{col}`: real }
 }
 
 shape NormalizedCol[U: Unit, col: string] {
   unit { U }
   const {
-    `{col}`:    number
-    `{col}_z`:  number
+    `{col}`:    real
+    `{col}_z`:  real
   }
 }
 
@@ -358,7 +358,7 @@ store Students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"
   const {
     admission: date
     birthdate: date
-    height:    number
+    height:    real
   }
 }
 

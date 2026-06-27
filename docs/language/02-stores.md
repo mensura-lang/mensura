@@ -72,7 +72,7 @@ store StudentGrades {
     course:  Courses
   }
   const { class_id: string }
-  var   { grade: number }
+  var   { grade: real }
 }
 ```
 
@@ -92,7 +92,7 @@ Transitivity follows the store graph.
 
 The `const` and `var` blocks list the attributes that accompany each
 observation.  Each attribute has a name and a type.  The type may be
-a primitive (`string`, `number`, `date`, ...) or a unit reference, in
+a primitive (`string`, `int`, `real`, `date`, ...) or a unit reference, in
 the same way unit index fields can be either.
 
 A value is **total** by default: in an observed row every attribute is
@@ -166,7 +166,7 @@ store Students {
 
 store AlumniSnapshot {
   unit { Person }
-  const { graduation_year: number }
+  const { graduation_year: int }
 }
 ```
 
@@ -231,7 +231,7 @@ unit Department {
 unit Course {
   department: Department
   name: string
-  year: number
+  year: int
 }
 
 unit Enrollment {
@@ -276,7 +276,7 @@ store StudentGrades {
     course:  Courses
   }
   const { class_id: string }
-  var   { grade: number }
+  var   { grade: real }
 }
 ```
 

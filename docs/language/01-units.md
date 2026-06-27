@@ -37,7 +37,7 @@ unit Person {
 
 unit Course {
   name: string
-  year: number
+  year: int
 }
 ```
 
@@ -47,7 +47,10 @@ identity discipline.  Two observations of `Course` are observations of
 the same Course iff they agree on `(name, year)`.
 
 Each field has a name and a type.  The type determines the value space
-of that index column.  Type annotations may carry domain restrictions
+of that index column.  An index field's type must be **key-eligible**:
+a stable, comparable identity (`string`, `int`, `bool`, `date`, `enum`),
+never a continuous `real` measurement, since identity is decided by
+equality (ADR 0014).  Type annotations may carry domain restrictions
 (regex constraints, numeric ranges, precision, length).  The syntax of
 those annotations is part of the broader type system, not specific to
 units.
@@ -99,7 +102,7 @@ unit Department {
 unit Course {
   department: Department
   name: string
-  year: number
+  year: int
 }
 ```
 
@@ -118,7 +121,7 @@ needs no such resolution.  See `02-stores.md`.
 ### Hierarchical at the unit level, flat at the math level
 
 A compound unit's index is a tree.  `Course`'s index is
-`(department: (code: string), name: string, year: number)`, where
+`(department: (code: string), name: string, year: int)`, where
 `department` is itself a tuple.  Mensura presents this hierarchy in
 syntax (a user writes `course.department.code`).
 
@@ -170,7 +173,7 @@ unit Department {
 unit Course {
   department: Department
   name: string
-  year: number
+  year: int
 }
 
 unit Enrollment {

@@ -50,6 +50,6 @@ A `status` value must be one of the three variants; anything else is a type
 error.  When the store is created, the column is stored as text constrained to
 those values.
 
-Attribute types today are the primitives (`string`, `number`, `bool`, `date`)
+Attribute types today are the primitives (`string`, `int`, `real`, `bool`, `date`)
 and named enums.  Physical units and precision on attributes are a later
 feature; see [What's next](../whats-next.md).

@@ -123,8 +123,8 @@ named_type    = ident ;
 - **`shape_block` loop**: as `store_block`, minus `domain`; a `domain` word
   in a shape body is a parse error (shapes carry no foreign-key resolution).
 - **`field` / `attr` loops**: a loop continues on `ident` and ends on `}`.
-- **`type`**: a type is a single `ident`: a primitive (`string`, `number`,
-  ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
+- **`type`**: a type is a single `ident`: a primitive (`string`, `int`,
+  `real`, ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
   decision, not the parser's; the parser commits on the lone identifier.
   A trailing `?` makes the value **optional** (it may be missing in an
   observed row; see ADR 0010 and `02-stores.md`).  After the identifier
