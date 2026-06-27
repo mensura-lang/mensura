@@ -310,7 +310,7 @@ mod tests {
             content: Content {
                 index: vec![Column {
                     name: "id".to_string(),
-                    domain: ColumnType::Number,
+                    domain: ColumnType::Int,
                 }],
                 columns: vec![Column {
                     name: "name".to_string(),
@@ -349,7 +349,7 @@ mod tests {
             unit: "Machine".to_string(),
             columns: vec![
                 col("machine", ColumnType::String, ColumnRole::Index, false),
-                col("temperature", ColumnType::Number, ColumnRole::Var, false),
+                col("temperature", ColumnType::Real, ColumnRole::Var, false),
                 col("note", ColumnType::String, ColumnRole::Var, true),
             ],
             span: Span::new(0, 0),

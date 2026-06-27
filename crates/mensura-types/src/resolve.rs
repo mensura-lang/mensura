@@ -334,7 +334,7 @@ fn resolve_shape(
         let kind = match p.kind.name.as_str() {
             "Unit" => Some(ParamKind::Unit),
             "string" => Some(ParamKind::Str),
-            "number" | "bool" | "date" => {
+            "int" | "real" | "bool" | "date" => {
                 errors.push(ResolveError::new(
                     format!(
                         "`{}` parameters are not yet supported; use `Unit` or `string`",
@@ -661,7 +661,8 @@ fn totality_word(optional: bool) -> &'static str {
 fn type_name(ty: &ColumnType) -> String {
     match ty {
         ColumnType::String => "string".into(),
-        ColumnType::Number => "number".into(),
+        ColumnType::Int => "int".into(),
+        ColumnType::Real => "real".into(),
         ColumnType::Bool => "bool".into(),
         ColumnType::Date => "date".into(),
         ColumnType::Enum { name, .. } => name.clone(),
@@ -708,16 +709,31 @@ fn add_column(
             span,
         ));
     }
-    match resolve_type(&field.ty, units, enums) {
-        Ok(ct) => columns.push(Column {
-            name,
-            ty: ct,
-            role,
-            optional: field.ty.is_optional() && !is_index,
-            span: field.name.span,
-        }),
-        Err(e) => errors.push(e),
+    let ct = match resolve_type(&field.ty, units, enums) {
+        Ok(ct) => ct,
+        Err(e) => {
+            errors.push(e);
+            return;
+        }
+    };
+    // A key is identified by equality, so an index field must be key-eligible
+    // (ADR 0014); `real` is a continuous measurement, not an identity.
+    if is_index && !ct.is_key_eligible() {
+        errors.push(ResolveError::new(
+            format!(
+                "an index field must be a key-eligible type: `{}` cannot be a key",
+                type_name(&ct)
+            ),
+            field.ty.name.span,
+        ));
     }
+    columns.push(Column {
+        name,
+        ty: ct,
+        role,
+        optional: field.ty.is_optional() && !is_index,
+        span: field.name.span,
+    });
 }
 
 /// Render a name template that may not interpolate: units and stores have no
@@ -759,7 +775,8 @@ fn resolve_type(
     let id = &ty.name;
     match id.name.as_str() {
         "string" => Ok(ColumnType::String),
-        "number" => Ok(ColumnType::Number),
+        "int" => Ok(ColumnType::Int),
+        "real" => Ok(ColumnType::Real),
         "bool" => Ok(ColumnType::Bool),
         "date" => Ok(ColumnType::Date),
         other if enums.contains_key(other) => {
@@ -1056,7 +1073,7 @@ mod tests {
             store readings {
               unit { Machine }
               var { last_service: date? }
-              var { vibration: number }
+              var { vibration: real }
             }
         "#;
         let schemas = resolve_str(src).expect("should resolve");
@@ -1221,12 +1238,12 @@ mod tests {
         // `Unit` and `string` are supported; other parameter types are not.
         let src = r#"
             unit Person { id: string }
-            shape Weighted[n: number] { unit { Person } }
+            shape Weighted[n: real] { unit { Person } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
             e.message
-                .contains("`number` parameters are not yet supported")
+                .contains("`real` parameters are not yet supported")
         }));
     }
 
@@ -1258,15 +1275,15 @@ mod tests {
             unit Person { id: string }
             shape NormalizedCol[col: string] {
               const {
-                `{col}`:   number
-                `{col}_z`: number
+                `{col}`:   real
+                `{col}_z`: real
               }
             }
             store students : NormalizedCol["height"] {
               unit { Person }
               const {
-                height:   number
-                height_z: number
+                height:   real
+                height_z: real
               }
             }
         "#;
@@ -1319,7 +1336,7 @@ mod tests {
     fn template_referencing_unknown_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Bad[col: string] { const { `{other}`: number } }
+            shape Bad[col: string] { const { `{other}`: real } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1361,7 +1378,7 @@ mod tests {
             unit Machine { id: string }
             store temperature_readings {
               unit { Machine }
-              const { temp_mean: number }
+              const { temp_mean: real }
             }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);

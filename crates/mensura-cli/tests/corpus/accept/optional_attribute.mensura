@@ -8,5 +8,5 @@ store readings {
   unit { Machine }
   const { commissioned: date }
   var   { last_service: date? }
-  var   { vibration: number }
+  var   { vibration: real }
 }

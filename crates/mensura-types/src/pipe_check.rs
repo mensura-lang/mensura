@@ -285,12 +285,15 @@ fn group_record_content(
     for field in fields {
         match type_expr(ctx, &field.value) {
             Err(e) => errs.extend(e),
-            Ok(Ty::Bag { domain }) => {
+            Ok(Ty::Bag { domain, opt }) => {
                 saw_window = true;
                 columns.push(Column {
                     name: field.name.name.clone(),
                     domain,
                 });
+                if opt == Optionality::Optional {
+                    totality.mark_optional(field.name.name.clone());
+                }
             }
             Ok(ty) => match column_of(&ty) {
                 Some((domain, opt)) => {
@@ -511,6 +514,15 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     let Some(pos) = table.content.columns.iter().position(|c| c.name == col) else {
         return Err(te(format!("unknown column `{col}`"), span));
     };
+    if !table.content.columns[pos].domain.is_key_eligible() {
+        return Err(te(
+            format!(
+                "`extend_key` cannot promote `{col}`: its type is not key-eligible \
+                 (a continuous `real` measurement is not an identity)"
+            ),
+            span,
+        ));
+    }
     if table.qualifiers.totality.is_optional(col) {
         return Err(te(
             format!("`extend_key` requires `{col}` to be total; narrow it first"),
@@ -565,11 +577,12 @@ mod tests {
             "readings",
             "Reading",
             vec![
-                scol("ts", ColumnType::Number, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
                 scol("machine", ColumnType::String, ColumnRole::Var, false),
-                scol("temperature", ColumnType::Number, ColumnRole::Var, false),
-                scol("peak", ColumnType::Number, ColumnRole::Var, true),
+                scol("temperature", ColumnType::Real, ColumnRole::Var, false),
+                scol("peak", ColumnType::Real, ColumnRole::Var, true),
                 scol("flag", ColumnType::Bool, ColumnRole::Var, false),
+                scol("note", ColumnType::String, ColumnRole::Var, true),
             ],
         );
         let machines = from_cols(
@@ -643,8 +656,17 @@ mod tests {
     #[test]
     fn extend_key_rejects_optional_column() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> extend_key peak").expect_err("optional");
+        // `note` is key-eligible (string) but optional.
+        let errs = pipe_ty(&s, "readings |> extend_key note").expect_err("optional");
         assert!(errs[0].message.contains("to be total"));
+    }
+
+    #[test]
+    fn extend_key_rejects_real_column() {
+        let s = sample_sources();
+        // `temperature` is a real measurement: not key-eligible (ADR 0014).
+        let errs = pipe_ty(&s, "readings |> extend_key temperature").expect_err("real");
+        assert!(errs[0].message.contains("key-eligible"));
     }
 
     #[test]
@@ -658,7 +680,7 @@ mod tests {
     fn map_derives_columns_preserving_cardinality() {
         let s = sample_sources();
         let t =
-            table_of(pipe_ty(&s, "readings |> map |r| (.hot = r.temperature > 30)").expect("ok"));
+            table_of(pipe_ty(&s, "readings |> map |r| (.hot = r.temperature > 30.0)").expect("ok"));
         assert!(t.content.index.iter().any(|c| c.name == "ts"));
         assert_eq!(t.content.columns.len(), 1);
         assert_eq!(t.content.columns[0].name, "hot");
@@ -681,7 +703,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> extend_key machine \
-                 |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)",
+                 |> group_map |g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
             )
             .expect("ok"),
         );
@@ -694,8 +716,8 @@ mod tests {
     #[test]
     fn group_map_rejects_non_numeric_aggregate() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> group_map |g| (.m = mean g.machine)")
-            .expect_err("non-numeric");
+        let errs =
+            pipe_ty(&s, "readings |> group_map |g| (.m = sum g.machine)").expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
     }
 
@@ -719,7 +741,7 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> group_map |g| (.m = mean g.temperature, .t = g.temperature)",
+            "readings |> group_map |g| (.m = sum g.temperature, .t = g.temperature)",
         )
         .expect_err("mixed");
         assert!(errs.iter().any(|e| e.message.contains("not a mix")));
@@ -808,7 +830,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> extend_key machine \
-                 |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)",
+                 |> group_map |g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
             )
             .expect("machine_temperature types"),
         );
