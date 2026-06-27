@@ -235,6 +235,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Unary(op, operand) => type_unary(ctx, *op, operand),
         ExprKind::App(func, arg) => type_app(ctx, func, arg, expr.span),
         ExprKind::Presence(base, _) => type_presence(ctx, base, expr.span),
+        ExprKind::If { cond, then, els } => type_if(ctx, cond, then, els, expr.span),
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -665,6 +666,76 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
 
 /// Require `operand` to be a known boolean (section 5.3). Accepts both a
 /// predicate result and a total `bool` column read.
+/// `if c then a else b` (section 5, ADR 0015): `c` is a known boolean and the
+/// two branches unify to one value type, which is the result.
+fn type_if(
+    ctx: &Context,
+    cond: &Expr,
+    then: &Expr,
+    els: &Expr,
+    span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = require_bool(ctx, cond, "an `if` condition");
+    let then_ty = collect_ty(type_expr(ctx, then), &mut errs);
+    let els_ty = collect_ty(type_expr(ctx, els), &mut errs);
+    let (Some(then_ty), Some(els_ty)) = (then_ty, els_ty) else {
+        return Err(errs);
+    };
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    unify_branches(&then_ty, &els_ty, span)
+}
+
+/// Unify the two branch types of a conditional. Two values of the same domain
+/// merge (the result is optional if either branch is); otherwise the branches
+/// must be identical. A mismatch is a located error.
+fn unify_branches(then_ty: &Ty, els_ty: &Ty, span: Span) -> Result<Ty, Vec<TypeError>> {
+    match (then_ty, els_ty) {
+        (
+            Ty::Value {
+                domain: da,
+                opt: oa,
+            },
+            Ty::Value {
+                domain: db,
+                opt: ob,
+            },
+        ) if da == db => Ok(Ty::Value {
+            domain: da.clone(),
+            opt: join_opt(*oa, *ob),
+        }),
+        _ if then_ty == els_ty => Ok(then_ty.clone()),
+        _ => Err(vec![TypeError::new(
+            format!(
+                "the `if` branches must have the same type, found {} and {}",
+                describe_ty(then_ty),
+                describe_ty(els_ty)
+            ),
+            span,
+        )]),
+    }
+}
+
+/// The optional axis of a merge: optional if either input is.
+fn join_opt(a: Optionality, b: Optionality) -> Optionality {
+    if a == Optionality::Optional || b == Optionality::Optional {
+        Optionality::Optional
+    } else {
+        Optionality::Total
+    }
+}
+
+/// A short human description of a `Ty` for diagnostics.
+fn describe_ty(ty: &Ty) -> String {
+    match ty {
+        Ty::Value { domain, .. } => format!("a {}", domain_name(domain)),
+        Ty::Bag { domain, .. } => format!("a bag of {}", domain_name(domain)),
+        Ty::Bool => "a bool".to_string(),
+        Ty::Record(_) => "a record".to_string(),
+    }
+}
+
 fn require_bool(ctx: &Context, operand: &Expr, what: &str) -> Vec<TypeError> {
     match type_expr(ctx, operand) {
         Err(errs) => errs,
@@ -828,6 +899,35 @@ mod tests {
         assert!(errs[0].message.contains("not defined on real"));
         let errs = ty_of(&ctx, "r.status == \"activ\"").expect_err("bad variant");
         assert!(errs[0].message.contains("not a variant of `Status`"));
+    }
+
+    #[test]
+    fn conditional_unifies_branches() {
+        let ctx = row_ctx();
+        // Both branches a total int.
+        assert_eq!(
+            ty_of(&ctx, "if true then 1 else 2"),
+            Ok(total(ColumnType::Int))
+        );
+        // A row predicate as the condition.
+        assert_eq!(
+            ty_of(&ctx, "if r.flag then 1 else 2"),
+            Ok(total(ColumnType::Int))
+        );
+        // An optional branch makes the whole conditional optional.
+        assert_eq!(
+            ty_of(&ctx, "if r.flag then r.note else \"x\""),
+            Ok(Ty::Value {
+                domain: ColumnType::String,
+                opt: Optionality::Optional
+            })
+        );
+        // Mismatched branch domains.
+        let errs = ty_of(&ctx, "if true then 1 else \"x\"").expect_err("branch mismatch");
+        assert!(errs[0].message.contains("same type"));
+        // A non-boolean condition.
+        let errs = ty_of(&ctx, "if 1 then 1 else 2").expect_err("non-bool condition");
+        assert!(errs[0].message.contains("boolean"));
     }
 
     #[test]
