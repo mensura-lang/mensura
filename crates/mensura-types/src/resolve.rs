@@ -211,9 +211,19 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
             sources = sources.with(&schema.store, TableType::from_store(schema));
         }
         for v in &views {
-            if let Err(errs) = type_view(&sources, &v.body) {
-                for e in errs {
-                    errors.push(ResolveError::new(e.message, e.span));
+            match type_view(&sources, &v.body) {
+                Ok(_output) => {
+                    // TODO(views): check the optional `: Shape` conformance
+                    // clause (`v.conforms`) against `_output`'s content
+                    // (index + named columns, by type), ignoring const/var
+                    // roles and cardinality (10-views.md, ADR 0013). This
+                    // reuses the parameterized shape machinery of
+                    // `check_conformance` in a content-only mode; deferred.
+                }
+                Err(errs) => {
+                    for e in errs {
+                        errors.push(ResolveError::new(e.message, e.span));
+                    }
                 }
             }
         }
