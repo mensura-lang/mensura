@@ -1,14 +1,14 @@
-unit Sensor {
+unit Machine {
   id: string
 }
 
-enum Health { "ok", "degraded" }
+enum MachineStatus { "operational", "degraded", "failure" }
 
-store readings {
-  unit { Sensor }
-  const { installed: date }
-  var   { temperature: real }
-  var   { sample_count: int }
+store machines {
+  unit { Machine }
+  const { commissioned: date }
+  var   { status: MachineStatus }
+  var   { operating_hours: real }
+  var   { service_count: int }
   var   { online: bool }
-  var   { health: Health }
 }

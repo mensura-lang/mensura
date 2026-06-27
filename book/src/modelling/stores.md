@@ -34,8 +34,8 @@ without the row itself being absent.
 ```
 
 A machine that has never been serviced has no `last_service` date: the value is
-missing, but the row still exists.  `vibration`, with no `?`, is always present.
-Both `const` and `var` attributes may be optional.
+missing, but the row still exists.  `operating_hours`, with no `?`, is always
+present.  Both `const` and `var` attributes may be optional.
 
 ## Enumerations
 

@@ -2,9 +2,9 @@ unit Machine {
   id: string
 }
 
-store readings {
+store machines {
   unit { Machine }
   const { commissioned: date }
   var   { last_service: date? }
-  var   { vibration: real }
+  var   { operating_hours: real }
 }
