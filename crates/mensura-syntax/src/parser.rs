@@ -79,7 +79,7 @@ pub fn parse_expr(tokens: &[Token]) -> Result<Expr, ParseError> {
 fn is_expr_reserved(word: &str) -> bool {
     matches!(
         word,
-        "or" | "and" | "not" | "in" | "is" | "known" | "missing"
+        "or" | "and" | "not" | "in" | "is" | "known" | "missing" | "if" | "then" | "else"
     )
 }
 
@@ -749,6 +749,9 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Ident(s) => {
+                if s == "if" {
+                    return self.parse_if();
+                }
                 if is_expr_reserved(&s) {
                     return Err(self.error(format!("`{s}` is a reserved operator, not a value")));
                 }
@@ -765,6 +768,32 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => self.parse_block_expr(),
             _ => Err(self.error("expected an expression")),
         }
+    }
+
+    /// `if_expr = "if" or_expr "then" or_expr "else" or_expr` (ADR 0015).
+    fn parse_if(&mut self) -> Result<Expr, ParseError> {
+        let start = self.cur_span().start;
+        self.bump_keyword(); // `if`
+        let cond = self.parse_or()?;
+        if !self.at_keyword("then") {
+            return Err(self.error("expected `then` after the `if` condition"));
+        }
+        self.bump_keyword(); // `then`
+        let then = self.parse_or()?;
+        if !self.at_keyword("else") {
+            return Err(self.error("expected `else` after the `then` branch"));
+        }
+        self.bump_keyword(); // `else`
+        let els = self.parse_or()?;
+        let end = els.span.end;
+        Ok(Expr {
+            kind: ExprKind::If {
+                cond: Box::new(cond),
+                then: Box::new(then),
+                els: Box::new(els),
+            },
+            span: Span::new(start, end),
+        })
     }
 
     /// `lambda = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr`.  The
@@ -1060,6 +1089,19 @@ mod tests {
         assert_eq!(v.name.name, "machine_temperature");
         assert!(v.conforms.is_empty());
         assert_eq!(v.body.stmts.len(), 1);
+    }
+
+    #[test]
+    fn parses_conditional() {
+        let toks = tokenize("if a then b else c").expect("lex");
+        let expr = crate::parse_expr(&toks).expect("parse");
+        assert!(matches!(expr.kind, ExprKind::If { .. }));
+    }
+
+    #[test]
+    fn conditional_requires_then_and_else() {
+        let toks = tokenize("if a then b").expect("lex");
+        assert!(crate::parse_expr(&toks).is_err());
     }
 
     #[test]
@@ -1447,6 +1489,9 @@ mod tests {
                     })
                     .collect();
                 format!("(block {})", ss.join("; "))
+            }
+            ExprKind::If { cond, then, els } => {
+                format!("(if {} {} {})", sexpr(cond), sexpr(then), sexpr(els))
             }
         }
     }

@@ -55,6 +55,12 @@ pub enum ExprKind {
     Record(Vec<RecordField>),
     /// A statement block `{ let ...; assert ...; result }`.
     Block(Block),
+    /// A conditional `if c then a else b` (ADR 0015).
+    If {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        els: Box<Expr>,
+    },
 }
 
 /// A prefix operator.
