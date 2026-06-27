@@ -15,7 +15,7 @@ surface in expressions.  The
 concrete LL(1) grammar lives in `04-grammar.md`; this document is about
 meaning and shape, and quotes grammar only where it clarifies a design
 choice.  Casing of names follows `05-naming-and-casing.md`.  The
-table-level operations (`filter`, `map`, `aggregate`, joins, the `|>`
+table-level operations (`map`, `group_map`, the joins, `split`, the `|>`
 pipe) are part of this same sublanguage but are catalogued in the
 pipeline document; this document stops at the value level.
 
@@ -52,11 +52,13 @@ parenthesized group and means the same as `f x`.
 
 Each bracket has exactly one role:
 
-- **`( )`** is for grouping and product values.  `(e)` is `e`; `(a, b)` is a
-  positional **tuple**, a genuine product value (the form a merge consumes,
-  for example `(train, test)`); and `(.a = x, .b = y)` is a labeled
-  **record**, where the leading `.` marks a field.  A `( )` is *either*
-  all-positional or all-labeled, never mixed.
+- **`( )`** is for grouping, the homogeneous collection, and records.  `(e)`
+  is `e`; `()` is the empty collection and `(a, b, ...)` a collection of like
+  values (the form a `map` body uses to drop or expand rows, and the form a
+  merge consumes, for example `(train, test)`); and `(.a = x, .b = y)` is a
+  labeled **record**, where the leading `.` marks a field.  A `( )` is
+  *either* a positional collection or all-labeled, never mixed.  A
+  heterogeneous sequence `([ ... ])` is reserved for the future (ADR 0015).
 - **`{ }`** is for blocks and declaration bodies, never a value.  In
   expression position it is a statement block (`let` / `assert` statements and
   an optional result), which is why `completeness_check { ... }` is just
@@ -67,7 +69,7 @@ Each bracket has exactly one role:
 - Application is juxtaposition and uses no bracket at all.
 
 Because application binds tighter than every infix operator, `f x + g y`
-is `(f x) + (g y)`, and `data |> filter p` is `data |> (filter p)`.
+is `(f x) + (g y)`, and `data |> map f` is `data |> (map f)`.
 
 ## Values
 
@@ -78,12 +80,17 @@ The atomic values are:
   runtime configuration selects.  Ordinary arithmetic applies to them.
 - **Strings**: `"text"`.
 - **Booleans**: `true`, `false`.
-- **Tuples**: `(a, b, ...)`, positional products of values.
+- **Collections**: `(a, b, ...)`, a homogeneous sequence of like values; `()`
+  is the empty collection.  A `map` body uses this to drop (`()`) or expand
+  (`(a, b)`) rows (ADR 0015).
 - **Records**: `(.a = x, .b = y)`, labeled products; a field may carry an
-  explicit type, `(.a : T = x)`.  `:` is typing, `=` is the value, matching
-  every other binder (`name [: Type] = value`).
+  explicit type, `(.a : T = x)`, and an optional reserved role marker,
+  `(.a const = x)` or `(.a var = x)` (default `const`; ADR 0015).  `:` is
+  typing, `=` is the value, matching every other binder
+  (`name [role] [: Type] = value`).
 - **Lambdas**: `|x| e` and `|x, y| e` (see below); an optional return type is
   written `|x| : T e`.
+- **Conditionals**: `if c then a else b` (see below).
 - **Names**: an identifier resolved against the site's context.
 
 Member access is written `a.b.c` and binds tighter than application, so
@@ -102,8 +109,10 @@ construction.  See the forward references.
 A lambda is an anonymous function written `|x| e`, with parameters
 between bars and the body after, following Rust.  Multiple parameters
 are comma-separated: `|a, b| a + b`.  Lambdas are the explicit way to
-give an operation a per-element computation, for example a row predicate
-`|r| r.age >= 18` or a quantifier body `|x| x > 30`.
+give an operation a per-element computation, for example a quantifier body
+`|x| x > 30`.  Pipeline lambdas are **key-first**, binding the key before the
+value: `map`/join `|k, r|`, `group_map |k, g|`, `split |k|` (ADR 0015, and
+`07-pipelines.md`).  `|_, r|` ignores the key.
 
 The closing bar of a lambda and the `|>` pipe both use `|`.  The two
 never collide in practice: `|>` is the pipe and is always infix, while a
@@ -112,6 +121,16 @@ lambda's bars are `|` immediately followed by a parameter list, never by
 with no space (`|x|>0`), which a maximal-munch lexer would read as
 `|x` then `|>`; writing the comparison with a space (`|x| > 0`)
 resolves it, and the formatter enforces that spacing.
+
+### Conditionals
+
+A conditional is written `if c then a else b` (ADR 0015): the condition `c` is
+a known boolean, and the two branches must have the same type, which is the
+type of the whole expression.  Both branches are always present; there is no
+`else`-less form.  It is an ordinary value, so it nests anywhere an expression
+is expected, including a field value, `(.flag = if r.hot then 1 else 0)`, and
+a `map` body, where `if c then r else ()` keeps or drops the row.  The
+conditional is the introduction site for the deferred `is known` narrowing.
 
 ## Operators and precedence
 
@@ -158,7 +177,7 @@ or **missing**, always 0 or 1 (`Cell = Option` in
 missingness (whether a value is there) are orthogonal axes.
 
 A value-scoped expression runs at one row, so a bare column read there is
-a single value.  A group-scoped expression (a `|g|` lambda, see
+a single value.  A group-scoped expression (the `g` of a `|k, g|` lambda, see
 `07-pipelines.md`) sees the whole bag of rows at a key, so a column read
 there is the **bag** of that column's values across the rows.  Operators
 state what they accept on each axis, and the language never silently
@@ -196,7 +215,7 @@ is present.  They apply to values only.  An **optional** value is the one
 place either may hold; on a **total** value `is known` is always true.
 
 `is known` **narrows**: inside the branch guarded by `r.x is known`, and
-on every row after a table-level `filter (|r| r.x is known)`, the optional
+on every row a `map` keeps with `if r.x is known then r else ()`, the optional
 `x` is treated as total, so a scalar operator may then use it.  This is
 the third way to establish that a value is known, alongside a default or
 coalesce and an aggregate defined over missingness (ADR 0010).
@@ -226,7 +245,7 @@ sites; only this pair changes.
   (columns, principals, parameters) are snake_case, per
   `05-naming-and-casing.md`.
 - The **result type** is what the site checks the expression against: a
-  boolean for a predicate (`when:`, `where:`, a `filter` lambda), a
+  boolean for a predicate (`when:`, `where:`, a `split` predicate), a
   value for `@auto` or a derived column, and so on.  The aggregates form
   a distinct group: they are well-typed only where an aggregate result
   is expected, and a later document fixes which builtins each context
@@ -263,25 +282,32 @@ An authorization predicate (boolean result, context exposes `principal`):
 principal.kind == "device" and "temperature-sensor" in principal.roles
 ```
 
-A derived value over a single row (the lambda binds the row; `mass` and
-`height` are single-valued columns):
+A derived value over a single row (the key-first lambda ignores the key and
+binds the value row; `mass` and `height` are single-valued columns):
 
 ```
-|r| r.mass / r.height ^ 2.0
+|_, r| r.mass / r.height ^ 2.0
 ```
 
-A predicate that reduces a bag before comparing (a group-scoped lambda;
-`g.readings` is the bag of readings across the group, so a scalar
-comparison on it would be a type error and `max` collapses it first):
+A predicate that reduces a bag before comparing (a group lambda; `g.readings`
+is the bag of readings across the group, so a scalar comparison on it would be
+a type error and `max` collapses it first):
 
 ```
-|g| max g.readings > 30.0
+|_, g| max g.readings > 30.0
 ```
 
 A membership test over such a bag:
 
 ```
-|g| "staff" in g.roles
+|_, g| "staff" in g.roles
+```
+
+A `map` body that filters, keeping only the rows that need attention (the
+empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
+
+```
+|_, r| if r.status == "degraded" then r else ()
 ```
 
 ## Forward references and open questions
@@ -296,10 +322,10 @@ A membership test over such a bag:
   document fixes only that such literals are a distinct kind and do not
   participate in plain arithmetic.
 - **The pipeline level.**  The `|>` pipe, the operation catalogue
-  (`filter`, `map`, `aggregate`, `ungroup`, the joins, `pivot`,
-  `unpivot`, `bind`, `split`) and their split-safety obligations are the
-  same sublanguage applied at table type, catalogued in the pipeline
-  document.  `|>` appears in the precedence table here because it is one
+  (`extend_key`, `map`, `group_map`, the joins, `split`, `bind`) and their
+  split-safety obligations are the same sublanguage applied at table type,
+  catalogued in the pipeline document.  Filtering is not a primitive: it is
+  `map |k, r| if c then r else ()` (ADR 0015).  `|>` appears in the precedence table here because it is one
   language, but its consumers live there.
 - **Row cardinality.**  `#row` (and possibly a general cardinality
   operator `#x`) is reserved for a later round; for now only value-level

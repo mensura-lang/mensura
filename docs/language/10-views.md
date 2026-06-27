@@ -46,7 +46,7 @@ conformance clause, and a **block** that hosts the pipeline:
 ```mensura
 view feature_window : Tabular[Machine] {
   let base = readings |> extend_key machine;
-  base |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)
+  base |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)
 }
 ```
 
@@ -134,7 +134,7 @@ pipeline's result.
 view machine_temperature : Tabular[Machine] {
   readings
   |> extend_key machine
-  |> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)
+  |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)
 }
 ```
 
@@ -159,6 +159,19 @@ view full_dataset {
 the disjoint pair preserves `singletons` and reconstructs `data` (`bind_split`,
 `09-typing-reference.md`, section 11).  The view claims no shape, so it is a free
 table; its lineage and cardinality are whatever the pipeline computes.
+
+**Keep only the rows that matter (filter via `map`).**
+
+```mensura
+view attention_needed {
+  machines |> map |_, r| if r.status == "degraded" then r else ()
+}
+```
+
+The key-first `map` body returns the value row `r` when the machine is degraded
+and the empty collection `()` otherwise, so it drops the other rows.  The maximum
+collection size is 1, so the result stays `singletons`; there is no `filter`
+primitive (`09-typing-reference.md`, section 6.1, ADR 0015).
 
 ## Scope of this round
 
