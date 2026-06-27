@@ -9,7 +9,7 @@ use crate::ast::{
     DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
     ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
 };
-use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
+use crate::expr::{BinOp, Block, Expr, ExprKind, FieldRole, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
 
 /// A parse failure, located by a source span.
@@ -872,10 +872,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `field = "." ident [ ":" type ] "=" expr`, one labeled record field.
+    /// `field = "." ident [ "const" | "var" ] [ ":" type ] "=" expr`, one
+    /// labeled record field.  The role marker is reserved (ADR 0015); it is
+    /// parsed and carried but has no type-level meaning yet.
     fn parse_record_field(&mut self) -> Result<RecordField, ParseError> {
         let start = self.expect(&TokenKind::Dot, "`.` to start a record field")?;
         let name = self.expect_ident("a field name")?;
+        let role = if self.at_keyword("const") {
+            self.bump_keyword();
+            FieldRole::Const
+        } else if self.at_keyword("var") {
+            self.bump_keyword();
+            FieldRole::Var
+        } else {
+            FieldRole::Const
+        };
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type()?)
         } else {
@@ -886,6 +897,7 @@ impl<'a> Parser<'a> {
         let span = Span::new(start.start, value.span.end);
         Ok(RecordField {
             name,
+            role,
             ty,
             value,
             span,
@@ -1623,6 +1635,26 @@ mod tests {
     fn records_with_optional_ascription() {
         assert_eq!(sexpr(&expr("(.a = x, .b = y)")), "(record a=x b=y)");
         assert_eq!(sexpr(&expr("(.a : number = 1)")), "(record a=1)");
+    }
+
+    #[test]
+    fn record_field_role_marker() {
+        // The marker is optional; `const` is the default (ADR 0015).
+        let roles = |src: &str| -> Vec<FieldRole> {
+            match expr(src).kind {
+                ExprKind::Record(fs) => fs.iter().map(|f| f.role).collect(),
+                other => panic!("expected a record, got {other:?}"),
+            }
+        };
+        assert_eq!(roles("(.a = 1)"), vec![FieldRole::Const]);
+        assert_eq!(roles("(.b var = 1)"), vec![FieldRole::Var]);
+        assert_eq!(roles("(.c const = 1)"), vec![FieldRole::Const]);
+        // The marker precedes the optional type ascription.
+        assert_eq!(roles("(.d var : number = 1)"), vec![FieldRole::Var]);
+        assert_eq!(
+            roles("(.a = 1, .b var = 2)"),
+            vec![FieldRole::Const, FieldRole::Var]
+        );
     }
 
     #[test]

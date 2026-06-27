@@ -115,10 +115,23 @@ pub enum Presence {
     Missing,
 }
 
-/// One labeled field of a record: `.name [: Type] = value`.
+/// The reserved role marker on a record field (ADR 0015).  The type-level
+/// meaning of `const`/`var` (a column-scoped qualifier) is settled with the
+/// view shape-conformance work; for now the marker is parsed and carried only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FieldRole {
+    /// `const` (the default): the field is held fixed.
+    #[default]
+    Const,
+    /// `var`: the field varies.
+    Var,
+}
+
+/// One labeled field of a record: `.name [const | var] [: Type] = value`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordField {
     pub name: Ident,
+    pub role: FieldRole,
     pub ty: Option<TypeExpr>,
     pub value: Expr,
     pub span: Span,
