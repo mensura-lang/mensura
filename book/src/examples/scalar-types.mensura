@@ -1,0 +1,14 @@
+unit Sensor {
+  id: string
+}
+
+enum Health { "ok", "degraded" }
+
+store readings {
+  unit { Sensor }
+  const { installed: date }
+  var   { temperature: real }
+  var   { sample_count: int }
+  var   { online: bool }
+  var   { health: Health }
+}

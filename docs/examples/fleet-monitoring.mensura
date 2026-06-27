@@ -1,7 +1,7 @@
 // Fleet monitoring: the machine registry for a streaming
 // predictive-maintenance example.  This file grows as the language does; today
 // it holds only what the current implementation compiles (scalar-index units,
-// named enums, shapes, and basic stores).
+// named enums, shapes, basic stores, and a simple view).
 //
 // Still to come, milestone by milestone:
 //   M3  dimensional sensor units and precision (temperature, vibration, ...)
@@ -27,4 +27,11 @@ store machines : Commissioned {
   // Optional value (`?`): a machine never serviced has no last-service date.
   // The value is missing, not absent; the row still exists (ADR 0010).
   var   { last_service: date? }
+}
+
+// A view derives a table from stores by a pipeline (docs/language/10-views.md).
+// This one flags the machines needing attention, one row per machine; richer
+// windowed feature views arrive with streaming (M5).
+view attention_needed {
+  machines |> map |r| (.degraded = r.status == "degraded")
 }

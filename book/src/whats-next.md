@@ -1,14 +1,19 @@
 # What's next
 
 This book grows with the language.  Today it covers modelling data: units,
-stores, shapes, and creating stores in a database.  The features that compute
-over stored data are being built and will be documented here as they land.
+scalar types, stores, and shapes, plus checking a program and creating its
+stores in a database.  The features that compute over stored data are being
+built and will be documented here as they land.
 
 On the way, roughly in order:
 
 - **Expressions and pipelines.**  Transforming stored data with a typed
   algebra, where each operation carries rules for how it changes a table's
-  content and qualifiers.
+  content and qualifiers.  The type checker for this already exists: value
+  expressions, the Tier A pipeline operations (`map`, `group_map`, `extend_key`,
+  the joins, `split`/`bind`), and `view` declarations all type-check today
+  (`mensura check`); a dedicated chapter and the runtime that materializes a
+  view follow.
 - **Lineage and leak-free validation.**  The property that motivates the whole
   language: the type system proving that a training set and a test set share no
   entities, so a split cannot leak.
