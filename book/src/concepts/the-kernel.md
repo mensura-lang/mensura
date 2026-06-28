@@ -24,10 +24,15 @@ Three pieces of glue thread operations together:
 - **tuples**, to bring several tables together for an operation that merges
   them: `(train, test) |> bind`.
 
-```mensura,ignore
-readings
-|> map |_, r| (.celsius = r.kelvin - 273.15)
-|> extend_key machine
+```mensura
+unit Reading { ts: int }
+store readings { unit { Reading } var { kelvin: real } var { machine: string } }
+
+view celsius {
+  readings
+  |> extend_key machine
+  |> map |k, r| (.celsius = r.kelvin - 273.15)
+}
 ```
 
 ## The primitives
