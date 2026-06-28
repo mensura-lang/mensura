@@ -378,6 +378,49 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   parenthesized.  A lambda that is not the last argument of an application
   must also be parenthesized, since its body extends maximally.
 
+### FIRST/FOLLOW verification (the M0 freeze condition)
+
+The per-production prose above argues decidability informally; this subsection
+discharges the `ROADMAP.md` M0 condition explicitly: no left recursion, disjoint
+FIRST sets at every choice, and FIRST/FOLLOW disjoint at every nullable
+production.
+
+**No left recursion.**  The expression grammar is a precedence cascade: each
+non-terminal references only strictly tighter levels (`pipe_expr` -> `or_expr`
+-> ... -> `primary`), and repetition is written as a right-iterative loop
+`{ op operand }`, never as `A = A op B`.  `unary_expr = "-" unary_expr | ...`
+and `not_expr = "not" not_expr | ...` recurse only after consuming a terminal
+(`-`, `not`), so they are not left-recursive.  No production can derive itself
+without first consuming input.
+
+**Disjoint FIRST at each choice.**  The only productions with alternatives are
+`not_expr` (`not` vs `FIRST(cmp_expr)`), `unary_expr` (`-` vs
+`FIRST(pow_expr)`), `primary`, `paren`'s body, and `stmt`.  `not`, `-`, and
+`if` are tokens distinct from any value-starting token; `primary`'s five arms
+start with the disjoint tokens `number` / `string` / `ident` / `|` / `{` (and
+`(` for `paren`); `paren`'s body splits on `.` (record) versus everything else
+(collection), and an expression never starts with `.`; `stmt` splits on the
+reserved idents `let` / `assert` versus any other expression-starting token.
+
+**FIRST/FOLLOW disjoint at each nullable or optional production.**  The nullable
+points and their checks:
+
+| nullable / optional | FIRST(optional part) | FOLLOW (what ends it) | disjoint? |
+| --- | --- | --- | --- |
+| `cmp_expr` tail `[ cmp_op add_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
+| `pow_expr` tail `[ "^" unary_expr ]` | `^` | everything looser than `^` | yes (`^` is not in FOLLOW) |
+| each loop `{ op operand }` (`\|>`, `or`, `and`, `+ -`, `* /`) | that level's operator token(s) | the next looser operator or a terminator | yes (operators are partitioned by level) |
+| `app_expr = postfix { postfix }` | `number string ident( non-reserved ) ( \| {` | any operator, `\|>`, `) , then else ; }` | yes (no operator or terminator starts a `postfix`) |
+| `lambda` params `[ ident { "," ident } ]` | `ident` | `\|` (closing bar) | yes |
+| return / field / let ascription `[ ":" type ]` | `:` | lambda body start, `=`, `}` | yes (`:` is distinct) |
+| `collection_body = [ expr { "," expr } ]` | `FIRST(expr)` | `)` | yes (`expr` never starts with `)`) |
+| `block` body `[ stmt { ";" stmt } ]` | `FIRST(stmt)` | `}` | yes (`stmt` never starts with `}`) |
+
+Every choice is settled by one token of lookahead and no nullable production can
+be confused with what follows it, so the expression sublanguage is LL(1).  With
+the declaration grammar (proven above), the whole core grammar meets the M0
+freeze condition.
+
 ### Reserved words in expressions
 
 Combining juxtaposition application with word operators forces a small,
