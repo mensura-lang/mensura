@@ -88,7 +88,8 @@ passes two curried arguments, the second passes one argument that is a
 pair.  That distinction is not an extra rule to learn; it falls out of
 currying, and each pipe form is the exact mirror of a juxtaposition form.
 This is the discipline recorded in
-`docs/decisions/0018-application-piping-equivalence.md`.
+`docs/decisions/0018-application-piping-equivalence.md`; how the checker
+realizes it is `docs/toolkit/01-application-checking.md`.
 
 ## Values
 

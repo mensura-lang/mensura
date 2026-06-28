@@ -62,7 +62,8 @@ Three forms thread operations together, all from the expression sublanguage:
   feeds.  The pipe is reversed application, `x |> g` means `g x`, so a stage
   may always be written either way; the equivalence and its two-class
   consequence are spelled out in `06-expressions.md` and recorded in
-  `docs/decisions/0018-application-piping-equivalence.md`.
+  `docs/decisions/0018-application-piping-equivalence.md`.  How the checker
+  realizes that equivalence is `docs/toolkit/01-application-checking.md`.
 - **`let`**, to name an intermediate table and reuse it (forking a pipeline is
   binding a table once and using it twice).
 - **tuples**, to bring several tables together for a merge:

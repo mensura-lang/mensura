@@ -70,7 +70,8 @@ implementation realize it through a single mechanism rather than two.
   That split is acceptable as the "primitives only" staging of ADR 0009,
   but it is a known gap against this ADR, and the unifying refactor (one
   application path shared by `f a b` and `b |> f a`) is a deferred
-  follow-up, not done in this round.
+  follow-up, not done in this round.  That follow-up has since landed; how
+  the checker realizes the invariant is `docs/toolkit/01-application-checking.md`.
 
 ## Consequences
 
@@ -119,7 +120,9 @@ Neutral:
 
 - **Which unification the follow-up takes.**  Parser-level desugar
   (alternative 2) versus a shared application routine the pipe path calls;
-  this is settled when the checker refactor is specified.
+  this is settled when the checker refactor is specified.  *Settled:* the
+  shared application routine, routing both forms onto one path without an AST
+  rewrite (`docs/toolkit/01-application-checking.md`).
 - **General application in the value layer.**  `expr_check` types only a
   fixed set of builtins today; the shared application path presumes a
   general application rule, whose surface (user-defined functions, partial

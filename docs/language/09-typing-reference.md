@@ -243,8 +243,10 @@ aggregates, ...) are in scope is a property of the context, not the grammar
 
 Application is juxtaposition, left-associative: `f x y` is `(f x) y`; functions
 are curried, so partial application is an ordinary value (this is what lets
-pipeline stages compose under `|>`).  Application binds tighter than every infix
-operator and looser than member access.  Operator precedence, loosest to
+pipeline stages compose under `|>`).  The pipe is reversed application
+(`x |> g` means `g x`); the checker routes both forms through one path, per
+`docs/toolkit/01-application-checking.md`.  Application binds tighter than every
+infix operator and looser than member access.  Operator precedence, loosest to
 tightest (`06`, "Operators and precedence"; grammar in `04-grammar.md`):
 
 | Operators | Assoc. | Notes |
