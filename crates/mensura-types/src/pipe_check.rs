@@ -110,6 +110,7 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
         "bind" => op_bind(input, &args, head.span),
         "left_join" => op_join(sources, input, &args, head.span, JoinKind::Left),
         "inner_join" => op_join(sources, input, &args, head.span, JoinKind::Inner),
+        "unpivot" => op_unpivot(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
 }
@@ -724,6 +725,106 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     Ok(())
 }
 
+/// `unpivot name value (cols...)` (section 6.6, Tier A, ADR 0016): fold the
+/// named value columns into one `value` column, spreading their *names* into a
+/// new `enum` index column `name`. The folded columns must be non-index and
+/// share one domain. Cardinality, completeness, and lineage are preserved
+/// (`unpivot_splitSafe`, `unpivot_preservesDisjoint`).
+fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [name_arg, value_arg, cols_arg] = args else {
+        return Err(error(
+            "`unpivot` takes a name column, a value column, and a `(col, ...)` group",
+            span,
+        ));
+    };
+    let ExprKind::Name(name_col) = &name_arg.kind else {
+        return Err(error(
+            "`unpivot`'s name column must be an identifier",
+            name_arg.span,
+        ));
+    };
+    let ExprKind::Name(value_col) = &value_arg.kind else {
+        return Err(error(
+            "`unpivot`'s value column must be an identifier",
+            value_arg.span,
+        ));
+    };
+    let ExprKind::Tuple(items) = &cols_arg.kind else {
+        return Err(error(
+            "`unpivot` expects a `(col, ...)` group of columns",
+            cols_arg.span,
+        ));
+    };
+    if items.is_empty() {
+        return Err(error(
+            "`unpivot` needs at least one column to fold",
+            cols_arg.span,
+        ));
+    }
+
+    // Collect the folded columns: each must exist, be non-index, and share one
+    // domain. A folded column that may be missing makes the `value` optional.
+    let mut folded: Vec<String> = Vec::new();
+    let mut domain: Option<ColumnType> = None;
+    let mut value_optional = false;
+    let mut errs = Vec::new();
+    for item in items {
+        let ExprKind::Name(col) = &item.kind else {
+            errs.push(te("a folded column must be an identifier", item.span));
+            continue;
+        };
+        if table.content.index.iter().any(|c| &c.name == col) {
+            errs.push(te(
+                format!("`{col}` is an index column, not a value column"),
+                item.span,
+            ));
+            continue;
+        }
+        let Some(c) = table.content.columns.iter().find(|c| &c.name == col) else {
+            errs.push(te(format!("unknown column `{col}`"), item.span));
+            continue;
+        };
+        match &domain {
+            None => domain = Some(c.domain.clone()),
+            Some(d) if *d == c.domain => {}
+            Some(_) => errs.push(te(
+                format!("folded columns must share the same domain; `{col}` differs"),
+                item.span,
+            )),
+        }
+        if table.qualifiers.totality.is_optional(col) {
+            value_optional = true;
+        }
+        folded.push(col.clone());
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let domain = domain.expect("at least one column checked");
+
+    // Remove the folded columns, add the `value` column and the `name` enum key.
+    table.content.columns.retain(|c| !folded.contains(&c.name));
+    for col in &folded {
+        table.qualifiers.totality.narrow(col);
+    }
+    table.content.columns.push(Column {
+        name: value_col.clone(),
+        domain,
+    });
+    if value_optional {
+        table.qualifiers.totality.mark_optional(value_col.clone());
+    }
+    table.content.index.push(Column {
+        name: name_col.clone(),
+        domain: ColumnType::Enum {
+            name: name_col.clone(),
+            variants: folded,
+        },
+    });
+    Ok(PipeTy::Table(table))
+}
+
 /// Decompose a curried application `f a b c` into the head `f` and the argument
 /// list `[a, b, c]`. A non-application returns `(expr, [])`.
 fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
@@ -1109,6 +1210,45 @@ mod tests {
         // `ts` is a number, but `machines` is keyed by a string.
         let errs = pipe_ty(&s, "readings |> left_join machines (|k, l| k.ts)").expect_err("domain");
         assert!(errs[0].message.contains("key domain"));
+    }
+
+    #[test]
+    fn unpivot_folds_columns_into_name_and_value() {
+        let s = sample_sources();
+        // Fold two `real` columns into one `enum`-keyed value column.
+        let t = table_of(
+            pipe_ty(&s, "readings |> unpivot metric reading (temperature, peak)").expect("ok"),
+        );
+        assert!(t.content.index.iter().any(|c| c.name == "metric"));
+        assert!(matches!(
+            t.content
+                .index
+                .iter()
+                .find(|c| c.name == "metric")
+                .unwrap()
+                .domain,
+            ColumnType::Enum { .. }
+        ));
+        assert!(t.content.columns.iter().any(|c| c.name == "reading"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "temperature"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "peak"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn unpivot_rejects_mismatched_domains() {
+        let s = sample_sources();
+        // `temperature` is real, `note` is string: cannot share one value column.
+        let errs = pipe_ty(&s, "readings |> unpivot metric reading (temperature, note)")
+            .expect_err("domain mismatch");
+        assert!(errs[0].message.contains("same domain"));
+    }
+
+    #[test]
+    fn unpivot_needs_at_least_one_column() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> unpivot metric reading ()").expect_err("no columns");
+        assert!(errs[0].message.contains("at least one column"));
     }
 
     // The two worked examples from docs/language/10-views.md, end to end.
