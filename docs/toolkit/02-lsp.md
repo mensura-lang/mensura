@@ -9,8 +9,10 @@ and find-references are forward references (see the end of this document).
 
 Scope follows the rest of the toolchain: units and scalar-index stores with
 primitive attributes (`docs/language/01-units.md`,
-`docs/language/02-stores.md`).  Compound units, `domain` resolution, and
-physical-unit types are out of scope and surface as diagnostics, not crashes.
+`docs/language/02-stores.md`), plus `view` bodies and the pipeline sublanguage
+(`docs/language/10-views.md`, `docs/language/07-pipelines.md`).  Compound
+units, `domain` resolution, and physical-unit types are out of scope and
+surface as diagnostics, not crashes.
 
 ## What the basic server exposes
 
@@ -91,7 +93,8 @@ Token types (the legend advertised at `initialize`):
 
 | Type         | Source                                                |
 |--------------|-------------------------------------------------------|
-| `keyword`    | Contextual keywords: `unit`, `store`, `shape`, `const`, `var`, `domain`, `enum`. |
+| `keyword`    | Contextual keywords: declaration headers (`unit`, `store`, `shape`, `const`, `var`, `domain`, `enum`, `view`), the conditional (`if`, `then`, `else`), the predicate operators (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement keywords (`let`, `assert`). |
+| `function`   | Pipeline operations (`map`, `group_map`, `split`, `bind`, `left_join`, `inner_join`, `extend_key`, `shrink_key`, `unpivot`, `pivot`, `assume`, `completeness_check`), carried with the `defaultLibrary` modifier. |
 | `type`       | Declaration and reference names of units and shapes, and conformance targets. |
 | `property`   | Field and attribute names, including the literal parts of a name template. |
 | `parameter`  | Shape parameters and `{param}` holes inside a name template. |
@@ -101,7 +104,8 @@ Token types (the legend advertised at `initialize`):
 | `enumMember` | Named-enum (`enum Name { ... }`) variants.            |
 | `comment`    | Line comments, from the trivia channel.               |
 
-No token modifiers initially.  A `var`-versus-`const` modifier and a
+One token modifier, `defaultLibrary`, marks the builtin pipeline operations
+(every `function` token carries it).  A `var`-versus-`const` modifier and a
 primitive-versus-unit-reference split are forward references.
 
 ### Two tiers, and why keywords need the parser
@@ -117,13 +121,21 @@ raw tokens.
 from the AST and a small companion table:
 
 - *Keyword spans* come from the parser.  As it recognizes each contextual
-  keyword (it already calls `at_keyword("unit")`, `"store"`, `"shape"`,
-  `"const"`, `"var"`, `"domain"`, `"enum"`), the parser records the matched
-  span in a classified-span table returned alongside the AST.  This keeps the
-  keyword vocabulary in exactly one place (the parser) and covers the
-  clause-header keywords (`unit {`, `const {`, `var {`, `domain {`) whose spans
-  the AST does not otherwise store.  The highlighter never re-derives the
-  keyword set.
+  keyword (it consumes them through `bump_keyword`, covering the declaration
+  headers, the conditional, the predicate operators, and the statement
+  keywords `let`/`assert`), the parser records the matched span in a
+  classified-span table returned alongside the AST.  This keeps the keyword
+  vocabulary in exactly one place (the parser) and covers the clause-header
+  keywords (`unit {`, `const {`, `var {`, `domain {`) whose spans the AST does
+  not otherwise store.  The highlighter never re-derives the keyword set.
+- *Operation spans* also come from the parser.  Pipeline operations are not
+  keywords: each is the leftmost identifier of a `|>` right-hand side, an
+  ordinary application head.  The parser recognizes them positionally (any
+  identifier in operation position) and records its span, so the vocabulary
+  stays in one place and no name list is duplicated from `pipe_check`.  These
+  spans become `function` tokens with the `defaultLibrary` modifier.  A
+  mistyped operation is still colored; `resolve` reports the unknown-operation
+  error separately.
 - *Types* are `UnitDecl.name`, `StoreDecl.name`, `StoreDecl.unit`,
   `ShapeDecl.name` and its optional `unit`, `DomainEntry.store`, the shape-param
   kind annotations, every `TypeExpr::Named` ident, and the `:` conformance

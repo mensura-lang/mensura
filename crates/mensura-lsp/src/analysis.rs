@@ -6,7 +6,8 @@
 //! `docs/toolkit/03-book-highlighting.md`.
 
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, Position, Range, SemanticToken, SemanticTokenType,
+    Diagnostic, DiagnosticSeverity, Position, Range, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType,
 };
 
 use mensura_highlight::{CheckError, Highlight, HighlightKind, highlight};
@@ -27,7 +28,24 @@ pub fn token_legend() -> Vec<SemanticTokenType> {
         SemanticTokenType::OPERATOR,
         SemanticTokenType::ENUM_MEMBER,
         SemanticTokenType::COMMENT,
+        SemanticTokenType::FUNCTION,
     ]
+}
+
+/// The semantic-token *modifier* legend, advertised at `initialize`.  Only
+/// `defaultLibrary`, which marks the builtin pipeline operations.  Its position
+/// (0) is the bit [`modifier_bitset`] sets.
+pub fn token_modifier_legend() -> Vec<SemanticTokenModifier> {
+    vec![SemanticTokenModifier::DEFAULT_LIBRARY]
+}
+
+/// The modifier bitmask for a kind.  Builtin functions (pipeline operations)
+/// carry `defaultLibrary` (bit 0); every other kind carries none.
+fn modifier_bitset(kind: HighlightKind) -> u32 {
+    match kind {
+        HighlightKind::Function => 1 << 0,
+        _ => 0,
+    }
 }
 
 /// Index of a kind into [`token_legend`].
@@ -42,6 +60,7 @@ fn legend_index(kind: HighlightKind) -> u32 {
         HighlightKind::Operator => 6,
         HighlightKind::EnumMember => 7,
         HighlightKind::Comment => 8,
+        HighlightKind::Function => 9,
     }
 }
 
@@ -92,7 +111,7 @@ fn encode_tokens(
             delta_start,
             length,
             token_type: legend_index(span.kind),
-            token_modifiers_bitset: 0,
+            token_modifiers_bitset: modifier_bitset(span.kind),
         });
         prev_line = line;
         prev_char = character;
@@ -138,6 +157,21 @@ mod tests {
         assert!(types.contains(&legend_index(HighlightKind::Keyword)));
         assert!(types.contains(&legend_index(HighlightKind::Type)));
         assert!(types.contains(&legend_index(HighlightKind::Property)));
+    }
+
+    #[test]
+    fn pipeline_operation_is_a_builtin_function_token() {
+        let analysis = analyze(
+            "view v { readings |> extend_key machine }",
+            PositionEncoding::Utf8,
+        );
+        let func = analysis
+            .tokens
+            .iter()
+            .find(|t| t.token_type == legend_index(HighlightKind::Function))
+            .expect("a function token for the operation head");
+        // `defaultLibrary` is the only modifier, so its bit is the low bit.
+        assert_eq!(func.token_modifiers_bitset, 1);
     }
 
     #[test]

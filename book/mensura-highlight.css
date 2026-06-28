@@ -16,6 +16,7 @@ pre.mensura code.mn-code {
 /* Light themes (the default). */
 .mn-comment { color: #9aa0a6; font-style: italic; }
 .mn-keyword { color: #a626a4; }
+.mn-function { color: #0184bc; }
 .mn-type { color: #4078f2; }
 .mn-property { color: #383a42; }
 .mn-parameter { color: #b76b01; }
@@ -32,6 +33,10 @@ pre.mensura code.mn-code {
 .coal .mn-keyword,
 .navy .mn-keyword,
 .ayu .mn-keyword { color: #c678dd; }
+
+.coal .mn-function,
+.navy .mn-function,
+.ayu .mn-function { color: #56b6c2; }
 
 .coal .mn-type,
 .navy .mn-type,

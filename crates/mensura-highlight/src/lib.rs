@@ -20,6 +20,7 @@ use mensura_types::resolve;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HighlightKind {
     Keyword,
+    Function,
     Type,
     Property,
     Parameter,
@@ -38,12 +39,13 @@ impl HighlightKind {
             HighlightKind::Comment => 0,
             HighlightKind::EnumMember => 1,
             HighlightKind::Keyword => 2,
-            HighlightKind::Type => 3,
-            HighlightKind::Parameter => 4,
-            HighlightKind::Property => 5,
-            HighlightKind::String => 6,
-            HighlightKind::Number => 7,
-            HighlightKind::Operator => 8,
+            HighlightKind::Function => 3,
+            HighlightKind::Type => 4,
+            HighlightKind::Parameter => 5,
+            HighlightKind::Property => 6,
+            HighlightKind::String => 7,
+            HighlightKind::Number => 8,
+            HighlightKind::Operator => 9,
         }
     }
 }
@@ -106,6 +108,11 @@ pub fn highlight(src: &str) -> Highlighted {
             // and enum members come from the AST.
             for &span in &parsed.keyword_spans {
                 builder.push(span, HighlightKind::Keyword);
+            }
+            // Pipeline operation heads (the leftmost identifier of each `|>`
+            // right-hand side) color as builtin functions.
+            for &span in &parsed.op_spans {
+                builder.push(span, HighlightKind::Function);
             }
             highlight_program(&mut builder, &parsed.program);
             highlight_literals(&mut builder, &lexed.tokens);
@@ -328,6 +335,22 @@ mod tests {
         assert!(ks.contains(&HighlightKind::Keyword));
         assert!(ks.contains(&HighlightKind::Type));
         assert!(ks.contains(&HighlightKind::Property));
+    }
+
+    #[test]
+    fn pipeline_operations_are_functions() {
+        // Operation heads on the right of `|>` color as builtin functions.
+        let ks = kinds("view v { readings |> extend_key machine }");
+        assert!(ks.contains(&HighlightKind::Function));
+    }
+
+    #[test]
+    fn predicate_operators_color_as_keywords() {
+        // `is` and `known` are now recorded by the parser, so they color even
+        // though they are not declaration keywords.  `view` is a keyword too,
+        // so there are at least three keyword spans.
+        let ks = kinds("view v { completeness_check { assert a is known } }");
+        assert!(ks.iter().filter(|&&k| k == HighlightKind::Keyword).count() >= 3);
     }
 
     #[test]
