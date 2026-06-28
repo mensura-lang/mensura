@@ -1,0 +1,10 @@
+// Accept: assume { complete } discharges shrink_key's completeness obligation,
+// then a group_map aggregate brings the bag back to singletons (ADR 0017).
+unit Reading { ts: int }
+store readings { unit { Reading } var { machine: string } var { credits: int } }
+view rollup {
+  readings |> extend_key machine
+           |> assume { complete }
+           |> shrink_key machine
+           |> group_map |k, g| (.total = sum g.credits)
+}

@@ -1,0 +1,9 @@
+// Accept: unpivot puts `metric` in the key; pivoting it back is the index form,
+// which is admissible once completeness is established (Tier B, ADR 0016/0017).
+unit Reading { ts: int }
+store readings { unit { Reading } var { temperature: real } var { humidity: real } }
+view wide {
+  readings |> unpivot metric reading (temperature, humidity)
+           |> assume { complete }
+           |> pivot metric reading
+}
