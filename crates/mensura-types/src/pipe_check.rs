@@ -911,13 +911,55 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         ));
     };
 
-    // Attribute form only in this task: `name` must be a non-index column.
-    if table.content.index.iter().any(|c| &c.name == name_col) {
-        return Err(error(
-            "index-form `pivot` (spreading a key column) is not yet supported",
-            name_arg.span,
-        ));
+    // Index form (Tier B, ADR 0017): `name` is a key column. Demands
+    // completeness over the key it leaves behind, drops lineage
+    // (`pivot_not_splitInvariant`).
+    if let Some(idx_pos) = table.content.index.iter().position(|c| &c.name == name_col) {
+        let ColumnType::Enum { variants, .. } = table.content.index[idx_pos].domain.clone() else {
+            return Err(error(
+                format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
+                name_arg.span,
+            ));
+        };
+        if table.content.index.len() == 1 {
+            return Err(error(
+                "index-form `pivot` must leave at least one index column",
+                name_arg.span,
+            ));
+        }
+        if table.qualifiers.completeness != Completeness::Complete {
+            return Err(error(
+                "index-form `pivot` needs completeness over the retained key; \
+                 establish it with `completeness_check` or `assume { complete }`",
+                span,
+            ));
+        }
+        let Some(value_pos) = table
+            .content
+            .columns
+            .iter()
+            .position(|c| &c.name == value_col)
+        else {
+            return Err(error(
+                format!("unknown column `{value_col}`"),
+                value_arg.span,
+            ));
+        };
+        let value_domain = table.content.columns[value_pos].domain.clone();
+        table.content.index.remove(idx_pos);
+        table.content.columns.retain(|c| &c.name != value_col);
+        table.qualifiers.totality.narrow(value_col);
+        for variant in variants {
+            table.content.columns.push(Column {
+                name: variant,
+                domain: value_domain.clone(),
+            });
+        }
+        table.qualifiers.lineage = Lineage::dropped();
+        return Ok(PipeTy::Table(table));
     }
+
+    // Attribute form: `name` is a non-index column.
     let Some(name_pos) = table
         .content
         .columns
@@ -1545,6 +1587,38 @@ mod tests {
         // `tag` is a plain string column, not a finite-enumerable enum.
         let errs = pipe_ty(&s, "obs |> pivot tag reading").expect_err("not enumerable");
         assert!(errs[0].message.contains("enum"));
+    }
+
+    #[test]
+    fn pivot_index_form_demands_completeness() {
+        let s = sample_sources();
+        // `unpivot` puts `metric` in the key; pivoting it back is the index form,
+        // which demands completeness over the retained key.
+        let errs = pipe_ty(
+            &s,
+            "readings |> unpivot metric reading (temperature, peak) |> pivot metric reading",
+        )
+        .expect_err("incomplete");
+        assert!(errs[0].message.contains("complete"));
+    }
+
+    #[test]
+    fn pivot_index_form_drops_lineage_and_spreads() {
+        let s = sample_sources();
+        // The unpivot/pivot round-trip restores the wide shape; the index form
+        // drops lineage.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> unpivot metric reading (temperature, peak) \
+                 |> assume { complete } |> pivot metric reading",
+            )
+            .expect("ok"),
+        );
+        assert!(!t.content.index.iter().any(|c| c.name == "metric"));
+        assert!(t.content.columns.iter().any(|c| c.name == "temperature"));
+        assert!(t.content.columns.iter().any(|c| c.name == "peak"));
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
     }
 
     #[test]
