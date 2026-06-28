@@ -15,6 +15,7 @@ use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
 
 use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
+use crate::suggest::suffix;
 use crate::table::{
     Cardinality, Column, Completeness, Content, Lineage, Qualifiers, SplitId, TableType, Totality,
 };
@@ -72,7 +73,10 @@ pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeE
     match &expr.kind {
         ExprKind::Name(name) => match sources.get(name) {
             Some(pipe) => Ok(pipe.clone()),
-            None => Err(error(format!("unknown source `{name}`"), expr.span)),
+            None => {
+                let hint = suffix(name, sources.bound.keys().cloned().collect::<Vec<_>>());
+                Err(error(format!("unknown source `{name}`{hint}"), expr.span))
+            }
         },
         ExprKind::Tuple(items) if items.len() == 2 => {
             let a =
@@ -115,7 +119,27 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
         "pivot" => op_pivot(input, &args, head.span),
         "assume" => op_assume(input, &args, head.span),
         "completeness_check" => op_completeness_check(input, &args, head.span),
-        _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
+        other => {
+            const OPS: [&str; 12] = [
+                "extend_key",
+                "shrink_key",
+                "map",
+                "group_map",
+                "split",
+                "bind",
+                "left_join",
+                "inner_join",
+                "unpivot",
+                "pivot",
+                "assume",
+                "completeness_check",
+            ];
+            let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
+            Err(error(
+                format!("unsupported operation `{other}`{hint}"),
+                head.span,
+            ))
+        }
     }
 }
 
@@ -1270,6 +1294,20 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> nope").expect_err("unknown op");
         assert!(errs[0].message.contains("unsupported operation `nope`"));
+    }
+
+    #[test]
+    fn unknown_source_suggests_a_close_name() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readngs").expect_err("typo");
+        assert!(errs[0].message.contains("did you mean `readings`?"));
+    }
+
+    #[test]
+    fn unknown_operation_suggests_a_close_name() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> shrink_ky machine").expect_err("typo");
+        assert!(errs[0].message.contains("did you mean `shrink_key`?"));
     }
 
     #[test]
