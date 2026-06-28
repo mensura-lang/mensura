@@ -565,6 +565,15 @@ A site that *demands* disjointness (notably `fit`/`evaluate`, deferred with the
 learning operations, section 13) consumes the fact: it type-checks only when the
 two tables are structurally disjoint, asserted, or assumed.
 
+**M1 scope.**  The implemented checker (`mensura check`) tracks disjointness
+*only* through this tag hierarchy, with `assume` as the escape hatch.  The
+symbolic key-predicate region of `08-lineage.md` (and any decision procedure
+over it, such as the linear-arithmetic fragment) is **deferred to M6**, where
+`fit`/`evaluate` become the first operations to consume disjointness; until
+then nothing consumes it, so the predicate fragment buys nothing.  In M1
+`assume` is therefore exercised only for the Tier B completeness obligation
+(`assume { complete }`, ADR 0017).
+
 ## 10.  Consolidated effect matrix
 
 One row per primitive (pres. = preserved).  "card" gives the cardinality bound
