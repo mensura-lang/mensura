@@ -104,6 +104,7 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
     };
     match op.as_str() {
         "extend_key" => op_extend_key(input, &args, head.span),
+        "shrink_key" => op_shrink_key(input, &args, head.span),
         "map" => op_map(input, &args, head.span),
         "group_map" => op_group_map(input, &args, head.span),
         "split" => op_split(input, &args, head.span),
@@ -726,6 +727,60 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     let column = table.content.columns.remove(pos);
     table.content.index.push(column);
     Ok(())
+}
+
+/// `shrink_key cols` (section 6.3, Tier B, ADR 0017): drop index components into
+/// the non-index part. Content: the named key columns become ordinary columns.
+/// Cardinality: rises to `bag` (rows that differed only in the dropped key now
+/// share a key). Completeness: **demanded** over the retained key (discharged by
+/// an upstream `completeness_check`/`assume`); the result is complete over the
+/// new key. Lineage: **dropped** (`project_not_preservesDisjoint`).
+fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    if args.is_empty() {
+        return Err(error("`shrink_key` needs at least one column", span));
+    }
+    if table.qualifiers.completeness != Completeness::Complete {
+        return Err(error(
+            "`shrink_key` needs completeness over the retained key; establish it \
+             with `completeness_check { ... }` or `assume { complete }` first",
+            span,
+        ));
+    }
+    let mut errs = Vec::new();
+    let mut to_drop: Vec<String> = Vec::new();
+    for arg in args {
+        let ExprKind::Name(col) = &arg.kind else {
+            errs.push(te("`shrink_key` expects column names", arg.span));
+            continue;
+        };
+        if !table.content.index.iter().any(|c| &c.name == col) {
+            errs.push(te(format!("not an index column `{col}`"), arg.span));
+            continue;
+        }
+        to_drop.push(col.clone());
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    if to_drop.len() == table.content.index.len() {
+        return Err(error(
+            "`shrink_key` must leave at least one index column",
+            span,
+        ));
+    }
+    // Move each dropped key column into the non-index part.
+    let (dropped, kept): (Vec<Column>, Vec<Column>) = table
+        .content
+        .index
+        .drain(..)
+        .partition(|c| to_drop.contains(&c.name));
+    table.content.index = kept;
+    table.content.columns.extend(dropped);
+    table.qualifiers.cardinality = Cardinality::Bag;
+    table.qualifiers.lineage = Lineage::dropped();
+    // Completeness stays Complete (now over the coarser retained key).
+    Ok(PipeTy::Table(table))
 }
 
 /// `unpivot name value (cols...)` (section 6.6, Tier A, ADR 0016): fold the
@@ -1490,6 +1545,51 @@ mod tests {
         // `tag` is a plain string column, not a finite-enumerable enum.
         let errs = pipe_ty(&s, "obs |> pivot tag reading").expect_err("not enumerable");
         assert!(errs[0].message.contains("enum"));
+    }
+
+    #[test]
+    fn shrink_key_demotes_after_establishing_completeness() {
+        let s = sample_sources();
+        // Promote `machine` into the key, establish completeness, then shrink it
+        // back out: result is a bag, complete, with lineage dropped.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> assume { complete } \
+                 |> shrink_key machine",
+            )
+            .expect("ok"),
+        );
+        assert!(!t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.columns.iter().any(|c| c.name == "machine"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
+    }
+
+    #[test]
+    fn shrink_key_demands_completeness() {
+        let s = sample_sources();
+        // No establish step: a bare store is incomplete, so shrink_key is rejected.
+        let errs = pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine")
+            .expect_err("incomplete");
+        assert!(errs[0].message.contains("complete"));
+    }
+
+    #[test]
+    fn shrink_key_cannot_empty_the_index() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> assume { complete } |> shrink_key ts")
+            .expect_err("empty index");
+        assert!(errs[0].message.contains("at least one index"));
+    }
+
+    #[test]
+    fn shrink_key_unknown_column_errors() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> assume { complete } |> shrink_key bogus")
+            .expect_err("unknown");
+        assert!(errs[0].message.contains("not an index column `bogus`"));
     }
 
     #[test]
