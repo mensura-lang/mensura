@@ -87,8 +87,9 @@ pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeE
         }
         ExprKind::Binary(BinOp::Pipe, lhs, rhs) => {
             let input = type_pipeline(sources, lhs)?;
-            apply_op(sources, input, rhs)
+            apply_application(sources, rhs, Some(input))
         }
+        ExprKind::App(..) => apply_application(sources, expr, None),
         _ => Err(error("not a pipeline expression", expr.span)),
     }
 }
@@ -100,25 +101,58 @@ fn expect_table(pipe: PipeTy, span: Span) -> Result<TableType, Vec<TypeError>> {
     }
 }
 
-/// Apply a pipeline operation (the right side of a `|>`) to its input table.
-fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, Vec<TypeError>> {
-    let (head, args) = flatten_app(op_expr);
+/// Apply a pipeline operation to its input, whether the input arrived from the
+/// left of a `|>` (`piped` is `Some`) or as the operation's trailing argument in
+/// a bare application `op args data` (`piped` is `None`).  Both spellings
+/// converge here, so a stage is checked identically either way (ADR 0018,
+/// `docs/toolkit/01-application-checking.md`).
+fn apply_application(
+    sources: &Sources,
+    op_expr: &Expr,
+    piped: Option<PipeTy>,
+) -> Result<PipeTy, Vec<TypeError>> {
+    let (head, mut args) = flatten_app(op_expr);
     let ExprKind::Name(op) = &head.kind else {
         return Err(error("expected a pipeline operation", op_expr.span));
     };
-    match op.as_str() {
-        "extend_key" => op_extend_key(input, &args, head.span),
-        "shrink_key" => op_shrink_key(input, &args, head.span),
-        "map" => op_map(input, &args, head.span),
-        "group_map" => op_group_map(input, &args, head.span),
-        "split" => op_split(input, &args, head.span),
-        "bind" => op_bind(input, &args, head.span),
-        "left_join" => op_join(sources, input, &args, head.span, JoinKind::Left),
-        "inner_join" => op_join(sources, input, &args, head.span, JoinKind::Inner),
-        "unpivot" => op_unpivot(input, &args, head.span),
-        "pivot" => op_pivot(input, &args, head.span),
-        "assume" => op_assume(input, &args, head.span),
-        "completeness_check" => op_completeness_check(input, &args, head.span),
+    let input = match piped {
+        Some(input) => input,
+        None => {
+            // Bare application: the piped input is the trailing argument.
+            // Peeling it is sound only for a saturated stage; an unsaturated
+            // form is partial application (ADR 0018, open question 2), not yet
+            // supported.
+            let Some(last) = args.pop() else {
+                return Err(error("a pipeline operation needs an input", head.span));
+            };
+            type_pipeline(sources, last)?
+        }
+    };
+    dispatch_op(sources, op, &args, input, head.span)
+}
+
+/// Dispatch a resolved pipeline operation to its handler.  Shared by the pipe
+/// and bare-application forms via [`apply_application`].
+fn dispatch_op(
+    sources: &Sources,
+    op: &str,
+    args: &[&Expr],
+    input: PipeTy,
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
+    match op {
+        "extend_key" => op_extend_key(input, args, span),
+        "shrink_key" => op_shrink_key(input, args, span),
+        "map" => op_map(input, args, span),
+        "group_map" => op_group_map(input, args, span),
+        "split" => op_split(input, args, span),
+        "bind" => op_bind(input, args, span),
+        "left_join" => op_join(sources, input, args, span, JoinKind::Left),
+        "inner_join" => op_join(sources, input, args, span, JoinKind::Inner),
+        "unpivot" => op_unpivot(input, args, span),
+        "pivot" => op_pivot(input, args, span),
+        "assume" => op_assume(input, args, span),
+        "completeness_check" => op_completeness_check(input, args, span),
         other => {
             const OPS: [&str; 12] = [
                 "extend_key",
@@ -137,7 +171,7 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
             let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
             Err(error(
                 format!("unsupported operation `{other}`{hint}"),
-                head.span,
+                span,
             ))
         }
     }
@@ -1963,6 +1997,17 @@ mod tests {
     }
 
     #[test]
+    fn view_body_accepts_bare_application() {
+        // The exact path the `bare_application` corpus case takes (resolve ->
+        // type_view -> type_pipeline): a view body written `op args data`, equal
+        // to its `data |> op args` pipe mirror (ADR 0018).
+        let s = sample_sources();
+        let bare = view_body("view v { extend_key machine readings }");
+        let piped = view_body("view v { readings |> extend_key machine }");
+        assert_eq!(type_view(&s, &bare), type_view(&s, &piped));
+    }
+
+    #[test]
     fn view_body_threads_let_bindings() {
         let s = sample_sources();
         let body = view_body(
@@ -1986,5 +2031,79 @@ mod tests {
         let body = view_body("view bad { assert true; readings }");
         let errs = type_view(&s, &body).expect_err("assert");
         assert!(errs[0].message.contains("assert"));
+    }
+
+    // ADR 0018: `data |> op args` and `op args data` are one application, checked
+    // identically. The result type carries no source spans, so the two spellings
+    // produce an equal `PipeTy` (`docs/toolkit/01-application-checking.md`).
+
+    #[test]
+    fn application_equals_pipe_for_extend_key() {
+        let s = sample_sources();
+        assert_eq!(
+            pipe_ty(&s, "extend_key machine readings"),
+            pipe_ty(&s, "readings |> extend_key machine"),
+        );
+    }
+
+    #[test]
+    fn application_equals_pipe_for_map() {
+        let s = sample_sources();
+        // The lambda is parenthesized in the bare form so the trailing `readings`
+        // is the operation's input, not part of the lambda body.
+        assert_eq!(
+            pipe_ty(&s, "map (|k, r| r) readings"),
+            pipe_ty(&s, "readings |> map |k, r| r"),
+        );
+    }
+
+    #[test]
+    fn application_equals_pipe_for_join() {
+        let s = sample_sources();
+        assert_eq!(
+            pipe_ty(&s, "left_join machines (|_, l| l.machine) readings"),
+            pipe_ty(&s, "readings |> left_join machines (|_, l| l.machine)"),
+        );
+    }
+
+    #[test]
+    fn application_equals_pipe_for_bind() {
+        let s = sample_sources();
+        // The pair is the input in both spellings (a tuple is one argument).
+        assert_eq!(
+            pipe_ty(&s, "bind (readings, readings)"),
+            pipe_ty(&s, "(readings, readings) |> bind"),
+        );
+    }
+
+    #[test]
+    fn application_and_pipe_share_the_unknown_op_diagnostic() {
+        let s = sample_sources();
+        let bare = pipe_ty(&s, "nope readings").expect_err("unknown op");
+        let piped = pipe_ty(&s, "readings |> nope").expect_err("unknown op");
+        // The span differs (the op sits at a different offset in each spelling),
+        // but the resolution and message are identical.
+        assert_eq!(bare[0].message, piped[0].message);
+        assert!(bare[0].message.contains("unsupported operation `nope`"));
+    }
+
+    #[test]
+    fn application_and_pipe_share_the_arity_diagnostic() {
+        let s = sample_sources();
+        let bare = pipe_ty(&s, "map readings").expect_err("missing lambda");
+        let piped = pipe_ty(&s, "readings |> map").expect_err("missing lambda");
+        assert_eq!(bare[0].message, piped[0].message);
+        assert!(bare[0].message.contains("lambda"));
+    }
+
+    #[test]
+    fn bare_partial_application_is_not_supported() {
+        let s = sample_sources();
+        // There is no partial application (ADR 0018 open question 2): the trailing
+        // argument is always the input, so `extend_key machine` reads `machine` as
+        // the input table (an unknown source) rather than a partially applied
+        // stage. It is rejected, not invented.
+        let errs = pipe_ty(&s, "extend_key machine").expect_err("no input");
+        assert!(errs[0].message.contains("unknown source `machine`"));
     }
 }

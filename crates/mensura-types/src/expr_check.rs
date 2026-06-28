@@ -5,8 +5,11 @@
 //! Mirrors `resolve`'s contract: it collects all diagnostics rather than failing
 //! on the first. Operators are gated by the scalar domain's properties
 //! (equatable / orderable / numeric); typing is strict, with no `int`/`real`
-//! coercion. The `|>` pipe, general application, lambdas, record/tuple literals,
-//! and `is known` narrowing are deferred to later rounds.
+//! coercion. The `|>` pipe routes to the same application path as juxtaposition
+//! (ADR 0018, `docs/toolkit/01-application-checking.md`), but only over the
+//! built-in operations (`to_real`, the aggregates): general application
+//! (user-defined functions, partial application) is deferred, as are lambdas,
+//! record/tuple literals, and `is known` narrowing.
 
 use std::collections::BTreeMap;
 
@@ -236,9 +239,9 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Bool(_) => Ok(Ty::Bool),
         ExprKind::Name(name) => type_name(ctx, name, expr.span),
         ExprKind::Member(base, field) => type_member(ctx, base, field),
-        ExprKind::Binary(op, lhs, rhs) => type_binary(ctx, *op, lhs, rhs, expr.span),
+        ExprKind::Binary(op, lhs, rhs) => type_binary(ctx, *op, lhs, rhs),
         ExprKind::Unary(op, operand) => type_unary(ctx, *op, operand),
-        ExprKind::App(func, arg) => type_app(ctx, func, arg, expr.span),
+        ExprKind::App(..) => apply_value(ctx, expr, None),
         ExprKind::Presence(base, _) => type_presence(ctx, base, expr.span),
         ExprKind::If { cond, then, els } => type_if(ctx, cond, then, els, expr.span),
         _ => Err(vec![TypeError::new(
@@ -271,18 +274,54 @@ fn type_member(ctx: &Context, base: &Expr, field: &Ident) -> Result<Ty, Vec<Type
     }
 }
 
-/// Application. The forms typed are the `to_real` conversion and an aggregate
-/// applied to a bag (section 5.4, ADR 0014); any other application is deferred.
-fn type_app(ctx: &Context, func: &Expr, arg: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
-    let ExprKind::Name(name) = &func.kind else {
-        return Err(vec![TypeError::new("unsupported in this increment", span)]);
+/// Decompose a curried application `f a b` into the head `f` and the argument
+/// list `[a, b]`. A non-application returns `(expr, [])`. (Local to the value
+/// layer; the pipe layer has its own copy, since the two type domains stay
+/// decoupled, `docs/toolkit/01-application-checking.md`.)
+fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut cur = expr;
+    while let ExprKind::App(func, arg) = &cur.kind {
+        args.push(arg.as_ref());
+        cur = func;
+    }
+    args.reverse();
+    (cur, args)
+}
+
+/// Apply a value operation, whether the argument arrived from the left of a
+/// `|>` (`piped` is `Some`) or as a trailing argument in a bare application
+/// `op arg` (`piped` is `None`). Both spellings converge here, so `x |> op` and
+/// `op x` are checked identically (ADR 0018,
+/// `docs/toolkit/01-application-checking.md`). The applicable operations are the
+/// `to_real` conversion and the aggregates (section 5.4, ADR 0014), all 1-ary;
+/// general application (user-defined functions, partial application) is deferred.
+fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty, Vec<TypeError>> {
+    let (head, mut args) = flatten_app(op_expr);
+    if let Some(input) = piped {
+        args.push(input);
+    }
+    let ExprKind::Name(name) = &head.kind else {
+        return Err(vec![TypeError::new(
+            "unsupported in this increment",
+            head.span,
+        )]);
+    };
+    let [arg] = args[..] else {
+        return Err(vec![TypeError::new(
+            "unsupported in this increment",
+            head.span,
+        )]);
     };
     if name == "to_real" {
         return type_to_real(ctx, arg);
     }
     match ctx.aggregate(name) {
         Some(agg) => type_aggregate(ctx, agg, name, arg),
-        None => Err(vec![TypeError::new("unsupported in this increment", span)]),
+        None => Err(vec![TypeError::new(
+            "unsupported in this increment",
+            head.span,
+        )]),
     }
 }
 
@@ -359,13 +398,7 @@ fn type_aggregate(ctx: &Context, agg: Agg, name: &str, arg: &Expr) -> Result<Ty,
     }
 }
 
-fn type_binary(
-    ctx: &Context,
-    op: BinOp,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<Ty, Vec<TypeError>> {
+fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Pow => {
             let domain = matching_operands(
@@ -411,7 +444,7 @@ fn type_binary(
             }
         }
         BinOp::In => type_membership(ctx, lhs, rhs),
-        BinOp::Pipe => Err(vec![TypeError::new("unsupported in this increment", span)]),
+        BinOp::Pipe => apply_value(ctx, rhs, Some(lhs)),
     }
 }
 
@@ -999,5 +1032,37 @@ mod tests {
         assert_eq!(ty_of(&ctx, "r.temperature is known"), Ok(Ty::Bool));
         let errs = ty_of(&ctx, "r.bogus + r.note").expect_err("two errors");
         assert_eq!(errs.len(), 2);
+    }
+
+    // ADR 0018: in the value layer too, `x |> op` and `op x` are one application,
+    // checked identically over the built-in operations
+    // (`docs/toolkit/01-application-checking.md`).
+
+    #[test]
+    fn application_equals_pipe_for_aggregate() {
+        let ctx = group_ctx();
+        assert_eq!(
+            ty_of(&ctx, "sum g.temperature"),
+            ty_of(&ctx, "g.temperature |> sum"),
+        );
+    }
+
+    #[test]
+    fn application_equals_pipe_for_to_real() {
+        let ctx = row_ctx();
+        assert_eq!(
+            ty_of(&ctx, "to_real r.size"),
+            ty_of(&ctx, "r.size |> to_real")
+        );
+    }
+
+    #[test]
+    fn pipe_to_a_non_builtin_is_rejected() {
+        // The value layer does not (yet) admit general application; piping into a
+        // non-builtin is an error, mirroring the bare form (ADR 0018 open
+        // question 2).
+        let ctx = group_ctx();
+        assert!(ty_of(&ctx, "g.temperature |> bogus").is_err());
+        assert!(ty_of(&ctx, "bogus g.temperature").is_err());
     }
 }

@@ -1,0 +1,16 @@
+// Accepted: a view written in bare application form `op args data`, the
+// juxtaposition mirror of `data |> op args`.  The checker routes both spellings
+// through one application path (ADR 0018,
+// docs/toolkit/01-application-checking.md).
+unit Reading {
+  ts: number
+}
+
+store readings {
+  unit { Reading }
+  var { label: string }
+}
+
+view promoted {
+  extend_key label readings
+}
