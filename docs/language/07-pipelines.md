@@ -220,7 +220,11 @@ type-checks only when the cell it spreads is known to hold at most one value.
 
 Two operations are Tier B: **`shrink_key`** and the **index form of `pivot`**.
 Each is sound only over a complete partition, so each *consumes* a completeness
-fact about its input.  Completeness is established in one of three ways:
+fact about its input.  The M1 surface for establishing and consuming the fact
+is ratified in `docs/decisions/0017-completeness-establish-consume.md`: M1
+ships the `completeness_check` and `assume { complete }` stages (with
+key-context asserts), and defers `collect`-by-mechanism completeness and the
+`@complete_over` annotation.  Completeness is established in one of three ways:
 
 - **`completeness_check { assert ... }`**, a pipe stage that *establishes* the
   fact locally.  It is an ordinary stage (`completeness_check` applied to a
