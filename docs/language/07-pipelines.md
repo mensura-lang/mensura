@@ -59,7 +59,10 @@ Three forms thread operations together, all from the expression sublanguage:
 - **`|>`**, the pipe: `data |> op` applies `op` to `data`.  An op is an
   ordinary curried function, so a partially applied stage such as
   `left_join machines (|r| r.machine)` is the `Table -> Table` value the pipe
-  feeds.
+  feeds.  The pipe is reversed application, `x |> g` means `g x`, so a stage
+  may always be written either way; the equivalence and its two-class
+  consequence are spelled out in `06-expressions.md` and recorded in
+  `docs/decisions/0018-application-piping-equivalence.md`.
 - **`let`**, to name an intermediate table and reuse it (forking a pipeline is
   binding a table once and using it twice).
 - **tuples**, to bring several tables together for a merge:
