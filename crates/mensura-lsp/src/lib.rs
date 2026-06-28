@@ -31,7 +31,7 @@ use lsp_types::{
     request::{Request as _, SemanticTokensFullRequest},
 };
 
-use crate::analysis::{analyze, token_legend};
+use crate::analysis::{analyze, token_legend, token_modifier_legend};
 use crate::line_index::PositionEncoding;
 
 type LspResult = Result<(), Box<dyn Error + Sync + Send>>;
@@ -88,7 +88,7 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
             SemanticTokensOptions {
                 legend: SemanticTokensLegend {
                     token_types: token_legend(),
-                    token_modifiers: vec![],
+                    token_modifiers: token_modifier_legend(),
                 },
                 full: Some(SemanticTokensFullOptions::Bool(true)),
                 range: Some(false),

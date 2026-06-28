@@ -27,9 +27,17 @@ pub struct ParseError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
     pub program: Program,
-    /// Spans of the contextual keywords (`unit`, `store`, `shape`, `const`,
-    /// `var`, `domain`, `enum`), in source order.
+    /// Spans of the contextual keywords, in source order: the declaration
+    /// headers (`unit`, `store`, `shape`, `const`, `var`, `domain`, `enum`,
+    /// `view`), the conditional (`if`, `then`, `else`), the predicate operators
+    /// (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement
+    /// keywords (`let`, `assert`).
     pub keyword_spans: Vec<Span>,
+    /// Spans of pipeline operation heads: the leftmost identifier of each `|>`
+    /// right-hand side, in source order.  Recognized by position, so any
+    /// identifier in operation position is recorded (a mistyped operation is
+    /// still colored; `resolve` reports the unknown-operation error).
+    pub op_spans: Vec<Span>,
 }
 
 /// Parse a token slice (lexer output, ending in [`TokenKind::Eof`]) into a
@@ -45,11 +53,13 @@ pub fn parse_with_meta(tokens: &[Token]) -> Result<Parsed, ParseError> {
         tokens,
         pos: 0,
         keyword_spans: Vec::new(),
+        op_spans: Vec::new(),
     };
     let program = parser.parse_program()?;
     Ok(Parsed {
         program,
         keyword_spans: parser.keyword_spans,
+        op_spans: parser.op_spans,
     })
 }
 
@@ -64,6 +74,7 @@ pub fn parse_expr(tokens: &[Token]) -> Result<Expr, ParseError> {
         tokens,
         pos: 0,
         keyword_spans: Vec::new(),
+        op_spans: Vec::new(),
     };
     let expr = parser.parse_expr_inner()?;
     if !parser.at_eof() {
@@ -87,6 +98,7 @@ struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     keyword_spans: Vec<Span>,
+    op_spans: Vec<Span>,
 }
 
 impl<'a> Parser<'a> {
@@ -530,16 +542,31 @@ impl<'a> Parser<'a> {
         while self.check(&TokenKind::PipeArrow) {
             self.pos += 1;
             let rhs = self.parse_or()?;
+            self.record_pipe_op(&rhs);
             lhs = self.binary(BinOp::Pipe, lhs, rhs);
         }
         Ok(lhs)
+    }
+
+    /// Record the operation head of a `|>` right-hand side.  The side is a
+    /// curried application; its leftmost atom is the operation.  When that atom
+    /// is a name (it always is for a real operation), its span is recorded for
+    /// highlighting.
+    fn record_pipe_op(&mut self, rhs: &Expr) {
+        let mut head = rhs;
+        while let ExprKind::App(callee, _) = &head.kind {
+            head = callee;
+        }
+        if matches!(head.kind, ExprKind::Name(_)) {
+            self.op_spans.push(head.span);
+        }
     }
 
     /// `or_expr = and_expr { "or" and_expr }`.
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_and()?;
         while self.at_keyword("or") {
-            self.pos += 1;
+            self.bump_keyword();
             let rhs = self.parse_and()?;
             lhs = self.binary(BinOp::Or, lhs, rhs);
         }
@@ -550,7 +577,7 @@ impl<'a> Parser<'a> {
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.parse_not()?;
         while self.at_keyword("and") {
-            self.pos += 1;
+            self.bump_keyword();
             let rhs = self.parse_not()?;
             lhs = self.binary(BinOp::And, lhs, rhs);
         }
@@ -561,7 +588,7 @@ impl<'a> Parser<'a> {
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
         if self.at_keyword("not") {
             let start = self.cur_span().start;
-            self.pos += 1;
+            self.bump_keyword();
             let inner = self.parse_not()?;
             let span = Span::new(start, inner.span.end);
             Ok(Expr {
@@ -578,12 +605,12 @@ impl<'a> Parser<'a> {
     fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
         let lhs = self.parse_add()?;
         if self.at_keyword("is") {
-            self.pos += 1;
+            self.bump_keyword();
             let pres = if self.at_keyword("known") {
-                self.pos += 1;
+                self.bump_keyword();
                 Presence::Known
             } else if self.at_keyword("missing") {
-                self.pos += 1;
+                self.bump_keyword();
                 Presence::Missing
             } else {
                 return Err(self.error("expected `known` or `missing` after `is`"));
@@ -940,7 +967,7 @@ impl<'a> Parser<'a> {
     /// only here, in statement position.
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.at_keyword("let") {
-            self.pos += 1;
+            self.bump_keyword();
             let name = self.expect_ident("a name after `let`")?;
             let ty = if self.eat(&TokenKind::Colon) {
                 Some(self.parse_type()?)
@@ -951,7 +978,7 @@ impl<'a> Parser<'a> {
             let value = self.parse_expr_inner()?;
             Ok(Stmt::Let { name, ty, value })
         } else if self.at_keyword("assert") {
-            self.pos += 1;
+            self.bump_keyword();
             let e = self.parse_expr_inner()?;
             Ok(Stmt::Assert(e))
         } else {
@@ -1412,6 +1439,36 @@ mod tests {
                 "enum", "shape", "const", "unit", "store", "unit", "const", "var"
             ]
         );
+    }
+
+    #[test]
+    fn keyword_spans_cover_predicate_and_statement_keywords() {
+        // The expression operators (`or`, `and`, `not`, `is`, `known`,
+        // `missing`) and the statement keywords (`let`, `assert`) are recorded
+        // like the declaration keywords, so a highlighter colors them.
+        let src = "view v { let t = a and b or not c; assert t is known; assert c is missing }";
+        let tokens = tokenize(src).expect("should lex");
+        let parsed = parse_with_meta(&tokens).expect("should parse");
+        let words: Vec<&str> = parsed.keyword_spans.iter().map(|s| s.slice(src)).collect();
+        for kw in [
+            "let", "and", "or", "not", "assert", "is", "known", "missing",
+        ] {
+            assert!(
+                words.contains(&kw),
+                "missing keyword span for `{kw}`: {words:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn op_spans_capture_pipeline_operation_heads() {
+        // Each `|>` right-hand side is a curried application; its leftmost
+        // identifier is the operation, recorded for highlighting.
+        let src = "view v { readings |> extend_key machine |> group_map |k, g| (.m = count g.x) }";
+        let tokens = tokenize(src).expect("should lex");
+        let parsed = parse_with_meta(&tokens).expect("should parse");
+        let ops: Vec<&str> = parsed.op_spans.iter().map(|s| s.slice(src)).collect();
+        assert_eq!(ops, ["extend_key", "group_map"]);
     }
 
     // --- expression sublanguage ---------------------------------------------

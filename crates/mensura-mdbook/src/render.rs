@@ -115,6 +115,7 @@ fn render_block(code: &str, modifiers: &Modifiers) -> Result<String, String> {
 fn css_class(kind: HighlightKind) -> &'static str {
     match kind {
         HighlightKind::Keyword => "mn-keyword",
+        HighlightKind::Function => "mn-function",
         HighlightKind::Type => "mn-type",
         HighlightKind::Property => "mn-property",
         HighlightKind::Parameter => "mn-parameter",
@@ -163,6 +164,14 @@ mod tests {
         assert!(out.contains("nohighlight"));
         // No fences survive.
         assert!(!out.contains("```"));
+    }
+
+    #[test]
+    fn pipeline_operations_render_as_functions() {
+        // `ignore` skips the resolve gate; we only check the op classification.
+        let md = "```mensura,ignore\nview v { readings |> extend_key machine }\n```";
+        let out = rewrite_markdown(md).unwrap();
+        assert!(out.contains("<span class=\"mn-function\">extend_key</span>"));
     }
 
     #[test]
