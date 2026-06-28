@@ -782,11 +782,19 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
             errs.push(te(format!("not an index column `{col}`"), arg.span));
             continue;
         }
+        if to_drop.contains(col) {
+            errs.push(te(
+                format!("`shrink_key` names `{col}` more than once"),
+                arg.span,
+            ));
+            continue;
+        }
         to_drop.push(col.clone());
     }
     if !errs.is_empty() {
         return Err(errs);
     }
+    // `to_drop` is now distinct, so this counts distinct dropped index columns.
     if to_drop.len() == table.content.index.len() {
         return Err(error(
             "`shrink_key` must leave at least one index column",
@@ -875,6 +883,13 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
                 item.span,
             )),
         }
+        if folded.contains(col) {
+            errs.push(te(
+                format!("`unpivot` folds `{col}` more than once"),
+                item.span,
+            ));
+            continue;
+        }
         if table.qualifiers.totality.is_optional(col) {
             value_optional = true;
         }
@@ -884,6 +899,35 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
         return Err(errs);
     }
     let domain = domain.expect("at least one column checked");
+
+    // The new name and value columns must differ and must not collide with a
+    // column that survives the fold or an existing index column (the
+    // no-duplicate-columns invariant every operation upholds, cf. `op_join`).
+    if name_col == value_col {
+        return Err(error(
+            "`unpivot`'s name and value columns must differ",
+            name_arg.span,
+        ));
+    }
+    let survives = |n: &str| {
+        table.content.index.iter().any(|c| c.name == n)
+            || (table.content.columns.iter().any(|c| c.name == n) && !folded.iter().any(|f| f == n))
+    };
+    if survives(value_col) {
+        errs.push(te(
+            format!("`unpivot` would duplicate column `{value_col}`"),
+            value_arg.span,
+        ));
+    }
+    if survives(name_col) {
+        errs.push(te(
+            format!("`unpivot` would duplicate column `{name_col}`"),
+            name_arg.span,
+        ));
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
 
     // Remove the folded columns, add the `value` column and the `name` enum key.
     table.content.columns.retain(|c| !folded.contains(&c.name));
@@ -934,6 +978,12 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             value_arg.span,
         ));
     };
+    if name_col == value_col {
+        return Err(error(
+            "`pivot`'s name and value columns must differ",
+            value_arg.span,
+        ));
+    }
 
     // Index form (Tier B, ADR 0017): `name` is a key column. Demands
     // completeness over the key it leaves behind, drops lineage
@@ -970,6 +1020,30 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             ));
         };
         let value_domain = table.content.columns[value_pos].domain.clone();
+        // A spread variant must not collide with a surviving column (the name
+        // key and value column are about to be removed, so they do not count).
+        let mut errs = Vec::new();
+        for variant in &variants {
+            let dup = table
+                .content
+                .index
+                .iter()
+                .any(|c| &c.name == variant && &c.name != name_col)
+                || table
+                    .content
+                    .columns
+                    .iter()
+                    .any(|c| &c.name == variant && &c.name != value_col);
+            if dup {
+                errs.push(te(
+                    format!("`pivot` would duplicate column `{variant}`"),
+                    name_arg.span,
+                ));
+            }
+        }
+        if !errs.is_empty() {
+            return Err(errs);
+        }
         table.content.index.remove(idx_pos);
         table.content.columns.retain(|c| &c.name != value_col);
         table.qualifiers.totality.narrow(value_col);
@@ -1017,6 +1091,26 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         ));
     };
     let value_domain = table.content.columns[value_pos].domain.clone();
+    // A spread variant must not collide with a surviving column (the name and
+    // value columns are about to be removed, so they do not count).
+    let mut errs = Vec::new();
+    for variant in &variants {
+        let dup = table.content.index.iter().any(|c| &c.name == variant)
+            || table
+                .content
+                .columns
+                .iter()
+                .any(|c| &c.name == variant && &c.name != name_col && &c.name != value_col);
+        if dup {
+            errs.push(te(
+                format!("`pivot` would duplicate column `{variant}`"),
+                name_arg.span,
+            ));
+        }
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
 
     // Drop the name and value columns, add one column per enum variant.
     table
@@ -1740,6 +1834,79 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> completeness_check { }").expect_err("empty");
         assert!(errs[0].message.contains("at least one"));
+    }
+
+    #[test]
+    fn unpivot_rejects_duplicate_output_column() {
+        let s = sample_sources();
+        // `flag` survives the fold, so naming the value column `flag` collides.
+        let errs = pipe_ty(&s, "readings |> unpivot metric flag (temperature, peak)")
+            .expect_err("duplicate");
+        assert!(errs[0].message.contains("would duplicate column `flag`"));
+    }
+
+    #[test]
+    fn unpivot_rejects_repeated_fold() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> unpivot metric reading (temperature, temperature)",
+        )
+        .expect_err("repeated");
+        assert!(errs[0].message.contains("more than once"));
+    }
+
+    #[test]
+    fn unpivot_rejects_name_equal_value() {
+        let s = sample_sources();
+        let errs =
+            pipe_ty(&s, "readings |> unpivot x x (temperature, peak)").expect_err("name == value");
+        assert!(errs[0].message.contains("must differ"));
+    }
+
+    #[test]
+    fn pivot_rejects_name_equal_value() {
+        let s = enum_source();
+        let errs = pipe_ty(&s, "obs |> pivot metric metric").expect_err("name == value");
+        assert!(errs[0].message.contains("must differ"));
+    }
+
+    #[test]
+    fn pivot_rejects_variant_colliding_with_a_column() {
+        // A source whose enum variant `lo` collides with an existing column.
+        let obs = from_cols(
+            "obs",
+            "Obs",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol(
+                    "metric",
+                    ColumnType::Enum {
+                        name: "Metric".to_string(),
+                        variants: vec!["lo".to_string(), "hi".to_string()],
+                    },
+                    ColumnRole::Var,
+                    false,
+                ),
+                scol("reading", ColumnType::Real, ColumnRole::Var, false),
+                scol("lo", ColumnType::Real, ColumnRole::Var, false),
+            ],
+        );
+        let s = Sources::new().with("obs", obs);
+        let errs = pipe_ty(&s, "obs |> pivot metric reading").expect_err("collision");
+        assert!(errs[0].message.contains("would duplicate column `lo`"));
+    }
+
+    #[test]
+    fn shrink_key_rejects_repeated_column() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> extend_key machine |> assume { complete } \
+             |> shrink_key machine machine",
+        )
+        .expect_err("repeated");
+        assert!(errs[0].message.contains("more than once"));
     }
 
     // The two worked examples from docs/language/10-views.md, end to end.
