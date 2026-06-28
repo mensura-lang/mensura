@@ -112,6 +112,8 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
         "inner_join" => op_join(sources, input, &args, head.span, JoinKind::Inner),
         "unpivot" => op_unpivot(input, &args, head.span),
         "pivot" => op_pivot(input, &args, head.span),
+        "assume" => op_assume(input, &args, head.span),
+        "completeness_check" => op_completeness_check(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
 }
@@ -911,6 +913,106 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
     Ok(PipeTy::Table(table))
 }
 
+/// `assume { complete }` (section 8, ADR 0017): admit a completeness obligation
+/// by fiat, locally and visibly. The block holds the single recognized claim
+/// `complete`. In M1 the only consumable obligation is completeness, so that is
+/// the only claim accepted.
+fn op_assume(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [block_arg] = args else {
+        return Err(error("`assume` takes a `{ ... }` block of claims", span));
+    };
+    let ExprKind::Block(block) = &block_arg.kind else {
+        return Err(error("`assume` expects a `{ ... }` block", block_arg.span));
+    };
+    let mut errs = Vec::new();
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Expr(e) => match &e.kind {
+                ExprKind::Name(claim) if claim == "complete" => {
+                    table.qualifiers.completeness = Completeness::Complete;
+                }
+                _ => errs.push(te("`assume` accepts only the claim `complete`", e.span)),
+            },
+            Stmt::Let { value, .. } => {
+                errs.push(te(
+                    "`assume` blocks hold claims, not `let` bindings",
+                    value.span,
+                ));
+            }
+            Stmt::Assert(e) => {
+                errs.push(te(
+                    "use `completeness_check` for `assert`, not `assume`",
+                    e.span,
+                ));
+            }
+        }
+    }
+    if errs.is_empty() {
+        Ok(PipeTy::Table(table))
+    } else {
+        Err(errs)
+    }
+}
+
+/// `completeness_check { assert <bool>; ... }` (section 8, ADR 0017): a pipe
+/// stage whose boolean asserts witness that the partition is complete over the
+/// current key. Each assert is a boolean over the key context (`k`). Establishes
+/// `Complete`; all other qualifiers preserved.
+fn op_completeness_check(
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [block_arg] = args else {
+        return Err(error(
+            "`completeness_check` takes a `{ assert ... }` block",
+            span,
+        ));
+    };
+    let ExprKind::Block(block) = &block_arg.kind else {
+        return Err(error(
+            "`completeness_check` expects a `{ ... }` block",
+            block_arg.span,
+        ));
+    };
+    let mut errs = Vec::new();
+    let mut assert_count = 0;
+    let ctx = Context::key("k", &table);
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Assert(e) => {
+                assert_count += 1;
+                errs.extend(require_known_bool(&ctx, e));
+            }
+            Stmt::Let { value, .. } => {
+                errs.push(te(
+                    "a `completeness_check` block holds only `assert`s",
+                    value.span,
+                ));
+            }
+            Stmt::Expr(e) => {
+                errs.push(te(
+                    "a `completeness_check` block holds only `assert`s",
+                    e.span,
+                ));
+            }
+        }
+    }
+    if assert_count == 0 {
+        errs.push(te(
+            "`completeness_check` needs at least one `assert` to witness completeness",
+            block.span,
+        ));
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    table.qualifiers.completeness = Completeness::Complete;
+    Ok(PipeTy::Table(table))
+}
+
 /// Decompose a curried application `f a b c` into the head `f` and the argument
 /// list `[a, b, c]`. A non-application returns `(expr, [])`.
 fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
@@ -1388,6 +1490,44 @@ mod tests {
         // `tag` is a plain string column, not a finite-enumerable enum.
         let errs = pipe_ty(&s, "obs |> pivot tag reading").expect_err("not enumerable");
         assert!(errs[0].message.contains("enum"));
+    }
+
+    #[test]
+    fn assume_establishes_completeness() {
+        let s = sample_sources();
+        let t = table_of(pipe_ty(&s, "readings |> assume { complete }").expect("ok"));
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn assume_rejects_unknown_claim() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> assume { whatever }").expect_err("unknown claim");
+        assert!(errs[0].message.contains("assume"));
+    }
+
+    #[test]
+    fn completeness_check_establishes_completeness() {
+        let s = sample_sources();
+        let t = table_of(
+            pipe_ty(&s, "readings |> completeness_check { assert k.ts > 0 }").expect("ok"),
+        );
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn completeness_check_needs_a_boolean_assert() {
+        let s = sample_sources();
+        let errs =
+            pipe_ty(&s, "readings |> completeness_check { assert k.ts }").expect_err("non-bool");
+        assert!(errs[0].message.contains("boolean"));
+    }
+
+    #[test]
+    fn completeness_check_needs_at_least_one_assert() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> completeness_check { }").expect_err("empty");
+        assert!(errs[0].message.contains("at least one"));
     }
 
     // The two worked examples from docs/language/10-views.md, end to end.
