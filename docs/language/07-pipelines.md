@@ -188,14 +188,19 @@ specified in `08-lineage.md`.
 ### `unpivot` / `pivot` - reshape long and wide
 
 ```
-wide |> unpivot reading_a reading_b      // long form, keyed by (..., name)
-long |> pivot name value                 // wide form
+wide |> unpivot metric reading (temperature, humidity)  // long, keyed by (..., metric)
+long |> pivot metric reading                            // wide form
 ```
 
-**`unpivot cols`** turns the named value columns into rows, spreading the column
-*name* into the key.  Content: the names move into the index, the values into a
-single column.  Cardinality: preserved.  Completeness: preserved.  Tier A
-(`unpivot_splitSafe`).
+The ratified surface is in `docs/decisions/0016-reshape-surface.md`:
+`unpivot name value (col, ...)` names the new key and value columns
+explicitly, and `pivot name value` selects the attribute or index form by
+where `name` sits.
+
+**`unpivot name value (cols)`** turns the named value columns into rows,
+spreading the column *name* into the key.  Content: the names move into a new
+`enum` index column, the values into a single column.  Cardinality: preserved.
+Completeness: preserved.  Tier A (`unpivot_splitSafe`).
 
 **`pivot name value`** is the inverse: it gathers, for each key, the values
 indexed by the `name` column into one wide row.  It has two forms with
@@ -215,7 +220,11 @@ type-checks only when the cell it spreads is known to hold at most one value.
 
 Two operations are Tier B: **`shrink_key`** and the **index form of `pivot`**.
 Each is sound only over a complete partition, so each *consumes* a completeness
-fact about its input.  Completeness is established in one of three ways:
+fact about its input.  The M1 surface for establishing and consuming the fact
+is ratified in `docs/decisions/0017-completeness-establish-consume.md`: M1
+ships the `completeness_check` and `assume { complete }` stages (with
+key-context asserts), and defers `collect`-by-mechanism completeness and the
+`@complete_over` annotation.  Completeness is established in one of three ways:
 
 - **`completeness_check { assert ... }`**, a pipe stage that *establishes* the
   fact locally.  It is an ordinary stage (`completeness_check` applied to a

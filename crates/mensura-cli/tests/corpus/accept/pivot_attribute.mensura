@@ -1,0 +1,8 @@
+// Accept: attribute-form pivot spreads a non-index enum column over a
+// singletons store (Tier A, ADR 0016).
+enum Metric { "lo", "hi" }
+unit Obs { ts: int }
+store obs { unit { Obs } var { metric: Metric } var { reading: real } }
+view wide {
+  obs |> pivot metric reading
+}

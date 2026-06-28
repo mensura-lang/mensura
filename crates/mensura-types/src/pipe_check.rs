@@ -15,6 +15,7 @@ use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
 
 use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
+use crate::suggest::suffix;
 use crate::table::{
     Cardinality, Column, Completeness, Content, Lineage, Qualifiers, SplitId, TableType, Totality,
 };
@@ -72,7 +73,10 @@ pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeE
     match &expr.kind {
         ExprKind::Name(name) => match sources.get(name) {
             Some(pipe) => Ok(pipe.clone()),
-            None => Err(error(format!("unknown source `{name}`"), expr.span)),
+            None => {
+                let hint = suffix(name, sources.bound.keys().cloned().collect::<Vec<_>>());
+                Err(error(format!("unknown source `{name}`{hint}"), expr.span))
+            }
         },
         ExprKind::Tuple(items) if items.len() == 2 => {
             let a =
@@ -104,13 +108,38 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
     };
     match op.as_str() {
         "extend_key" => op_extend_key(input, &args, head.span),
+        "shrink_key" => op_shrink_key(input, &args, head.span),
         "map" => op_map(input, &args, head.span),
         "group_map" => op_group_map(input, &args, head.span),
         "split" => op_split(input, &args, head.span),
         "bind" => op_bind(input, &args, head.span),
         "left_join" => op_join(sources, input, &args, head.span, JoinKind::Left),
         "inner_join" => op_join(sources, input, &args, head.span, JoinKind::Inner),
-        _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
+        "unpivot" => op_unpivot(input, &args, head.span),
+        "pivot" => op_pivot(input, &args, head.span),
+        "assume" => op_assume(input, &args, head.span),
+        "completeness_check" => op_completeness_check(input, &args, head.span),
+        other => {
+            const OPS: [&str; 12] = [
+                "extend_key",
+                "shrink_key",
+                "map",
+                "group_map",
+                "split",
+                "bind",
+                "left_join",
+                "inner_join",
+                "unpivot",
+                "pivot",
+                "assume",
+                "completeness_check",
+            ];
+            let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
+            Err(error(
+                format!("unsupported operation `{other}`{hint}"),
+                head.span,
+            ))
+        }
     }
 }
 
@@ -724,6 +753,481 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     Ok(())
 }
 
+/// `shrink_key cols` (section 6.3, Tier B, ADR 0017): drop index components into
+/// the non-index part. Content: the named key columns become ordinary columns.
+/// Cardinality: rises to `bag` (rows that differed only in the dropped key now
+/// share a key). Completeness: **demanded** over the retained key (discharged by
+/// an upstream `completeness_check`/`assume`); the result is complete over the
+/// new key. Lineage: **dropped** (`project_not_preservesDisjoint`).
+fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    if args.is_empty() {
+        return Err(error("`shrink_key` needs at least one column", span));
+    }
+    if table.qualifiers.completeness != Completeness::Complete {
+        return Err(error(
+            "`shrink_key` needs completeness over the retained key; establish it \
+             with `completeness_check { ... }` or `assume { complete }` first",
+            span,
+        ));
+    }
+    let mut errs = Vec::new();
+    let mut to_drop: Vec<String> = Vec::new();
+    for arg in args {
+        let ExprKind::Name(col) = &arg.kind else {
+            errs.push(te("`shrink_key` expects column names", arg.span));
+            continue;
+        };
+        if !table.content.index.iter().any(|c| &c.name == col) {
+            errs.push(te(format!("not an index column `{col}`"), arg.span));
+            continue;
+        }
+        if to_drop.contains(col) {
+            errs.push(te(
+                format!("`shrink_key` names `{col}` more than once"),
+                arg.span,
+            ));
+            continue;
+        }
+        to_drop.push(col.clone());
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    // `to_drop` is now distinct, so this counts distinct dropped index columns.
+    if to_drop.len() == table.content.index.len() {
+        return Err(error(
+            "`shrink_key` must leave at least one index column",
+            span,
+        ));
+    }
+    // Move each dropped key column into the non-index part.
+    let (dropped, kept): (Vec<Column>, Vec<Column>) = table
+        .content
+        .index
+        .drain(..)
+        .partition(|c| to_drop.contains(&c.name));
+    table.content.index = kept;
+    table.content.columns.extend(dropped);
+    table.qualifiers.cardinality = Cardinality::Bag;
+    table.qualifiers.lineage = Lineage::dropped();
+    // Completeness stays Complete (now over the coarser retained key).
+    Ok(PipeTy::Table(table))
+}
+
+/// `unpivot name value (cols...)` (section 6.6, Tier A, ADR 0016): fold the
+/// named value columns into one `value` column, spreading their *names* into a
+/// new `enum` index column `name`. The folded columns must be non-index and
+/// share one domain. Cardinality, completeness, and lineage are preserved
+/// (`unpivot_splitSafe`, `unpivot_preservesDisjoint`).
+fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [name_arg, value_arg, cols_arg] = args else {
+        return Err(error(
+            "`unpivot` takes a name column, a value column, and a `(col, ...)` group",
+            span,
+        ));
+    };
+    let ExprKind::Name(name_col) = &name_arg.kind else {
+        return Err(error(
+            "`unpivot`'s name column must be an identifier",
+            name_arg.span,
+        ));
+    };
+    let ExprKind::Name(value_col) = &value_arg.kind else {
+        return Err(error(
+            "`unpivot`'s value column must be an identifier",
+            value_arg.span,
+        ));
+    };
+    let ExprKind::Tuple(items) = &cols_arg.kind else {
+        return Err(error(
+            "`unpivot` expects a `(col, ...)` group of columns",
+            cols_arg.span,
+        ));
+    };
+    if items.is_empty() {
+        return Err(error(
+            "`unpivot` needs at least one column to fold",
+            cols_arg.span,
+        ));
+    }
+
+    // Collect the folded columns: each must exist, be non-index, and share one
+    // domain. A folded column that may be missing makes the `value` optional.
+    let mut folded: Vec<String> = Vec::new();
+    let mut domain: Option<ColumnType> = None;
+    let mut value_optional = false;
+    let mut errs = Vec::new();
+    for item in items {
+        let ExprKind::Name(col) = &item.kind else {
+            errs.push(te("a folded column must be an identifier", item.span));
+            continue;
+        };
+        if table.content.index.iter().any(|c| &c.name == col) {
+            errs.push(te(
+                format!("`{col}` is an index column, not a value column"),
+                item.span,
+            ));
+            continue;
+        }
+        let Some(c) = table.content.columns.iter().find(|c| &c.name == col) else {
+            errs.push(te(format!("unknown column `{col}`"), item.span));
+            continue;
+        };
+        match &domain {
+            None => domain = Some(c.domain.clone()),
+            Some(d) if *d == c.domain => {}
+            Some(_) => errs.push(te(
+                format!("folded columns must share the same domain; `{col}` differs"),
+                item.span,
+            )),
+        }
+        if folded.contains(col) {
+            errs.push(te(
+                format!("`unpivot` folds `{col}` more than once"),
+                item.span,
+            ));
+            continue;
+        }
+        if table.qualifiers.totality.is_optional(col) {
+            value_optional = true;
+        }
+        folded.push(col.clone());
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let domain = domain.expect("at least one column checked");
+
+    // The new name and value columns must differ and must not collide with a
+    // column that survives the fold or an existing index column (the
+    // no-duplicate-columns invariant every operation upholds, cf. `op_join`).
+    if name_col == value_col {
+        return Err(error(
+            "`unpivot`'s name and value columns must differ",
+            name_arg.span,
+        ));
+    }
+    let survives = |n: &str| {
+        table.content.index.iter().any(|c| c.name == n)
+            || (table.content.columns.iter().any(|c| c.name == n) && !folded.iter().any(|f| f == n))
+    };
+    if survives(value_col) {
+        errs.push(te(
+            format!("`unpivot` would duplicate column `{value_col}`"),
+            value_arg.span,
+        ));
+    }
+    if survives(name_col) {
+        errs.push(te(
+            format!("`unpivot` would duplicate column `{name_col}`"),
+            name_arg.span,
+        ));
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+
+    // Remove the folded columns, add the `value` column and the `name` enum key.
+    table.content.columns.retain(|c| !folded.contains(&c.name));
+    for col in &folded {
+        table.qualifiers.totality.narrow(col);
+    }
+    table.content.columns.push(Column {
+        name: value_col.clone(),
+        domain,
+    });
+    if value_optional {
+        table.qualifiers.totality.mark_optional(value_col.clone());
+    }
+    table.content.index.push(Column {
+        name: name_col.clone(),
+        domain: ColumnType::Enum {
+            name: name_col.clone(),
+            variants: folded,
+        },
+    });
+    Ok(PipeTy::Table(table))
+}
+
+/// `pivot name value` (section 6.6, ADR 0016): the inverse of `unpivot`.
+/// Attribute form (`name` is a non-index column): split-safe, admissible only
+/// when the input is `singletons` so each (key, name) cell holds at most one
+/// value (`pivotAttr_splitSafe`). The `name` column must be a finite-enumerable
+/// `enum` (its values become column names); each variant becomes a `value`-typed
+/// column. Lineage and completeness preserved. The index form (`name` in the
+/// key) is Tier B and handled in a later task.
+fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [name_arg, value_arg] = args else {
+        return Err(error(
+            "`pivot` takes a name column and a value column",
+            span,
+        ));
+    };
+    let ExprKind::Name(name_col) = &name_arg.kind else {
+        return Err(error(
+            "`pivot`'s name column must be an identifier",
+            name_arg.span,
+        ));
+    };
+    let ExprKind::Name(value_col) = &value_arg.kind else {
+        return Err(error(
+            "`pivot`'s value column must be an identifier",
+            value_arg.span,
+        ));
+    };
+    if name_col == value_col {
+        return Err(error(
+            "`pivot`'s name and value columns must differ",
+            value_arg.span,
+        ));
+    }
+
+    // Index form (Tier B, ADR 0017): `name` is a key column. Demands
+    // completeness over the key it leaves behind, drops lineage
+    // (`pivot_not_splitInvariant`).
+    if let Some(idx_pos) = table.content.index.iter().position(|c| &c.name == name_col) {
+        let ColumnType::Enum { variants, .. } = table.content.index[idx_pos].domain.clone() else {
+            return Err(error(
+                format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
+                name_arg.span,
+            ));
+        };
+        if table.content.index.len() == 1 {
+            return Err(error(
+                "index-form `pivot` must leave at least one index column",
+                name_arg.span,
+            ));
+        }
+        if table.qualifiers.completeness != Completeness::Complete {
+            return Err(error(
+                "index-form `pivot` needs completeness over the retained key; \
+                 establish it with `completeness_check` or `assume { complete }`",
+                span,
+            ));
+        }
+        let Some(value_pos) = table
+            .content
+            .columns
+            .iter()
+            .position(|c| &c.name == value_col)
+        else {
+            return Err(error(
+                format!("unknown column `{value_col}`"),
+                value_arg.span,
+            ));
+        };
+        let value_domain = table.content.columns[value_pos].domain.clone();
+        // A spread variant must not collide with a surviving column (the name
+        // key and value column are about to be removed, so they do not count).
+        let mut errs = Vec::new();
+        for variant in &variants {
+            let dup = table
+                .content
+                .index
+                .iter()
+                .any(|c| &c.name == variant && &c.name != name_col)
+                || table
+                    .content
+                    .columns
+                    .iter()
+                    .any(|c| &c.name == variant && &c.name != value_col);
+            if dup {
+                errs.push(te(
+                    format!("`pivot` would duplicate column `{variant}`"),
+                    name_arg.span,
+                ));
+            }
+        }
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        table.content.index.remove(idx_pos);
+        table.content.columns.retain(|c| &c.name != value_col);
+        table.qualifiers.totality.narrow(value_col);
+        for variant in variants {
+            table.content.columns.push(Column {
+                name: variant,
+                domain: value_domain.clone(),
+            });
+        }
+        table.qualifiers.lineage = Lineage::dropped();
+        return Ok(PipeTy::Table(table));
+    }
+
+    // Attribute form: `name` is a non-index column.
+    let Some(name_pos) = table
+        .content
+        .columns
+        .iter()
+        .position(|c| &c.name == name_col)
+    else {
+        return Err(error(format!("unknown column `{name_col}`"), name_arg.span));
+    };
+    let ColumnType::Enum { variants, .. } = table.content.columns[name_pos].domain.clone() else {
+        return Err(error(
+            format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
+            name_arg.span,
+        ));
+    };
+    if table.qualifiers.cardinality != Cardinality::Singletons {
+        return Err(error(
+            "`pivot` requires a singletons input: each (key, name) cell must hold \
+             at most one value; aggregate upstream first",
+            span,
+        ));
+    }
+    let Some(value_pos) = table
+        .content
+        .columns
+        .iter()
+        .position(|c| &c.name == value_col)
+    else {
+        return Err(error(
+            format!("unknown column `{value_col}`"),
+            value_arg.span,
+        ));
+    };
+    let value_domain = table.content.columns[value_pos].domain.clone();
+    // A spread variant must not collide with a surviving column (the name and
+    // value columns are about to be removed, so they do not count).
+    let mut errs = Vec::new();
+    for variant in &variants {
+        let dup = table.content.index.iter().any(|c| &c.name == variant)
+            || table
+                .content
+                .columns
+                .iter()
+                .any(|c| &c.name == variant && &c.name != name_col && &c.name != value_col);
+        if dup {
+            errs.push(te(
+                format!("`pivot` would duplicate column `{variant}`"),
+                name_arg.span,
+            ));
+        }
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+
+    // Drop the name and value columns, add one column per enum variant.
+    table
+        .content
+        .columns
+        .retain(|c| &c.name != name_col && &c.name != value_col);
+    table.qualifiers.totality.narrow(name_col);
+    table.qualifiers.totality.narrow(value_col);
+    for variant in variants {
+        table.content.columns.push(Column {
+            name: variant,
+            domain: value_domain.clone(),
+        });
+    }
+    Ok(PipeTy::Table(table))
+}
+
+/// `assume { complete }` (section 8, ADR 0017): admit a completeness obligation
+/// by fiat, locally and visibly. The block holds the single recognized claim
+/// `complete`. In M1 the only consumable obligation is completeness, so that is
+/// the only claim accepted.
+fn op_assume(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [block_arg] = args else {
+        return Err(error("`assume` takes a `{ ... }` block of claims", span));
+    };
+    let ExprKind::Block(block) = &block_arg.kind else {
+        return Err(error("`assume` expects a `{ ... }` block", block_arg.span));
+    };
+    let mut errs = Vec::new();
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Expr(e) => match &e.kind {
+                ExprKind::Name(claim) if claim == "complete" => {
+                    table.qualifiers.completeness = Completeness::Complete;
+                }
+                _ => errs.push(te("`assume` accepts only the claim `complete`", e.span)),
+            },
+            Stmt::Let { value, .. } => {
+                errs.push(te(
+                    "`assume` blocks hold claims, not `let` bindings",
+                    value.span,
+                ));
+            }
+            Stmt::Assert(e) => {
+                errs.push(te(
+                    "use `completeness_check` for `assert`, not `assume`",
+                    e.span,
+                ));
+            }
+        }
+    }
+    if errs.is_empty() {
+        Ok(PipeTy::Table(table))
+    } else {
+        Err(errs)
+    }
+}
+
+/// `completeness_check { assert <bool>; ... }` (section 8, ADR 0017): a pipe
+/// stage whose boolean asserts witness that the partition is complete over the
+/// current key. Each assert is a boolean over the key context (`k`). Establishes
+/// `Complete`; all other qualifiers preserved.
+fn op_completeness_check(
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [block_arg] = args else {
+        return Err(error(
+            "`completeness_check` takes a `{ assert ... }` block",
+            span,
+        ));
+    };
+    let ExprKind::Block(block) = &block_arg.kind else {
+        return Err(error(
+            "`completeness_check` expects a `{ ... }` block",
+            block_arg.span,
+        ));
+    };
+    let mut errs = Vec::new();
+    let mut assert_count = 0;
+    let ctx = Context::key("k", &table);
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Assert(e) => {
+                assert_count += 1;
+                errs.extend(require_known_bool(&ctx, e));
+            }
+            Stmt::Let { value, .. } => {
+                errs.push(te(
+                    "a `completeness_check` block holds only `assert`s",
+                    value.span,
+                ));
+            }
+            Stmt::Expr(e) => {
+                errs.push(te(
+                    "a `completeness_check` block holds only `assert`s",
+                    e.span,
+                ));
+            }
+        }
+    }
+    if assert_count == 0 {
+        errs.push(te(
+            "`completeness_check` needs at least one `assert` to witness completeness",
+            block.span,
+        ));
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    table.qualifiers.completeness = Completeness::Complete;
+    Ok(PipeTy::Table(table))
+}
+
 /// Decompose a curried application `f a b c` into the head `f` and the argument
 /// list `[a, b, c]`. A non-application returns `(expr, [])`.
 fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
@@ -884,6 +1388,20 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> nope").expect_err("unknown op");
         assert!(errs[0].message.contains("unsupported operation `nope`"));
+    }
+
+    #[test]
+    fn unknown_source_suggests_a_close_name() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readngs").expect_err("typo");
+        assert!(errs[0].message.contains("did you mean `readings`?"));
+    }
+
+    #[test]
+    fn unknown_operation_suggests_a_close_name() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> shrink_ky machine").expect_err("typo");
+        assert!(errs[0].message.contains("did you mean `shrink_key`?"));
     }
 
     #[test]
@@ -1109,6 +1627,286 @@ mod tests {
         // `ts` is a number, but `machines` is keyed by a string.
         let errs = pipe_ty(&s, "readings |> left_join machines (|k, l| k.ts)").expect_err("domain");
         assert!(errs[0].message.contains("key domain"));
+    }
+
+    #[test]
+    fn unpivot_folds_columns_into_name_and_value() {
+        let s = sample_sources();
+        // Fold two `real` columns into one `enum`-keyed value column.
+        let t = table_of(
+            pipe_ty(&s, "readings |> unpivot metric reading (temperature, peak)").expect("ok"),
+        );
+        assert!(t.content.index.iter().any(|c| c.name == "metric"));
+        assert!(matches!(
+            t.content
+                .index
+                .iter()
+                .find(|c| c.name == "metric")
+                .unwrap()
+                .domain,
+            ColumnType::Enum { .. }
+        ));
+        assert!(t.content.columns.iter().any(|c| c.name == "reading"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "temperature"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "peak"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn unpivot_rejects_mismatched_domains() {
+        let s = sample_sources();
+        // `temperature` is real, `note` is string: cannot share one value column.
+        let errs = pipe_ty(&s, "readings |> unpivot metric reading (temperature, note)")
+            .expect_err("domain mismatch");
+        assert!(errs[0].message.contains("same domain"));
+    }
+
+    #[test]
+    fn unpivot_needs_at_least_one_column() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> unpivot metric reading ()").expect_err("no columns");
+        assert!(errs[0].message.contains("at least one column"));
+    }
+
+    /// A source with a non-index `enum` column, for the attribute form of
+    /// `pivot` (which spreads a non-index enum column).
+    fn enum_source() -> Sources {
+        let obs = from_cols(
+            "obs",
+            "Obs",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol(
+                    "metric",
+                    ColumnType::Enum {
+                        name: "Metric".to_string(),
+                        variants: vec!["lo".to_string(), "hi".to_string()],
+                    },
+                    ColumnRole::Var,
+                    false,
+                ),
+                scol("reading", ColumnType::Real, ColumnRole::Var, false),
+                scol("tag", ColumnType::String, ColumnRole::Var, false),
+            ],
+        );
+        Sources::new().with("obs", obs)
+    }
+
+    #[test]
+    fn pivot_attribute_form_spreads_an_enum_column() {
+        let s = enum_source();
+        // Spread the non-index enum `metric` into one column per variant.
+        let t = table_of(pipe_ty(&s, "obs |> pivot metric reading").expect("ok"));
+        assert!(t.content.columns.iter().any(|c| c.name == "lo"));
+        assert!(t.content.columns.iter().any(|c| c.name == "hi"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "metric"));
+        assert!(!t.content.index.iter().any(|c| c.name == "metric"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn pivot_demands_singletons() {
+        let s = enum_source();
+        // A bag input (expanded by map) cannot pivot: cells are not card <= 1.
+        let errs =
+            pipe_ty(&s, "obs |> map |k, r| (r, r) |> pivot metric reading").expect_err("bag");
+        assert!(errs[0].message.contains("singletons"));
+    }
+
+    #[test]
+    fn pivot_name_column_must_be_enum() {
+        let s = enum_source();
+        // `tag` is a plain string column, not a finite-enumerable enum.
+        let errs = pipe_ty(&s, "obs |> pivot tag reading").expect_err("not enumerable");
+        assert!(errs[0].message.contains("enum"));
+    }
+
+    #[test]
+    fn pivot_index_form_demands_completeness() {
+        let s = sample_sources();
+        // `unpivot` puts `metric` in the key; pivoting it back is the index form,
+        // which demands completeness over the retained key.
+        let errs = pipe_ty(
+            &s,
+            "readings |> unpivot metric reading (temperature, peak) |> pivot metric reading",
+        )
+        .expect_err("incomplete");
+        assert!(errs[0].message.contains("complete"));
+    }
+
+    #[test]
+    fn pivot_index_form_drops_lineage_and_spreads() {
+        let s = sample_sources();
+        // The unpivot/pivot round-trip restores the wide shape; the index form
+        // drops lineage.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> unpivot metric reading (temperature, peak) \
+                 |> assume { complete } |> pivot metric reading",
+            )
+            .expect("ok"),
+        );
+        assert!(!t.content.index.iter().any(|c| c.name == "metric"));
+        assert!(t.content.columns.iter().any(|c| c.name == "temperature"));
+        assert!(t.content.columns.iter().any(|c| c.name == "peak"));
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
+    }
+
+    #[test]
+    fn shrink_key_demotes_after_establishing_completeness() {
+        let s = sample_sources();
+        // Promote `machine` into the key, establish completeness, then shrink it
+        // back out: result is a bag, complete, with lineage dropped.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> assume { complete } \
+                 |> shrink_key machine",
+            )
+            .expect("ok"),
+        );
+        assert!(!t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.columns.iter().any(|c| c.name == "machine"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
+    }
+
+    #[test]
+    fn shrink_key_demands_completeness() {
+        let s = sample_sources();
+        // No establish step: a bare store is incomplete, so shrink_key is rejected.
+        let errs = pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine")
+            .expect_err("incomplete");
+        assert!(errs[0].message.contains("complete"));
+    }
+
+    #[test]
+    fn shrink_key_cannot_empty_the_index() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> assume { complete } |> shrink_key ts")
+            .expect_err("empty index");
+        assert!(errs[0].message.contains("at least one index"));
+    }
+
+    #[test]
+    fn shrink_key_unknown_column_errors() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> assume { complete } |> shrink_key bogus")
+            .expect_err("unknown");
+        assert!(errs[0].message.contains("not an index column `bogus`"));
+    }
+
+    #[test]
+    fn assume_establishes_completeness() {
+        let s = sample_sources();
+        let t = table_of(pipe_ty(&s, "readings |> assume { complete }").expect("ok"));
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn assume_rejects_unknown_claim() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> assume { whatever }").expect_err("unknown claim");
+        assert!(errs[0].message.contains("assume"));
+    }
+
+    #[test]
+    fn completeness_check_establishes_completeness() {
+        let s = sample_sources();
+        let t = table_of(
+            pipe_ty(&s, "readings |> completeness_check { assert k.ts > 0 }").expect("ok"),
+        );
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn completeness_check_needs_a_boolean_assert() {
+        let s = sample_sources();
+        let errs =
+            pipe_ty(&s, "readings |> completeness_check { assert k.ts }").expect_err("non-bool");
+        assert!(errs[0].message.contains("boolean"));
+    }
+
+    #[test]
+    fn completeness_check_needs_at_least_one_assert() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> completeness_check { }").expect_err("empty");
+        assert!(errs[0].message.contains("at least one"));
+    }
+
+    #[test]
+    fn unpivot_rejects_duplicate_output_column() {
+        let s = sample_sources();
+        // `flag` survives the fold, so naming the value column `flag` collides.
+        let errs = pipe_ty(&s, "readings |> unpivot metric flag (temperature, peak)")
+            .expect_err("duplicate");
+        assert!(errs[0].message.contains("would duplicate column `flag`"));
+    }
+
+    #[test]
+    fn unpivot_rejects_repeated_fold() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> unpivot metric reading (temperature, temperature)",
+        )
+        .expect_err("repeated");
+        assert!(errs[0].message.contains("more than once"));
+    }
+
+    #[test]
+    fn unpivot_rejects_name_equal_value() {
+        let s = sample_sources();
+        let errs =
+            pipe_ty(&s, "readings |> unpivot x x (temperature, peak)").expect_err("name == value");
+        assert!(errs[0].message.contains("must differ"));
+    }
+
+    #[test]
+    fn pivot_rejects_name_equal_value() {
+        let s = enum_source();
+        let errs = pipe_ty(&s, "obs |> pivot metric metric").expect_err("name == value");
+        assert!(errs[0].message.contains("must differ"));
+    }
+
+    #[test]
+    fn pivot_rejects_variant_colliding_with_a_column() {
+        // A source whose enum variant `lo` collides with an existing column.
+        let obs = from_cols(
+            "obs",
+            "Obs",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol(
+                    "metric",
+                    ColumnType::Enum {
+                        name: "Metric".to_string(),
+                        variants: vec!["lo".to_string(), "hi".to_string()],
+                    },
+                    ColumnRole::Var,
+                    false,
+                ),
+                scol("reading", ColumnType::Real, ColumnRole::Var, false),
+                scol("lo", ColumnType::Real, ColumnRole::Var, false),
+            ],
+        );
+        let s = Sources::new().with("obs", obs);
+        let errs = pipe_ty(&s, "obs |> pivot metric reading").expect_err("collision");
+        assert!(errs[0].message.contains("would duplicate column `lo`"));
+    }
+
+    #[test]
+    fn shrink_key_rejects_repeated_column() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> extend_key machine |> assume { complete } \
+             |> shrink_key machine machine",
+        )
+        .expect_err("repeated");
+        assert!(errs[0].message.contains("more than once"));
     }
 
     // The two worked examples from docs/language/10-views.md, end to end.

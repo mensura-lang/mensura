@@ -80,10 +80,13 @@ mensura/
   `pivotAttr` with its reversibility, and the `bind` disjointness lemma.
 - **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
   -> SQLite` is built for the "basic" subset: scalar-index units, stores with
-  primitive and `enum` attributes, shapes, and named enums.  Expressions,
-  pipelines, and the lineage hook are specified ahead of the parser and are not
-  yet implemented.  Compound units, foreign-key (`domain`) resolution, and
-  physical-unit/precision types are deferred.
+  primitive and `enum` attributes, shapes, and named enums.  The expression
+  sublanguage and the full Tier A / Tier B pipeline algebra (the eight
+  primitives, with cardinality, completeness, and tag-based disjointness) are
+  implemented and checked by `mensura check` (M1).  Compound (multi-entity)
+  units and foreign-key (`domain`) resolution are scheduled for M4 (where
+  devices and cross-store ingestion first need them); physical-unit/precision
+  types are M3.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): physical units and precision; measure semantics (additivity);
   devices and `collect`; ingestion endpoints; streaming windows and refresh; ML
@@ -135,9 +138,12 @@ core language, with span-based diagnostics.
   expression sublanguage and the pipeline primitives (record literals,
   statement blocks, `|>`, `|x|` lambdas), per `04-grammar.md`.
 - `mensura-types`: type-check expressions and pipelines over `Table<Qs, C>`,
-  including cardinality, completeness, and the disjointness hook.  Predicate
-  disjointness has a decidable fragment (linear arithmetic over numeric key
-  fields) and falls back to `assume` outside it.
+  including cardinality, completeness, and disjointness.  Disjointness is
+  tracked by the **tag-based lineage hierarchy** (`09` section 9), with
+  `completeness_check` / `assume` discharging the Tier B completeness
+  obligation.  The symbolic predicate-region fragment (linear arithmetic over
+  numeric key fields, `08-lineage.md`) is **deferred** to M6, where the
+  learning operations first consume disjointness.
 - `mensura-cli`: the `check` subcommand.
 - Diagnostics with source spans and suggested fixes where possible.
 
@@ -180,6 +186,11 @@ Output: device readings land in stores under a typed ingestion path.
   (overview pillar 7).
 - Store ingestion via the CLI or as a library; the over-the-wire transport is
   wired in M7.
+- Compound (multi-entity) units and foreign-key (`domain`) resolution: a
+  reading keyed by several entities, and `domain` blocks resolving a column to
+  another store's key.  Deferred from M1 (the frontend rejects them today with
+  "not yet supported"); needed here because cross-store ingestion is the first
+  consumer.
 
 ## M5 - Streaming and reactive
 

@@ -1,10 +1,9 @@
 # The kernel operations
 
-> These operations are a design preview: they are specified but not yet
-> implemented, so the snippets here are not checked by the compiler.  The
-> [What's next](../whats-next.md) page tracks the frontier.  The spelling is
-> preliminary; the ideas, and the theorems behind them, are settled.  The full
-> specification is in `docs/language/07-pipelines.md`.
+> The spelling is preliminary, but these operations are implemented: the
+> snippet below is compiled by the book's check gate.  The ideas, and the
+> theorems behind them, are settled.  The full specification is in
+> `docs/language/07-pipelines.md`.
 
 A pipeline transforms one table into another, but it is not a separate kind of
 thing in Mensura.  A pipeline is an ordinary expression of table type, built
@@ -24,10 +23,15 @@ Three pieces of glue thread operations together:
 - **tuples**, to bring several tables together for an operation that merges
   them: `(train, test) |> bind`.
 
-```mensura,ignore
-readings
-|> map |_, r| (.celsius = r.kelvin - 273.15)
-|> extend_key machine
+```mensura
+unit Reading { ts: int }
+store readings { unit { Reading } var { kelvin:real machine:string } }
+
+view celsius {
+  readings
+  |> extend_key machine
+  |> map |k, r| (.celsius = r.kelvin - 273.15)
+}
 ```
 
 ## The primitives

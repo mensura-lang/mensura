@@ -1,0 +1,7 @@
+// Reject (resolve): the value column `flag` collides with the surviving `flag`
+// column, which would break the no-duplicate-columns invariant.
+unit Reading { ts: int }
+store readings { unit { Reading } var { flag: bool } var { temperature: real } var { peak: real } }
+view bad {
+  readings |> unpivot metric flag (temperature, peak)
+}
