@@ -3,7 +3,7 @@
 // through one application path (ADR 0018,
 // docs/toolkit/01-application-checking.md).
 unit Reading {
-  ts: number
+  ts: int
 }
 
 store readings {
