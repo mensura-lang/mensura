@@ -111,6 +111,7 @@ fn apply_op(sources: &Sources, input: PipeTy, op_expr: &Expr) -> Result<PipeTy, 
         "left_join" => op_join(sources, input, &args, head.span, JoinKind::Left),
         "inner_join" => op_join(sources, input, &args, head.span, JoinKind::Inner),
         "unpivot" => op_unpivot(input, &args, head.span),
+        "pivot" => op_pivot(input, &args, head.span),
         _ => Err(error(format!("unsupported operation `{op}`"), head.span)),
     }
 }
@@ -825,6 +826,91 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
     Ok(PipeTy::Table(table))
 }
 
+/// `pivot name value` (section 6.6, ADR 0016): the inverse of `unpivot`.
+/// Attribute form (`name` is a non-index column): split-safe, admissible only
+/// when the input is `singletons` so each (key, name) cell holds at most one
+/// value (`pivotAttr_splitSafe`). The `name` column must be a finite-enumerable
+/// `enum` (its values become column names); each variant becomes a `value`-typed
+/// column. Lineage and completeness preserved. The index form (`name` in the
+/// key) is Tier B and handled in a later task.
+fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [name_arg, value_arg] = args else {
+        return Err(error(
+            "`pivot` takes a name column and a value column",
+            span,
+        ));
+    };
+    let ExprKind::Name(name_col) = &name_arg.kind else {
+        return Err(error(
+            "`pivot`'s name column must be an identifier",
+            name_arg.span,
+        ));
+    };
+    let ExprKind::Name(value_col) = &value_arg.kind else {
+        return Err(error(
+            "`pivot`'s value column must be an identifier",
+            value_arg.span,
+        ));
+    };
+
+    // Attribute form only in this task: `name` must be a non-index column.
+    if table.content.index.iter().any(|c| &c.name == name_col) {
+        return Err(error(
+            "index-form `pivot` (spreading a key column) is not yet supported",
+            name_arg.span,
+        ));
+    }
+    let Some(name_pos) = table
+        .content
+        .columns
+        .iter()
+        .position(|c| &c.name == name_col)
+    else {
+        return Err(error(format!("unknown column `{name_col}`"), name_arg.span));
+    };
+    let ColumnType::Enum { variants, .. } = table.content.columns[name_pos].domain.clone() else {
+        return Err(error(
+            format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
+            name_arg.span,
+        ));
+    };
+    if table.qualifiers.cardinality != Cardinality::Singletons {
+        return Err(error(
+            "`pivot` requires a singletons input: each (key, name) cell must hold \
+             at most one value; aggregate upstream first",
+            span,
+        ));
+    }
+    let Some(value_pos) = table
+        .content
+        .columns
+        .iter()
+        .position(|c| &c.name == value_col)
+    else {
+        return Err(error(
+            format!("unknown column `{value_col}`"),
+            value_arg.span,
+        ));
+    };
+    let value_domain = table.content.columns[value_pos].domain.clone();
+
+    // Drop the name and value columns, add one column per enum variant.
+    table
+        .content
+        .columns
+        .retain(|c| &c.name != name_col && &c.name != value_col);
+    table.qualifiers.totality.narrow(name_col);
+    table.qualifiers.totality.narrow(value_col);
+    for variant in variants {
+        table.content.columns.push(Column {
+            name: variant,
+            domain: value_domain.clone(),
+        });
+    }
+    Ok(PipeTy::Table(table))
+}
+
 /// Decompose a curried application `f a b c` into the head `f` and the argument
 /// list `[a, b, c]`. A non-application returns `(expr, [])`.
 fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
@@ -1249,6 +1335,59 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> unpivot metric reading ()").expect_err("no columns");
         assert!(errs[0].message.contains("at least one column"));
+    }
+
+    /// A source with a non-index `enum` column, for the attribute form of
+    /// `pivot` (which spreads a non-index enum column).
+    fn enum_source() -> Sources {
+        let obs = from_cols(
+            "obs",
+            "Obs",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol(
+                    "metric",
+                    ColumnType::Enum {
+                        name: "Metric".to_string(),
+                        variants: vec!["lo".to_string(), "hi".to_string()],
+                    },
+                    ColumnRole::Var,
+                    false,
+                ),
+                scol("reading", ColumnType::Real, ColumnRole::Var, false),
+                scol("tag", ColumnType::String, ColumnRole::Var, false),
+            ],
+        );
+        Sources::new().with("obs", obs)
+    }
+
+    #[test]
+    fn pivot_attribute_form_spreads_an_enum_column() {
+        let s = enum_source();
+        // Spread the non-index enum `metric` into one column per variant.
+        let t = table_of(pipe_ty(&s, "obs |> pivot metric reading").expect("ok"));
+        assert!(t.content.columns.iter().any(|c| c.name == "lo"));
+        assert!(t.content.columns.iter().any(|c| c.name == "hi"));
+        assert!(!t.content.columns.iter().any(|c| c.name == "metric"));
+        assert!(!t.content.index.iter().any(|c| c.name == "metric"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn pivot_demands_singletons() {
+        let s = enum_source();
+        // A bag input (expanded by map) cannot pivot: cells are not card <= 1.
+        let errs =
+            pipe_ty(&s, "obs |> map |k, r| (r, r) |> pivot metric reading").expect_err("bag");
+        assert!(errs[0].message.contains("singletons"));
+    }
+
+    #[test]
+    fn pivot_name_column_must_be_enum() {
+        let s = enum_source();
+        // `tag` is a plain string column, not a finite-enumerable enum.
+        let errs = pipe_ty(&s, "obs |> pivot tag reading").expect_err("not enumerable");
+        assert!(errs[0].message.contains("enum"));
     }
 
     // The two worked examples from docs/language/10-views.md, end to end.
