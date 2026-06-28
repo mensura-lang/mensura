@@ -31,6 +31,24 @@ each operation, not in the surface syntax.
 - Stay a small, focused language whose power comes from its type system rather
   than from a large surface area.
 
+## Building
+
+Install Rust via [rustup](https://rustup.rs):
+
+```
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Mensura requires Rust 1.85 or later (edition 2024).  After installation,
+reload your shell and use the `Makefile` targets:
+
+| Target | Command |
+|--------|---------|
+| `make test` | `cargo test --workspace` |
+| `make check` | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `make fmt` | `cargo fmt --all` |
+| `make install` | installs the `mensura` binary |
+
 ## Learn more
 
 See `docs/language/00-overview.md` for what the language is and `ROADMAP.md`
