@@ -71,6 +71,25 @@ Each bracket has exactly one role:
 Because application binds tighter than every infix operator, `f x + g y`
 is `(f x) + (g y)`, and `data |> map f` is `data |> (map f)`.
 
+The `|>` pipe is **reversed application**: `x |> g` means `g x`, nothing
+more.  Application is the one primitive; the pipe only reverses it.  This
+single rule, with currying, is what relates the application and pipe
+spellings of an operation.  It collapses the four ways one might write a
+two-argument call into **two** equivalence classes, not one:
+
+| juxtaposition | means                            | pipe mirror     |
+| ------------- | -------------------------------- | --------------- |
+| `f a b`       | `(f a) b`                        | `b \|> f a`     |
+| `f (a, b)`    | `f` applied to the pair `(a, b)` | `(a, b) \|> f`  |
+
+So `f a b` is the same as `b |> f a`, and `f (a, b)` is the same as
+`(a, b) |> f`, but `f a b` is **not** the same as `f (a, b)`: the first
+passes two curried arguments, the second passes one argument that is a
+pair.  That distinction is not an extra rule to learn; it falls out of
+currying, and each pipe form is the exact mirror of a juxtaposition form.
+This is the discipline recorded in
+`docs/decisions/0018-application-piping-equivalence.md`.
+
 ## Values
 
 The atomic values are:
