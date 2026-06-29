@@ -61,21 +61,21 @@ enter the system.  Those concerns belong on stores.
 
 ## Cardinality
 
-For any unit `U` and any tuple of index values `r`, any tabulation of
-observations of `U` has cardinality 0 or 1 at `r`: the entity is
+For any unit `U` and any tuple of index values `k`, any tabulation of
+observations of `U` has cardinality 0 or 1 at `k`: the entity is
 either observed (cardinality 1) or not (cardinality 0).  This is
 Wickham's rule that each row is one observation, restated as a
 property of the unit.
 
 The chapter's algebra (Chapter 5 of Data Science Project: An Inductive
 Learning Approach, F. A. N. Verri, 2026, doi: 10.5281/zenodo.14498010)
-allows row cardinality greater than 1, where one row of an indexed
-table can carry tuples of values per cell.  Mensura accepts this as a
-*transient state inside the algebra*: an operation like `project` can
-produce a result in which one index tuple carries multiple values, and
-a later operation (`ungroup`, `aggregate`) reduces it back to
-cardinality 0 or 1.  Transient states are well-formed inside a
-pipeline; they are ill-formed at unit boundaries (a `store`, a
+allows row cardinality greater than 1.  Mensura models this as a key
+carrying many rows (a *bag*), following the row-multiset model
+(ADR 0015), and accepts it as a *transient state inside the algebra*:
+an operation like `shrink_key` can produce a result in which one key
+carries multiple rows, and a later `group_map` may reduce each group back
+to a single row (cardinality 0 or 1).  Transient states are well-formed
+inside a pipeline; they are ill-formed at unit boundaries (a `store`, a
 `collect`, a `view`, a function signature that promises a tabulation
 of a unit).
 
@@ -133,11 +133,17 @@ mathematical object, and the chapter's typing rules apply unchanged.
 
 ## Naming convention
 
-Units have **singular** names: `Person`, `Course`, `Enrollment`.
-Stores, which tabulate observations of units, have **plural** names:
-`Students`, `Courses`, `Enrollments`.  The convention is soft.
-Following it makes source code easier to scan: a reader can tell from
-a name alone which kind of declaration they are looking at.
+A unit is a type, so its name is **PascalCase**: `Person`, `Course`,
+`Enrollment`.  A store, which tabulates observations of a unit, is a
+term, so its name is **snake_case**: `students`, `courses`,
+`enrollments`.  This case distinction is enforced (a non-PascalCase
+unit name or a non-snake_case store name is a resolution error); see
+`05-naming-and-casing.md`.
+
+A softer style convention sits on top of the enforced case rule: units
+read naturally as **singular** (`Person`) and stores as **plural**
+(`students`), since a store holds many observations.  This part is not
+enforced, but following it makes source code easier to scan.
 
 ## What is not in a unit
 
@@ -194,10 +200,9 @@ stores.
 - **Attribute identity** (when are two columns in two stores referring
   to "the same thing") is not yet settled.  It is important for the
   semantics of `bind` and `join` and will get its own document.
+  A new `attribute` declaration may be needed to give a univocal name
+  to an attribute and avoid accidental collisions of equivocal names.
 - **Schema reconciliation under `bind`/`join`** depends on attribute
   identity and is deferred to the algebra document.
 - **How operations transform units** is treated in the algebra
-  document.  Briefly: split-invariant operations preserve the unit;
-  `project` and aggregating operations change it.
-- **`assume` and units** is deferred until the algebra is in place
-  and a concrete need has been established.
+  document.
