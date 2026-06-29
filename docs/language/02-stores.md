@@ -9,7 +9,7 @@ This document defines what a store is and how it is declared.  The
 unit being tabulated is defined separately (`01-units.md`).  The
 process variant of a store, `collect`, is treated in its own document.
 The API surface a store may expose (REST endpoints, authentication,
-permissions) is part of the M4 web-service work and is out of scope
+permissions) is part of the web-service work and is out of scope
 here.  The audit, version, and auto-fill policy syntax (`@audited`,
 `@versioned`, `@auto`, `@allowcreate`) is treated in a separate policy
 document.
@@ -43,7 +43,7 @@ A store declaration consists of a name, a unit reference, an optional
 ```
 enum Status { "active", "inactive" }
 
-store Persons {
+store persons {
   unit { Person }
   const { birthdate: date }
   var   { status: Status }
@@ -65,11 +65,11 @@ unit-reference field) must declare where each unit-reference field
 resolves.  The `domain` block does this:
 
 ```
-store StudentGrades {
+store student_grades {
   unit { Enrollment }
   domain {
-    student: Students
-    course:  Courses
+    student: students
+    course:  courses
   }
   const { class_id: string }
   var   { grade: real }
@@ -78,14 +78,14 @@ store StudentGrades {
 
 `Enrollment` was declared in `01-units.md` with index fields
 `student: Person` and `course: Course`.  The `domain` block resolves
-each: rows of `StudentGrades` are constrained to `student` values
-that appear as observations in `Students`, and `course` values that
-appear as observations in `Courses`.
+each: rows of `student_grades` are constrained to `student` values
+that appear as observations in `students`, and `course` values that
+appear as observations in `courses`.
 
 The block has one entry per unit-reference field of the store's unit.
-Resolution is one level deep: `StudentGrades.domain` says only where
+Resolution is one level deep: `student_grades.domain` says only where
 `student` and `course` resolve.  How `Course.department` resolves is
-the responsibility of `Courses`, declared in *its* `domain` block.
+the responsibility of `courses`, declared in *its* `domain` block.
 Transitivity follows the store graph.
 
 ## Attributes
@@ -120,16 +120,16 @@ unit Program {
   code: string
 }
 
-store Programs {
+store programs {
   unit { Program }
-  domain { coordinator: Persons }
+  domain { coordinator: persons }
   const { name: string }
   var   { coordinator: Person }
 }
 ```
 
-Here `Programs.coordinator` is an attribute of type `Person`, resolved
-into `Persons`.
+Here `programs.coordinator` is an attribute of type `Person`, resolved
+into `persons`.
 
 ### `const` and `var`
 
@@ -154,33 +154,33 @@ A unit can be tabulated by any number of stores.  This is a feature,
 not a quirk: different stores serve different purposes.
 
 ```
-store Persons {
+store persons {
   unit { Person }
   const { birthdate: date }
 }
 
-store Students {
+store students {
   unit { Person }
   const { admission: date }
 }
 
-store AlumniSnapshot {
+store alumni_snapshot {
   unit { Person }
   const { graduation_year: int }
 }
 ```
 
-`Persons`, `Students`, and `AlumniSnapshot` all tabulate `Person`
+`persons`, `students`, and `alumni_snapshot` all tabulate `Person`
 observations, with different attribute sets and different
-change-control disciplines.  A row may be present in `Students` and
-absent from `Persons`; a row may move from `Students` to
-`AlumniSnapshot` when a person graduates; the same `Person.id` may
+change-control disciplines.  A row may be present in `students` and
+absent from `persons`; a row may move from `students` to
+`alumni_snapshot` when a person graduates; the same `Person.id` may
 appear in two stores at the same time.
 
 Crucially, *which* store another store's `domain` block resolves a
 unit-reference field into is a per-store choice.  An `Enrollment`
-whose `student` resolves into `Students` is about a current student;
-one resolved into `AlumniSnapshot` is about a graduate.  The choice
+whose `student` resolves into `students` is about a current student;
+one resolved into `alumni_snapshot` is about a graduate.  The choice
 is local to the referencing store.
 
 ## The store dependency graph
@@ -199,7 +199,7 @@ Acyclicity is a compile-time check.  It guarantees that:
 A store may have any number of incoming edges.  Multiple stores
 referencing the same store is normal.  Multiple stores referencing
 different stores of the same unit (for example, several stores
-referencing `Students` and one referencing `AlumniSnapshot`) is also
+referencing `students` and one referencing `alumni_snapshot`) is also
 normal.
 
 ## What is not in a store
@@ -208,7 +208,7 @@ A store declaration cannot contain:
 
 - **The identity criterion** of its unit.  That is fixed by the unit
   declaration; the store cannot extend, restrict, or redefine it.
-- **Pipeline operations.**  Filtering, projecting, mutating, joining
+- **Pipeline operations.**  Mapping, joining, reindexing, reshaping
   belong to views and transforms (treated in the algebra document),
   not to store declarations.
 - **Row-cardinality declarations.**  The 0-or-1 rule for rows is
@@ -243,49 +243,49 @@ enum Weekday {
   "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
 }
 
-store Departments {
+store departments {
   unit { Department }
   const { name: string }
 }
 
-store Persons {
+store persons {
   unit { Person }
   const { birthdate: date }
   var   { last_name: string }
 }
 
-store Students {
+store students {
   unit { Person }
   const { admission: date }
 }
 
-store Courses {
+store courses {
   unit { Course }
   domain {
-    department: Departments
+    department: departments
   }
   const {
     weekday: Weekday
   }
 }
 
-store StudentGrades {
+store student_grades {
   unit { Enrollment }
   domain {
-    student: Students
-    course:  Courses
+    student: students
+    course:  courses
   }
   const { class_id: string }
   var   { grade: real }
 }
 ```
 
-Five stores.  `Departments`, `Persons`, `Students` are basic.
-`Courses`, `StudentGrades` are compound.  `Persons` and `Students`
+Five stores.  `departments`, `persons`, `students` are basic.
+`courses`, `student_grades` are compound.  `persons` and `students`
 both tabulate `Person` with different attribute sets.
 
-The dependency graph: `StudentGrades` references `Students` and
-`Courses`; `Courses` references `Departments`; the others reference
+The dependency graph: `student_grades` references `students` and
+`courses`; `courses` references `departments`; the others reference
 nothing.  Acyclic, well-formed.
 
 ## Forward references and open questions
@@ -300,7 +300,7 @@ nothing.  Acyclic, well-formed.
   `const` always implies `@audited` (per the proposal), belong in a
   separate policy document.
 - **API surface.**  REST endpoints, authentication, and permission
-  checking are part of the M4 web-service work, not the language
+  checking are part of the web-service work, not the language
   core.  This document is silent on whether or how any particular
   store is exposed over HTTP.  The design is settled in
   `docs/decisions/0005-identity-and-authorization.md` (identity and
