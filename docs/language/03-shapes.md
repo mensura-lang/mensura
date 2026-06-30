@@ -24,7 +24,7 @@ policy, or domain resolution.
 
 Stores claim conformance to shapes with a `:` clause.  Functions
 accept and return values typed by shape names.  The same shape may be
-implemented by many stores; one store may implement many shapes.
+claimed by many stores; one store may claim many shapes.
 
 ```
 shape PersonRecord {
@@ -32,14 +32,14 @@ shape PersonRecord {
   const { admission: date }
 }
 
-store Students : PersonRecord {
+store students : PersonRecord {
   unit { Person }
   const { admission: date }
 }
 
 enum Rank { "assistant", "associate", "full" }
 
-store Faculty : PersonRecord {
+store faculty : PersonRecord {
   unit { Person }
   const { admission: date }
   var   { rank: Rank }
@@ -47,19 +47,19 @@ store Faculty : PersonRecord {
 
 fn count(t: PersonRecord) -> real { ... }
 
-let n_students = count(Students);
-let n_faculty  = count(Faculty);
+let n_students = count(students);
+let n_faculty  = count(faculty);
 ```
 
-Both `Students` and `Faculty` implement `PersonRecord`; both can be
-passed to a function whose argument type is `PersonRecord`.  `Faculty`
+Both `students` and `faculty` conform to `PersonRecord`; both can be
+passed to a function whose argument type is `PersonRecord`.  `faculty`
 has an additional attribute (`rank`) that the shape does not require;
 extra attributes are fine.
 
 The `:` reads the same way it does everywhere else in the language:
 the thing on the left has the type on the right.  An attribute
 (`admission: date`), a function parameter (`t: PersonRecord`), and a
-store (`Students : PersonRecord`) all use the one colon for "has this
+store (`students : PersonRecord`) all use the one colon for "has this
 type."  A store is a structural subtype of every shape it claims: it
 has everything the shape requires, possibly more.
 
@@ -73,7 +73,7 @@ the shape promises the value is always known.
 ## Shape declaration
 
 A shape declaration consists of a name, an optional parameter list, an
-optional `unit { ... }` clause, and any real of `const` and `var`
+optional `unit { ... }` clause, and any number of `const` and `var`
 blocks.
 
 ```
@@ -212,7 +212,7 @@ store name.  The clause may list one or more shapes, separated by
 commas, with their arguments supplied:
 
 ```
-store Students : PersonRecord, NumericCol[Person, "height"] {
+store students : PersonRecord, NumericCol[Person, "height"] {
   unit { Person }
   const {
     admission: date
@@ -270,10 +270,10 @@ its output.
 At the call site, all arguments are supplied positionally:
 
 ```
-let standardised = normalize(Person, "height", Students);
+let standardised = normalize(Person, "height", students);
 ```
 
-The compiler resolves `U` and `col`, verifies that `Students` conforms
+The compiler resolves `U` and `col`, verifies that `students` conforms
 to `NumericCol[Person, "height"]`, and then `standardised` has type
 `NormalizedCol[Person, "height"]`.
 
@@ -293,7 +293,7 @@ A shape declaration cannot contain:
 - **Policy annotations** (`@audited`, `@versioned`, `@auto`,
   `@allowcreate`).  These attach to store attributes.
 - **API surface** (`endpoint`, `auth`).  These belong on the store
-  and are M4 concerns.
+  and are web-service concerns.
 - **Storage commitment.**  A shape is contract, not data.
 
 A shape *does* contain:
@@ -353,7 +353,7 @@ shape NormalizedCol[U: Unit, col: string] {
   }
 }
 
-store Students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"] {
+store students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"] {
   unit { Person }
   const {
     admission: date
@@ -366,11 +366,11 @@ fn normalize(U: Unit, col: string, t: NumericCol[U, col]) -> NormalizedCol[U, co
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
 }
 
-let standardised = normalize(Person, "height", Students);
+let standardised = normalize(Person, "height", students);
 // standardised has type NormalizedCol[Person, "height"]
 ```
 
-`Students` is a basic store of `Person`, claiming conformance to three
+`students` is a basic store of `Person`, claiming conformance to three
 shapes: `PersonRecord` (a concrete-unit contract), `Ageable["birthdate"]`
 (a unit-agnostic contract that also fits a `Department` store keyed on
 `"foundation_day"`), and `NumericCol[Person, "height"]` (the structural
