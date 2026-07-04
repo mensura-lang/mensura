@@ -5,10 +5,12 @@
 //! "basic only" scope by rejecting compound units, compound fields, and
 //! `domain` blocks with clear "not yet supported" errors.
 //!
-//! Shapes (`docs/language/03-shapes.md`) are validated here too: each store
-//! that claims conformance with a `:` clause is checked against the shape's
-//! structure.  Shapes carry no storage, so they produce no [`Schema`]; only
-//! stores do.
+//! Shapes (`docs/language/03-shapes.md`) are validated here too: each store or
+//! view that claims conformance with a `:` clause is checked against the shape's
+//! structure.  A store is checked against its declared columns; a view against
+//! its computed output content, ignoring role and cardinality
+//! (`docs/language/10-views.md`).  Shapes carry no storage, so they produce no
+//! [`Schema`]; only stores do.
 
 use std::collections::{HashMap, HashSet};
 
@@ -212,13 +214,20 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
         }
         for v in &views {
             match type_view(&sources, &v.body) {
-                Ok(_output) => {
-                    // TODO(views): check the optional `: Shape` conformance
-                    // clause (`v.conforms`) against `_output`'s content
-                    // (index + named columns, by type), ignoring const/var
-                    // roles and cardinality (10-views.md, ADR 0013). This
-                    // reuses the parameterized shape machinery of
-                    // `check_conformance` in a content-only mode; deferred.
+                Ok(output) => {
+                    // Check the optional `: Shape` conformance clause against
+                    // the view's computed output content (index + named
+                    // columns by type/totality), ignoring const/var roles and
+                    // cardinality (10-views.md, ADR 0013).
+                    check_view_conformance(
+                        v,
+                        &output,
+                        &shapes,
+                        &resolved_shapes,
+                        &units,
+                        &enums,
+                        &mut errors,
+                    );
                 }
                 Err(errs) => {
                     for e in errs {
@@ -504,61 +513,11 @@ fn check_conformance(
             continue;
         };
 
-        if claim.args.len() != shape.params.len() {
-            errors.push(ResolveError::new(
-                format!(
-                    "store `{}` claims `{}` with {} argument(s), but the shape declares {}",
-                    s.name.name,
-                    shape_ref_label(claim),
-                    claim.args.len(),
-                    shape.params.len()
-                ),
-                claim.span,
-            ));
+        let subject = format!("store `{}`", s.name.name);
+        let Some((unit_bind, str_bind)) = bind_shape_args(&subject, shape, claim, units, errors)
+        else {
             continue;
-        }
-
-        // Bind arguments to parameters by position, checking each kind.
-        let mut unit_bind: HashMap<&str, &str> = HashMap::new();
-        let mut str_bind: HashMap<&str, &str> = HashMap::new();
-        let mut args_ok = true;
-        for ((pname, pkind), arg) in shape.params.iter().zip(&claim.args) {
-            match (pkind, arg) {
-                (ParamKind::Unit, ShapeArg::Unit(id)) => {
-                    if !units.contains_key(id.name.as_str()) {
-                        errors.push(ResolveError::new(
-                            format!("unknown unit `{}`", id.name),
-                            id.span,
-                        ));
-                        args_ok = false;
-                    }
-                    unit_bind.insert(pname.as_str(), id.name.as_str());
-                }
-                (ParamKind::Str, ShapeArg::Str(lit)) => {
-                    str_bind.insert(pname.as_str(), lit.value.as_str());
-                }
-                (ParamKind::Unit, ShapeArg::Str(_)) => {
-                    errors.push(ResolveError::new(
-                        format!("parameter `{pname}` expects a unit name, but a string was given"),
-                        arg.span(),
-                    ));
-                    args_ok = false;
-                }
-                (ParamKind::Str, ShapeArg::Unit(id)) => {
-                    errors.push(ResolveError::new(
-                        format!(
-                            "parameter `{pname}` expects a string, but `{}` was given",
-                            id.name
-                        ),
-                        arg.span(),
-                    ));
-                    args_ok = false;
-                }
-            }
-        }
-        if !args_ok {
-            continue;
-        }
+        };
 
         // Unit check, unless the shape is unit-agnostic.  `required` is set
         // only when the shape pins a unit and the store disagrees.
@@ -643,6 +602,258 @@ fn check_conformance(
             }
         }
     }
+}
+
+/// Positional argument bindings for a shape claim: the `Unit`-parameter map and
+/// the `string`-parameter map, each from parameter name to the bound value.
+type ShapeBindings<'a> = (HashMap<&'a str, &'a str>, HashMap<&'a str, &'a str>);
+
+/// Bind a conformance claim's arguments to a shape's parameters by position,
+/// checking arity and each argument's kind.  Shared by store and view
+/// conformance.  `subject` names the claiming construct for the arity
+/// diagnostic (for example ``store `persons` `` or ``view `machine_temp` ``).
+/// Returns the unit and `string` bindings, or `None` if any check failed (each
+/// failure is recorded on `errors`).
+fn bind_shape_args<'a>(
+    subject: &str,
+    shape: &'a ResolvedShape,
+    claim: &'a ShapeRef,
+    units: &HashMap<&str, &UnitDecl>,
+    errors: &mut Vec<ResolveError>,
+) -> Option<ShapeBindings<'a>> {
+    if claim.args.len() != shape.params.len() {
+        errors.push(ResolveError::new(
+            format!(
+                "{subject} claims `{}` with {} argument(s), but the shape declares {}",
+                shape_ref_label(claim),
+                claim.args.len(),
+                shape.params.len()
+            ),
+            claim.span,
+        ));
+        return None;
+    }
+
+    // Bind arguments to parameters by position, checking each kind.
+    let mut unit_bind: HashMap<&str, &str> = HashMap::new();
+    let mut str_bind: HashMap<&str, &str> = HashMap::new();
+    let mut args_ok = true;
+    for ((pname, pkind), arg) in shape.params.iter().zip(&claim.args) {
+        match (pkind, arg) {
+            (ParamKind::Unit, ShapeArg::Unit(id)) => {
+                if !units.contains_key(id.name.as_str()) {
+                    errors.push(ResolveError::new(
+                        format!("unknown unit `{}`", id.name),
+                        id.span,
+                    ));
+                    args_ok = false;
+                }
+                unit_bind.insert(pname.as_str(), id.name.as_str());
+            }
+            (ParamKind::Str, ShapeArg::Str(lit)) => {
+                str_bind.insert(pname.as_str(), lit.value.as_str());
+            }
+            (ParamKind::Unit, ShapeArg::Str(_)) => {
+                errors.push(ResolveError::new(
+                    format!("parameter `{pname}` expects a unit name, but a string was given"),
+                    arg.span(),
+                ));
+                args_ok = false;
+            }
+            (ParamKind::Str, ShapeArg::Unit(id)) => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "parameter `{pname}` expects a string, but `{}` was given",
+                        id.name
+                    ),
+                    arg.span(),
+                ));
+                args_ok = false;
+            }
+        }
+    }
+    if args_ok {
+        Some((unit_bind, str_bind))
+    } else {
+        None
+    }
+}
+
+/// Check every shape a view claims with its `:` clause against the view's
+/// computed output (`docs/language/10-views.md`, "Constraining a view with a
+/// shape").  Unlike a store, a view has no declared unit and no `const`/`var`
+/// roles, so the check is content-only:
+///
+/// - a unit-fixing shape requires the output's index to be exactly the unit's
+///   index fields, by name and type (cardinality is left free: a view may be
+///   `bag`);
+/// - each shape attribute must appear among the output columns, index or
+///   non-index, with a matching type and totality, regardless of role.
+fn check_view_conformance(
+    view: &ViewDecl,
+    output: &TableType,
+    shapes: &HashMap<&str, &ShapeDecl>,
+    resolved: &HashMap<&str, ResolvedShape>,
+    units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
+    errors: &mut Vec<ResolveError>,
+) {
+    for claim in &view.conforms {
+        let name = claim.name.name.as_str();
+        let Some(shape) = resolved.get(name) else {
+            // As for stores: a shape that resolved with errors already reported
+            // them; only an entirely unknown name is new here.
+            if !shapes.contains_key(name) {
+                errors.push(ResolveError::new(
+                    format!("unknown shape `{name}`"),
+                    claim.span,
+                ));
+            }
+            continue;
+        };
+
+        let subject = format!("view `{}`", view.name.name);
+        let Some((unit_bind, str_bind)) = bind_shape_args(&subject, shape, claim, units, errors)
+        else {
+            continue;
+        };
+
+        // A unit-fixing shape constrains the output's index structurally: a
+        // view carries no declared unit, so conformance is that the output's
+        // index columns are exactly the unit's index fields (10-views.md, "The
+        // unit clause").
+        let required_unit = match &shape.unit {
+            ShapeUnit::Agnostic => None,
+            ShapeUnit::Concrete(u) => Some(u.as_str()),
+            ShapeUnit::Param(p) => Some(unit_bind[p.as_str()]),
+        };
+        if let Some(uname) = required_unit
+            && let Some(unit) = units.get(uname).copied()
+        {
+            let expected = unit_index_columns(unit, units, enums);
+            let actual: Vec<(String, ColumnType)> = output
+                .content
+                .index
+                .iter()
+                .map(|c| (c.name.clone(), c.domain.clone()))
+                .collect();
+            if !same_columns(&expected, &actual) {
+                errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}`, which tabulates `{}`, but its index is {} rather than {}",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        uname,
+                        render_columns(&actual),
+                        render_columns(&expected)
+                    ),
+                    claim.span,
+                ));
+                continue;
+            }
+        }
+
+        // Content attributes: each must appear somewhere in the output (index
+        // or non-index), with a matching type and totality.  Role (const/var)
+        // is not a view concept and is not checked.
+        for attr in &shape.attrs {
+            let want = render_template(&attr.name, &str_bind);
+            if !is_identifier(&want) {
+                errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}`: interpolated attribute name `{}` is not a valid identifier",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        want
+                    ),
+                    claim.span,
+                ));
+                continue;
+            }
+            let found = output
+                .content
+                .index
+                .iter()
+                .chain(output.content.columns.iter())
+                .find(|c| c.name == want);
+            match found {
+                None => errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}` but is missing attribute `{}`",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        want
+                    ),
+                    claim.span,
+                )),
+                Some(have) if have.domain != attr.ty => errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}`: attribute `{}` has type `{}` in the shape but `{}` in the view",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        want,
+                        type_name(&attr.ty),
+                        type_name(&have.domain)
+                    ),
+                    claim.span,
+                )),
+                Some(_) if output.qualifiers.totality.is_optional(&want) != attr.optional => errors
+                    .push(ResolveError::new(
+                        format!(
+                            "view `{}` claims `{}`: attribute `{}` is `{}` in the shape but `{}` in the view",
+                            view.name.name,
+                            shape_ref_label(claim),
+                            want,
+                            totality_word(attr.optional),
+                            totality_word(output.qualifiers.totality.is_optional(&want))
+                        ),
+                        claim.span,
+                    )),
+                Some(_) => {}
+            }
+        }
+    }
+}
+
+/// Resolve a unit's index fields to their `(name, type)` pairs, for structural
+/// conformance of a view claiming a unit-fixing shape.  Fields that fail to
+/// resolve (for example a still-unsupported compound field) are skipped: such
+/// a unit cannot back a store either, and its error surfaces where it is used.
+fn unit_index_columns(
+    unit: &UnitDecl,
+    units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
+) -> Vec<(String, ColumnType)> {
+    let mut out = Vec::new();
+    for f in &unit.fields {
+        if let (Ok(name), Ok(ty)) = (
+            literal_field_name(&f.name),
+            resolve_type(&f.ty, units, enums),
+        ) {
+            out.push((name, ty));
+        }
+    }
+    out
+}
+
+/// Two column lists match iff they carry the same names, each with the same
+/// type.  Order is not significant: a view's index is a set of key columns, and
+/// pipeline stages may present them in any order.
+fn same_columns(a: &[(String, ColumnType)], b: &[(String, ColumnType)]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|(name, ty)| b.iter().any(|(bn, bt)| bn == name && bt == ty))
+}
+
+/// Render a column list as ``a: int, b: string`` for diagnostics.
+fn render_columns(cols: &[(String, ColumnType)]) -> String {
+    if cols.is_empty() {
+        return "empty".into();
+    }
+    cols.iter()
+        .map(|(name, ty)| format!("`{name}: {}`", type_name(ty)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Concatenate a name template, substituting each `string` parameter with its
@@ -1533,5 +1744,92 @@ mod tests {
         "#;
         let errs = errors(bad);
         assert!(errs.iter().any(|e| e.message.contains("bag")));
+    }
+
+    // A summarizing view whose output index is `Machine`'s key and whose one
+    // non-index column is `temp_max: real` (`docs/language/10-views.md`).
+    const SUMMARY_VIEW: &str = r#"
+        unit Machine { id: string }
+        store readings { unit { Machine } var { temperature: real } }
+    "#;
+
+    #[test]
+    fn view_conforms_to_unit_fixing_shape() {
+        // A unit-fixing shape checks the output's index structurally: the view
+        // ends in `group_map`, so its index is `Machine`'s `id`.
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape Tabular[U: Unit] {{ unit {{ U }} }}
+            view machine_summary : Tabular[Machine] {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        resolve_str(&src).expect("view carrying Machine's index conforms");
+    }
+
+    #[test]
+    fn view_with_wrong_unit_index_is_rejected() {
+        // The view's index is `id`, but `Site`'s index is `code`, so a claim of
+        // `Tabular[Site]` fails the structural index check.
+        let src = format!(
+            "{SUMMARY_VIEW}
+            unit Site {{ code: string }}
+            shape Tabular[U: Unit] {{ unit {{ U }} }}
+            view v : Tabular[Site] {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(
+            errs.iter().any(
+                |e| e.message.contains("tabulates `Site`") && e.message.contains("rather than")
+            )
+        );
+    }
+
+    #[test]
+    fn view_conforms_to_content_shape() {
+        // A content shape checks named columns by type, ignoring role: the
+        // shape says `const`, the view has no roles, and it still conforms.
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMax {{ const {{ temp_max: real }} }}
+            view machine_summary : HasMax {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        resolve_str(&src).expect("view carrying temp_max conforms regardless of role");
+    }
+
+    #[test]
+    fn view_missing_content_attribute_is_rejected() {
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMin {{ var {{ temp_min: real }} }}
+            view v : HasMin {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("missing attribute `temp_min`"))
+        );
+    }
+
+    #[test]
+    fn view_content_attribute_wrong_type_is_rejected() {
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMax {{ var {{ temp_max: string }} }}
+            view v : HasMax {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("type `string` in the shape but `real` in the view")
+        }));
     }
 }

@@ -20,6 +20,13 @@ shape Commissioned {
   const { commissioned: date }
 }
 
+// A unit-fixing contract: a table keyed by a given unit.  Claimed by the view
+// below to assert its output is still keyed by `Machine` (docs/language/
+// 10-views.md, "Constraining a view with a shape").
+shape Tabular[U: Unit] {
+  unit { U }
+}
+
 store machines : Commissioned {
   unit { Machine }
   const { commissioned: date }
@@ -34,6 +41,6 @@ store machines : Commissioned {
 // returns the value row when degraded and the empty collection `( )` otherwise,
 // so it filters without a `filter` primitive (ADR 0015).  Richer windowed
 // feature views arrive with streaming (M5).
-view attention_needed {
+view attention_needed : Tabular[Machine] {
   machines |> map |_, r| if r.status == "degraded" then r else ()
 }
