@@ -1080,8 +1080,16 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         }
         table.content.index.remove(idx_pos);
         table.content.columns.retain(|c| &c.name != value_col);
+        // Completeness over the retained key guarantees every (key, variant)
+        // row exists, so a spread cell is known exactly when the value column
+        // was total (`cellOf` in `formal/Mensura/Completeness.lean` reads an
+        // `Option`).
+        let value_optional = table.qualifiers.totality.is_optional(value_col);
         table.qualifiers.totality.narrow(value_col);
         for variant in variants {
+            if value_optional {
+                table.qualifiers.totality.mark_optional(variant.clone());
+            }
             table.content.columns.push(Column {
                 name: variant,
                 domain: value_domain.clone(),
@@ -1146,14 +1154,24 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         return Err(errs);
     }
 
-    // Drop the name and value columns, add one column per enum variant.
+    // Drop the name and value columns, add one column per enum variant.  A
+    // `singletons` input holds at most one (name, value) pair per key, so
+    // with several variants the other spread cells are missing (`cellOf` in
+    // `formal/Mensura/Completeness.lean` reads an `Option`): each variant
+    // column is optional unless the enum has a single variant and the value
+    // column was total.
     table
         .content
         .columns
         .retain(|c| &c.name != name_col && &c.name != value_col);
+    let value_optional = table.qualifiers.totality.is_optional(value_col);
+    let single_variant = variants.len() == 1;
     table.qualifiers.totality.narrow(name_col);
     table.qualifiers.totality.narrow(value_col);
     for variant in variants {
+        if value_optional || !single_variant {
+            table.qualifiers.totality.mark_optional(variant.clone());
+        }
         table.content.columns.push(Column {
             name: variant,
             domain: value_domain.clone(),
@@ -1736,6 +1754,10 @@ mod tests {
         assert!(!t.content.columns.iter().any(|c| c.name == "metric"));
         assert!(!t.content.index.iter().any(|c| c.name == "metric"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        // A singletons input fills at most one variant per key, so the spread
+        // cells are optional (`cellOf` reads an `Option`).
+        assert!(t.qualifiers.totality.is_optional("lo"));
+        assert!(t.qualifiers.totality.is_optional("hi"));
     }
 
     #[test]
@@ -1785,6 +1807,37 @@ mod tests {
         assert!(t.content.columns.iter().any(|c| c.name == "temperature"));
         assert!(t.content.columns.iter().any(|c| c.name == "peak"));
         assert_eq!(t.qualifiers.lineage, Lineage::root());
+        // `peak` is optional, so the folded value column was optional and the
+        // spread cells inherit it; completeness only guarantees the rows.
+        assert!(t.qualifiers.totality.is_optional("temperature"));
+        assert!(t.qualifiers.totality.is_optional("peak"));
+    }
+
+    #[test]
+    fn pivot_index_form_keeps_a_total_value_total() {
+        // Folding only total columns keeps the spread cells total: index-form
+        // completeness guarantees every (key, variant) row exists, and the
+        // value is always known.
+        let wide = from_cols(
+            "wide",
+            "Slot",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("lo", ColumnType::Real, ColumnRole::Attr, false),
+                scol("hi", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+        );
+        let s = Sources::new().with("wide", wide);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading (lo, hi) \
+                 |> assume { complete } |> pivot metric reading",
+            )
+            .expect("ok"),
+        );
+        assert!(t.qualifiers.totality.is_total("lo"));
+        assert!(t.qualifiers.totality.is_total("hi"));
     }
 
     #[test]
