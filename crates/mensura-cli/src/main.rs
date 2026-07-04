@@ -90,10 +90,16 @@ fn cmd_check(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match frontend(path, &src) {
-        Ok(schemas) => {
-            let n = schemas.len();
-            let noun = if n == 1 { "store" } else { "stores" };
-            println!("ok: {n} {noun}");
+        Ok(program) => {
+            let stores = program.schemas.len();
+            let views = program.views.len();
+            let store_noun = if stores == 1 { "store" } else { "stores" };
+            if views == 0 {
+                println!("ok: {stores} {store_noun}");
+            } else {
+                let view_noun = if views == 1 { "view" } else { "views" };
+                println!("ok: {stores} {store_noun}, {views} {view_noun}");
+            }
             ExitCode::SUCCESS
         }
         Err(()) => ExitCode::FAILURE,
@@ -104,7 +110,7 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
     let Some(src) = read_source(path) else {
         return ExitCode::FAILURE;
     };
-    let Ok(schemas) = frontend(path, &src) else {
+    let Ok(program) = frontend(path, &src) else {
         return ExitCode::FAILURE;
     };
 
@@ -124,7 +130,7 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
     if in_memory {
         eprintln!("note: using an in-memory database; pass --db <path> to persist");
     }
-    for schema in &schemas {
+    for schema in &program.schemas {
         match backend.ensure_store(schema) {
             Ok(EnsureOutcome::Created) => {
                 println!(
@@ -146,9 +152,9 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
 }
 
 /// The shared compiler frontend: lex, parse, and resolve `src`, reporting every
-/// diagnostic to stderr.  Returns the resolved schemas on success, or `Err(())`
+/// diagnostic to stderr.  Returns the resolved program on success, or `Err(())`
 /// once diagnostics have been printed.  Both `check` and `run` build on it.
-fn frontend(path: &Path, src: &str) -> Result<Vec<mensura_types::Schema>, ()> {
+fn frontend(path: &Path, src: &str) -> Result<mensura_types::ResolvedProgram, ()> {
     let tokens = match tokenize(src) {
         Ok(tokens) => tokens,
         Err(err) => {

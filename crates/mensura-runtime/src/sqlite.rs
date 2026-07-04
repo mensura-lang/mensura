@@ -123,6 +123,7 @@ mod tests {
         let program = mensura_syntax::parse(&tokens).expect("should parse");
         mensura_types::resolve(&program)
             .expect("should resolve")
+            .schemas
             .into_iter()
             .find(|s| s.store == store)
             .unwrap_or_else(|| panic!("no store named {store}"))

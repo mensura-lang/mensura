@@ -1,4 +1,4 @@
-//! Name resolution: AST [`Program`] -> resolved [`Schema`]s.
+//! Name resolution: AST [`Program`] -> a resolved [`ResolvedProgram`].
 //!
 //! Resolution collects *all* diagnostics rather than failing on the first,
 //! since stores and units are largely independent.  It enforces the current
@@ -10,16 +10,17 @@
 //! structure.  A store is checked against its declared columns; a view against
 //! its computed output content, ignoring cardinality
 //! (`docs/language/10-views.md`).  Shapes carry no storage, so they produce no
-//! [`Schema`]; only stores do.
+//! [`Schema`]; a store yields a [`Schema`] and a view a [`ViewPlan`]
+//! (`docs/toolkit/04-processing-layer.md`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use mensura_syntax::{
-    EnumDecl, Field, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeRef, Span,
-    StoreDecl, TypeExpr, UnitDecl, ViewDecl, is_identifier,
+    Block, EnumDecl, Expr, ExprKind, Field, Item, NameSeg, NameTemplate, Program, ShapeArg,
+    ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, TypeExpr, UnitDecl, ViewDecl, is_identifier,
 };
 
-use crate::model::{Column, ColumnRole, ColumnType, Schema};
+use crate::model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
 use crate::pipe_check::{Sources, type_view};
 use crate::table::TableType;
 
@@ -100,9 +101,9 @@ fn check_case(name: &str, span: Span, case: Case, what: &str, errors: &mut Vec<R
     ));
 }
 
-/// Resolve a parsed program into one [`Schema`] per store, or every error
-/// found along the way.
-pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
+/// Resolve a parsed program into one [`Schema`] per store and one
+/// [`ViewPlan`] per view, or every error found along the way.
+pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
     // Pass 1: collect unit, store, shape, and enum names (separate namespaces).
@@ -182,6 +183,30 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
         }
     }
 
+    // Stores and views share one table namespace at the storage level
+    // (`docs/toolkit/04-processing-layer.md`): both materialize as a table
+    // named after the declaration, so a collision is an error here, not a
+    // surprise at runtime.
+    let mut view_names: HashSet<&str> = HashSet::new();
+    for v in &views {
+        if !view_names.insert(&v.name.name) {
+            errors.push(ResolveError::new(
+                format!("duplicate view `{}`", v.name.name),
+                v.name.span,
+            ));
+        }
+        if store_names.contains(v.name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "view `{}` collides with a store of the same name: stores and \
+                     views share one table namespace",
+                    v.name.name
+                ),
+                v.name.span,
+            ));
+        }
+    }
+
     // Pass 2: resolve each shape's structure, for conformance checks below.
     let mut resolved_shapes: HashMap<&str, ResolvedShape> = HashMap::new();
     for (name, sh) in &shapes {
@@ -205,8 +230,11 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
         }
     }
 
-    // Pass 4: type-check each view's body against the store schemas presented as
-    // table sources (`docs/language/10-views.md`).  Views produce no `Schema`.
+    // Pass 4: type-check each view's body against the store schemas presented
+    // as table sources (`docs/language/10-views.md`), and lower each checked
+    // view into a `ViewPlan` for the processing layer
+    // (`docs/toolkit/04-processing-layer.md`).
+    let mut view_plans = Vec::new();
     if !views.is_empty() {
         let mut sources = Sources::new();
         for schema in &schemas {
@@ -228,6 +256,7 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
                         &enums,
                         &mut errors,
                     );
+                    view_plans.push(view_plan(v, &output, &store_names));
                 }
                 Err(errs) => {
                     for e in errs {
@@ -239,9 +268,104 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
     }
 
     if errors.is_empty() {
-        Ok(schemas)
+        Ok(ResolvedProgram {
+            schemas,
+            views: view_plans,
+        })
     } else {
         Err(errors)
+    }
+}
+
+/// Lower a checked view into its [`ViewPlan`]: the output columns in storage
+/// order (read off the checked table type), the computed cardinality, the
+/// body, and the stores it reads.
+fn view_plan(v: &ViewDecl, output: &TableType, store_names: &HashSet<&str>) -> ViewPlan {
+    let mut columns = Vec::new();
+    for c in &output.content.index {
+        columns.push(Column {
+            name: c.name.clone(),
+            ty: c.domain.clone(),
+            role: ColumnRole::Index,
+            optional: false,
+            span: v.name.span,
+        });
+    }
+    for c in &output.content.columns {
+        columns.push(Column {
+            name: c.name.clone(),
+            ty: c.domain.clone(),
+            role: ColumnRole::Attr,
+            optional: output.qualifiers.totality.is_optional(&c.name),
+            span: v.name.span,
+        });
+    }
+    ViewPlan {
+        name: v.name.name.clone(),
+        columns,
+        cardinality: output.qualifiers.cardinality,
+        body: v.body.clone(),
+        sources: collect_sources(&v.body, store_names),
+        span: v.span,
+    }
+}
+
+/// The store names a view body mentions, sorted.  A bare name is a source
+/// only in pipeline position, but matching every name against the store set
+/// over-approximates harmlessly (the runtime would scan a store it does not
+/// read); shadowing store names with lambda parameters is not a concern the
+/// slice needs to resolve.
+fn collect_sources(body: &Block, stores: &HashSet<&str>) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    collect_block(body, stores, &mut found);
+    found.into_iter().collect()
+}
+
+fn collect_block(block: &Block, stores: &HashSet<&str>, found: &mut BTreeSet<String>) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { value, .. } => collect_expr(value, stores, found),
+            Stmt::Assert(e) | Stmt::Expr(e) => collect_expr(e, stores, found),
+        }
+    }
+}
+
+fn collect_expr(expr: &Expr, stores: &HashSet<&str>, found: &mut BTreeSet<String>) {
+    match &expr.kind {
+        ExprKind::Name(name) => {
+            if stores.contains(name.as_str()) {
+                found.insert(name.clone());
+            }
+        }
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) => {}
+        ExprKind::Member(base, _) => collect_expr(base, stores, found),
+        ExprKind::App(f, a) => {
+            collect_expr(f, stores, found);
+            collect_expr(a, stores, found);
+        }
+        ExprKind::Unary(_, e) => collect_expr(e, stores, found),
+        ExprKind::Binary(_, l, r) => {
+            collect_expr(l, stores, found);
+            collect_expr(r, stores, found);
+        }
+        ExprKind::Presence(base, _) => collect_expr(base, stores, found),
+        ExprKind::Lambda { body, .. } => collect_expr(body, stores, found),
+        ExprKind::Tuple(items) => {
+            for item in items {
+                collect_expr(item, stores, found);
+            }
+        }
+        ExprKind::Record(fields) => {
+            for f in fields {
+                collect_expr(&f.value, stores, found);
+            }
+        }
+        ExprKind::Block(b) => collect_block(b, stores, found),
+        ExprKind::If { cond, then, els } => {
+            collect_expr(cond, stores, found);
+            collect_expr(then, stores, found);
+            collect_expr(els, stores, found);
+        }
     }
 }
 
@@ -1010,14 +1134,105 @@ fn resolve_type(
 mod tests {
     use super::*;
 
-    fn resolve_str(src: &str) -> Result<Vec<Schema>, Vec<ResolveError>> {
+    fn resolve_program(src: &str) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let tokens = mensura_syntax::tokenize(src).expect("should lex");
         let program = mensura_syntax::parse(&tokens).expect("should parse");
         resolve(&program)
     }
 
+    fn resolve_str(src: &str) -> Result<Vec<Schema>, Vec<ResolveError>> {
+        resolve_program(src).map(|p| p.schemas)
+    }
+
     fn errors(src: &str) -> Vec<ResolveError> {
         resolve_str(src).expect_err("should fail to resolve")
+    }
+
+    const ATTENTION: &str = r#"
+        unit Machine { id: string }
+        enum MachineStatus { "operational", "degraded", "failure" }
+        store machines {
+          unit { Machine }
+          attr {
+            status: MachineStatus
+            last_service: date?
+          }
+        }
+        view attention_needed {
+          machines |> map |_, r| if r.status == "degraded" then r else ()
+        }
+    "#;
+
+    #[test]
+    fn view_lowers_to_a_plan() {
+        let program = resolve_program(ATTENTION).expect("should resolve");
+        assert_eq!(program.views.len(), 1);
+        let plan = &program.views[0];
+        assert_eq!(plan.name, "attention_needed");
+        assert_eq!(plan.sources, vec!["machines".to_string()]);
+        assert_eq!(plan.cardinality, crate::table::Cardinality::Singletons);
+
+        // Output columns in storage order: the index, then the computed
+        // attributes in the order the checker produced them (a whole-row
+        // `map` body yields them alphabetically).
+        let cols: Vec<(&str, ColumnRole, bool)> = plan
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.role, c.optional))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                ("id", ColumnRole::Index, false),
+                ("last_service", ColumnRole::Attr, true),
+                ("status", ColumnRole::Attr, false),
+            ]
+        );
+
+        // A `singletons` view is keyed at the storage level.
+        assert!(plan.shape().keyed);
+    }
+
+    #[test]
+    fn view_colliding_with_a_store_is_an_error() {
+        let src = r#"
+            unit Machine { id: string }
+            store machines {
+              unit { Machine }
+              attr { commissioned: date }
+            }
+            view machines {
+              machines |> map |_, r| r
+            }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("collides with a store")),
+            "expected a table-namespace collision error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_view_is_an_error() {
+        let src = r#"
+            unit Machine { id: string }
+            store machines {
+              unit { Machine }
+              attr { commissioned: date }
+            }
+            view v {
+              machines |> map |_, r| r
+            }
+            view v {
+              machines |> map |_, r| r
+            }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("duplicate view")),
+            "expected a duplicate-view error, got: {errs:?}"
+        );
     }
 
     #[test]
