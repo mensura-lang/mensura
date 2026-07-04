@@ -117,14 +117,16 @@ A **column** is a named field in a table's schema.  Index columns form the
 key; non-index columns carry the per-entity data.
 
 **Attribute** is a synonym for non-index column, preferred in declaration
-contexts (store and shape bodies).  Attributes are split into `const`
+contexts (store and shape bodies), where attributes are listed in an `attr`
+block.  In a store each attribute is tagged with its mutability: `@const`
 (immutable facts: the date of birth of a Person, the credit count of a
-Course) and `var` (as in variability, evolving data: a student's enrolment
-status, a sensor's latest reading).
+Course) or `@var` (as in variability, evolving data: a student's enrolment
+status, a sensor's latest reading).  A shape lists the same attributes as
+structure only and says nothing about mutability.
 
 The word "variable" sometimes appears as a synonym for attribute in the
-statistical literature.  Mensura reserves the keyword `var` for one specific
-category of attribute (the mutable one) and avoids "variable" as a general
+statistical literature.  Mensura reserves `@var` for one specific category
+of store attribute (the mutable one) and avoids "variable" as a general
 synonym for column.  "Feature" and "predictor" are not Mensura vocabulary;
 they are ML-community names for specific uses of columns.
 
@@ -154,8 +156,8 @@ A column is **total** if its value is always known when a row is present.
 Totality is the default.  A column marked `?` is **optional**: its value may
 be **missing** (absent, null) even when the row exists.
 
-Index columns are always total; a key field cannot be missing.  Only `const`
-and `var` attributes may be optional.
+Index columns are always total; a key field cannot be missing.  Only
+non-index attributes may be optional.
 
 Totality and cardinality are independent axes.  A table can have singletons
 cardinality (at most one row per key) with optional columns (the row exists
@@ -234,8 +236,9 @@ operators cannot be applied to it.  Bag combinators (`count`, `sum`, `min`,
 
 A **store** is a Mensura declaration that creates a persistent, updatable
 tabulation of observations of a unit.  It declares the unit being tabulated,
-the `const` and `var` attributes, domain resolution (for compound units), and
-change-control policy.  A store is the primary source of raw data in Mensura.
+its attributes (each tagged `@const` or `@var`), domain resolution (for
+compound units), and change-control policy.  A store is the primary source of
+raw data in Mensura.
 
 A **collect** is a process-style counterpart to a store, where data arrives
 through a streaming or ingestion mechanism rather than through CRUD
@@ -245,8 +248,9 @@ do not.
 ### Shape
 
 A **shape** is a named structural contract for a table: an optional unit
-clause plus `const`/`var` attribute blocks.  A shape is abstract: it carries
-no storage commitment, no domain resolution, and no policy.  Stores and
+clause plus `attr` blocks.  A shape is abstract: it describes structure only,
+carrying no storage commitment, no domain resolution, no policy, and no
+mutability (the `@const`/`@var` distinction is a store concern).  Stores and
 functions are typed against shapes.
 
 A shape can be unit-fixing (`unit { Person }`), parameterised over a unit
@@ -312,22 +316,23 @@ hosts `let` bindings, `assert` statements, and a trailing table-valued
 expression.  The view's content and qualifiers are computed from the pipeline,
 not declared.
 
-### `const` and `var`
+### `@const` and `@var`
 
-`const` and `var` are the two categories of non-index attribute in a store or
-shape.
+`@const` and `@var` are the two mutability annotations on a store attribute,
+written after its `name : type`.  They are store-only: a shape lists
+attributes without them.  Every store attribute carries exactly one.
 
-A `const` attribute is a fact that should not change after the entity is
+A `@const` attribute is a fact that should not change after the entity is
 first observed: a person's date of birth, a course's credit count.  Changes
-to `const` attributes are exceptional and subject to audit.
+to `@const` attributes are exceptional and subject to audit.
 
-A `var` attribute is data that evolves as part of normal operation: a
+A `@var` attribute is data that evolves as part of normal operation: a
 student's enrolment status, a device's latest sensor reading.  Changes to
-`var` attributes are routine.
+`@var` attributes are routine.
 
-The distinction is encoded in the type and governs which change-control
-annotations (`@audited`, `@versioned`, `@auto`, `@allowcreate`) apply.  It
-is not left to convention.
+The distinction is encoded in the type and governs which further
+change-control annotations (`@audited`, `@versioned`, `@auto`, `@allowcreate`)
+apply.  It is not left to convention.
 
 ### `assume`
 
@@ -443,11 +448,12 @@ warnings.
    Physical-unit and semantic mismatches are compile errors, not runtime
    conversions.
 
-5. **Constants and evolving data.** Non-index columns are split into `const`
-   (facts that should not change), `var` (data that evolves), and the
-   annotations that govern this evolution: `@audited`, `@versioned`,
-   `@auto`, `@allowcreate`.  The distinction between immutable facts and
-   evolving state is encoded in the type, not left to convention.
+5. **Constants and evolving data.** Non-index columns are store attributes
+   tagged `@const` (facts that should not change) or `@var` (data that
+   evolves), alongside the further annotations that govern this evolution:
+   `@audited`, `@versioned`, `@auto`, `@allowcreate`.  The distinction between
+   immutable facts and evolving state is encoded in the type, not left to
+   convention.
 
 6. **No defaults that hide assumptions.** Where existing tools silently
    pick a row order, a join key, an imputation strategy, or a CV scheme,

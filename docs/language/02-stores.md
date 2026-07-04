@@ -38,22 +38,27 @@ the unit declaration.
 ## Store declaration
 
 A store declaration consists of a name, a unit reference, an optional
-`domain` block, and any number of `const` and `var` blocks.
+`domain` block, and one or more `attr` blocks.
 
 ```
 enum Status { "active", "inactive" }
 
 store persons {
   unit { Person }
-  const { birthdate: date }
-  var   { status: Status }
+  attr {
+    birthdate: date   @const
+    status:    Status @var
+  }
 }
 ```
 
 The store's name is the identifier other stores and pipelines use to
 refer to it.  The `unit { U }` line says which unit is being
-tabulated.  The `const` and `var` blocks list the attributes attached
-to each observation; their semantics are described below.
+tabulated.  The `attr` block lists the attributes attached to each
+observation; each attribute is tagged `@const` or `@var` for its
+mutability, described below.  Repeated `attr` blocks are allowed and
+merged.  This surface is decided in
+`docs/decisions/0019-attr-blocks-and-store-const-var-annotations.md`.
 
 ## Basic and compound stores
 
@@ -71,8 +76,10 @@ store student_grades {
     student: students
     course:  courses
   }
-  const { class_id: string }
-  var   { grade: real }
+  attr {
+    class_id: string @const
+    grade:    real   @var
+  }
 }
 ```
 
@@ -90,17 +97,19 @@ Transitivity follows the store graph.
 
 ## Attributes
 
-The `const` and `var` blocks list the attributes that accompany each
-observation.  Each attribute has a name and a type.  The type may be
-a primitive (`string`, `int`, `real`, `date`, ...) or a unit reference, in
-the same way unit index fields can be either.
+The `attr` block lists the attributes that accompany each observation.
+Each attribute has a name, a type, and (in a store) a trailing `@const`
+or `@var` annotation.  The type may be a primitive (`string`, `int`,
+`real`, `date`, ...) or a unit reference, in the same way unit index
+fields can be either.
 
 A value is **total** by default: in an observed row every attribute is
 known.  Marking the type with a trailing `?` makes the value
-**optional**, so it may be missing even when the row is present:
+**optional**, so it may be missing even when the row is present.  The
+`?` sits on the type, before the mutability annotation:
 
 ```
-var { last_service: date? }
+attr { last_service: date? @var }
 ```
 
 Whether a value may be missing is independent of how many rows a key has
@@ -123,30 +132,40 @@ unit Program {
 store programs {
   unit { Program }
   domain { coordinator: persons }
-  const { name: string }
-  var   { coordinator: Person }
+  attr {
+    name:        string @const
+    coordinator: Person @var
+  }
 }
 ```
 
 Here `programs.coordinator` is an attribute of type `Person`, resolved
 into `persons`.
 
-### `const` and `var`
+### `@const` and `@var`
 
-`const` attributes are *facts that should not change*: a person's
+Every attribute in a store's `attr` block carries exactly one of the
+two mutability annotations, written after its `name : type`.  There is
+no default: omitting both is a compile error naming the attribute.
+Mutability is load-bearing intent, so it is stated, not inferred.  The
+annotations are store-only; a shape lists the same attributes without
+them (`03-shapes.md`).
+
+`@const` attributes are *facts that should not change*: a person's
 birthdate, a course's name under a given catalogue revision, a
 registration's program.  They can be modified, but the language
 treats every change as an exceptional event subject to audit.
 
-`var` attributes are *data that evolves over time*: a student's
+`@var` attributes are *data that evolves over time*: a student's
 status, a course offering's open/closed state, a person's last name.
 Changes are still observed by the language, but they are routine.
 
-The semantic distinction between `const` and `var` is not just
-documentation: it is what audit and version policy attach to.  The
-exact policy syntax (`@audited`, `@versioned`, `@auto`,
-`@allowcreate`) is treated in a separate document; for now it is
-enough to know that `const` and `var` are real, distinct categories.
+The semantic distinction between `@const` and `@var` is not just
+documentation: it is what audit and version policy attach to.
+`@const`/`@var` are the first members of the store-only annotation
+family; the further policy syntax (`@audited`, `@versioned`, `@auto`,
+`@allowcreate`) composes in the same trailing slot and is treated in a
+separate document.
 
 ## Multiple stores of the same unit
 
@@ -156,17 +175,17 @@ not a quirk: different stores serve different purposes.
 ```
 store persons {
   unit { Person }
-  const { birthdate: date }
+  attr { birthdate: date @const }
 }
 
 store students {
   unit { Person }
-  const { admission: date }
+  attr { admission: date @const }
 }
 
 store alumni_snapshot {
   unit { Person }
-  const { graduation_year: int }
+  attr { graduation_year: int @const }
 }
 ```
 
@@ -245,18 +264,20 @@ enum Weekday {
 
 store departments {
   unit { Department }
-  const { name: string }
+  attr { name: string @const }
 }
 
 store persons {
   unit { Person }
-  const { birthdate: date }
-  var   { last_name: string }
+  attr {
+    birthdate: date   @const
+    last_name: string @var
+  }
 }
 
 store students {
   unit { Person }
-  const { admission: date }
+  attr { admission: date @const }
 }
 
 store courses {
@@ -264,8 +285,8 @@ store courses {
   domain {
     department: departments
   }
-  const {
-    weekday: Weekday
+  attr {
+    weekday: Weekday @const
   }
 }
 
@@ -275,8 +296,10 @@ store student_grades {
     student: students
     course:  courses
   }
-  const { class_id: string }
-  var   { grade: real }
+  attr {
+    class_id: string @const
+    grade:    real   @var
+  }
 }
 ```
 
@@ -297,7 +320,7 @@ nothing.  Acyclic, well-formed.
   not.
 - **Audit, version, auto-fill policy.**  The syntax and semantics of
   `@audited`, `@versioned`, `@auto`, `@allowcreate`, and whether
-  `const` always implies `@audited` (per the proposal), belong in a
+  `@const` always implies `@audited` (per the proposal), belong in a
   separate policy document.
 - **API surface.**  REST endpoints, authentication, and permission
   checking are part of the web-service work, not the language
