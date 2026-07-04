@@ -24,33 +24,36 @@ stage; the design content is not.
 ## What a pipeline tracks
 
 The point of typing pipelines is that a table carries more than its rows.  An
-operation is read by what it does to the table's **tracked properties**, and
-the type checker rejects a pipeline that would violate one of them.  A pipeline
-threads four kinds of property:
+operation is read by what it does to the table's **content** and its
+**qualifiers** (the two parts of `Table<Qs, C>`, ADR 0013), and the type
+checker rejects a pipeline that would violate one of them:
 
-- **Content** (`C`): the schema, namely the index (key) columns and the
+- **Content** (`C`): the structure, namely the index (key) columns and the
   non-index columns with their domains.  Reindexing moves columns between the
   key and the non-key part.
-- **Cardinality**: how many nested rows share a key (none, one, or a bag).
-  Cardinality is part of the content type (`06-expressions.md`); operations
+- **Cardinality** (table-scoped qualifier): how many nested rows share a key,
+  **singletons** (`card <= 1`) or **bag** (`card 0..*`).  Operations
   transform it predictably, and some operations *demand* a particular
-  cardinality (`pivot` wants at most one row per key, `card <= 1`).
-- **Totality**: whether each non-index value is known or may be missing
-  (`Cell = Option`).  A value is total unless its type is marked `?` (ADR
-  0010); `left_join` makes its right columns optional, and a default, an
-  aggregate, or an `is known` narrowing makes a column total again.
-- **Completeness**: whether a partition is fully present, that is, whether
-  every group over some key has all of its rows.  Completeness is what makes a
-  key-shrinking operation sound.  It is established (by a check, a source
-  annotation, or a `collect` mechanism) and consumed (by a Tier B operation).
-- **Qualifiers** (`Qs`): sampling, dependency, and lineage, defined in `std`
-  per ADR 0004.  Each primitive carries propagation rules for them; this
-  document does not re-specify those rules, but it notes where an operation
-  imposes a qualifier-level precondition.
+  cardinality (`pivot` wants `singletons`, at most one row per key).
+- **Totality** (column-scoped qualifier): whether each non-index value is
+  known or may be missing (`Cell = Option`).  A value is total unless its
+  type is marked `?` (ADR 0010); `left_join` makes its right columns
+  optional, and a default, an aggregate, or an `is known` narrowing makes a
+  column total again.
+- **Completeness** (table-scoped qualifier): whether a partition is fully
+  present, that is, whether every group over some key has all of its rows.
+  Completeness is what makes a key-shrinking operation sound.  It is
+  established (by a check, a source annotation, or a `collect` mechanism)
+  and consumed (by a Tier B operation).
+- **Lineage** (table-scoped qualifier): the split ancestry that carries
+  disjointness, specified in `08-lineage.md`.  Sampling and dependency, the
+  two `std` qualifiers of ADR 0004 with no rules yet written, are deferred;
+  this document notes where an operation imposes a qualifier-level
+  precondition but does not re-specify propagation rules.
 
-The properties this document makes first-class, beyond plain content, are
-**cardinality**, **totality**, and **completeness**: every operation below
-states how it affects each one it changes.
+The qualifiers this document makes first-class are **cardinality**,
+**totality**, and **completeness**: every operation below states how it
+affects each one it changes.
 
 ## Composition
 
@@ -58,7 +61,7 @@ Three forms thread operations together, all from the expression sublanguage:
 
 - **`|>`**, the pipe: `data |> op` applies `op` to `data`.  An op is an
   ordinary curried function, so a partially applied stage such as
-  `left_join machines (|r| r.machine)` is the `Table -> Table` value the pipe
+  `left_join machines (|k, l| l.machine)` is the `Table -> Table` value the pipe
   feeds.  The pipe is reversed application, `x |> g` means `g x`, so a stage
   may always be written either way; the equivalence and its two-class
   consequence are spelled out in `06-expressions.md` and recorded in
@@ -83,40 +86,46 @@ obligation to be admitted.
 Each entry gives the surface form, the parameters, the effect on **content**,
 on **cardinality**, on **completeness** (and on **totality** where the
 operation changes it), the Tier, and the backing theorem.
-Throughout, `|r| ...` is a lambda over a single row, `|g| ...` a lambda over a
-group (a row whose cells are bags), and a bare column name (`machine`) is a
-reference to a column of the current schema.
+Throughout, lambdas are **key-first** (ADR 0015): `|k, r| ...` binds the key
+`k` and a single value row `r`, `|k, g| ...` binds the key and the group `g`
+(a row whose cells are bags), `split`'s `|k|` binds the key alone, and
+`|_, r|` ignores the key.  A bare column name (`machine`) is a reference to a
+column of the current schema.
 
 ### `map` - per-row transform
 
 ```
-data |> map |r| (.bmi = r.mass / r.height ^ 2)
+data |> map |k, r| (.bmi = r.mass / r.height ^ 2.0)
 ```
 
-The lambda receives one row and returns a row (a record).  Content: the output
-columns are those of the returned record.  Cardinality: 1:1, so per-key
-cardinality is preserved.  Completeness: preserved.  Tier A
-(`map_splitSafe`).
+The key-first lambda receives the key and one value row and returns a
+**collection of value rows** (ADR 0015): a bare row or record keeps one,
+`()` drops the row, and `(a, b, ...)` expands to several.  Content: the
+output columns are those of the returned rows; the index is preserved.
+Cardinality: the maximum collection size, so a body that returns at most one
+row preserves per-key cardinality and a body that may return two or more
+yields `bag`.  Completeness: preserved.  Tier A (`map_splitSafe`).
 
-`map` is the per-row case of the general key-preserving operation; dropping a
-row (a filter) or emitting several rows (an expansion) is the same primitive
-returning zero or many rows, which needs the expression-level conditionals and
-collection literals that are not yet specified (see forward references).
+Because the body is a collection, dropping a row (a filter) and emitting
+several rows (an expansion) are the same primitive: a filter is
+`map |k, r| if c then r else ()`, using the conditionals and collection
+literals of `06-expressions.md`.  There is no `filter` primitive; a named
+`filter` may later be sugar for this form (ADR 0015).
 
 ### `group_map` - per-key whole-group transform
 
 ```
-data |> group_map |g| (.total = sum g.credits)
+data |> group_map |k, g| (.total = sum g.credits)
 ```
 
-The lambda receives the whole group at a key, presented as a row whose cells
-are bags (so `g.credits` is the bag of `credits` across the group, a
-cardinality-many cell reduced here by `sum`).  Empty groups are skipped, so the
-lambda always sees a non-empty group.  Content: the output columns are those of
+The key-first lambda receives the key and the whole group at it, presented
+as a row whose cells are bags (so `g.credits` is the bag of `credits` across
+the group, a cardinality-many cell reduced here by `sum`).  Empty groups are
+skipped, so the lambda always sees a non-empty group.  Content: the output columns are those of
 the return.  Cardinality: **inferred from the return** - returning a single
-record yields card 1 per key (this is the `aggregate` shape, and it is what
-later lets `pivot` satisfy its `card <= 1` precondition); returning a bag yields
-card many (the window shape: one output row per input row).  Completeness:
+record yields `singletons` (one row per key, the `aggregate` shape, and it is
+what later lets `pivot` satisfy its `singletons` precondition); returning a
+bag yields `bag` (the window shape: one output row per input row).  Completeness:
 preserved.  Tier A (`fiberMap_splitSafe`).
 
 Window-style returns (a bag, one row per input row, such as a running total or
@@ -142,7 +151,7 @@ preserved.  Tier A (`ungroup_splitSafe`).
 **`shrink_key cols`** drops index component(s) into the non-index part.
 Content: the named key columns become ordinary columns.  Cardinality: rows that
 differed only in the dropped component now share a key, so per-key cardinality
-**grows** (the result is card many over the coarser key unless a following
+**grows** (the result is `bag` over the coarser key unless a following
 `group_map` reduces it).  Completeness: **demanded** - shrinking is split-safe
 only over a partition that is complete over the retained key, so `shrink_key`
 *consumes* a completeness fact.  Tier B (`project_not_preservesDisjoint`).
@@ -150,13 +159,15 @@ only over a partition that is complete over the retained key, so `shrink_key`
 ### `left_join` / `inner_join` - join a fixed table
 
 ```
-readings |> left_join machines (|r| r.machine)
+readings |> left_join machines (|k, l| l.machine)
 ```
 
-Joins the current table against a fixed right table; the lambda maps a left row
-to the right table's key.  Content: the right table's columns are added.
-Cardinality: preserved when the right table is functional (`card <= 1` per
-key); a right table with several rows per key multiplies them in.  Totality:
+Joins the current table against a fixed right table; the key-first lambda
+maps a left row (key `k`, value `l`) to the right table's key.  Content: the
+right table's columns are added.
+Cardinality: preserved when the right table is functional (`singletons`); a
+right table with several rows per key multiplies them in, raising the bound
+to `bag`.  Totality:
 `left_join` makes the added right columns **optional**, since an unmatched left
 row is kept with them missing; `inner_join` drops unmatched rows, so it adds no
 optionality.  Completeness: preserved on the left.  Tier A
@@ -179,8 +190,8 @@ keeps.  Tier A (`split_disjoint`; `bind_split` shows `bind` undoes it).
 each key.  It is **total**: it has no disjointness precondition, and it is
 always split-safe and associative/commutative (`bind_comm`, `bind_assoc`).
 Content: unchanged.  Cardinality: binding **disjoint** inputs preserves
-`card <= 1`; binding **overlapping** inputs may push an entity above one row, so
-the result is card many.  That lost guarantee is the only thing disjointness
+`singletons`; binding **overlapping** inputs may push an entity above one row,
+raising the bound to `bag`.  That lost guarantee is the only thing disjointness
 buys; it is not required for the operation to be defined or safe.  Completeness:
 the union is complete over a key iff both inputs are.  Tier A.
 
@@ -211,7 +222,7 @@ indexed by the `name` column into one wide row.  It has two forms with
 different status:
 
 - **Attribute form** (the `name` is a non-index column): split-safe, and
-  admissible exactly when each (key, name) cell is **`card <= 1`** - which is
+  admissible exactly when each (key, name) cell is **`singletons`** - which is
   the cardinality guarantee an upstream `group_map`/aggregate provides.  Tier A
   (`pivotAttr_splitSafe`; reversible against `unpivot` via `pivotAttr_reversible`).
 - **Index form** (the `name` is part of the key): not split-invariant, because
@@ -243,7 +254,7 @@ key-context asserts), and defers `collect`-by-mechanism completeness and the
   enrollments
   |> completeness_check { assert row_count open_offerings == 0 }
   |> shrink_key course
-  |> group_map |g| (.total_credits = sum g.credits)
+  |> group_map |k, g| (.total_credits = sum g.credits)
   ```
 
 - **`@complete_over(col)`** on a source store, establishing the fact globally so
@@ -258,18 +269,20 @@ fiat, locally and visibly, when the obligation cannot be discharged.
 
 ## Cardinality, totality, and the type
 
-Two orthogonal per-column properties are carried in the content type and
-threaded by every operation above: **cardinality** (how many rows share a key)
-and **totality** (whether a value is known or may be missing, `Cell = Option`).
+Two orthogonal qualifiers are threaded by every operation above:
+**cardinality** (table-scoped: how many rows share a key, `singletons` or
+`bag`) and **totality** (column-scoped: whether a value is known or may be
+missing, `Cell = Option`).
 The rules that consume them are stated in `06-expressions.md`: a scalar
 operator requires a **single known value** (`card 1` and not missing), the bag
-combinators (`sum`, `mean`, `count`, `any`, `all`, `in`) bring a many-row bag
+combinators (`sum`, `min`, `max`, `count`, `any`, `all`, `in`; `mean` is
+derived, `sum(x) / to_real(count(x))`, ADR 0014) bring a many-row bag
 down to one value, and a missing value is made known by a default, an
 aggregate, or an `is known` narrowing.  At the pipeline level `pivot`'s
-attribute form is admitted only at `card <= 1` (at most one row per key).  ADR
-0010 settles the total/optional axis and its `?` marker; how a *cardinality* is
-written in a type (`card 1` versus `0-or-1` versus many) stays the
-content/types document's job.  This document specifies how each operation
+attribute form is admitted only at `singletons` (at most one row per key).
+ADR 0010 settles the total/optional axis and its `?` marker; how
+`singletons` / `bag` (and the derived `exhaustive`) are written in a type
+stays the content/types document's job.  This document specifies how each operation
 *changes* these properties and where one is *demanded*, and leans on inference
 for the rest.
 
@@ -294,13 +307,13 @@ is.  A pipeline is a description of a table; the hosting site
 ```
 readings
 |> extend_key machine
-|> group_map |g| (.temp_mean = mean g.temperature, .temp_max = max g.temperature)
+|> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)
 ```
 
 `extend_key` adds `machine` to the key (content: index grows; cardinality and
 completeness preserved); `group_map` reduces each group to one record, so the
-result is **card 1** per `(…, machine)` key.  All Tier A, so it composes safely;
-it type-checks.
+result is **singletons** per `(…, machine)` key.  All Tier A, so it composes
+safely; it type-checks.
 
 **Coarsen the key (Tier B, with the completeness fact established first).**
 
@@ -308,13 +321,13 @@ it type-checks.
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }
 |> shrink_key course
-|> group_map |g| (.total_credits = sum g.credits)
+|> group_map |k, g| (.total_credits = sum g.credits)
 ```
 
 The check **establishes** "complete over student"; `shrink_key course`
-**consumes** it (dropping `course` makes the table card many over `student`);
-`group_map` brings it back to **card 1** per student.  It type-checks because
-the obligation was discharged.  Remove the check (and `@complete_over`, and
+**consumes** it (dropping `course` makes the table `bag` over `student`);
+`group_map` brings it back to **singletons** per student.  It type-checks
+because the obligation was discharged.  Remove the check (and `@complete_over`, and
 `assume`) and `shrink_key` is rejected.
 
 **Train/test split and re-merge (cardinality under `bind`).**
@@ -325,8 +338,8 @@ let full          = (train, test) |> bind
 ```
 
 `split` yields a disjoint pair, each complete over the keys it keeps; binding
-the disjoint pair preserves `card <= 1` and reconstructs `data` (`bind_split`).
-Binding two *overlapping* tables would instead yield card many, the documented
+the disjoint pair preserves `singletons` and reconstructs `data` (`bind_split`).
+Binding two *overlapping* tables would instead yield `bag`, the documented
 cost of dropping disjointness.  It type-checks.
 
 ## Forward references and open questions
@@ -341,12 +354,13 @@ cost of dropping disjointness.  It type-checks.
   `tagged_bind`/`tagged_split` are sugar over the primitives above and get
   their own round.
 - **Expression features the fuller surfaces need.**  Row-dropping and
-  row-expanding `map`, and bag-returning `group_map` (windows), need
-  expression-level conditionals, collection literals, and (for windows)
-  ordering; those are specified before the sugar that uses them.
-- **The cardinality-type notation.**  How card 1 / 0-or-1 / many is written in
-  a `Type` is the content/types document.  (The orthogonal total/optional axis
-  and its `?` marker are settled in ADR 0010.)
+  row-expanding `map` are covered by the conditionals and collection literals
+  of `06-expressions.md` (ADR 0015); bag-returning `group_map` (windows)
+  still needs an ordering from the dependency qualifier.
+- **The cardinality-type notation.**  How `singletons` / `bag` (and the
+  derived `exhaustive`) are written in a `Type` is the content/types
+  document.  (The orthogonal total/optional axis and its `?` marker are
+  settled in ADR 0010.)
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
 - **Hosting and streaming.**  `view` declarations that host pipelines are

@@ -101,9 +101,9 @@ Qs  qualifiers (propagated facts; concrete and closed in this freeze)
   or a fact on an index column (column scope on a key column).  A value that
   varies per runtime key-tuple is not type-level trackable (ADR 0013).
 
-The older `Table<S, D, L, C>` quadruple from the overview is subsumed:
-`Table<Qs, C>` carries the same facts, now as scoped members of `Qs` rather than
-fixed type slots.
+The older `Table<S, D, L, C>` quadruple from early drafts of the overview is
+subsumed: `Table<Qs, C>` carries the same facts, now as scoped members of
+`Qs` rather than fixed type slots.
 
 ## 2.  Judgment notation
 
@@ -443,9 +443,11 @@ both inputs were (`bind_disjoint_iff`).  Tier A.
 
 ### 6.6  `unpivot` / `pivot` (reshape long and wide)
 
-**`unpivot cols`** turns the named value columns into rows, spreading the column
-*name* into the key.  Content: the names move into the index, the values into a
-single column.  Cardinality: preserved.  Completeness: preserved.  Lineage:
+**`unpivot name value (cols)`** turns the named value columns into rows,
+spreading the column *name* into the key (the ratified surface,
+`docs/decisions/0016-reshape-surface.md`).  Content: the names move into a new
+`enum` index column `name`, the values into a single column `value`.
+Cardinality: preserved.  Completeness: preserved.  Lineage:
 preserved.  Tier A (`unpivot_splitSafe`, `unpivot_preservesDisjoint`).
 
 **`pivot name value`** is the inverse, with two forms of different status:
@@ -673,9 +675,10 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
 
 - **The extensible qualifier meta-calculus (ADR 0004).**  User-definable
   qualifiers, the rule-combinator DSL, and the open `Qs` row are deferred.  In
-  this freeze `Qs` is the closed pair completeness + lineage; reconciling this
-  narrower scope with ADR 0004 (which anticipated freezing the full
-  meta-calculus at M0) is a follow-up.
+  this freeze `Qs` is the closed set of four built-ins (cardinality, totality,
+  completeness, lineage; section 1); reconciling this narrower scope with
+  ADR 0004 (which anticipated freezing the full meta-calculus at M0) is a
+  follow-up.
 - **Sampling and dependency qualifiers.**  Both are `std` qualifiers with no
   propagation rules yet written; they join `Qs` once the meta-calculus lands.
 - **The predicate-region elaboration of lineage (`08-lineage.md`).**  The

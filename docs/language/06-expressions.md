@@ -335,10 +335,11 @@ empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
 - **Consolidated rules.**  The expression rules above are collected, with the
   pipeline and completeness rules, in `09-typing-reference.md` (the M0 freeze).
 - **Measured SI values.**  The `NxE` literal (`10x3`), the attachment of
-  a unit by juxtaposition (`10x3 m`, with no `SI(...)` constructor), the
-  unit grammar (`m/s^2` under ordinary operator precedence, with no
-  whitespace-significance), dimensional checking, and conversion between
-  units all belong to the physical-units and precision feature.  This
+  a physical unit by juxtaposition (`10x3 m`, with no `SI(...)`
+  constructor), the physical-unit grammar (`m/s^2` under ordinary operator
+  precedence, with no whitespace-significance), dimensional checking, and
+  conversion between physical units all belong to the physical-units and
+  precision feature.  This
   document fixes only that such literals are a distinct kind and do not
   participate in plain arithmetic.
 - **The pipeline level.**  The `|>` pipe, the operation catalogue
@@ -359,4 +360,3 @@ empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
   `lookup(principal)` and `@auto(auth.id)`, are still to be re-spelled to
   juxtaposition (`lookup principal`, `@auto (auth.id)`).  (The expression
   productions and the named `enum` declaration now live in `04-grammar.md`.)
-```

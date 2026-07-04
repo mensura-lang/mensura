@@ -45,7 +45,7 @@ store faculty : PersonRecord {
   var   { rank: Rank }
 }
 
-fn count(t: PersonRecord) -> real { ... }
+let count = |t: PersonRecord| : real { ... }
 
 let n_students = count(students);
 let n_faculty  = count(faculty);
@@ -58,7 +58,7 @@ extra attributes are fine.
 
 The `:` reads the same way it does everywhere else in the language:
 the thing on the left has the type on the right.  An attribute
-(`admission: date`), a function parameter (`t: PersonRecord`), and a
+(`admission: date`), a lambda parameter (`t: PersonRecord`), and a
 store (`students : PersonRecord`) all use the one colon for "has this
 type."  A store is a structural subtype of every shape it claims: it
 has everything the shape requires, possibly more.
@@ -245,16 +245,18 @@ resolves foreign keys.  Both are checked, neither implies the other.
 
 ## Conformance in function signatures
 
-A function or transform parameter is typed by referring to a shape.
-The unit and value parameters a function is generic over sit in the
-*same* parameter list as its table arguments, as one telescope:
+A function is an ordinary `let` binding of a lambda.  Each lambda parameter
+carries a type ascription, and the return type follows the parameter bars,
+both using the same `:` as every other ascription; the binding's own type
+is inferred from the lambda, so every name is bound exactly once.  The unit
+and value parameters a function is generic over sit in the *same* parameter
+list as its table arguments, as one telescope:
 
 ```
-fn count(t: PersonRecord) -> real { ... }
+let count = |t: PersonRecord| : real { ... }
 
-fn normalize(U: Unit, col: string, t: NumericCol[U, col]) -> NormalizedCol[U, col] {
+let normalize = |U: Unit, col: string, t: NumericCol[U, col]| : NormalizedCol[U, col]
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
-}
 ```
 
 There is one list, not a separate "generics" list and "value" list.
@@ -280,10 +282,36 @@ to `NumericCol[Person, "height"]`, and then `standardised` has type
 Functions and transforms are a later implementation slice: only shape
 declarations and the store conformance clause are implemented today.  Shape
 *type application* uses square brackets (`NumericCol[U, col]`), as shown.  The
-parentheses in the `fn` signatures and call sites above are provisional: how
+parameter ascriptions in the lambdas (not yet in the lambda grammar of
+`04-grammar.md`) and the parentheses at the call sites are provisional: how
 function signatures and calls delimit their arguments (brackets, the
-juxtaposition application of the expression sublanguage, or otherwise) is part
-of the deferred function-syntax design.
+juxtaposition application of the expression sublanguage, or otherwise) is
+part of the deferred function-syntax design.
+
+## Naming convention
+
+A shape is a type, so its name is **PascalCase**: `PersonRecord`, `Ageable`,
+`NumericCol`.  This case rule is enforced, like the unit and store rules;
+see `05-naming-and-casing.md`.
+
+A softer style convention sits on top of the enforced case rule, the
+counterpart of "units singular, stores plural" (`01-units.md`).  A shape
+name reads **singular**, as what one conforming table *is*, because it
+appears to the right of a `:` and the colon reads "has this type":
+`students : PersonRecord` reads "students is a PersonRecord table".  A
+plural name would suggest the shape holds many of something; it holds
+nothing, it classifies one table.
+
+Two singular styles fit the two kinds of contract.  A contract about
+*content* is a singular noun phrase naming what a conforming table is:
+`PersonRecord`, `NumericCol`, `FeatureWindow`.  A contract about a
+*property* is an **adjective** (or participle): `Ageable`, `Tabular`,
+`Named`.  Prefer the adjective form whenever the shape asserts a quality
+rather than enumerates structure; it is also the natural style for the
+future marker shapes (`Independent`, `Exhaustive`), which assert a quality
+and nothing else.  The test for both styles: the name should complete
+"this table is (a) ___" naturally.  This part is not enforced, but
+following it keeps conformance clauses readable as sentences.
 
 ## What shapes do not contain
 
@@ -362,9 +390,8 @@ store students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"
   }
 }
 
-fn normalize(U: Unit, col: string, t: NumericCol[U, col]) -> NormalizedCol[U, col] {
+let normalize = |U: Unit, col: string, t: NumericCol[U, col]| : NormalizedCol[U, col]
   mutate { `{col}_z` = (t[col] - mean(t[col])) / sd(t[col]) }
-}
 
 let standardised = normalize(Person, "height", students);
 // standardised has type NormalizedCol[Person, "height"]

@@ -42,6 +42,13 @@ An `enum` is a named type, so its name is PascalCase (`Status`), like a
 (`enum Status { "active", "inactive" }`), not identifiers, so the variant
 values themselves are unconstrained.
 
+A softer style layer sits on top of the enforced case rule and is not
+checked: a unit reads **singular** and a store **plural** (`01-units.md`),
+and a shape reads **singular**, as a noun phrase when it names content
+(`PersonRecord`) and preferably as an **adjective** when it asserts a
+property (`Ageable`, `Independent`); see `03-shapes.md`, "Naming
+convention".
+
 ### Why two classes
 
 A `store` or `collect` is a resource you query, mutate, and expose over a
