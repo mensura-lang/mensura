@@ -25,7 +25,7 @@ Three pieces of glue thread operations together:
 
 ```mensura
 unit Reading { ts: int }
-store readings { unit { Reading } var { kelvin:real machine:string } }
+store readings { unit { Reading } attr { kelvin:real machine:string } }
 
 view celsius {
   readings

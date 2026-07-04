@@ -4,7 +4,9 @@ unit Machine {
 
 store machines {
   unit { Machine }
-  const { commissioned: date }
-  var   { last_service: date? }
-  var   { operating_hours: real }
+  attr {
+    commissioned: date
+    last_service: date?
+    operating_hours: real
+  }
 }
