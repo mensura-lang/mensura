@@ -3,17 +3,18 @@
 This document specifies the surface grammar of Mensura.  Most of it is the
 grammar the parser accepts *today*, and it grows one feature at a time: the
 implemented subset covers `unit` declarations, the basic form of `store`
-declarations, and `shape` declarations (with an optional unit clause and
+declarations, `shape` declarations (with an optional unit clause and
 `Unit`/`string` parameters, the latter interpolated into attribute names)
-claimed through the `:` conformance clause on stores.
+claimed through the `:` conformance clause on stores, `enum` declarations,
+and `view` declarations.
 
 The final section, the expression sublanguage, is the grammar for the one
 expression language of `06-expressions.md` (and
 `docs/decisions/0007-single-expression-sublanguage.md`), kept here so the
 declaration grammar and the expression grammar live in one place.  The parser
-now implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`),
-though no declaration site hosts an expression yet; the hosting sites (`when:`,
-`where:`, `@auto`, the pipeline operations) land with their own features.
+implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`), and
+`view` declarations host it (`10-views.md`); the remaining hosting sites
+(`when:`, `where:`, `@auto`) land with their own features.
 
 The store and shape attribute surface shown here (the `attr` block, with no
 mutability markers) is the design decided in
@@ -189,10 +190,15 @@ deferred):
 | Type     | Meaning                                          |
 |----------|--------------------------------------------------|
 | `string` | text                                             |
-| `number` | numeric (integer or real)                        |
+| `int`    | integer number                                   |
+| `real`   | real number                                      |
 | `bool`   | boolean                                          |
 | `date`   | calendar date (ISO 8601)                         |
 | `Name`   | a declared `enum`: one of its string variants    |
+
+`int` and `real` are distinct domains with no implicit widening between
+them; only the key-eligible types (`string`, `int`, `bool`, `date`, `enum`)
+may be index fields (ADR 0014).
 
 A trailing `?` (e.g. `date?`) makes any of these **optional**: the value may
 be missing in an observed row (ADR 0010).  Without it the value is total
@@ -214,7 +220,7 @@ unit Department {
   code: string
 }
 
-store Departments {
+store departments {
   unit { Department }
   attr { name: string }
 }
@@ -223,7 +229,7 @@ enum Status {
   "active", "inactive"
 }
 
-store Persons : Ageable["birthdate"] {
+store persons : Ageable["birthdate"] {
   unit { Person }
   attr {
     birthdate: date
@@ -232,7 +238,7 @@ store Persons : Ageable["birthdate"] {
   }
 }
 
-store Students : PersonRecord, Tabular[Person] {
+store students : PersonRecord, Tabular[Person] {
   unit { Person }
   attr { admission: date }
 }
@@ -255,14 +261,14 @@ shape Ageable[date_field: string] {
 }
 ```
 
-`Students` claims the concrete-unit shape `PersonRecord` and the
+`students` claims the concrete-unit shape `PersonRecord` and the
 unit-parameter shape `Tabular[Person]`; the resolver checks the store's unit
 and `admission` attribute against the former and binds `U := Person` for the
-latter.  `Persons` claims `Ageable["birthdate"]`: the `string` argument
+latter.  `persons` claims `Ageable["birthdate"]`: the `string` argument
 renders the templated attribute name to `birthdate`, which the store carries,
 and its `status` is the named `enum Status`.
 `Named` is unit-agnostic (no unit clause): any store carrying an
-attribute `name: string` conforms.  `Courses` and `StudentGrades` from
+attribute `name: string` conforms.  `courses` and `student_grades` from
 `02-stores.md` are compound (their units reference other units and they carry
 `domain` blocks); they parse but are rejected by the resolver until compound
 support lands.
@@ -310,10 +316,11 @@ The terminals `number`, `string`, and `ident` are lexer tokens.  Boolean
 literals (`true`, `false`) and the word operators and statement keywords
 (`or`, `and`, `not`, `in`, `is`, `known`, `missing`, `let`, `assert`) are
 `ident` tokens recognized by their text in the positions shown; see the
-reserved-words note below.  `"|>"` is a single token, a new one: the lexer
-emits `|` as `Pipe` today and must munch `|>` maximally, with the closing-bar
-caveat in `06-expressions.md`.  All other punctuation (`== != < <= > >= + - *
-/ ^ . | ( ) { } [ ] : ; ,`) the lexer already emits, so the records, blocks,
+reserved-words note below.  `"|>"` is a single token (`PipeArrow`): the lexer
+munches it maximally, so a lone `|` stays a `Pipe` (a lambda bar), with the
+closing-bar caveat in `06-expressions.md`.  All other punctuation
+(`== != < <= > >= + - * / ^ . | ( ) { } [ ] : ; ,`) the lexer already
+emits, so the records, blocks,
 and ascriptions here need no new tokens.  The `NxE` measured literal (`10x3`)
 is a separate token reserved for the physical-units feature and does not
 appear in this subset.
@@ -447,7 +454,7 @@ identifiers, as the keyword-free lexer intends.
 - Compound units, `domain` resolution, and foreign keys.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Physical-unit and precision types, including the `NxE` measured literal and
-  the unit grammar.
+  the physical-unit grammar.
 - The pipeline operations (`map`, `group_map`, `extend_key`/`shrink_key`,
   joins, `split`/`bind`, `unpivot`/`pivot`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the

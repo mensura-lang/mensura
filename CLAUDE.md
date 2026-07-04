@@ -3,11 +3,12 @@
 Mensura is a statically typed language for data handling whose type system
 encodes sampling, dependency, lineage, and content properties so that
 semantic mistakes (data leakage, wrong CV strategy on temporal data, biased
-training sets, broken split-invariance, unit mismatches) become compile
-errors.
+training sets, broken split-invariance, physical-unit mismatches) become
+compile errors.
 
-The project has moved past Pre-M0 into early implementation.  The first
-feature, creating a store, is built end to end (see Implementation below).
+The project is in M1.  Creating a store is built end to end, and shapes,
+views, and the core pipeline algebra are typechecked in the frontend (see
+Implementation below).
 `ROADMAP.md` has the phased plan and `docs/language/00-overview.md` says what
 the language is.
 
@@ -39,22 +40,32 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
   `docs/language/04-grammar.md`.
 - `mensura-types`: name resolution and the resolved `Schema` model, the
   boundary IR (a store flattened to ordered, typed columns tagged as index
-  or attribute).  `resolve` collects *all* diagnostics rather than failing
-  on the first.
+  or attribute), plus the expression and pipeline checkers (`expr_check`,
+  `pipe_check`) that type view bodies.  `resolve` collects *all* diagnostics
+  rather than failing on the first.
 - `mensura-runtime`: the `StorageBackend` trait and a `SqliteBackend`
   (rusqlite, `bundled`).  A `Schema` maps to `CREATE TABLE` (index columns as
   the primary key, `enum` as `TEXT CHECK`).  Storage mapping and the
   storage-versus-processing (DBSP) split are in
   `docs/toolkit/00-storage-backend.md`.
 - `mensura-cli`: the `mensura` binary.  `mensura lex <file>` dumps tokens;
+  `mensura check <file>` typechecks without touching a database;
   `mensura run <file> [--db <path>]` typechecks and creates the stores
-  (`--db` defaults to an in-memory database).
+  (`--db` defaults to an in-memory database); `mensura lsp` runs the
+  language server over stdio.
+- `mensura-lsp`, `mensura-highlight`, `mensura-mdbook`: the language server
+  backend, the shared source-classification layer for highlighting, and the
+  mdBook preprocessor that highlights and check-gates the `book/` code
+  blocks (`docs/toolkit/03-book-highlighting.md`).
 
-Current scope is "basic": scalar-index units and stores with primitive
-attributes (`string`, `number`, `bool`, `date`, `enum("...")`).  Compound
-units, `domain`/foreign-key resolution, and physical-unit/precision types are
-deferred and rejected with "not yet supported" diagnostics.  Enum variants
-are string literals.  Worked examples live in `docs/examples/*.mensura`.
+Current scope: scalar-index units; stores with primitive attributes
+(`string`, `int`, `real`, `bool`, `date`, and named `enum` types whose
+variants are string literals); shapes with `Unit`/`string` parameters; and
+views hosting the core pipeline algebra over the expression sublanguage,
+including the Tier B completeness discharge (ADR 0017).  Compound
+units, `domain`/foreign-key resolution, and physical-unit/precision types
+are deferred and rejected with "not yet supported" diagnostics.  Worked
+examples live in `docs/examples/*.mensura`.
 
 ## Style guide
 

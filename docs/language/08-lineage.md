@@ -24,7 +24,8 @@ core, `assert` / `assume` cover anything the hierarchy cannot decide.
 **cardinality** and **completeness**.  Each is a *tracked fact*: every
 operation states how it transforms the fact, the fact is *established* by a
 mechanism or a check or an annotation, and a downstream operation *demands*
-it.  Completeness is the template (`07-pipelines.md:39-42`, `:208-238`):
+it.  Completeness is the template (`07-pipelines.md`, "What a pipeline
+tracks" and "Tier B and completeness"):
 
 - established by mechanism (`collect` is complete by construction), by a check
   (`completeness_check { assert ... }`), or by a source annotation
@@ -36,9 +37,9 @@ it.  Completeness is the template (`07-pipelines.md:39-42`, `:208-238`):
 This document gives **disjointness** the same surface.  Disjointness is the
 precondition for not leaking across a split, and it is the fact that licenses
 leak-free validation, which is the correctness goal of the whole language.
-`07-pipelines.md:178-180` already places it in the lineage qualifier rather
-than in the algebra; what follows is the operational account of how that fact
-is established, propagated, demanded, and assumed.
+`07-pipelines.md` (the `split` / `bind` entry) already places it in the
+lineage qualifier rather than in the algebra; what follows is the operational
+account of how that fact is established, propagated, demanded, and assumed.
 
 ## Disjointness is a relation, tracked through a unary state
 
@@ -133,7 +134,7 @@ Tier A pipeline carries a disjointness fact end to end.  Per primitive:
 | operation | effect on the region | disjointness | theorem |
 | --- | --- | --- | --- |
 | `map` | key-preserving, support can only shrink | preserved | `map_preservesDisjoint` |
-| `filter` | region narrows to `R and q` | preserved (strengthened) | `map_preservesDisjoint` |
+| `map` as filter (ADR 0015) | region narrows to `R and q` | preserved (strengthened) | `map_preservesDisjoint` |
 | `group_map` | one output key per input key | preserved | `fiberMap_splitSafe` |
 | `extend_key` | key refines, support splits | preserved | `ungroup_preservesDisjoint` |
 | `left_join` / `inner_join` | fixed-right, key-preserving | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
@@ -159,17 +160,18 @@ Disjoint (bind a b) c   iff   Disjoint a c  and  Disjoint b c
 region and therefore only *lose* disjointness facts: binding in a table that
 overlaps `c` destroys `Disjoint _ c`.  This is the precise content of "the
 property is changed by merge".  Note that `bind` itself is total and always
-split-safe (`07-pipelines.md:169-176`); disjointness is not a precondition for
-`bind` to be defined, it is a fact `bind` consumes when two halves are
-recombined and a guarantee (`card <= 1`) that disjoint inputs buy.
+split-safe (`07-pipelines.md`, the `split` / `bind` entry); disjointness is
+not a precondition for `bind` to be defined, it is a fact `bind` consumes
+when two halves are recombined and a guarantee (`card <= 1`) that disjoint
+inputs buy.
 
 **`shrink_key` and index `pivot` break it.**  These are the key-changing
 operations, and they are exactly where disjointness is lost.  `shrink_key`
 drops an index component, merging rows that a split had separated by that
 component; the formalization proves the underlying `project` does not preserve
-disjointness (`project_not_preservesDisjoint`), which is why
-`07-pipelines.md:140` already cites that theorem for `shrink_key`.  The index
-form of `pivot` is not even split-invariant (`pivot_not_splitInvariant`).
+disjointness (`project_not_preservesDisjoint`), which is why the reindexing
+entry of `07-pipelines.md` already cites that theorem for `shrink_key`.  The
+index form of `pivot` is not even split-invariant (`pivot_not_splitInvariant`).
 Past one of these, an upstream disjointness fact no longer holds over the new
 key and must be re-established (by a check) or assumed.
 
@@ -186,8 +188,8 @@ consume it:
   documents; when they are, the disjointness demand is their defining
   precondition, the direct analogue of a Tier B completeness demand.
 - `bind` consumes a disjointness fact to *preserve* a cardinality guarantee:
-  binding disjoint inputs keeps `card <= 1` per key, binding overlapping
-  inputs yields card many (`07-pipelines.md:172-175`).
+  binding disjoint inputs keeps `singletons`, binding overlapping inputs
+  raises the bound to `bag` (`07-pipelines.md`, the `split` / `bind` entry).
 
 An operation that demands disjointness type-checks only when the fact is in
 scope, established by one of the four mechanisms above and propagated, intact,

@@ -6,7 +6,7 @@ tidyverse, Polars, dplyr, …) leave to runtime, convention, or the
 programmer's discipline.  The compiler rejects programs whose data-handling
 operations are *syntactically valid but semantically wrong*: data leakage
 between training and test sets, the wrong cross-validation strategy on
-temporal data, biased sub-sampling, broken split-invariance, unit
+temporal data, biased sub-sampling, broken split-invariance, physical-unit
 mismatches, and so on.
 
 The novelty is not in the surface syntax but in the
@@ -428,7 +428,7 @@ warnings.
    `completeness_check { … }` stage, or a `@complete_over` annotation on
    their source, to be admissible.  See `docs/language/07-pipelines.md`.
 
-4. **Indexes and units are part of the type.** Each table declares its
+4. **Indexes and physical units are part of the type.** Each table declares its
    index columns, and each column declares its domain, including physical
    units and semantic refinements (CPF, email, regex-constrained strings).
    Physical-unit and semantic mismatches are compile errors, not runtime
@@ -460,8 +460,8 @@ warnings.
 - A Polars-backed interpreter sufficient to run typed pipelines
   end-to-end.
 - Compile-time prevention of the specific bug classes the postdoc report
-  promises to address: leakage, wrong-CV-on-temporal-data, unit mismatch,
-  group-leak, broken split-invariance.
+  promises to address: leakage, wrong-CV-on-temporal-data, physical-unit
+  mismatch, group-leak, broken split-invariance.
 - Validation strategies and ML algorithm signatures as typed primitives
   (random forest, ARIMA, mixed-effects, k-fold, stratified, temporal,
   grouped), each with its disjointness obligations.
