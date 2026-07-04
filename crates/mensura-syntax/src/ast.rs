@@ -69,7 +69,7 @@ pub struct EnumDecl {
     pub span: Span,
 }
 
-/// A `name: type` pair: a unit index field, or a `const`/`var` attribute of a
+/// A `name: type` pair: a unit index field, or an `attr` attribute of a
 /// store or shape.  The name may be backtick-quoted and, in a shape, may
 /// interpolate `string` parameters; a plain identifier is a single literal
 /// [`NameSeg`].
@@ -80,7 +80,7 @@ pub struct Field {
     pub span: Span,
 }
 
-/// `store Name [: ShapeRef, ...] { unit { U } (const|var|domain block)* }`
+/// `store Name [: ShapeRef, ...] { unit { U } (attr|domain block)* }`
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreDecl {
     pub name: Ident,
@@ -88,8 +88,8 @@ pub struct StoreDecl {
     pub unit: Ident,
     /// The shapes claimed by the `:` conformance clause, in source order.
     pub conforms: Vec<ShapeRef>,
-    pub consts: Vec<Field>,
-    pub vars: Vec<Field>,
+    /// The attributes of all `attr` blocks, merged in source order.
+    pub attrs: Vec<Field>,
     pub domain: Vec<DomainEntry>,
     pub span: Span,
 }
@@ -123,7 +123,7 @@ impl ShapeArg {
     }
 }
 
-/// `shape Name [[params]] { [unit { U }] (const|var block)* }`
+/// `shape Name [[params]] { [unit { U }] (attr block)* }`
 ///
 /// A structural contract: an optional unit plus the attributes a conforming
 /// store must carry.  Shapes hold no `domain` block, no policy, and no
@@ -136,8 +136,8 @@ pub struct ShapeDecl {
     /// The unit named by the `unit { U }` clause, if any.  `None` is a
     /// unit-agnostic shape.
     pub unit: Option<Ident>,
-    pub consts: Vec<Field>,
-    pub vars: Vec<Field>,
+    /// The attributes of all `attr` blocks, merged in source order.
+    pub attrs: Vec<Field>,
     pub span: Span,
 }
 

@@ -20,7 +20,7 @@ Suppose the store names a unit that was never declared:
 ```mensura,ignore
 store machines {
   unit { Machne }   // typo: there is no unit by this name
-  const { commissioned: date }
+  attr { commissioned: date }
 }
 ```
 

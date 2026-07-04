@@ -1,7 +1,7 @@
 // Accept: completeness_check establishes completeness for a downstream shrink
 // (ADR 0017).  The assert is a boolean over the key context.
 unit Reading { ts: int }
-store readings { unit { Reading } var { machine: string } var { credits: int } }
+store readings { unit { Reading } attr { machine: string } attr { credits: int } }
 view rollup {
   readings |> extend_key machine
            |> completeness_check { assert k.ts > 0 }

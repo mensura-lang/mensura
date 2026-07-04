@@ -9,7 +9,7 @@ use crate::ast::{
     DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
     ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
 };
-use crate::expr::{BinOp, Block, Expr, ExprKind, FieldRole, Presence, RecordField, Stmt, UnOp};
+use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
 
 /// A parse failure, located by a source span.
@@ -28,7 +28,7 @@ pub struct ParseError {
 pub struct Parsed {
     pub program: Program,
     /// Spans of the contextual keywords, in source order: the declaration
-    /// headers (`unit`, `store`, `shape`, `const`, `var`, `domain`, `enum`,
+    /// headers (`unit`, `store`, `shape`, `attr`, `domain`, `enum`,
     /// `view`), the conditional (`if`, `then`, `else`), the predicate operators
     /// (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement
     /// keywords (`let`, `assert`).
@@ -270,14 +270,11 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::LBrace, "`{` to open the store body")?;
         let unit = self.parse_unit_clause()?;
 
-        let mut consts = Vec::new();
-        let mut vars = Vec::new();
+        let mut attrs = Vec::new();
         let mut domain = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
-            if self.at_keyword("const") {
-                self.parse_attr_block(&mut consts)?;
-            } else if self.at_keyword("var") {
-                self.parse_attr_block(&mut vars)?;
+            if self.at_keyword("attr") {
+                self.parse_attr_block(&mut attrs)?;
             } else if self.at_keyword("domain") {
                 self.parse_domain_block(&mut domain)?;
             } else if self.at_keyword("unit") {
@@ -285,7 +282,7 @@ impl<'a> Parser<'a> {
                     self.error("the `unit` clause may appear only once, at the start of the body")
                 );
             } else {
-                return Err(self.error("expected `const`, `var`, `domain`, or `}`"));
+                return Err(self.error("expected `attr`, `domain`, or `}`"));
             }
         }
         let end = self.expect(&TokenKind::RBrace, "`}` to close the store body")?;
@@ -293,8 +290,7 @@ impl<'a> Parser<'a> {
             name,
             unit,
             conforms,
-            consts,
-            vars,
+            attrs,
             domain,
             span: Span::new(start, end.end),
         })
@@ -313,13 +309,10 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let mut consts = Vec::new();
-        let mut vars = Vec::new();
+        let mut attrs = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
-            if self.at_keyword("const") {
-                self.parse_attr_block(&mut consts)?;
-            } else if self.at_keyword("var") {
-                self.parse_attr_block(&mut vars)?;
+            if self.at_keyword("attr") {
+                self.parse_attr_block(&mut attrs)?;
             } else if self.at_keyword("domain") {
                 return Err(self.error("a shape cannot contain a `domain` block"));
             } else if self.at_keyword("unit") {
@@ -327,7 +320,7 @@ impl<'a> Parser<'a> {
                     self.error("the `unit` clause may appear only once, at the start of the body")
                 );
             } else {
-                return Err(self.error("expected `const`, `var`, or `}`"));
+                return Err(self.error("expected `attr` or `}`"));
             }
         }
         let end = self.expect(&TokenKind::RBrace, "`}` to close the shape body")?;
@@ -335,8 +328,7 @@ impl<'a> Parser<'a> {
             name,
             params,
             unit,
-            consts,
-            vars,
+            attrs,
             span: Span::new(start, end.end),
         })
     }
@@ -443,10 +435,10 @@ impl<'a> Parser<'a> {
         Ok(unit)
     }
 
-    /// Parse a `const { ... }` or `var { ... }` block, appending its fields.
-    /// Shared by stores and shapes.
+    /// Parse an `attr { ... }` block, appending its fields.  Shared by
+    /// stores and shapes; repeated blocks merge into one attribute list.
     fn parse_attr_block(&mut self, out: &mut Vec<Field>) -> Result<(), ParseError> {
-        self.bump_keyword(); // `const` / `var`
+        self.bump_keyword(); // `attr`
         self.expect(&TokenKind::LBrace, "`{` to open the block")?;
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
             out.push(self.parse_field()?);
@@ -899,21 +891,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `field = "." ident [ "const" | "var" ] [ ":" type ] "=" expr`, one
-    /// labeled record field.  The role marker is reserved (ADR 0015); it is
-    /// parsed and carried but has no type-level meaning yet.
+    /// `field = "." ident [ ":" type ] "=" expr`, one labeled record field.
     fn parse_record_field(&mut self) -> Result<RecordField, ParseError> {
         let start = self.expect(&TokenKind::Dot, "`.` to start a record field")?;
         let name = self.expect_ident("a field name")?;
-        let role = if self.at_keyword("const") {
-            self.bump_keyword();
-            FieldRole::Const
-        } else if self.at_keyword("var") {
-            self.bump_keyword();
-            FieldRole::Var
-        } else {
-            FieldRole::Const
-        };
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type()?)
         } else {
@@ -924,7 +905,6 @@ impl<'a> Parser<'a> {
         let span = Span::new(start.start, value.span.end);
         Ok(RecordField {
             name,
-            role,
             ty,
             value,
             span,
@@ -1089,13 +1069,13 @@ mod tests {
 
             store Departments {
               unit { Department }
-              const { name: string }
+              attr { name: string }
             }
 
             store Persons {
               unit { Person }
-              const { birthdate: date }
-              var   { last_name: string }
+              attr { birthdate: date }
+              attr { last_name: string }
             }
         "#;
         let program = parse_str(src).expect("should parse");
@@ -1113,10 +1093,10 @@ mod tests {
         };
         assert_eq!(persons.name.name, "Persons");
         assert_eq!(persons.unit.name, "Person");
-        assert_eq!(persons.consts.len(), 1);
-        assert_eq!(persons.consts[0].name.as_literal(), Some("birthdate"));
-        assert_eq!(persons.vars.len(), 1);
-        assert_eq!(persons.vars[0].name.as_literal(), Some("last_name"));
+        // Repeated `attr` blocks merge into one attribute list.
+        assert_eq!(persons.attrs.len(), 2);
+        assert_eq!(persons.attrs[0].name.as_literal(), Some("birthdate"));
+        assert_eq!(persons.attrs[1].name.as_literal(), Some("last_name"));
     }
 
     #[test]
@@ -1158,7 +1138,7 @@ mod tests {
     fn parses_enum_declaration_and_reference() {
         let src = r#"
             enum Status { "active", "inactive" }
-            store S { unit { U } var { status: Status } }
+            store S { unit { U } attr { status: Status } }
         "#;
         let program = parse_str(src).unwrap();
 
@@ -1172,8 +1152,8 @@ mod tests {
         let Item::Store(s) = &program.items[1] else {
             panic!("expected a store");
         };
-        assert_eq!(s.vars[0].ty.name.name, "Status");
-        assert!(!s.vars[0].ty.is_optional());
+        assert_eq!(s.attrs[0].ty.name.name, "Status");
+        assert!(!s.attrs[0].ty.is_optional());
     }
 
     #[test]
@@ -1181,8 +1161,8 @@ mod tests {
         let src = r#"
             store S {
               unit { U }
-              var { last_service: date? }
-              var { vibration: number }
+              attr { last_service: date? }
+              attr { vibration: number }
             }
         "#;
         let program = parse_str(src).unwrap();
@@ -1190,12 +1170,12 @@ mod tests {
             panic!("expected a store");
         };
         // `date?` is optional and its span covers the `?`.
-        let opt = &s.vars[0].ty;
+        let opt = &s.attrs[0].ty;
         assert_eq!(opt.name.name, "date");
         assert!(opt.is_optional());
         assert_eq!(opt.span().slice(src), "date?");
         // A bare type stays total.
-        assert!(!s.vars[1].ty.is_optional());
+        assert!(!s.attrs[1].ty.is_optional());
     }
 
     #[test]
@@ -1207,7 +1187,7 @@ mod tests {
                 student: Students
                 course:  Courses
               }
-              const { class_id: string }
+              attr { class_id: string }
             }
         "#;
         let program = parse_str(src).unwrap();
@@ -1224,12 +1204,12 @@ mod tests {
         let src = r#"
             shape PersonRecord {
               unit { Person }
-              const { admission: date }
+              attr { admission: date }
             }
 
             store Students : PersonRecord {
               unit { Person }
-              const { admission: date }
+              attr { admission: date }
             }
         "#;
         let program = parse_str(src).unwrap();
@@ -1239,7 +1219,7 @@ mod tests {
         };
         assert_eq!(shape.name.name, "PersonRecord");
         assert_eq!(shape.unit.as_ref().unwrap().name, "Person");
-        assert_eq!(shape.consts[0].name.as_literal(), Some("admission"));
+        assert_eq!(shape.attrs[0].name.as_literal(), Some("admission"));
 
         let Item::Store(store) = &program.items[1] else {
             panic!("expected a store");
@@ -1290,13 +1270,13 @@ mod tests {
 
     #[test]
     fn parses_unit_agnostic_shape() {
-        let program = parse_str("shape Named { const { name: string } }").unwrap();
+        let program = parse_str("shape Named { attr { name: string } }").unwrap();
         let Item::Shape(shape) = &program.items[0] else {
             panic!("expected a shape");
         };
         assert!(shape.params.is_empty());
         assert!(shape.unit.is_none());
-        assert_eq!(shape.consts[0].name.as_literal(), Some("name"));
+        assert_eq!(shape.attrs[0].name.as_literal(), Some("name"));
     }
 
     #[test]
@@ -1316,11 +1296,11 @@ mod tests {
     fn parses_string_argument_and_template() {
         let src = r#"
             shape Ageable[date_field: string] {
-              const { `{date_field}`: date }
+              attr { `{date_field}`: date }
             }
             store Persons : Ageable["birthdate"] {
               unit { Person }
-              const { birthdate: date }
+              attr { birthdate: date }
             }
         "#;
         let program = parse_str(src).unwrap();
@@ -1330,8 +1310,8 @@ mod tests {
         };
         assert_eq!(shape.params[0].kind.name, "string");
         // The attribute name is a single interpolated parameter.
-        assert_eq!(shape.consts[0].name.segments.len(), 1);
-        let NameSeg::Param(p) = &shape.consts[0].name.segments[0] else {
+        assert_eq!(shape.attrs[0].name.segments.len(), 1);
+        let NameSeg::Param(p) = &shape.attrs[0].name.segments[0] else {
             panic!("expected an interpolated segment");
         };
         assert_eq!(p.name, "date_field");
@@ -1347,11 +1327,11 @@ mod tests {
 
     #[test]
     fn parses_mixed_template_segments() {
-        let program = parse_str("shape S[col: string] { const { `{col}_z`: number } }").unwrap();
+        let program = parse_str("shape S[col: string] { attr { `{col}_z`: number } }").unwrap();
         let Item::Shape(shape) = &program.items[0] else {
             panic!("expected a shape");
         };
-        let segs = &shape.consts[0].name.segments;
+        let segs = &shape.attrs[0].name.segments;
         assert_eq!(segs.len(), 2);
         assert!(matches!(&segs[0], NameSeg::Param(p) if p.name == "col"));
         assert!(matches!(&segs[1], NameSeg::Lit(s) if s == "_z"));
@@ -1359,7 +1339,7 @@ mod tests {
 
     #[test]
     fn empty_interpolation_is_an_error() {
-        let err = parse_str("shape S { const { `{}`: number } }").unwrap_err();
+        let err = parse_str("shape S { attr { `{}`: number } }").unwrap_err();
         assert!(err.message.contains("empty `{}`"));
     }
 
@@ -1382,7 +1362,7 @@ mod tests {
 
     #[test]
     fn store_without_unit_clause_is_an_error() {
-        let err = parse_str("store S { const { a: string } }").unwrap_err();
+        let err = parse_str("store S { attr { a: string } }").unwrap_err();
         assert!(err.message.contains("unit"));
     }
 
@@ -1407,7 +1387,7 @@ mod tests {
     #[test]
     fn unknown_store_block_is_an_error() {
         let err = parse_str("store S { unit { U } bogus { } }").unwrap_err();
-        assert!(err.message.contains("`const`, `var`, `domain`"));
+        assert!(err.message.contains("`attr`, `domain`"));
     }
 
     #[test]
@@ -1427,16 +1407,16 @@ mod tests {
 
     #[test]
     fn keyword_spans_cover_every_contextual_keyword() {
-        let src = r#"enum E { "a" } shape Sh { const { t: string } } unit U { x: string } store S { unit { U } const { a: string } var { b: number } }"#;
+        let src = r#"enum E { "a" } shape Sh { attr { t: string } } unit U { x: string } store S { unit { U } attr { a: string } attr { b: number } }"#;
         let tokens = tokenize(src).expect("should lex");
         let parsed = parse_with_meta(&tokens).expect("should parse");
         let words: Vec<&str> = parsed.keyword_spans.iter().map(|s| s.slice(src)).collect();
-        // In source order: the enum decl; the shape decl and its `const`; the
-        // unit decl; the store decl, its `unit` clause, `const`, `var`.
+        // In source order: the enum decl; the shape decl and its `attr`; the
+        // unit decl; the store decl, its `unit` clause, and two `attr`s.
         assert_eq!(
             words,
             [
-                "enum", "shape", "const", "unit", "store", "unit", "const", "var"
+                "enum", "shape", "attr", "unit", "store", "unit", "attr", "attr"
             ]
         );
     }
@@ -1695,23 +1675,11 @@ mod tests {
     }
 
     #[test]
-    fn record_field_role_marker() {
-        // The marker is optional; `const` is the default (ADR 0015).
-        let roles = |src: &str| -> Vec<FieldRole> {
-            match expr(src).kind {
-                ExprKind::Record(fs) => fs.iter().map(|f| f.role).collect(),
-                other => panic!("expected a record, got {other:?}"),
-            }
-        };
-        assert_eq!(roles("(.a = 1)"), vec![FieldRole::Const]);
-        assert_eq!(roles("(.b var = 1)"), vec![FieldRole::Var]);
-        assert_eq!(roles("(.c const = 1)"), vec![FieldRole::Const]);
-        // The marker precedes the optional type ascription.
-        assert_eq!(roles("(.d var : number = 1)"), vec![FieldRole::Var]);
-        assert_eq!(
-            roles("(.a = 1, .b var = 2)"),
-            vec![FieldRole::Const, FieldRole::Var]
-        );
+    fn record_field_role_marker_is_rejected() {
+        // The `const`/`var` role marker ADR 0015 reserved is dropped by ADR
+        // 0019; a record field is `.name [: Type] = value`.
+        assert!(expr_err("(.b var = 1)").message.contains("`=`"));
+        assert!(expr_err("(.c const = 1)").message.contains("`=`"));
     }
 
     #[test]

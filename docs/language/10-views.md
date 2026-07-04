@@ -25,9 +25,9 @@ result can be queried like a store.  Three things follow from "derived by a
 pipeline":
 
 - **Its content is computed, not declared.**  A store enumerates its columns in
-  `const`/`var` blocks; a view does not.  The view's schema, its index columns,
+  an `attr` block; a view does not.  The view's schema, its index columns,
   and its non-index columns are whatever the pipeline produces.  A view
-  therefore has no `const`/`var` blocks.
+  therefore has no `attr` block.
 - **Its properties are derived from mechanism.**  This is overview pillar 7
   applied to a derived table: just as a `store` fixes its sampling and lineage
   by the act of declaring it, a view fixes its tracked properties by the

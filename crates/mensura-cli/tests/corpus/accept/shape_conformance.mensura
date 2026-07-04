@@ -5,10 +5,10 @@ unit Person {
 
 shape PersonRecord {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 store students : PersonRecord {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }

@@ -6,7 +6,7 @@ unit Machine {
 
 store readings {
   unit { Machine }
-  var { temperature: real }
+  attr { temperature: real }
 }
 
 view bad {

@@ -6,9 +6,11 @@ enum MachineStatus { "operational", "degraded", "failure" }
 
 store machines {
   unit { Machine }
-  const { commissioned: date }
-  var   { status: MachineStatus }
-  var   { operating_hours: real }
-  var   { service_count: int }
-  var   { online: bool }
+  attr {
+    commissioned: date
+    status: MachineStatus
+    operating_hours: real
+    service_count: int
+    online: bool
+  }
 }

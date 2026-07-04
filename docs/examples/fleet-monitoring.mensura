@@ -17,7 +17,7 @@ enum MachineStatus { "operational", "degraded", "failure" }
 
 // A unit-agnostic structural contract: any store of commissioned equipment.
 shape Commissioned {
-  const { commissioned: date }
+  attr { commissioned: date }
 }
 
 // A unit-fixing contract: a table keyed by a given unit.  Claimed by the view
@@ -29,11 +29,14 @@ shape Tabular[U: Unit] {
 
 store machines : Commissioned {
   unit { Machine }
-  const { commissioned: date }
-  var   { status: MachineStatus }
-  // Optional value (`?`): a machine never serviced has no last-service date.
-  // The value is missing, not absent; the row still exists (ADR 0010).
-  var   { last_service: date? }
+  attr {
+    commissioned: date
+    status: MachineStatus
+    // Optional value (`?`): a machine never serviced has no last-service
+    // date.  The value is missing, not absent; the row still exists
+    // (ADR 0010).
+    last_service: date?
+  }
 }
 
 // A view derives a table from stores by a pipeline (docs/language/10-views.md).

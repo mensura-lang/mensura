@@ -132,8 +132,8 @@ mod tests {
         unit Person { id: string }
         store persons {
           unit { Person }
-          const { birthdate: date }
-          var   { last_name: string }
+          attr { birthdate: date }
+          attr { last_name: string }
         }
     "#;
 
@@ -153,8 +153,8 @@ mod tests {
             unit Person { id: string }
             store persons {
               unit { Person }
-              var { last_name: string? }
-              var { status: string }
+              attr { last_name: string? }
+              attr { status: string }
             }
         "#;
         let sql = create_table_sql(&schema(src, "persons"));
@@ -168,7 +168,7 @@ mod tests {
         let src = r#"
             unit U { id: string }
             enum Status { "active", "inactive" }
-            store s { unit { U } var { status: Status } }
+            store s { unit { U } attr { status: Status } }
         "#;
         let sql = create_table_sql(&schema(src, "s"));
         assert!(sql.contains("\"status\" TEXT CHECK (\"status\" IN ('active', 'inactive'))"));
@@ -205,7 +205,7 @@ mod tests {
         let src = r#"
             unit U { id: string }
             enum Status { "active", "inactive" }
-            store s { unit { U } var { status: Status } }
+            store s { unit { U } attr { status: Status } }
         "#;
         let mut db = SqliteBackend::open_in_memory().unwrap();
         db.ensure_store(&schema(src, "s")).unwrap();

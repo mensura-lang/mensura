@@ -29,20 +29,22 @@ claimed by many stores; one store may claim many shapes.
 ```
 shape PersonRecord {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 store students : PersonRecord {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 enum Rank { "assistant", "associate", "full" }
 
 store faculty : PersonRecord {
   unit { Person }
-  const { admission: date }
-  var   { rank: Rank }
+  attr {
+    admission: date
+    rank:      Rank
+  }
 }
 
 fn count(t: PersonRecord) -> real { ... }
@@ -73,14 +75,12 @@ the shape promises the value is always known.
 ## Shape declaration
 
 A shape declaration consists of a name, an optional parameter list, an
-optional `unit { ... }` clause, and any number of `const` and `var`
-blocks.
+optional `unit { ... }` clause, and one or more `attr` blocks.
 
 ```
 shape ShapeName[p1: T1, p2: T2, ...] {
   unit { ... }        // optional
-  const { ... }
-  var   { ... }
+  attr { ... }
 }
 ```
 
@@ -88,12 +88,12 @@ Both the parameter list and the `unit` clause are optional.  A shape
 with neither reads as a pure attribute contract; a shape with no
 parameters reads exactly like the `PersonRecord` example above.
 
-The body of a shape carries *structure only*: which unit, which
-attributes, and (per attribute) whether it is `const` or `var`.  A
-shape does not carry domain resolution, policy annotations, an API
-surface, or any storage commitment; those are store concerns.  A
-program containing only shape declarations is well-typed but observes
-no data.
+The body of a shape carries *structure only*: which unit and which
+attributes, written in exactly the same attribute language as a store
+body (`02-stores.md`).  A shape does not carry domain resolution,
+policy annotations, an API surface, or any storage commitment; those
+are store concerns.  A program containing only shape
+declarations is well-typed but observes no data.
 
 ## The unit clause (optional)
 
@@ -129,18 +129,18 @@ A shape takes a single parameter list.  Every parameter is written
 ```
 shape NumericCol[U: Unit, col: string] {
   unit { U }
-  const { `{col}`: real }
+  attr { `{col}`: real }
 }
 
 shape Ageable[date_field: string] {
-  const { `{date_field}`: date }
+  attr { `{date_field}`: date }
 }
 ```
 
-`NumericCol[Person, "height"]` is "a table of `Person` with at least a
-`const` attribute named `height` of type `real`."  `Ageable` is
-unit-agnostic: `Ageable["birthdate"]` is "any table with a `const`
-attribute named `birthdate` of type `date`," whatever its unit.
+`NumericCol[Person, "height"]` is "a table of `Person` with at least an
+attribute named `height` of type `real`."  `Ageable` is
+unit-agnostic: `Ageable["birthdate"]` is "any table with an attribute
+named `birthdate` of type `date`," whatever its unit.
 
 The list is a **telescope**: parameters are positional, and a later
 parameter (or the shape body) may refer to an earlier one.  A `Unit`
@@ -163,15 +163,15 @@ is a name.  A shape with no parameters omits the list entirely
 ## Name interpolation
 
 A backtick name is a uniform attribute-name form.  *Any* attribute
-name (a unit index field, a store `const`/`var`, or a shape
-`const`/`var`) may be written backtick-quoted, and `` `a` `` denotes
-the same attribute as the bare `a`.  Backticks add one capability:
-inside them, `{param}` interpolates a `string` parameter.
+name (a unit index field, a store attribute, or a shape attribute) may
+be written backtick-quoted, and `` `a` `` denotes the same attribute as
+the bare `a`.  Backticks add one capability: inside them, `{param}`
+interpolates a `string` parameter.
 
 ```
 shape NormalizedCol[U: Unit, col: string] {
   unit { U }
-  const {
+  attr {
     `{col}`:    real
     `{col}_z`:  real
   }
@@ -214,7 +214,7 @@ commas, with their arguments supplied:
 ```
 store students : PersonRecord, NumericCol[Person, "height"] {
   unit { Person }
-  const {
+  attr {
     admission: date
     height:    real
   }
@@ -229,8 +229,8 @@ compiler verifies that:
   store's unit equals it; a unit-agnostic shape imposes no unit
   constraint.
 - Every attribute required by the shape is present in the store, with
-  the same name (after interpolation), the same type, and in the same
-  block (`const` or `var`).
+  the same name (after interpolation) and the same type (including
+  optionality).
 - The store may have *additional* attributes beyond what the shape
   requires.
 
@@ -299,7 +299,7 @@ A shape declaration cannot contain:
 A shape *does* contain:
 
 - An optional unit: concrete, a `Unit` parameter, or omitted.
-- Const and var attribute blocks.
+- `attr` blocks, listing required attributes as structure only.
 - Optional parameters, each of kind `Unit` or a primitive type such as
   `string`.
 
@@ -333,21 +333,21 @@ unit Person {
 
 shape PersonRecord {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 shape Ageable[date_field: string] {
-  const { `{date_field}`: date }
+  attr { `{date_field}`: date }
 }
 
 shape NumericCol[U: Unit, col: string] {
   unit { U }
-  const { `{col}`: real }
+  attr { `{col}`: real }
 }
 
 shape NormalizedCol[U: Unit, col: string] {
   unit { U }
-  const {
+  attr {
     `{col}`:    real
     `{col}_z`:  real
   }
@@ -355,7 +355,7 @@ shape NormalizedCol[U: Unit, col: string] {
 
 store students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"] {
   unit { Person }
-  const {
+  attr {
     admission: date
     birthdate: date
     height:    real

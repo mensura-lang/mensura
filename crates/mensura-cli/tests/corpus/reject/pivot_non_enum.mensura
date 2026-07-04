@@ -1,7 +1,7 @@
 // Reject (resolve): pivot's name column must be a finite-enumerable enum;
 // `machine` is a plain string column.
 unit Reading { ts: int }
-store readings { unit { Reading } var { machine: string } var { temperature: real } }
+store readings { unit { Reading } attr { machine: string } attr { temperature: real } }
 view bad {
   readings |> pivot machine temperature
 }

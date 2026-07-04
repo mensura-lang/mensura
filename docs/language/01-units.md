@@ -85,8 +85,8 @@ the disambiguating column to the index, or split the unit.
 
 This row cardinality (how many rows a key has, 0 for "not sampled") is a
 different axis from whether a *value* is missing.  An index field is
-always known, so it never carries the `?` optional marker; only `const`
-and `var` values may be missing
+always known, so it never carries the `?` optional marker; only
+non-index attribute values may be missing
 (`docs/decisions/0010-attribute-totality.md`).
 
 ## Compositional units

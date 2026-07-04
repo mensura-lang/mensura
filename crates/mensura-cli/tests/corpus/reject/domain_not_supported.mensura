@@ -10,11 +10,11 @@ unit Enrollment {
 
 store students {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 store grades {
   unit { Enrollment }
   domain { student: students }
-  const { class_id: string }
+  attr { class_id: string }
 }

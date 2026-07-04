@@ -9,7 +9,7 @@ not.
 
 The point is to never highlight Mensura with an approximation.  The lexer is
 keyword-free: every word is an `Ident`, and only the parser knows that a given
-identifier was acting as `unit`, `store`, or `const` in its position
+identifier was acting as `unit`, `store`, or `attr` in its position
 (`docs/language/04-grammar.md`, `docs/toolkit/02-lsp.md`).  A regex grammar
 (highlight.js, the mdBook default) cannot reproduce this; the parser can.  So
 the book colors from the same pipeline the editor does, and the two agree by
