@@ -106,9 +106,8 @@ The atomic values are:
 - **Records**: `(.a = x, .b = y)`, labeled products; a field may carry an
   explicit type, `(.a : T = x)`.  `:` is typing, `=` is the value, matching
   every other binder (`name [: Type] = value`).  A record field carries no
-  `const`/`var` role marker: mutability is a store concern, so tagging a
-  computed field with it is nonsensical
-  (`docs/decisions/0019-attr-blocks-and-store-const-var-annotations.md`).
+  `const`/`var` role marker; the marker ADR 0015 reserved is dropped
+  (`docs/decisions/0019-attr-blocks-and-dropped-const-var.md`).
 - **Lambdas**: `|x| e` and `|x, y| e` (see below); an optional return type is
   written `|x| : T e`.
 - **Conditionals**: `if c then a else b` (see below).

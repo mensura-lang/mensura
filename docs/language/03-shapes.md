@@ -34,7 +34,7 @@ shape PersonRecord {
 
 store students : PersonRecord {
   unit { Person }
-  attr { admission: date @const }
+  attr { admission: date }
 }
 
 enum Rank { "assistant", "associate", "full" }
@@ -42,8 +42,8 @@ enum Rank { "assistant", "associate", "full" }
 store faculty : PersonRecord {
   unit { Person }
   attr {
-    admission: date @const
-    rank:      Rank @var
+    admission: date
+    rank:      Rank
   }
 }
 
@@ -89,11 +89,10 @@ with neither reads as a pure attribute contract; a shape with no
 parameters reads exactly like the `PersonRecord` example above.
 
 The body of a shape carries *structure only*: which unit and which
-attributes.  A shape says nothing about mutability: the `@const`/`@var`
-distinction is a store concern (`02-stores.md`), and writing either
-annotation in a shape is an error.  A shape also does not carry domain
-resolution, policy annotations, an API surface, or any storage
-commitment; those are store concerns.  A program containing only shape
+attributes, written in exactly the same attribute language as a store
+body (`02-stores.md`).  A shape does not carry domain resolution,
+policy annotations, an API surface, or any storage commitment; those
+are store concerns.  A program containing only shape
 declarations is well-typed but observes no data.
 
 ## The unit clause (optional)
@@ -216,8 +215,8 @@ commas, with their arguments supplied:
 store students : PersonRecord, NumericCol[Person, "height"] {
   unit { Person }
   attr {
-    admission: date @const
-    height:    real @const
+    admission: date
+    height:    real
   }
 }
 ```
@@ -231,8 +230,7 @@ compiler verifies that:
   constraint.
 - Every attribute required by the shape is present in the store, with
   the same name (after interpolation) and the same type (including
-  optionality).  A store attribute's `@const`/`@var` tag is a store
-  concern and never affects conformance.
+  optionality).
 - The store may have *additional* attributes beyond what the shape
   requires.
 
@@ -292,8 +290,6 @@ of the deferred function-syntax design.
 A shape declaration cannot contain:
 
 - **A `domain` block.**  Foreign-key resolution is per-store.
-- **Mutability annotations** (`@const`, `@var`).  These tag store
-  attributes; a shape's attributes carry no mutability.
 - **Policy annotations** (`@audited`, `@versioned`, `@auto`,
   `@allowcreate`).  These attach to store attributes.
 - **API surface** (`endpoint`, `auth`).  These belong on the store
@@ -360,9 +356,9 @@ shape NormalizedCol[U: Unit, col: string] {
 store students : PersonRecord, Ageable["birthdate"], NumericCol[Person, "height"] {
   unit { Person }
   attr {
-    admission: date @const
-    birthdate: date @const
-    height:    real @const
+    admission: date
+    birthdate: date
+    height:    real
   }
 }
 

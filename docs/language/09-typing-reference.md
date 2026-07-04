@@ -699,8 +699,7 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   row-expanding `map` now land (the `( )` collection and `if`/`then`/`else`, ADR
   0015); bag-returning `group_map` (windows) still needs an ordering.  The
   `const`/`var` record-field marker that ADR 0015 reserved is dropped by ADR
-  0019: mutability is a store concern, so a computed record field carries no
-  such marker.
+  0019, which drops the `const`/`var` concept altogether.
 - **Annotation grammar.**  `@audited`, `@versioned`, `@auto`, `@complete_over`,
   `@disjoint_partition` are named here but their surface lands with the
   annotation family.

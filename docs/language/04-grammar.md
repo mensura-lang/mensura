@@ -15,12 +15,10 @@ now implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`),
 though no declaration site hosts an expression yet; the hosting sites (`when:`,
 `where:`, `@auto`, the pipeline operations) land with their own features.
 
-The store and shape attribute surface shown here (the `attr` block and the
-store-only `@const`/`@var` annotations) is the design decided in
-`docs/decisions/0019-attr-blocks-and-store-const-var-annotations.md`.  It
-supersedes the earlier `const`/`var` attribute blocks; the parser still
-accepts those blocks until the reconciling implementation slice lands, at
-which point this grammar is what it parses.
+The store and shape attribute surface shown here (the `attr` block, with no
+mutability markers) is the design decided in
+`docs/decisions/0019-attr-blocks-and-dropped-const-var.md`.  It supersedes
+the earlier `const`/`var` attribute blocks.
 
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
@@ -49,10 +47,7 @@ Tokens come from the lexer (`crates/mensura-syntax/src/lexer.rs`).  The lexer
 emits every word as an `Ident`; it knows no keywords.  **Keywords are
 contextual**: the parser recognizes words such as `unit`, `store`, `shape`,
 `attr`, `domain`, `enum`, and `view` by their text *in the position where
-they are expected*, not by reserving them globally.  The `@const` and `@var`
-mutability annotations are the `@` token (`At`) followed by the contextual
-word `const` or `var` in the trailing-annotation position of a store
-attribute.
+they are expected*, not by reserving them globally.
 
 A backtick-delimited **template** (`` `{col}_z` ``) lexes to a single token
 carrying its raw inner text; the parser splits it into literal and `{param}`
@@ -82,8 +77,7 @@ arg           = ident | string ;
 unit_clause   = "unit" "{" ident "}" ;
 store_block   = attr_block | domain_block ;
 attr_block    = "attr" "{" { store_attr } "}" ;
-store_attr    = ident ":" type mutability ;
-mutability    = "@" ( "const" | "var" ) ;
+store_attr    = ident ":" type ;
 domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
 
@@ -134,11 +128,6 @@ named_type    = ident ;
   (shapes carry no foreign-key resolution).
 - **`field` / attribute loops**: a loop continues on `ident` (or a `template`
   name in a shape) and ends on `}`.
-- **`store_attr` mutability**: after an attribute's `type` the parser peeks
-  one token; the `@` (`At`) token opens the required `@const`/`@var`
-  annotation, and `const` versus `var` is the next word.  A store attribute
-  without the annotation is a parse error; the annotation never appears in a
-  shape attribute.
 - **`type`**: a type is a single `ident`: a primitive (`string`, `int`,
   `real`, ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
   decision, not the parser's; the parser commits on the lone identifier.
@@ -227,7 +216,7 @@ unit Department {
 
 store Departments {
   unit { Department }
-  attr { name: string @const }
+  attr { name: string }
 }
 
 enum Status {
@@ -237,15 +226,15 @@ enum Status {
 store Persons : Ageable["birthdate"] {
   unit { Person }
   attr {
-    birthdate: date   @const
-    last_name: string @var
-    status:    Status @var
+    birthdate: date
+    last_name: string
+    status:    Status
   }
 }
 
 store Students : PersonRecord, Tabular[Person] {
   unit { Person }
-  attr { admission: date @const }
+  attr { admission: date }
 }
 
 shape PersonRecord {

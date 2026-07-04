@@ -58,8 +58,8 @@ A store becomes exactly one table.
 
 - **Table name**: the store name, quoted.
 - **Columns**: the unit's index fields first (in declaration order), then the
-  store's `const` attributes, then its `var` attributes.  Index fields supply
-  identity; `const`/`var` supply the accompanying data.
+  store's attributes (in declaration order).  Index fields supply identity;
+  attributes supply the accompanying data.
 - **Primary key**: the index columns, as a single composite `PRIMARY KEY`.
   This enforces the 0-or-1 cardinality rule of `docs/language/01-units.md` at
   the storage level: one row per index tuple.
@@ -93,8 +93,10 @@ unit Person {
 
 store Persons {
   unit { Person }
-  const { birthdate: date }
-  var   { last_name: string? }
+  attr {
+    birthdate: date
+    last_name: string?
+  }
 }
 ```
 
