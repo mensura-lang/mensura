@@ -1802,6 +1802,35 @@ mod tests {
     }
 
     #[test]
+    fn view_conforms_to_var_attribute() {
+        // A `var` shape attribute is satisfied by a `var`-marked column in the
+        // view body (`(.temp_max var = ...)`, ADR 0015).
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMax {{ var {{ temp_max: real }} }}
+            view machine_summary : HasMax {{
+              readings |> group_map |k, g| (.temp_max var = max g.temperature)
+            }}"
+        );
+        resolve_str(&src).expect("a var attribute conforms to a var-marked column");
+    }
+
+    #[test]
+    fn view_conformance_ignores_role() {
+        // A view has no `const`/`var` role at its boundary (10-views.md): a
+        // `var`-marked column satisfies a `const` shape attribute and vice
+        // versa.  Only name, type, and totality are checked.
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape MaxConst {{ const {{ temp_max: real }} }}
+            view machine_summary : MaxConst {{
+              readings |> group_map |k, g| (.temp_max var = max g.temperature)
+            }}"
+        );
+        resolve_str(&src).expect("role is not checked for views");
+    }
+
+    #[test]
     fn view_missing_content_attribute_is_rejected() {
         let src = format!(
             "{SUMMARY_VIEW}
