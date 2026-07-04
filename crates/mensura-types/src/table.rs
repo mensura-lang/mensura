@@ -235,7 +235,7 @@ impl TableType {
             };
             match col.role {
                 ColumnRole::Index => index.push(structural),
-                ColumnRole::Const | ColumnRole::Var => {
+                ColumnRole::Attr => {
                     if col.optional {
                         totality.mark_optional(col.name.clone());
                     }
@@ -349,8 +349,8 @@ mod tests {
             unit: "Machine".to_string(),
             columns: vec![
                 col("machine", ColumnType::String, ColumnRole::Index, false),
-                col("temperature", ColumnType::Real, ColumnRole::Var, false),
-                col("note", ColumnType::String, ColumnRole::Var, true),
+                col("temperature", ColumnType::Real, ColumnRole::Attr, false),
+                col("note", ColumnType::String, ColumnRole::Attr, true),
             ],
             span: Span::new(0, 0),
         };

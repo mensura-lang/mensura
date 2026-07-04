@@ -7,7 +7,7 @@
 use mensura_syntax::Span;
 
 /// A resolved store: its name, the unit it tabulates, and its columns in
-/// storage order (index fields, then `const`, then `var`).
+/// storage order (index fields, then attributes in declaration order).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Schema {
     pub store: String,
@@ -31,12 +31,11 @@ pub struct Column {
 }
 
 /// Where a column comes from, which fixes its storage semantics: index
-/// columns form the primary key, `const`/`var` carry data.
+/// columns form the primary key, attribute columns carry data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColumnRole {
     Index,
-    Const,
-    Var,
+    Attr,
 }
 
 /// The resolved type (scalar domain) of a column (ADR 0014).  `number` is split

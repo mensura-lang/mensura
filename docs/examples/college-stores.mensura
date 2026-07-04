@@ -15,17 +15,17 @@ unit Department {
   code: string
 }
 
-// Unit-agnostic: no unit clause, so any store carrying a `const name: string`
-// conforms, whatever its unit.  `departments` claims it below.
+// Unit-agnostic: no unit clause, so any store carrying a `name: string`
+// attribute conforms, whatever its unit.  `departments` claims it below.
 shape Named {
-  const { name: string }
+  attr { name: string }
 }
 
 // A `string` parameter names the date field age is measured from, so the same
 // contract fits `Person` (born on `birthdate`) and `Department` (founded on
 // `foundation_day`).
 shape Ageable[date_field: string] {
-  const { `{date_field}`: date }
+  attr { `{date_field}`: date }
 }
 
 // A named enumerated type: a fixed set of string-literal values, referenced by
@@ -34,7 +34,7 @@ enum Status { "active", "inactive" }
 
 store departments : Named, Ageable["foundation_day"] {
   unit { Department }
-  const {
+  attr {
     name: string
     foundation_day: date
   }
@@ -42,12 +42,16 @@ store departments : Named, Ageable["foundation_day"] {
 
 store persons : Ageable["birthdate"] {
   unit { Person }
-  const { birthdate: date }
-  var { last_name: string }
+  attr {
+    birthdate: date
+    last_name: string
+  }
 }
 
 store students {
   unit { Person }
-  const { admission: date }
-  var { status: Status }
+  attr {
+    admission: date
+    status: Status
+  }
 }

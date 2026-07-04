@@ -7,12 +7,12 @@ unit Machine {
 }
 
 shape HasMin {
-  var { temp_min: real }
+  attr { temp_min: real }
 }
 
 store readings {
   unit { Machine }
-  var { temperature: real }
+  attr { temperature: real }
 }
 
 view machine_summary : HasMin {

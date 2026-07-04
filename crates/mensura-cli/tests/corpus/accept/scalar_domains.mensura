@@ -6,6 +6,6 @@ unit Sample {
 
 store samples {
   unit { Sample }
-  const { score: real }
-  var   { count_seen: int }
+  attr { score: real }
+  attr { count_seen: int }
 }

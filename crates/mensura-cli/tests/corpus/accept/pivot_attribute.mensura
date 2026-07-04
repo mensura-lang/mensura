@@ -2,7 +2,7 @@
 // singletons store (Tier A, ADR 0016).
 enum Metric { "lo", "hi" }
 unit Obs { ts: int }
-store obs { unit { Obs } var { metric: Metric } var { reading: real } }
+store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }
 view wide {
   obs |> pivot metric reading
 }

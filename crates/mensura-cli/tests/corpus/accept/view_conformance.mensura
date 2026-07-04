@@ -1,10 +1,7 @@
 // Accepted: a view whose computed output satisfies its `: Shape` claims.
 // `Tabular[Machine]` checks the output's index structurally (the `group_map`
-// leaves `Machine`'s `id` as the key).  `HasMax` checks a named column by type:
-// its `var` attribute is satisfied by the `var`-marked column `(.temp_max var =
-// ...)`, and `HasMin`'s `const` attribute is satisfied by the same view's
-// `var`-marked `temp_min`, since a view has no `const`/`var` role at its
-// boundary and conformance ignores it (docs/language/10-views.md, ADR 0015).
+// leaves `Machine`'s `id` as the key); `HasMax` and `HasMin` check named
+// columns by type and totality (docs/language/10-views.md, ADR 0019).
 unit Machine {
   id: string
 }
@@ -14,18 +11,18 @@ shape Tabular[U: Unit] {
 }
 
 shape HasMax {
-  var { temp_max: real }
+  attr { temp_max: real }
 }
 
 shape HasMin {
-  const { temp_min: real }
+  attr { temp_min: real }
 }
 
 store readings {
   unit { Machine }
-  var { temperature: real }
+  attr { temperature: real }
 }
 
 view machine_summary : Tabular[Machine], HasMax, HasMin {
-  readings |> group_map |k, g| (.temp_max var = max g.temperature, .temp_min var = min g.temperature)
+  readings |> group_map |k, g| (.temp_max = max g.temperature, .temp_min = min g.temperature)
 }
