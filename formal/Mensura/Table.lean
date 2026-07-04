@@ -61,6 +61,8 @@ on functional tables (`pivot_unpivot`), and `taggedSplit` inverts `taggedBind`
 (`taggedSplit_taggedBind_left`/`_right`).  All bind-homomorphisms plus
 `aggregate` are `SplitSafe` and compose; `project` and `pivot` are not.  The
 chapter's minimality assumption is `Minimal`, preserved by `bind` and `split`.
+The `bind` unit laws over `empty` and the `map` identity/fusion laws are stated
+as bare equations, seeding the future rewrite-rule set (ADR 0008).
 
 This completes the operations of the chapter's data-handling algebra.  Future
 directions: the grouped/arranged (window) operations of the chapter's "Other
@@ -662,6 +664,58 @@ theorem taggedSplit_taggedBind_right [DecidableEq S] {s₀ s₁ : S} (hne : s₀
   intro k
   simp [taggedSplit, taggedBind, map, bind, Multiset.add_bind, Multiset.bind_map,
         Multiset.bind_singleton, bind_singleton_id, Multiset.bind_zero, hne]
+
+/-! ### Equational laws: the rewrite-rule seeds
+
+Per ADR 0008, algebraic laws are stated in equational form (`lhs = rhs`
+under named side conditions) so they translate directly into rewrite rules
+once the processing layer grows an optimizing plan IR.  The laws below are
+the prototypical plan rewrites: `empty` completes `bind`'s commutative
+monoid (unit laws), and `map` carries identity and fusion laws.  Fusion
+subsumes filter/filter, filter/mutate, and select fusion, since all are
+`map`s (ADR 0015). -/
+
+/-- The empty table: no rows at any key.  The identity of `bind`
+(`bind_empty`, `empty_bind`), completing the commutative monoid that
+`bind_comm` and `bind_assoc` establish. -/
+def empty : Table K H σ := ⟨fun _ => 0⟩
+
+/-- Right unit: `bind T empty = T`. -/
+@[simp] theorem bind_empty (T : Table K H σ) : bind T empty = T := by
+  apply Table.ext_rows
+  intro k
+  simp [bind, empty]
+
+/-- Left unit: `bind empty T = T`. -/
+@[simp] theorem empty_bind (T : Table K H σ) : bind empty T = T := by
+  apply Table.ext_rows
+  intro k
+  simp [bind, empty]
+
+/-- `map` annihilates `empty`: mapping over no rows yields no rows. -/
+@[simp] theorem map_empty (φ : K → Row H σ → Multiset (Row H' σ')) :
+    map φ (empty : Table K H σ) = empty := by
+  apply Table.ext_rows
+  intro k
+  simp [map, empty]
+
+/-- Identity law: mapping each row to its singleton is the identity. -/
+@[simp] theorem map_id (T : Table K H σ) : map (fun _ f => {f}) T = T := by
+  apply Table.ext_rows
+  intro k
+  simp [map, bind_singleton_id]
+
+/-- Fusion law: two consecutive `map`s collapse into one whose body binds
+the second body over the first's output rows.  The prototypical plan
+rewrite; with `map_id` it makes `map` bodies a monoid under Kleisli-style
+composition. -/
+theorem map_map (ψ : K → Row H' σ' → Multiset (Row H'' σ''))
+    (φ : K → Row H σ → Multiset (Row H' σ')) (T : Table K H σ) :
+    map ψ (map φ T) = map (fun k f => (φ k f).bind (ψ k)) T := by
+  apply Table.ext_rows
+  intro k
+  simp only [map]
+  exact Multiset.bind_assoc
 
 /-! ### Minimality (the chapter's no-all-missing-row assumption) -/
 
