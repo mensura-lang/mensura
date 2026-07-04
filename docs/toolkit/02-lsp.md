@@ -93,7 +93,7 @@ Token types (the legend advertised at `initialize`):
 
 | Type         | Source                                                |
 |--------------|-------------------------------------------------------|
-| `keyword`    | Contextual keywords: declaration headers (`unit`, `store`, `shape`, `const`, `var`, `domain`, `enum`, `view`), the conditional (`if`, `then`, `else`), the predicate operators (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement keywords (`let`, `assert`). |
+| `keyword`    | Contextual keywords: declaration headers (`unit`, `store`, `shape`, `attr`, `domain`, `enum`, `view`), the conditional (`if`, `then`, `else`), the predicate operators (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement keywords (`let`, `assert`). |
 | `function`   | Pipeline operations (`map`, `group_map`, `split`, `bind`, `left_join`, `inner_join`, `extend_key`, `shrink_key`, `unpivot`, `pivot`, `assume`, `completeness_check`), carried with the `defaultLibrary` modifier. |
 | `type`       | Declaration and reference names of units and shapes, and conformance targets. |
 | `property`   | Field and attribute names, including the literal parts of a name template. |
@@ -105,8 +105,8 @@ Token types (the legend advertised at `initialize`):
 | `comment`    | Line comments, from the trivia channel.               |
 
 One token modifier, `defaultLibrary`, marks the builtin pipeline operations
-(every `function` token carries it).  A `var`-versus-`const` modifier and a
-primitive-versus-unit-reference split are forward references.
+(every `function` token carries it).  A primitive-versus-unit-reference
+split is a forward reference.
 
 ### Two tiers, and why keywords need the parser
 
@@ -126,7 +126,7 @@ from the AST and a small companion table:
   keywords `let`/`assert`), the parser records the matched span in a
   classified-span table returned alongside the AST.  This keeps the keyword
   vocabulary in exactly one place (the parser) and covers the clause-header
-  keywords (`unit {`, `const {`, `var {`, `domain {`) whose spans the AST does
+  keywords (`unit {`, `attr {`, `domain {`) whose spans the AST does
   not otherwise store.  The highlighter never re-derives the keyword set.
 - *Operation spans* also come from the parser.  Pipeline operations are not
   keywords: each is the leftmost identifier of a `|>` right-hand side, an
@@ -217,8 +217,8 @@ flow through the editor's standard diagnostic UI.
   hover, the rustdoc / Javadoc pattern.
 - Completion, goto-definition, and find-references.
 - Incremental document sync and semantic-token deltas / range requests.
-- Token modifiers: `readonly` for `const` versus `var` attributes, and a
-  primitive-versus-unit-reference distinction once resolution annotates types.
+- Token modifiers: a primitive-versus-unit-reference distinction once
+  resolution annotates types.
 - Lexer error recovery, so highlighting and diagnostics survive a malformed
   token instead of stopping at it.
 - Pull diagnostics (`textDocument/diagnostic`) if a client prefers them to the

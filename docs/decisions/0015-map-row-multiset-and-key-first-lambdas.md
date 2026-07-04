@@ -10,6 +10,11 @@ Touches `mensura-syntax` (grammar, AST, parser), `mensura-types` (`expr_check`,
 `pipe_check`), and the examples/corpus/tests.  The implementation lands on the
 same branch/PR as this acceptance.
 
+Amended by `docs/decisions/0019-attr-blocks-and-store-const-var-annotations`:
+the `const`/`var` record-field marker reserved here is dropped, because
+`const`/`var` becomes a store-only change-control concern that a computed row
+cannot carry.
+
 ## Context
 
 The formal `map` (`formal/Mensura/Table.lean`, `def map`) is

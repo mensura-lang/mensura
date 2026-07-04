@@ -1358,11 +1358,11 @@ mod tests {
             "Reading",
             vec![
                 scol("ts", ColumnType::Int, ColumnRole::Index, false),
-                scol("machine", ColumnType::String, ColumnRole::Var, false),
-                scol("temperature", ColumnType::Real, ColumnRole::Var, false),
-                scol("peak", ColumnType::Real, ColumnRole::Var, true),
-                scol("flag", ColumnType::Bool, ColumnRole::Var, false),
-                scol("note", ColumnType::String, ColumnRole::Var, true),
+                scol("machine", ColumnType::String, ColumnRole::Attr, false),
+                scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+                scol("peak", ColumnType::Real, ColumnRole::Attr, true),
+                scol("flag", ColumnType::Bool, ColumnRole::Attr, false),
+                scol("note", ColumnType::String, ColumnRole::Attr, true),
             ],
         );
         let machines = from_cols(
@@ -1370,7 +1370,7 @@ mod tests {
             "Machine",
             vec![
                 scol("machine", ColumnType::String, ColumnRole::Index, false),
-                scol("vendor", ColumnType::String, ColumnRole::Var, false),
+                scol("vendor", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
         Sources::new()
@@ -1716,11 +1716,11 @@ mod tests {
                         name: "Metric".to_string(),
                         variants: vec!["lo".to_string(), "hi".to_string()],
                     },
-                    ColumnRole::Var,
+                    ColumnRole::Attr,
                     false,
                 ),
-                scol("reading", ColumnType::Real, ColumnRole::Var, false),
-                scol("tag", ColumnType::String, ColumnRole::Var, false),
+                scol("reading", ColumnType::Real, ColumnRole::Attr, false),
+                scol("tag", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
         Sources::new().with("obs", obs)
@@ -1919,11 +1919,11 @@ mod tests {
                         name: "Metric".to_string(),
                         variants: vec!["lo".to_string(), "hi".to_string()],
                     },
-                    ColumnRole::Var,
+                    ColumnRole::Attr,
                     false,
                 ),
-                scol("reading", ColumnType::Real, ColumnRole::Var, false),
-                scol("lo", ColumnType::Real, ColumnRole::Var, false),
+                scol("reading", ColumnType::Real, ColumnRole::Attr, false),
+                scol("lo", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
         let s = Sources::new().with("obs", obs);

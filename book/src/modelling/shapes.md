@@ -10,9 +10,9 @@ date") without repeating the reasoning.
 ```
 
 `store students : PersonRecord` claims the shape.  The compiler checks that
-`students` is a store of `Person` and carries a `const admission: date`, exactly
-what `PersonRecord` requires.  Drop the `admission` attribute and the store no
-longer conforms, and the program is rejected.
+`students` is a store of `Person` and carries an `admission: date` attribute,
+exactly what `PersonRecord` requires.  Drop the `admission` attribute and the
+store no longer conforms, and the program is rejected.
 
 A shape may fix the unit, as `PersonRecord` does with `unit { Person }`, so that
 only stores of that unit can claim it.
@@ -28,7 +28,7 @@ for the name:
 ```
 
 `Ageable["birthdate"]` renders the templated attribute name to `birthdate`, and
-`persons` conforms because it carries `const birthdate: date`.  The same shape
+`persons` conforms because it carries `birthdate: date`.  The same shape
 applied with a different argument names a different attribute, so one `Ageable`
 contract fits a person measured from a `birthdate` and, say, a department
 measured from a `foundation_day`.

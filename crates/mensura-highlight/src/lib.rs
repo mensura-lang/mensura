@@ -3,7 +3,7 @@
 //! Both the language server (`mensura-lsp`) and the book preprocessor
 //! (`mensura-mdbook`) need to color source the same way the compiler sees it.
 //! In a keyword-free grammar only the parser knows that an `Ident` was acting
-//! as `unit`/`store`/`const`, so highlighting runs over the real pipeline
+//! as `unit`/`store`/`attr`, so highlighting runs over the real pipeline
 //! (`lex -> parse -> resolve`) rather than a regex approximation.  This crate
 //! owns classification and overlap resolution in byte offsets; consumers add
 //! the protocol- or HTML-specific rendering.  See
@@ -168,7 +168,7 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                         }
                     }
                 }
-                for field in store.consts.iter().chain(&store.vars) {
+                for field in store.attrs.iter() {
                     highlight_field(builder, field);
                 }
                 for entry in &store.domain {
@@ -185,7 +185,7 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                 if let Some(unit) = &shape.unit {
                     builder.push(unit.span, HighlightKind::Type);
                 }
-                for field in shape.consts.iter().chain(&shape.vars) {
+                for field in shape.attrs.iter() {
                     highlight_field(builder, field);
                 }
             }

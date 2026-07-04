@@ -1,8 +1,7 @@
 # Stores and attributes
 
-A **store** tabulates observations of a unit.  Where a unit declares identity, a
-store declares the attributes carried for each observation and how they may
-change.
+A **store** tabulates observations of a unit.  Where a unit declares identity,
+a store declares the attributes carried for each observation.
 
 ```mensura
 {{#include ../examples/store-machines.mensura}}
@@ -11,17 +10,13 @@ change.
 The `unit { Machine }` clause says which unit these rows are about.  The store's
 key is that unit's index, so each `Machine` has at most one row in `machines`.
 
-## Constants and variables
+## Attributes
 
-Non-index attributes are split by whether they evolve:
-
-- `const` attributes are facts fixed when the row is created.  When a machine
-  was commissioned does not change.
-- `var` attributes hold evolving state.  A machine's status moves between
-  values over its life.
-
-The split is part of the store's type.  It records intent precisely and is what
-later milestones hang auditing and versioning rules on.
+The `attr` block lists the non-index attributes, each a `name: type` pair.  A
+store may write several `attr` blocks; they merge into one attribute list.
+How attributes may change over time (auditing, versioning, per-attribute
+mutability) is change-control policy that later milestones attach to stores;
+today a store records structure only.
 
 ## Optional values
 
@@ -35,7 +30,7 @@ without the row itself being absent.
 
 A machine that has never been serviced has no `last_service` date: the value is
 missing, but the row still exists.  `operating_hours`, with no `?`, is always
-present.  Both `const` and `var` attributes may be optional.
+present.
 
 ## Enumerations
 

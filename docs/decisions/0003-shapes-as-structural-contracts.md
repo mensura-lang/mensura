@@ -9,6 +9,12 @@ Accepted.  The `shape` declaration and the conformance clause are specified in
 are the carrier the later qualifier work reuses
 (`docs/decisions/0004-qualifier-mechanism`).
 
+Refined by `docs/decisions/0019-attr-blocks-and-store-const-var-annotations`:
+a shape carries structure only, attributes are listed in `attr` blocks, and
+the `const`/`var` distinction moves off shapes onto store attributes as
+`@const`/`@var` annotations.  Conformance there compares name and type, not
+the `const`/`var` block this ADR describes.
+
 ## Context
 
 `0001` and `0002` give concrete declarations: a unit is one identity

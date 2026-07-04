@@ -1,6 +1,6 @@
 // Reject (resolve): shrink_key over an incomplete store with no establish step.
 unit Reading { ts: int }
-store readings { unit { Reading } var { machine: string } }
+store readings { unit { Reading } attr { machine: string } }
 view bad {
   readings |> extend_key machine |> shrink_key machine
 }

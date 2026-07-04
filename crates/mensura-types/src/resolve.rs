@@ -5,10 +5,12 @@
 //! "basic only" scope by rejecting compound units, compound fields, and
 //! `domain` blocks with clear "not yet supported" errors.
 //!
-//! Shapes (`docs/language/03-shapes.md`) are validated here too: each store
-//! that claims conformance with a `:` clause is checked against the shape's
-//! structure.  Shapes carry no storage, so they produce no [`Schema`]; only
-//! stores do.
+//! Shapes (`docs/language/03-shapes.md`) are validated here too: each store or
+//! view that claims conformance with a `:` clause is checked against the shape's
+//! structure.  A store is checked against its declared columns; a view against
+//! its computed output content, ignoring cardinality
+//! (`docs/language/10-views.md`).  Shapes carry no storage, so they produce no
+//! [`Schema`]; only stores do.
 
 use std::collections::{HashMap, HashSet};
 
@@ -212,13 +214,20 @@ pub fn resolve(program: &Program) -> Result<Vec<Schema>, Vec<ResolveError>> {
         }
         for v in &views {
             match type_view(&sources, &v.body) {
-                Ok(_output) => {
-                    // TODO(views): check the optional `: Shape` conformance
-                    // clause (`v.conforms`) against `_output`'s content
-                    // (index + named columns, by type), ignoring const/var
-                    // roles and cardinality (10-views.md, ADR 0013). This
-                    // reuses the parameterized shape machinery of
-                    // `check_conformance` in a content-only mode; deferred.
+                Ok(output) => {
+                    // Check the optional `: Shape` conformance clause against
+                    // the view's computed output content (index + named
+                    // columns by type/totality), ignoring cardinality
+                    // (10-views.md, ADR 0013).
+                    check_view_conformance(
+                        v,
+                        &output,
+                        &shapes,
+                        &resolved_shapes,
+                        &units,
+                        &enums,
+                        &mut errors,
+                    );
                 }
                 Err(errs) => {
                     for e in errs {
@@ -257,9 +266,9 @@ fn resolve_store(
         ));
     }
 
-    // Columns in storage order: index fields, then const, then var.  Compound
-    // units surface here: an index field whose type references another unit is
-    // rejected by `resolve_type`.
+    // Columns in storage order: index fields, then attributes in declaration
+    // order.  Compound units surface here: an index field whose type
+    // references another unit is rejected by `resolve_type`.
     let mut columns = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for f in &unit.fields {
@@ -273,24 +282,13 @@ fn resolve_store(
             enums,
         );
     }
-    for f in &s.consts {
+    for f in &s.attrs {
         add_column(
             &mut columns,
             &mut seen,
             &mut errors,
             f,
-            ColumnRole::Const,
-            units,
-            enums,
-        );
-    }
-    for f in &s.vars {
-        add_column(
-            &mut columns,
-            &mut seen,
-            &mut errors,
-            f,
-            ColumnRole::Var,
+            ColumnRole::Attr,
             units,
             enums,
         );
@@ -326,12 +324,11 @@ enum ShapeUnit {
     Param(String),
 }
 
-/// One resolved shape attribute: its (possibly interpolated) name template,
-/// resolved type, and block.
+/// One resolved shape attribute: its (possibly interpolated) name template
+/// and resolved type.
 struct ResolvedAttr {
     name: NameTemplate,
     ty: ColumnType,
-    role: ColumnRole,
     /// Value totality demanded of a conforming store's column (ADR 0010).
     optional: bool,
 }
@@ -431,37 +428,34 @@ fn resolve_shape(
     // be a primitive or enum (compound types stay deferred via `resolve_type`).
     let mut attrs = Vec::new();
     let mut seen_literals: HashSet<&str> = HashSet::new();
-    for (role, list) in [(ColumnRole::Const, &sh.consts), (ColumnRole::Var, &sh.vars)] {
-        for a in list {
-            for seg in &a.name.segments {
-                let NameSeg::Param(p) = seg else { continue };
-                if !str_params.contains(p.name.as_str()) {
-                    errors.push(ResolveError::new(
-                        format!("`{}` is not a `string` parameter of this shape", p.name),
-                        p.span,
-                    ));
-                }
+    for a in &sh.attrs {
+        for seg in &a.name.segments {
+            let NameSeg::Param(p) = seg else { continue };
+            if !str_params.contains(p.name.as_str()) {
+                errors.push(ResolveError::new(
+                    format!("`{}` is not a `string` parameter of this shape", p.name),
+                    p.span,
+                ));
             }
-            // A literal attribute name is checked here; an interpolated one is
-            // checked on the conforming store's resolved column instead.
-            if let Some(lit) = a.name.as_literal() {
-                check_case(lit, a.name.span, Case::Snake, "attribute", &mut errors);
-                if !seen_literals.insert(lit) {
-                    errors.push(ResolveError::new(
-                        format!("duplicate attribute `{lit}`"),
-                        a.name.span,
-                    ));
-                }
+        }
+        // A literal attribute name is checked here; an interpolated one is
+        // checked on the conforming store's resolved column instead.
+        if let Some(lit) = a.name.as_literal() {
+            check_case(lit, a.name.span, Case::Snake, "attribute", &mut errors);
+            if !seen_literals.insert(lit) {
+                errors.push(ResolveError::new(
+                    format!("duplicate attribute `{lit}`"),
+                    a.name.span,
+                ));
             }
-            match resolve_type(&a.ty, units, enums) {
-                Ok(ty) => attrs.push(ResolvedAttr {
-                    name: a.name.clone(),
-                    ty,
-                    role,
-                    optional: a.ty.is_optional(),
-                }),
-                Err(e) => errors.push(e),
-            }
+        }
+        match resolve_type(&a.ty, units, enums) {
+            Ok(ty) => attrs.push(ResolvedAttr {
+                name: a.name.clone(),
+                ty,
+                optional: a.ty.is_optional(),
+            }),
+            Err(e) => errors.push(e),
         }
     }
 
@@ -480,7 +474,7 @@ fn resolve_shape(
 /// to parameters by position (a unit name to a `Unit` parameter, a string to
 /// a `string` parameter), `string` bindings are interpolated into attribute
 /// names, and the store must tabulate the required unit (if any) and carry
-/// every attribute with the same name, role, and type.  Each failure is a
+/// every attribute with the same name and type.  Each failure is a
 /// separate diagnostic pointing at the claim.
 fn check_conformance(
     s: &StoreDecl,
@@ -504,61 +498,11 @@ fn check_conformance(
             continue;
         };
 
-        if claim.args.len() != shape.params.len() {
-            errors.push(ResolveError::new(
-                format!(
-                    "store `{}` claims `{}` with {} argument(s), but the shape declares {}",
-                    s.name.name,
-                    shape_ref_label(claim),
-                    claim.args.len(),
-                    shape.params.len()
-                ),
-                claim.span,
-            ));
+        let subject = format!("store `{}`", s.name.name);
+        let Some((unit_bind, str_bind)) = bind_shape_args(&subject, shape, claim, units, errors)
+        else {
             continue;
-        }
-
-        // Bind arguments to parameters by position, checking each kind.
-        let mut unit_bind: HashMap<&str, &str> = HashMap::new();
-        let mut str_bind: HashMap<&str, &str> = HashMap::new();
-        let mut args_ok = true;
-        for ((pname, pkind), arg) in shape.params.iter().zip(&claim.args) {
-            match (pkind, arg) {
-                (ParamKind::Unit, ShapeArg::Unit(id)) => {
-                    if !units.contains_key(id.name.as_str()) {
-                        errors.push(ResolveError::new(
-                            format!("unknown unit `{}`", id.name),
-                            id.span,
-                        ));
-                        args_ok = false;
-                    }
-                    unit_bind.insert(pname.as_str(), id.name.as_str());
-                }
-                (ParamKind::Str, ShapeArg::Str(lit)) => {
-                    str_bind.insert(pname.as_str(), lit.value.as_str());
-                }
-                (ParamKind::Unit, ShapeArg::Str(_)) => {
-                    errors.push(ResolveError::new(
-                        format!("parameter `{pname}` expects a unit name, but a string was given"),
-                        arg.span(),
-                    ));
-                    args_ok = false;
-                }
-                (ParamKind::Str, ShapeArg::Unit(id)) => {
-                    errors.push(ResolveError::new(
-                        format!(
-                            "parameter `{pname}` expects a string, but `{}` was given",
-                            id.name
-                        ),
-                        arg.span(),
-                    ));
-                    args_ok = false;
-                }
-            }
-        }
-        if !args_ok {
-            continue;
-        }
+        };
 
         // Unit check, unless the shape is unit-agnostic.  `required` is set
         // only when the shape pins a unit and the store disagrees.
@@ -606,17 +550,6 @@ fn check_conformance(
                     ),
                     claim.span,
                 )),
-                Some(have) if have.role != attr.role => errors.push(ResolveError::new(
-                    format!(
-                        "store `{}` claims `{}`: attribute `{}` is `{}` in the shape but `{}` in the store",
-                        s.name.name,
-                        shape_ref_label(claim),
-                        want,
-                        role_word(attr.role),
-                        role_word(have.role)
-                    ),
-                    claim.span,
-                )),
                 Some(have) if have.ty != attr.ty => errors.push(ResolveError::new(
                     format!(
                         "store `{}` claims `{}`: attribute `{}` has type `{}` in the shape but `{}` in the store",
@@ -643,6 +576,257 @@ fn check_conformance(
             }
         }
     }
+}
+
+/// Positional argument bindings for a shape claim: the `Unit`-parameter map and
+/// the `string`-parameter map, each from parameter name to the bound value.
+type ShapeBindings<'a> = (HashMap<&'a str, &'a str>, HashMap<&'a str, &'a str>);
+
+/// Bind a conformance claim's arguments to a shape's parameters by position,
+/// checking arity and each argument's kind.  Shared by store and view
+/// conformance.  `subject` names the claiming construct for the arity
+/// diagnostic (for example ``store `persons` `` or ``view `machine_temp` ``).
+/// Returns the unit and `string` bindings, or `None` if any check failed (each
+/// failure is recorded on `errors`).
+fn bind_shape_args<'a>(
+    subject: &str,
+    shape: &'a ResolvedShape,
+    claim: &'a ShapeRef,
+    units: &HashMap<&str, &UnitDecl>,
+    errors: &mut Vec<ResolveError>,
+) -> Option<ShapeBindings<'a>> {
+    if claim.args.len() != shape.params.len() {
+        errors.push(ResolveError::new(
+            format!(
+                "{subject} claims `{}` with {} argument(s), but the shape declares {}",
+                shape_ref_label(claim),
+                claim.args.len(),
+                shape.params.len()
+            ),
+            claim.span,
+        ));
+        return None;
+    }
+
+    // Bind arguments to parameters by position, checking each kind.
+    let mut unit_bind: HashMap<&str, &str> = HashMap::new();
+    let mut str_bind: HashMap<&str, &str> = HashMap::new();
+    let mut args_ok = true;
+    for ((pname, pkind), arg) in shape.params.iter().zip(&claim.args) {
+        match (pkind, arg) {
+            (ParamKind::Unit, ShapeArg::Unit(id)) => {
+                if !units.contains_key(id.name.as_str()) {
+                    errors.push(ResolveError::new(
+                        format!("unknown unit `{}`", id.name),
+                        id.span,
+                    ));
+                    args_ok = false;
+                }
+                unit_bind.insert(pname.as_str(), id.name.as_str());
+            }
+            (ParamKind::Str, ShapeArg::Str(lit)) => {
+                str_bind.insert(pname.as_str(), lit.value.as_str());
+            }
+            (ParamKind::Unit, ShapeArg::Str(_)) => {
+                errors.push(ResolveError::new(
+                    format!("parameter `{pname}` expects a unit name, but a string was given"),
+                    arg.span(),
+                ));
+                args_ok = false;
+            }
+            (ParamKind::Str, ShapeArg::Unit(id)) => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "parameter `{pname}` expects a string, but `{}` was given",
+                        id.name
+                    ),
+                    arg.span(),
+                ));
+                args_ok = false;
+            }
+        }
+    }
+    if args_ok {
+        Some((unit_bind, str_bind))
+    } else {
+        None
+    }
+}
+
+/// Check every shape a view claims with its `:` clause against the view's
+/// computed output (`docs/language/10-views.md`, "Constraining a view with a
+/// shape").  Unlike a store, a view has no declared unit, so the check is
+/// content-only:
+///
+/// - a unit-fixing shape requires the output's index to be exactly the unit's
+///   index fields, by name and type (cardinality is left free: a view may be
+///   `bag`);
+/// - each shape attribute must appear among the output columns, index or
+///   non-index, with a matching type and totality.
+fn check_view_conformance(
+    view: &ViewDecl,
+    output: &TableType,
+    shapes: &HashMap<&str, &ShapeDecl>,
+    resolved: &HashMap<&str, ResolvedShape>,
+    units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
+    errors: &mut Vec<ResolveError>,
+) {
+    for claim in &view.conforms {
+        let name = claim.name.name.as_str();
+        let Some(shape) = resolved.get(name) else {
+            // As for stores: a shape that resolved with errors already reported
+            // them; only an entirely unknown name is new here.
+            if !shapes.contains_key(name) {
+                errors.push(ResolveError::new(
+                    format!("unknown shape `{name}`"),
+                    claim.span,
+                ));
+            }
+            continue;
+        };
+
+        let subject = format!("view `{}`", view.name.name);
+        let Some((unit_bind, str_bind)) = bind_shape_args(&subject, shape, claim, units, errors)
+        else {
+            continue;
+        };
+
+        // A unit-fixing shape constrains the output's index structurally: a
+        // view carries no declared unit, so conformance is that the output's
+        // index columns are exactly the unit's index fields (10-views.md, "The
+        // unit clause").
+        let required_unit = match &shape.unit {
+            ShapeUnit::Agnostic => None,
+            ShapeUnit::Concrete(u) => Some(u.as_str()),
+            ShapeUnit::Param(p) => Some(unit_bind[p.as_str()]),
+        };
+        if let Some(uname) = required_unit
+            && let Some(unit) = units.get(uname).copied()
+        {
+            let expected = unit_index_columns(unit, units, enums);
+            let actual: Vec<(String, ColumnType)> = output
+                .content
+                .index
+                .iter()
+                .map(|c| (c.name.clone(), c.domain.clone()))
+                .collect();
+            if !same_columns(&expected, &actual) {
+                errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}`, which tabulates `{}`, but its index is {} rather than {}",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        uname,
+                        render_columns(&actual),
+                        render_columns(&expected)
+                    ),
+                    claim.span,
+                ));
+                continue;
+            }
+        }
+
+        // Content attributes: each must appear somewhere in the output (index
+        // or non-index), with a matching type and totality.
+        for attr in &shape.attrs {
+            let want = render_template(&attr.name, &str_bind);
+            if !is_identifier(&want) {
+                errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}`: interpolated attribute name `{}` is not a valid identifier",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        want
+                    ),
+                    claim.span,
+                ));
+                continue;
+            }
+            let found = output
+                .content
+                .index
+                .iter()
+                .chain(output.content.columns.iter())
+                .find(|c| c.name == want);
+            match found {
+                None => errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}` but is missing attribute `{}`",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        want
+                    ),
+                    claim.span,
+                )),
+                Some(have) if have.domain != attr.ty => errors.push(ResolveError::new(
+                    format!(
+                        "view `{}` claims `{}`: attribute `{}` has type `{}` in the shape but `{}` in the view",
+                        view.name.name,
+                        shape_ref_label(claim),
+                        want,
+                        type_name(&attr.ty),
+                        type_name(&have.domain)
+                    ),
+                    claim.span,
+                )),
+                Some(_) if output.qualifiers.totality.is_optional(&want) != attr.optional => errors
+                    .push(ResolveError::new(
+                        format!(
+                            "view `{}` claims `{}`: attribute `{}` is `{}` in the shape but `{}` in the view",
+                            view.name.name,
+                            shape_ref_label(claim),
+                            want,
+                            totality_word(attr.optional),
+                            totality_word(output.qualifiers.totality.is_optional(&want))
+                        ),
+                        claim.span,
+                    )),
+                Some(_) => {}
+            }
+        }
+    }
+}
+
+/// Resolve a unit's index fields to their `(name, type)` pairs, for structural
+/// conformance of a view claiming a unit-fixing shape.  Fields that fail to
+/// resolve (for example a still-unsupported compound field) are skipped: such
+/// a unit cannot back a store either, and its error surfaces where it is used.
+fn unit_index_columns(
+    unit: &UnitDecl,
+    units: &HashMap<&str, &UnitDecl>,
+    enums: &HashMap<&str, &EnumDecl>,
+) -> Vec<(String, ColumnType)> {
+    let mut out = Vec::new();
+    for f in &unit.fields {
+        if let (Ok(name), Ok(ty)) = (
+            literal_field_name(&f.name),
+            resolve_type(&f.ty, units, enums),
+        ) {
+            out.push((name, ty));
+        }
+    }
+    out
+}
+
+/// Two column lists match iff they carry the same names, each with the same
+/// type.  Order is not significant: a view's index is a set of key columns, and
+/// pipeline stages may present them in any order.
+fn same_columns(a: &[(String, ColumnType)], b: &[(String, ColumnType)]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|(name, ty)| b.iter().any(|(bn, bt)| bn == name && bt == ty))
+}
+
+/// Render a column list as ``a: int, b: string`` for diagnostics.
+fn render_columns(cols: &[(String, ColumnType)]) -> String {
+    if cols.is_empty() {
+        return "empty".into();
+    }
+    cols.iter()
+        .map(|(name, ty)| format!("`{name}: {}`", type_name(ty)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Concatenate a name template, substituting each `string` parameter with its
@@ -675,14 +859,6 @@ fn shape_ref_label(r: &ShapeRef) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         format!("{}[{}]", r.name.name, args)
-    }
-}
-
-fn role_word(role: ColumnRole) -> &'static str {
-    match role {
-        ColumnRole::Index => "index",
-        ColumnRole::Const => "const",
-        ColumnRole::Var => "var",
     }
 }
 
@@ -728,13 +904,13 @@ fn add_column(
         return;
     }
     // Index fields come from the unit and are checked at its declaration;
-    // here only the store's own `const`/`var` attributes are checked.
+    // here only the store's own attributes are checked.
     if role != ColumnRole::Index {
         check_case(&name, field.name.span, Case::Snake, "attribute", errors);
     }
     // An index field is always known: whether the row exists at all is
     // cardinality, a separate axis from value missingness (ADR 0010).  `?` on
-    // an index field is rejected; `const`/`var` may be optional.
+    // an index field is rejected; an attribute may be optional.
     let is_index = role == ColumnRole::Index;
     if is_index && let Some(span) = field.ty.optional {
         errors.push(ResolveError::new(
@@ -853,17 +1029,17 @@ mod tests {
 
             store departments {
               unit { Department }
-              const { name: string }
+              attr { name: string }
             }
             store persons {
               unit { Person }
-              const { birthdate: date }
-              var   { last_name: string }
+              attr { birthdate: date }
+              attr { last_name: string }
             }
             store students {
               unit { Person }
-              const { admission: date }
-              var   { status: Status }
+              attr { admission: date }
+              attr { status: Status }
             }
         "#;
         let schemas = resolve_str(src).expect("should resolve");
@@ -880,10 +1056,10 @@ mod tests {
             cols,
             vec![
                 ("id", ColumnRole::Index, &ColumnType::String),
-                ("admission", ColumnRole::Const, &ColumnType::Date),
+                ("admission", ColumnRole::Attr, &ColumnType::Date),
                 (
                     "status",
-                    ColumnRole::Var,
+                    ColumnRole::Attr,
                     &ColumnType::Enum {
                         name: "Status".into(),
                         variants: vec!["active".into(), "inactive".into()],
@@ -895,7 +1071,7 @@ mod tests {
 
     #[test]
     fn unknown_unit_is_rejected() {
-        let errs = errors("store s { unit { Ghost } const { a: string } }");
+        let errs = errors("store s { unit { Ghost } attr { a: string } }");
         assert!(errs[0].message.contains("unknown unit `Ghost`"));
     }
 
@@ -929,10 +1105,10 @@ mod tests {
 
     #[test]
     fn duplicate_column_is_rejected() {
-        // `id` is both the index field and a const attribute.
+        // `id` is both the index field and a declared attribute.
         let src = r#"
             unit Person { id: string }
-            store s { unit { Person } const { id: string } }
+            store s { unit { Person } attr { id: string } }
         "#;
         let errs = errors(src);
         assert!(errs[0].message.contains("duplicate column `id`"));
@@ -949,7 +1125,7 @@ mod tests {
         // A backtick-quoted literal name is the same as the bare identifier.
         let src = r#"
             unit Person { id: string }
-            store s { unit { Person } const { `extra`: string } }
+            store s { unit { Person } attr { `extra`: string } }
         "#;
         let schema = &resolve_str(src).expect("should resolve")[0];
         assert!(schema.columns.iter().any(|c| c.name == "extra"));
@@ -960,7 +1136,7 @@ mod tests {
         // A store has no parameters, so a `{param}` name cannot resolve.
         let src = r#"
             unit Person { id: string }
-            store s { unit { Person } const { `{x}`: string } }
+            store s { unit { Person } attr { `{x}`: string } }
         "#;
         let errs = errors(src);
         assert!(
@@ -992,7 +1168,7 @@ mod tests {
         let src = r#"
             unit U { id: string }
             store a { unit { Ghost } }
-            store b { unit { U } const { x: widget } }
+            store b { unit { U } attr { x: widget } }
         "#;
         let errs = errors(src);
         assert_eq!(errs.len(), 2);
@@ -1005,12 +1181,12 @@ mod tests {
             enum Status { "active", "inactive" }
             shape PersonRecord {
               unit { Person }
-              const { admission: date }
+              attr { admission: date }
             }
             store students : PersonRecord {
               unit { Person }
-              const { admission: date }
-              var   { status: Status }
+              attr { admission: date }
+              attr { status: Status }
             }
         "#;
         // The store carries an extra attribute (`status`); conformance only
@@ -1025,7 +1201,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Anything { unit { Person } }
-            store persons : Anything { unit { Person } const { birthdate: date } }
+            store persons : Anything { unit { Person } attr { birthdate: date } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -1047,7 +1223,7 @@ mod tests {
     fn missing_shape_attribute_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape PersonRecord { unit { Person } const { admission: date } }
+            shape PersonRecord { unit { Person } attr { admission: date } }
             store students : PersonRecord { unit { Person } }
         "#;
         let errs = errors(src);
@@ -1062,8 +1238,8 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             unit Course { code: string }
-            shape PersonRecord { unit { Person } const { admission: date } }
-            store courses : PersonRecord { unit { Course } const { admission: date } }
+            shape PersonRecord { unit { Person } attr { admission: date } }
+            store courses : PersonRecord { unit { Course } attr { admission: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| e.message.contains("tabulates `Person`")
@@ -1074,8 +1250,8 @@ mod tests {
     fn wrong_attribute_type_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape PersonRecord { unit { Person } const { admission: date } }
-            store students : PersonRecord { unit { Person } const { admission: string } }
+            shape PersonRecord { unit { Person } attr { admission: date } }
+            store students : PersonRecord { unit { Person } attr { admission: string } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1085,17 +1261,23 @@ mod tests {
     }
 
     #[test]
-    fn wrong_attribute_role_is_rejected() {
-        let src = r#"
+    fn repeated_attr_blocks_merge() {
+        // Several `attr` blocks are equivalent to one listing all attributes
+        // (ADR 0019); a duplicate across blocks is the within-block error.
+        let ok = r#"
             unit Person { id: string }
-            shape PersonRecord { unit { Person } const { admission: date } }
-            store students : PersonRecord { unit { Person } var { admission: date } }
+            store students { unit { Person } attr { a: date } attr { b: string } }
         "#;
-        let errs = errors(src);
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`const` in the shape but `var`"))
-        );
+        let schemas = resolve_str(ok).expect("should resolve");
+        let names: Vec<&str> = schemas[0].columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "a", "b"]);
+
+        let dup = r#"
+            unit Person { id: string }
+            store students { unit { Person } attr { a: date } attr { a: date } }
+        "#;
+        let errs = errors(dup);
+        assert!(errs[0].message.contains("duplicate column `a`"));
     }
 
     #[test]
@@ -1105,8 +1287,8 @@ mod tests {
             unit Machine { id: string }
             store readings {
               unit { Machine }
-              var { last_service: date? }
-              var { vibration: real }
+              attr { last_service: date? }
+              attr { vibration: real }
             }
         "#;
         let schemas = resolve_str(src).expect("should resolve");
@@ -1139,8 +1321,8 @@ mod tests {
         // store column, and vice versa.
         let src = r#"
             unit Person { id: string }
-            shape PersonRecord { unit { Person } const { admission: date } }
-            store students : PersonRecord { unit { Person } const { admission: date? } }
+            shape PersonRecord { unit { Person } attr { admission: date } }
+            store students : PersonRecord { unit { Person } attr { admission: date? } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1153,8 +1335,8 @@ mod tests {
     fn optional_attribute_conforms_when_shape_agrees() {
         let src = r#"
             unit Person { id: string }
-            shape PersonRecord { unit { Person } const { nickname: string? } }
-            store students : PersonRecord { unit { Person } const { nickname: string? } }
+            shape PersonRecord { unit { Person } attr { nickname: string? } }
+            store students : PersonRecord { unit { Person } attr { nickname: string? } }
         "#;
         resolve_str(src).expect("matching totality should conform");
     }
@@ -1178,7 +1360,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Tabular[U: Unit] { unit { U } }
-            store persons : Tabular[Person] { unit { Person } const { birthdate: date } }
+            store persons : Tabular[Person] { unit { Person } attr { birthdate: date } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -1189,8 +1371,8 @@ mod tests {
         // by carrying the required `name` attribute.
         let src = r#"
             unit Department { code: string }
-            shape Named { const { name: string } }
-            store departments : Named { unit { Department } const { name: string } }
+            shape Named { attr { name: string } }
+            store departments : Named { unit { Department } attr { name: string } }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
     }
@@ -1288,15 +1470,15 @@ mod tests {
             unit Person { id: string }
             unit Department { code: string }
             shape Ageable[date_field: string] {
-              const { `{date_field}`: date }
+              attr { `{date_field}`: date }
             }
             store persons : Ageable["birthdate"] {
               unit { Person }
-              const { birthdate: date }
+              attr { birthdate: date }
             }
             store departments : Ageable["foundation_day"] {
               unit { Department }
-              const { foundation_day: date }
+              attr { foundation_day: date }
             }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 2);
@@ -1307,14 +1489,14 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape NormalizedCol[col: string] {
-              const {
+              attr {
                 `{col}`:   real
                 `{col}_z`: real
               }
             }
             store students : NormalizedCol["height"] {
               unit { Person }
-              const {
+              attr {
                 height:   real
                 height_z: real
               }
@@ -1327,7 +1509,7 @@ mod tests {
     fn missing_interpolated_attribute_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Ageable[date_field: string] { const { `{date_field}`: date } }
+            shape Ageable[date_field: string] { attr { `{date_field}`: date } }
             store persons : Ageable["birthdate"] { unit { Person } }
         "#;
         let errs = errors(src);
@@ -1355,8 +1537,8 @@ mod tests {
     fn unit_argument_for_string_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Ageable[date_field: string] { const { `{date_field}`: date } }
-            store persons : Ageable[birthdate] { unit { Person } const { birthdate: date } }
+            shape Ageable[date_field: string] { attr { `{date_field}`: date } }
+            store persons : Ageable[birthdate] { unit { Person } attr { birthdate: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1369,7 +1551,7 @@ mod tests {
     fn template_referencing_unknown_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Bad[col: string] { const { `{other}`: real } }
+            shape Bad[col: string] { attr { `{other}`: real } }
         "#;
         let errs = errors(src);
         assert!(
@@ -1411,7 +1593,7 @@ mod tests {
             unit Machine { id: string }
             store temperature_readings {
               unit { Machine }
-              const { temp_mean: real }
+              attr { temp_mean: real }
             }
         "#;
         assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
@@ -1452,7 +1634,7 @@ mod tests {
     fn non_snake_attribute_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            store s { unit { Person } const { birthDate: date } }
+            store s { unit { Person } attr { birthDate: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1485,7 +1667,7 @@ mod tests {
     fn non_snake_string_parameter_is_rejected() {
         let src = r#"
             unit Person { id: string }
-            shape Ageable[dateField: string] { const { `{dateField}`: date } }
+            shape Ageable[dateField: string] { attr { `{dateField}`: date } }
         "#;
         let errs = errors(src);
         assert!(errs.iter().any(|e| {
@@ -1501,7 +1683,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             shape Tabular[U: Unit] { unit { U } }
-            store persons : Tabular[Person] { unit { Person } const { birthdate: date } }
+            store persons : Tabular[Person] { unit { Person } attr { birthdate: date } }
         "#;
         assert!(resolve_str(src).is_ok());
     }
@@ -1512,7 +1694,7 @@ mod tests {
         // so the convention does not constrain them in any position.
         let src = r#"
             unit 温度 { 标识: string }
-            store 温度表 { unit { 温度 } const { 测量: string } }
+            store 温度表 { unit { 温度 } attr { 测量: string } }
         "#;
         assert!(resolve_str(src).is_ok());
     }
@@ -1521,17 +1703,104 @@ mod tests {
     fn view_body_is_type_checked() {
         let ok = r#"
             unit Machine { id: string }
-            store readings { unit { Machine } var { temperature: real } }
+            store readings { unit { Machine } attr { temperature: real } }
             view machine_summary { readings |> group_map |k, g| (.temp_max = max g.temperature) }
         "#;
         resolve_str(ok).expect("a valid view resolves");
 
         let bad = r#"
             unit Machine { id: string }
-            store readings { unit { Machine } var { temperature: real } }
+            store readings { unit { Machine } attr { temperature: real } }
             view bad { readings |> group_map |k, g| (.x = g.temperature + 1.0) }
         "#;
         let errs = errors(bad);
         assert!(errs.iter().any(|e| e.message.contains("bag")));
+    }
+
+    // A summarizing view whose output index is `Machine`'s key and whose one
+    // non-index column is `temp_max: real` (`docs/language/10-views.md`).
+    const SUMMARY_VIEW: &str = r#"
+        unit Machine { id: string }
+        store readings { unit { Machine } attr { temperature: real } }
+    "#;
+
+    #[test]
+    fn view_conforms_to_unit_fixing_shape() {
+        // A unit-fixing shape checks the output's index structurally: the view
+        // ends in `group_map`, so its index is `Machine`'s `id`.
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape Tabular[U: Unit] {{ unit {{ U }} }}
+            view machine_summary : Tabular[Machine] {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        resolve_str(&src).expect("view carrying Machine's index conforms");
+    }
+
+    #[test]
+    fn view_with_wrong_unit_index_is_rejected() {
+        // The view's index is `id`, but `Site`'s index is `code`, so a claim of
+        // `Tabular[Site]` fails the structural index check.
+        let src = format!(
+            "{SUMMARY_VIEW}
+            unit Site {{ code: string }}
+            shape Tabular[U: Unit] {{ unit {{ U }} }}
+            view v : Tabular[Site] {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(
+            errs.iter().any(
+                |e| e.message.contains("tabulates `Site`") && e.message.contains("rather than")
+            )
+        );
+    }
+
+    #[test]
+    fn view_conforms_to_content_shape() {
+        // A content shape checks named columns by name, type, and totality;
+        // the same `attr` contract spans stores and views (ADR 0019).
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMax {{ attr {{ temp_max: real }} }}
+            view machine_summary : HasMax {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        resolve_str(&src).expect("view carrying temp_max conforms");
+    }
+
+    #[test]
+    fn view_missing_content_attribute_is_rejected() {
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMin {{ attr {{ temp_min: real }} }}
+            view v : HasMin {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("missing attribute `temp_min`"))
+        );
+    }
+
+    #[test]
+    fn view_content_attribute_wrong_type_is_rejected() {
+        let src = format!(
+            "{SUMMARY_VIEW}
+            shape HasMax {{ attr {{ temp_max: string }} }}
+            view v : HasMax {{
+              readings |> group_map |k, g| (.temp_max = max g.temperature)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("type `string` in the shape but `real` in the view")
+        }));
     }
 }

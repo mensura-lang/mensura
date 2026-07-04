@@ -828,21 +828,21 @@ mod tests {
             unit: "Machine".to_string(),
             columns: vec![
                 scol("machine", ColumnType::String, ColumnRole::Index, false),
-                scol("size", ColumnType::Int, ColumnRole::Var, false),
-                scol("temperature", ColumnType::Real, ColumnRole::Var, false),
-                scol("peak", ColumnType::Real, ColumnRole::Var, true),
-                scol("note", ColumnType::String, ColumnRole::Var, true),
-                scol("at", ColumnType::Date, ColumnRole::Var, false),
+                scol("size", ColumnType::Int, ColumnRole::Attr, false),
+                scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+                scol("peak", ColumnType::Real, ColumnRole::Attr, true),
+                scol("note", ColumnType::String, ColumnRole::Attr, true),
+                scol("at", ColumnType::Date, ColumnRole::Attr, false),
                 scol(
                     "status",
                     ColumnType::Enum {
                         name: "Status".to_string(),
                         variants: vec!["active".to_string(), "closed".to_string()],
                     },
-                    ColumnRole::Var,
+                    ColumnRole::Attr,
                     false,
                 ),
-                scol("flag", ColumnType::Bool, ColumnRole::Var, false),
+                scol("flag", ColumnType::Bool, ColumnRole::Attr, false),
             ],
             span: Span::new(0, 0),
         };

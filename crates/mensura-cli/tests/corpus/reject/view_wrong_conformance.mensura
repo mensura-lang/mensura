@@ -1,0 +1,20 @@
+// Rejected at resolution: the view claims a content shape whose column it does
+// not carry.  `HasMin` demands `temp_min: real`, but the pipeline produces only
+// `temp_max`, so the `: Shape` conformance check fails
+// (docs/language/10-views.md, "Constraining a view with a shape").
+unit Machine {
+  id: string
+}
+
+shape HasMin {
+  attr { temp_min: real }
+}
+
+store readings {
+  unit { Machine }
+  attr { temperature: real }
+}
+
+view machine_summary : HasMin {
+  readings |> group_map |k, g| (.temp_max = max g.temperature)
+}

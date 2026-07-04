@@ -8,6 +8,8 @@ unit Machine {
 
 store machines {
   unit { Machine }
-  const { commissioned: date }
-  var   { label: string }
+  attr {
+    commissioned: date
+    label: string
+  }
 }

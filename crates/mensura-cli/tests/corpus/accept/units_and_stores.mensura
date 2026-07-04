@@ -7,6 +7,6 @@ enum MachineStatus { "operational", "failure" }
 
 store machines {
   unit { Machine }
-  const { commissioned: date }
-  var   { status: MachineStatus }
+  attr { commissioned: date }
+  attr { status: MachineStatus }
 }

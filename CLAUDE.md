@@ -39,8 +39,8 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
   byte offsets carried on every token and AST node.  Grammar lives in
   `docs/language/04-grammar.md`.
 - `mensura-types`: name resolution and the resolved `Schema` model, the
-  boundary IR (a store flattened to ordered, typed columns tagged
-  index/const/var), plus the expression and pipeline checkers (`expr_check`,
+  boundary IR (a store flattened to ordered, typed columns tagged as index
+  or attribute), plus the expression and pipeline checkers (`expr_check`,
   `pipe_check`) that type view bodies.  `resolve` collects *all* diagnostics
   rather than failing on the first.
 - `mensura-runtime`: the `StorageBackend` trait and a `SqliteBackend`

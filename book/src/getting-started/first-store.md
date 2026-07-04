@@ -11,22 +11,15 @@ that holds their attributes.  Here is one in full:
 Save it as `machines.mensura`.  Two things are worth noticing before we run it.
 
 **Every word is an identifier.**  Mensura has no reserved keywords.  `unit`,
-`store`, `const`, and `var` are ordinary identifiers that the parser recognises
-by their position.  That is why the highlighting in this book comes from the
+`store`, and `attr` are ordinary identifiers that the parser recognises by
+their position.  That is why the highlighting in this book comes from the
 compiler itself rather than a word list: only the parser knows that the first
 `unit` opens a declaration while the second, inside the store, names which unit
 the rows are about.
 
-**Constants and variables are different.**  A store splits its non-index
-attributes into two groups:
-
-- `const` is for facts that should not change once a row exists.  A machine's
-  commissioning date is a fact about that machine.
-- `var` is for data that evolves.  A human-readable label can be corrected or
-  updated.
-
-The distinction is part of the type, not a comment.  Later milestones attach
-auditing and versioning rules to it; for now it records intent precisely.
+**Attributes are the data carried per row.**  The `attr` block lists the
+non-index attributes, each a name and a type.  A machine's commissioning date
+and its human-readable label travel with each observation of that machine.
 
 The `id: string` inside `unit Machine` is the unit's **index**: the field that
 identifies one machine from another.  Index fields become the store's primary

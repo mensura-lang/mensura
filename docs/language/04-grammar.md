@@ -16,6 +16,11 @@ implements it (`parse_expr` in `crates/mensura-syntax/src/parser.rs`), and
 `view` declarations host it (`10-views.md`); the remaining hosting sites
 (`when:`, `where:`, `@auto`) land with their own features.
 
+The store and shape attribute surface shown here (the `attr` block, with no
+mutability markers) is the design decided in
+`docs/decisions/0019-attr-blocks-and-dropped-const-var.md`.  It supersedes
+the earlier `const`/`var` attribute blocks.
+
 The grammar is **LL(1)**: a hand-written recursive-descent parser decides
 every alternative from one token of lookahead, with no backtracking, as
 required by `ROADMAP.md`.  Constructs that cannot be expressed in LL(1) are
@@ -42,8 +47,8 @@ deferred to a follow-up.
 Tokens come from the lexer (`crates/mensura-syntax/src/lexer.rs`).  The lexer
 emits every word as an `Ident`; it knows no keywords.  **Keywords are
 contextual**: the parser recognizes words such as `unit`, `store`, `shape`,
-`const`, `var`, `domain`, `enum`, and `view` by their text *in the position
-where they are expected*, not by reserving them globally.
+`attr`, `domain`, `enum`, and `view` by their text *in the position where
+they are expected*, not by reserving them globally.
 
 A backtick-delimited **template** (`` `{col}_z` ``) lexes to a single token
 carrying its raw inner text; the parser splits it into literal and `{param}`
@@ -71,19 +76,17 @@ shape_ref     = ident [ args ] ;
 args          = "[" arg { "," arg } "]" ;
 arg           = ident | string ;
 unit_clause   = "unit" "{" ident "}" ;
-store_block   = const_block | var_block | domain_block ;
-const_block   = "const" "{" { attr } "}" ;
-var_block     = "var" "{" { attr } "}" ;
-attr          = ident ":" type ;
+store_block   = attr_block | domain_block ;
+attr_block    = "attr" "{" { store_attr } "}" ;
+store_attr    = ident ":" type ;
 domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
 
 shape_decl    = "shape" ident [ params ] "{" [ unit_clause ] { shape_block } "}" ;
 params        = "[" param { "," param } "]" ;
 param         = ident ":" ident ;
-shape_block   = shape_const | shape_var ;
-shape_const   = "const" "{" { shape_attr } "}" ;
-shape_var     = "var" "{" { shape_attr } "}" ;
+shape_block   = shape_attr_block ;
+shape_attr_block = "attr" "{" { shape_attr } "}" ;
 shape_attr    = attr_name ":" type ;
 attr_name     = ident | template ;
 
@@ -119,11 +122,13 @@ named_type    = ident ;
 - **`shape_decl` body**: the optional `unit_clause` is taken when the body
   opens with the `unit` keyword, and skipped otherwise.  One token decides.
 - **`store_block` loop**: at each turn the next token is either `}` (end the
-  store body) or one of the introducers `const` / `var` / `domain`, all
-  distinct words.  One token decides.
-- **`shape_block` loop**: as `store_block`, minus `domain`; a `domain` word
-  in a shape body is a parse error (shapes carry no foreign-key resolution).
-- **`field` / `attr` loops**: a loop continues on `ident` and ends on `}`.
+  store body) or one of the introducers `attr` / `domain`, distinct words.
+  One token decides.
+- **`shape_block` loop**: as `store_block`, minus `domain`; a shape body has
+  only `attr` blocks, and a `domain` word in a shape body is a parse error
+  (shapes carry no foreign-key resolution).
+- **`field` / attribute loops**: a loop continues on `ident` (or a `template`
+  name in a shape) and ends on `}`.
 - **`type`**: a type is a single `ident`: a primitive (`string`, `int`,
   `real`, ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
   decision, not the parser's; the parser commits on the lone identifier.
@@ -149,8 +154,8 @@ subset.
   contract, not a store; foreign-key resolution is per-store.  The parser
   rejects a `domain` block inside a shape.
 - **Clause order.**  A `store` body must begin with its `unit { U }` clause,
-  followed by zero or more `const`, `var`, and `domain` blocks in any order.
-  Repeated `const`/`var` blocks are allowed and merged by the resolver.
+  followed by zero or more `attr` and `domain` blocks in any order.  Repeated
+  `attr` blocks are allowed and merged by the resolver.
 - **A shape's unit clause is optional.**  When present it comes first, as in
   a store; when absent the shape is unit-agnostic.  A shape claimed with
   arguments (`Tabular[Person]`, `Ageable["birthdate"]`) binds its parameters
@@ -217,7 +222,7 @@ unit Department {
 
 store departments {
   unit { Department }
-  const { name: string }
+  attr { name: string }
 }
 
 enum Status {
@@ -226,19 +231,21 @@ enum Status {
 
 store persons : Ageable["birthdate"] {
   unit { Person }
-  const { birthdate: date }
-  var   { last_name: string }
-  var   { status: Status }
+  attr {
+    birthdate: date
+    last_name: string
+    status:    Status
+  }
 }
 
 store students : PersonRecord, Tabular[Person] {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 shape PersonRecord {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 shape Tabular[U: Unit] {
@@ -246,11 +253,11 @@ shape Tabular[U: Unit] {
 }
 
 shape Named {
-  const { name: string }
+  attr { name: string }
 }
 
 shape Ageable[date_field: string] {
-  const { `{date_field}`: date }
+  attr { `{date_field}`: date }
 }
 ```
 
@@ -260,8 +267,8 @@ and `admission` attribute against the former and binds `U := Person` for the
 latter.  `persons` claims `Ageable["birthdate"]`: the `string` argument
 renders the templated attribute name to `birthdate`, which the store carries,
 and its `status` is the named `enum Status`.
-`Named` is unit-agnostic (no unit clause): any store carrying a
-`const name: string` conforms.  `courses` and `student_grades` from
+`Named` is unit-agnostic (no unit clause): any store carrying an
+attribute `name: string` conforms.  `courses` and `student_grades` from
 `02-stores.md` are compound (their units reference other units and they carry
 `domain` blocks); they parse but are rejected by the resolver until compound
 support lands.
@@ -296,7 +303,7 @@ conditional = "if" or_expr "then" or_expr "else" or_expr ;
 
 paren       = "(" ( record_body | collection_body ) ")" ;
 record_body = field { "," field } ;
-field       = "." ident [ "const" | "var" ] [ ":" type ] "=" expr ;
+field       = "." ident [ ":" type ] "=" expr ;
 collection_body = [ expr { "," expr } ] ;
 
 block       = "{" [ stmt { ";" stmt } [ ";" ] ] "}" ;
@@ -322,9 +329,8 @@ appear in this subset.
 grouping, `()` the empty collection, `(a, b, ...)` a collection of like values
 (the form a `map` body uses to drop or expand rows, ADR 0015), and
 `(.a = x, .b = y)` a labeled record.  A `( )` is *either* a positional
-collection *or* all-labeled, never mixed.  A record field may carry a reserved
-role marker, `(.a const = x)` or `(.a var = x)` (default `const`), and a
-heterogeneous sequence `([ ... ])` is reserved.  `conditional` is the prefix
+collection *or* all-labeled, never mixed.  A heterogeneous sequence
+`([ ... ])` is reserved.  `conditional` is the prefix
 `if c then a else b` (`if`/`then`/`else` reserved in expressions).  `block` is
 a statement block
 (`let`/`assert` statements and an optional trailing result expression),
@@ -367,8 +373,8 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   first element is an expression; then `,` continues the collection and `)` ends
   a grouping.  Since an expression never starts with `.`, the record/collection
   choice is one token; `()` is the empty collection.  A record field is
-  `.name [const | var] [: Type] = value`; within a field the optional role
-  marker, then `:` and `=`, are fixed by position.
+  `.name [: Type] = value`; within a field the optional `:` ascription, then
+  `=`, are fixed by position.
 - **`block`**: `{` opens it; each statement is dispatched on its first token
   (`let` -> `let_stmt`, `assert` -> `assert_stmt`, otherwise a result
   `expr`); `;` separates statements and `}` ends.  This is the only `{ }` in

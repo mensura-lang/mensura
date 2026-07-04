@@ -27,7 +27,6 @@ Two stores of the same unit observe the same kind of entity, but they
 may disagree on:
 
 - which attributes accompany each observation,
-- whether those attributes are immutable facts or evolving values,
 - which other stores their unit-reference fields resolve into,
 - which audit, version, or auto-fill policy applies,
 - the API surface (when one is exposed).
@@ -38,22 +37,26 @@ the unit declaration.
 ## Store declaration
 
 A store declaration consists of a name, a unit reference, an optional
-`domain` block, and any number of `const` and `var` blocks.
+`domain` block, and one or more `attr` blocks.
 
 ```
 enum Status { "active", "inactive" }
 
 store persons {
   unit { Person }
-  const { birthdate: date }
-  var   { status: Status }
+  attr {
+    birthdate: date
+    status:    Status
+  }
 }
 ```
 
 The store's name is the identifier other stores and pipelines use to
 refer to it.  The `unit { U }` line says which unit is being
-tabulated.  The `const` and `var` blocks list the attributes attached
-to each observation; their semantics are described below.
+tabulated.  The `attr` block lists the attributes attached to each
+observation.  Repeated `attr` blocks are allowed and merged.  This
+surface is decided in
+`docs/decisions/0019-attr-blocks-and-dropped-const-var.md`.
 
 ## Basic and compound stores
 
@@ -71,8 +74,10 @@ store student_grades {
     student: students
     course:  courses
   }
-  const { class_id: string }
-  var   { grade: real }
+  attr {
+    class_id: string
+    grade:    real
+  }
 }
 ```
 
@@ -90,17 +95,18 @@ Transitivity follows the store graph.
 
 ## Attributes
 
-The `const` and `var` blocks list the attributes that accompany each
-observation.  Each attribute has a name and a type.  The type may be
-a primitive (`string`, `int`, `real`, `date`, ...) or a unit reference, in
-the same way unit index fields can be either.
+The `attr` block lists the attributes that accompany each observation.
+Each attribute has a name and a type, exactly as in a shape
+(`03-shapes.md`).  The type may be a primitive (`string`, `int`,
+`real`, `date`, ...) or a unit reference, in the same way unit index
+fields can be either.
 
 A value is **total** by default: in an observed row every attribute is
 known.  Marking the type with a trailing `?` makes the value
 **optional**, so it may be missing even when the row is present:
 
 ```
-var { last_service: date? }
+attr { last_service: date? }
 ```
 
 Whether a value may be missing is independent of how many rows a key has
@@ -123,30 +129,28 @@ unit Program {
 store programs {
   unit { Program }
   domain { coordinator: persons }
-  const { name: string }
-  var   { coordinator: Person }
+  attr {
+    name:        string
+    coordinator: Person
+  }
 }
 ```
 
 Here `programs.coordinator` is an attribute of type `Person`, resolved
 into `persons`.
 
-### `const` and `var`
+### Mutability is deferred
 
-`const` attributes are *facts that should not change*: a person's
-birthdate, a course's name under a given catalogue revision, a
-registration's program.  They can be modified, but the language
-treats every change as an exceptional event subject to audit.
-
-`var` attributes are *data that evolves over time*: a student's
-status, a course offering's open/closed state, a person's last name.
-Changes are still observed by the language, but they are routine.
-
-The semantic distinction between `const` and `var` is not just
-documentation: it is what audit and version policy attach to.  The
-exact policy syntax (`@audited`, `@versioned`, `@auto`,
-`@allowcreate`) is treated in a separate document; for now it is
-enough to know that `const` and `var` are real, distinct categories.
+Earlier drafts distinguished immutable facts (`const`) from evolving
+values (`var`) per attribute.  That distinction is change-control
+policy, not structure, and the change-control family it belongs to
+(`@audited`, `@versioned`, `@auto`, `@allowcreate`) is itself
+deferred, so the language currently records no mutability at all: a
+store attribute is a name and a type, nothing more.  How mutability
+returns, for instance per-tabulation-kind defaults with annotations on
+exceptional attributes only, is an open question of the change-control
+document.  Decided in
+`docs/decisions/0019-attr-blocks-and-dropped-const-var.md`.
 
 ## Multiple stores of the same unit
 
@@ -156,23 +160,23 @@ not a quirk: different stores serve different purposes.
 ```
 store persons {
   unit { Person }
-  const { birthdate: date }
+  attr { birthdate: date }
 }
 
 store students {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 store alumni_snapshot {
   unit { Person }
-  const { graduation_year: int }
+  attr { graduation_year: int }
 }
 ```
 
 `persons`, `students`, and `alumni_snapshot` all tabulate `Person`
-observations, with different attribute sets and different
-change-control disciplines.  A row may be present in `students` and
+observations, with different attribute sets.  A row may be present in
+`students` and
 absent from `persons`; a row may move from `students` to
 `alumni_snapshot` when a person graduates; the same `Person.id` may
 appear in two stores at the same time.
@@ -245,18 +249,20 @@ enum Weekday {
 
 store departments {
   unit { Department }
-  const { name: string }
+  attr { name: string }
 }
 
 store persons {
   unit { Person }
-  const { birthdate: date }
-  var   { last_name: string }
+  attr {
+    birthdate: date
+    last_name: string
+  }
 }
 
 store students {
   unit { Person }
-  const { admission: date }
+  attr { admission: date }
 }
 
 store courses {
@@ -264,7 +270,7 @@ store courses {
   domain {
     department: departments
   }
-  const {
+  attr {
     weekday: Weekday
   }
 }
@@ -275,8 +281,10 @@ store student_grades {
     student: students
     course:  courses
   }
-  const { class_id: string }
-  var   { grade: real }
+  attr {
+    class_id: string
+    grade:    real
+  }
 }
 ```
 
@@ -295,9 +303,9 @@ nothing.  Acyclic, well-formed.
   its own document.  Briefly: collect declarations carry a
   completeness guarantee at the type level that ordinary stores do
   not.
-- **Audit, version, auto-fill policy.**  The syntax and semantics of
-  `@audited`, `@versioned`, `@auto`, `@allowcreate`, and whether
-  `const` always implies `@audited` (per the proposal), belong in a
+- **Change control.**  The syntax and semantics of `@audited`,
+  `@versioned`, `@auto`, `@allowcreate`, and how per-attribute
+  mutability returns (see "Mutability is deferred" above), belong in a
   separate policy document.
 - **API surface.**  REST endpoints, authentication, and permission
   checking are part of the web-service work, not the language
