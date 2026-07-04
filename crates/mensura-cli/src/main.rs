@@ -4,14 +4,15 @@
 //!
 //! - `lex`   -- print the token stream of a source file (a lexer debug aid).
 //! - `check` -- typecheck a program without touching a database.
-//! - `run`   -- typecheck a program and create its stores in a database.
+//! - `run`   -- typecheck a program, create its stores in a database, and
+//!   materialize its views (`docs/toolkit/04-processing-layer.md`).
 //! - `lsp`   -- run the language server over stdio.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use mensura_runtime::{EnsureOutcome, SqliteBackend, StorageBackend};
+use mensura_runtime::{EnsureOutcome, SqliteBackend, StorageBackend, materialize_views};
 use mensura_syntax::{Span, parse, tokenize};
 
 #[derive(Parser)]
@@ -33,7 +34,8 @@ enum Command {
         /// The Mensura source file to check.
         file: PathBuf,
     },
-    /// Typecheck a program and create its stores in a database.
+    /// Typecheck a program, create its stores in a database, and
+    /// materialize its views.
     Run {
         /// The Mensura source file to run.
         file: PathBuf,
@@ -148,7 +150,19 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
             }
         }
     }
-    ExitCode::SUCCESS
+    match materialize_views(&mut backend, &program) {
+        Ok(views) => {
+            for (name, rows) in views {
+                let noun = if rows == 1 { "row" } else { "rows" };
+                println!("materialized view {name} ({rows} {noun})");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The shared compiler frontend: lex, parse, and resolve `src`, reporting every
