@@ -7,9 +7,11 @@
 //! SQLite.
 
 pub mod backend;
+pub mod eval;
 pub mod sqlite;
 pub mod value;
 
 pub use backend::{EnsureOutcome, StorageBackend, StorageError};
+pub use eval::{EvalError, RunError, SourceTable, eval_view, materialize_views};
 pub use sqlite::{SqliteBackend, create_table_sql};
 pub use value::{Row, Value};
