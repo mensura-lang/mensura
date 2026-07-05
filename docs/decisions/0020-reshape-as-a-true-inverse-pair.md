@@ -114,6 +114,22 @@ distinct axes (ADR 0010).
 - `name` in index position is rejected with a hint to `shrink_key` first;
   an index spelling may return later as sugar for that composition.
 
+**Definition by desugaring.**  `unpivot` adds no computational power: its
+rows are exactly those of a per-row `map` whose body is the tuple of
+tagged records, one per folded column.  The specification takes that as
+its definition: `unpivot name value (a, b, ...)` desugars to that `map`,
+plus the enum typing of the tag.  What the name adds is the typing
+theorem: a general `map` body cannot be granted `functional` and
+`saturated` (the checker cannot see that the tags are distinct constants
+covering every variant), while the desugared form guarantees them by
+construction.  The runtime may evaluate `unpivot` through the desugaring,
+and the Lean laws for the pair can reuse the `map` lemmas.  `pivot`, by
+contrast, is not expressible as `map`: it reads the whole bag at a key,
+so it sits in the other `fiberMap` generator, the whole-bag
+(aggregate-shaped) one (`formal/Mensura/Completeness.lean`).  The inverse
+pair thus spans the two principal generators of the safe fiber
+operations: per-row one way, whole-bag the other.
+
 **The inverse contract**, the design's centerpiece, to be mechanized for
 the bag pair:
 
@@ -186,6 +202,15 @@ Establishment, consumption, and conservative propagation:
 - `complete_over S`: established by assertion (`completeness_check`,
   `assume`, the reserved `@complete_over`) or by mechanism (`collect`,
   globally); consumed by `shrink_key`.
+
+At the storage boundary the graded cardinality has a cheap physical
+witness: a view carrying `functional(c)` materializes with a `UNIQUE`
+constraint over its index columns plus `c`, generalizing the composite
+primary key a `singletons` table gets
+(`docs/toolkit/00-storage-backend.md`).  The facts remain proven at
+compile time and trusted at runtime; the constraint is defense in depth,
+turning a frontend/runtime disagreement into a loud transaction failure
+instead of a silently persisted violation.
 
 **Assertions establish `complete_over` only, never `saturated`.**  A
 faithful observation of a sparse population cannot promise rectangularity:
@@ -289,6 +314,11 @@ Neutral:
   demand to the eventual consumers (the M6 learning operations).
 - **Representation of the graded qualifiers.**  A single witness set per
   axis versus an antichain of key extensions; decided at realization.
+- **Recognizing the desugared form.**  Whether the checker should detect
+  the literal-tagged tuple pattern in a bare `map` and grant `functional`
+  and `saturated` there too, making `unpivot` pure sugar with no
+  privileged status.  Doable but brittle (an `if` in the body breaks the
+  pattern); recorded as a question, not a commitment.
 - **Formal work items.**  Mechanize the bag `unpivot` (map plus tag), the
   two bag-pair round-trip identities and their domain conditions, and the
   propagation lemmas for `functional` and `saturated`.
