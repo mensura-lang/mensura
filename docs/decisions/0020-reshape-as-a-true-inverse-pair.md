@@ -146,9 +146,9 @@ specification takes that as its definition.  What the name adds is the
 typing theorem: the desugared form types as a `bag` with a plain string
 tag, while `unpivot` is entitled to the enum typing of `name`, the
 `singletons` cardinality over the extended key, and `complete_over` the
-old key, all by construction.  `pivot`, by contrast, is not expressible as `map`:
-it reads the whole fiber at a residual key, sitting with the whole-bag
-(aggregate-shaped) operations, and it changes the key.  The pair thus
+old key, all by construction.  `pivot`, by contrast, is not expressible
+as `map`: it reads the whole fiber at a residual key, sitting with the
+whole-bag (aggregate-shaped) operations, and it changes the key.  The pair thus
 spans the two shapes of fiber operation: row-wise and key-extending one
 way, fiber-collapsing the other.
 
