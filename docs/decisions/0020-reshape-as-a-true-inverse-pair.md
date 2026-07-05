@@ -2,12 +2,15 @@
 
 ## Status
 
-Proposed.  Amends `docs/decisions/0016-reshape-surface.md`: the surface
-spelling of `unpivot` and `pivot` survives, but what `unpivot` emits and
-which `pivot` form exists change.  Refines the reading of
-`docs/language/09-typing-reference.md` section 3.4, which names coarser-key
-completeness only operationally, into tracked (graded) qualifier facts.  To
-be realized in `09-typing-reference.md` (sections 3.4, 6.3, 6.6, 8, 10),
+Proposed.  Amends `docs/decisions/0016-reshape-surface.md`: `unpivot`
+loses its column list (the fold is total over the attributes) and changes
+its missing-cell semantics (dropped rows, not reified missing values), and
+`pivot` keeps only the index form, with no completeness obligation.
+Promotes the coarser-key completeness that
+`docs/language/09-typing-reference.md` section 3.4 reads only
+operationally into a tracked, parameterized fact (`complete_over`) with
+propagation rules through the primitives.  To be realized in
+`09-typing-reference.md` (sections 3.4, 6.6, 8, 10),
 `docs/language/07-pipelines.md`, the Lean development under `formal/`, and
 the `mensura-types` / `mensura-runtime` implementation; until then the
 implemented behavior is ADR 0016's.
@@ -15,13 +18,13 @@ implemented behavior is ADR 0016's.
 ## Context
 
 The driving requirement, fixed during the design discussion this ADR
-records: **`pivot` and `unpivot` must form a truly inverse pair**.  Feature
-coverage (finer keys, sparse data, duplicated measurements, computed
-reshapes) comes from composing the pair with the other primitives, not from
-widening the pair itself.
+records: **`pivot` and `unpivot` must form a truly inverse pair**.
+Feature coverage (partial folds, extra columns, sparse data, duplicated
+measurements, computed reshapes) comes from composing the pair with the
+other primitives, not from widening the pair itself.
 
-The running example.  A wide store of students and a long store of
-enrollments:
+The running example.  A wide store of students, and a long store of
+enrollments keyed by the finer Enrollment-like compound:
 
 ```mensura
 unit Person { name: string }
@@ -37,288 +40,301 @@ store students {
 }
 ```
 
-Three problems with the ratified surface (ADR 0016) surfaced together:
+Problems this ADR resolves:
 
-1. **The round trip passes through Tier B.**  ADR 0016's `unpivot` extends
-   the key (the long form is keyed by an Enrollment-like compound), so the
-   inverse direction is the index form of `pivot`, which demands a
-   completeness discharge.  The identity view
+1. **The round trip demanded a discharge that held by construction.**
+   Under ADR 0016 plus the completeness machinery of ADR 0017, the
+   identity view `students |> unpivot ... |> pivot subject score` was
+   rejected without an `assume { complete }`, even though `unpivot`
+   saturates the subject axis at every student by mechanism.
+2. **Spread-cell totality was untracked.**  Pivoting a genuinely sparse
+   population (a student enrolled in two of three subjects) must yield
+   optional spread columns, while pivoting an `unpivot` result must
+   restore the original totalities exactly.  Nothing tracked
+   distinguished the two.
+3. **Reify semantics blocked exact reversibility.**  ADR 0016's `unpivot`
+   turns a missing wide cell into a long row carrying a missing value.
+   Then `pivot` sends an *absent row* to a *missing cell*, and the round
+   trip long-to-wide-to-long fabricates rows a sparse table never had,
+   which is where a saturation side condition kept creeping in.
+4. **No recorded answer on multiplicities in cells** (`real*`?).
 
-   ```mensura
-   view identity {
-     students
-       |> unpivot subject score (portuguese, math, science)
-       |> pivot subject score
-   }
-   ```
+Formal anchors (`formal/Mensura/Table.lean`,
+`formal/Mensura/Completeness.lean`):
 
-   is rejected without an `assume { complete }`, even though the discharged
-   fact holds by construction: `unpivot` saturates the subject axis at every
-   student, so "the previous key has not been split".
-
-2. **A provenance artifact.**  Reaching the bag long form (key unchanged,
-   `subject` an attribute, several rows per student) from stored long data
-   goes through `shrink_key`, a Tier B operation with a completeness
-   obligation.  Yet the same data is reachable from the wide side with no
-   obligation at all.  The obligation on that path is an artifact of losing
-   the provenance fact, not of the data.
-
-3. **Spread-cell totality.**  Pivoting a genuinely sparse population (a
-   student enrolled in two of three subjects) must yield optional spread
-   columns, while pivoting an `unpivot` result must restore the original
-   total columns.  Nothing tracked distinguishes the two.
-
-The formal inventory (all on `main`) already contains the answer's parts:
-
-- `unpivot : Table K N -> Table (K x N)` is split-safe
-  (`unpivot_splitSafe`), and the index `pivot` is its inverse on
-  functional wide tables: `Functional T := forall k, card <= 1` and
-  `pivot_unpivot : Functional T -> pivot (unpivot T) = T`
-  (`formal/Mensura/Table.lean`).
+- `Functional T := forall k, card <= 1`, and the round trip is already
+  proven one way: `pivot_unpivot : Functional T -> pivot (unpivot T) = T`.
 - The index `pivot` is **not** split-invariant
-  (`pivot_not_splitInvariant`), and `project` (index-long to bag-long) does
-  not preserve disjointness (`project_not_preservesDisjoint`).
-- The **bag-form** pivot `pivotAttr` (residual key `K`, the (value, name)
-  pairs carried in the bag at each key) is split-safe
-  (`pivotAttr_splitSafe`, `formal/Mensura/Completeness.lean`): it reads
-  only one key's bag, so a split cannot cut a fiber.
-- A cell reads as an `Option` (`cellOf`, `formal/Mensura/Table.lean`): one
-  row gives the value, zero give missing, and two or more are deliberately
-  meaningless.
-- Wide to bag-long is a per-row `map` (each wide row becomes one long row
-  per variant at the same key), a `BindHom`, so that direction is
-  split-safe for free.
+  (`pivot_not_splitInvariant`): a split whose predicate reads the spread
+  axis can cut a fiber across sides.  This is a real property of the
+  operation, not an artifact.
+- A cell reads as an `Option` (`cellOf`): zero rows give missing, one
+  gives the value, two or more are deliberately meaningless.
+- The formal `unpivot` currently reifies missing cells; the drop variant
+  decided here needs its own definition and law statements.
 
-The split-safe round trip therefore exists only through the **bag long
-form**, and the pair can be made inverse there by theorem.
+The decisive discussion insight: with **drop semantics**, value-missing in
+the wide table and row-absent in the long table become the *same
+information*, a bijective transposition.  Reify semantics breaks that
+correspondence, and every saturation side condition in earlier drafts was
+the price of breaking it.
 
 ## Decision
 
-### 1.  The bag pair, inverse on a characterized domain
+### 1.  The pair: index form, total fold, drop semantics
 
-**`unpivot name value (cols)`** keeps ADR 0016's spelling, but the key is
-unchanged: `name` lands as a **non-index enum attribute** whose synthesized
-variants are the folded column names, `value` carries the folded cells, and
-the cardinality becomes `bag`.  Formally the operation is a per-row `map`
-(one output row per variant at the same key) plus the enum typing of the
-tag.  On a `singletons` input it establishes `functional(name)` and
-`saturated(name)` by mechanism (section 2).  A missing folded cell still
-yields its row, with a missing value: row presence and value presence are
-distinct axes (ADR 0010).
+**`unpivot name value`** takes exactly two identifiers and folds **all**
+attribute columns, which must share one scalar domain.
 
-**`pivot name value`** has one form: the attribute (`pivotAttr`) form.
+- The key extends by `name`, a new enum index column whose variants are
+  the folded column names.  `value` carries the folded cells.
+- **A missing cell yields no row.**  The long form's value column is
+  therefore always total: missing values never enter the long table.
+- Establishes **`complete_over` the old key** by mechanism when every
+  folded column is total: each old row then yields one long row per
+  variant, so every residual fiber covers the whole axis.  When some
+  folded column is optional, the dropped cells leave holes and no fact is
+  established (section 2).  Cardinality is preserved.
+- Excluding a column, or unpivoting a heterogeneous wide table, is
+  upstream composition: project first (a `map` today; a `select`/`drop`
+  sugar may come later).  ADR 0016's rationale for explicit *identifiers*
+  is untouched; only its column *list* is removed, in favor of a total
+  fold with a canonical domain.
 
-- **Gate**: `functional(name)`; a `singletons` input implies it.
-- **Spread cells**: total iff `saturated(name)` holds and the value column
-  is total; optional otherwise.
-- `name` in index position is rejected with a hint to `shrink_key` first;
-  an index spelling may return later as sugar for that composition.
+**`pivot name value`** is the inverse and the only form.
 
-**Definition by desugaring.**  `unpivot` adds no computational power: its
-rows are exactly those of a per-row `map` whose body is the tuple of
-tagged records, one per folded column.  The specification takes that as
-its definition: `unpivot name value (a, b, ...)` desugars to that `map`,
-plus the enum typing of the tag.  What the name adds is the typing
-theorem: a general `map` body cannot be granted `functional` and
-`saturated` (the checker cannot see that the tags are distinct constants
-covering every variant), while the desugared form guarantees them by
-construction.  The runtime may evaluate `unpivot` through the desugaring,
-and the Lean laws for the pair can reuse the `map` lemmas.  `pivot`, by
-contrast, is not expressible as `map`: it reads the whole bag at a key,
-so it sits in the other `fiberMap` generator, the whole-bag
-(aggregate-shaped) one (`formal/Mensura/Completeness.lean`).  The inverse
-pair thus spans the two principal generators of the safe fiber
-operations: per-row one way, whole-bag the other.
+- `name` must be an enum-domained **index** column; `name` in attribute
+  position is rejected with a hint to `extend_key` first.
+- The input must be `singletons` and its attributes must be exactly
+  `value` ("drop or aggregate other columns first").  The key discipline
+  itself guarantees at most one row per (residual key, variant), which is
+  what makes each spread cell well-defined; no separate uniqueness fact
+  is needed.
+- **No completeness obligation.**  An absent (key, variant) row simply
+  becomes a missing cell.  ADR 0017's pivot obligation dissolves into a
+  totality upgrade: the spread columns are total iff the input is
+  `complete_over` the residual key and the value column is total;
+  optional otherwise.
+- **Lineage is dropped** (`pivot_not_splitInvariant`).  This is the one
+  cost the index form pays, and it is honest: pivoting after a split that
+  discriminated the spread axis genuinely differs from pivoting the
+  whole.
 
-**The inverse contract**, the design's centerpiece, to be mechanized for
-the bag pair:
+**The inverse contract**, to be mechanized with the drop-variant
+definitions:
 
-- `pivot (unpivot W) = W` for every functional (singletons) wide table
-  `W`.  The values round-trip exactly, including missing cells.  The type
-  round-trips exactly when the folded columns share one totality; a mixed
-  fold coarsens every spread column to the join of the folded totalities.
-- `unpivot (pivot L) = L` exactly for the long tables `L` that are
-  `functional(name)` and `saturated(name)`.
-- Outside that domain the two operations act as **normalizers along the
-  row-versus-value axis**: `pivot` sends an absent (key, variant) row to a
-  missing cell, and `unpivot` reifies a missing cell as a present row with
-  a missing value.  This is why saturation is the domain condition, and
-  why it cannot be dropped: the pair is inverse precisely where the two
-  axes carry the same information.
+- `pivot (unpivot W) = W` for every `singletons` wide table `W` with at
+  least one total folded column.  Values round-trip exactly, including
+  missing cells.  Types round-trip exactly when the folded columns share
+  one totality: all total gives `complete_over` back, hence total spread
+  columns; a mixed fold coarsens every spread column to optional (a
+  per-variant refinement is an open question).  (The side condition
+  exists because a row whose folded cells are all missing drops with its
+  key; one total column guarantees every key survives.)
+- `unpivot (pivot L) = L` for every `singletons` long table `L` whose
+  only attribute is a total value column.  **No saturation or
+  completeness condition**: sparse tables round-trip as they are, because
+  drop semantics inverts the missing-cell / absent-row transposition.
+- Outside these domains the operations are still defined; they normalize
+  toward the domain (pivot canonicalizes absence as missing cells,
+  unpivot canonicalizes it as absent rows).
 
-**Coverage by composition**, the second half of the requirement:
+**Definition by desugaring.**  `unpivot` adds no computational power: it
+is a per-row `map` (one tagged record per *known* folded cell, so the
+drop is a conditional collection) followed by `extend_key name`.  The
+specification takes that as its definition.  What the name adds is the
+typing theorem: the desugared form types as a `bag` with a plain string
+tag, while `unpivot` is entitled to the enum typing of `name`, the
+`singletons` cardinality over the extended key, and `complete_over` the
+old key, all by construction.  `pivot`, by contrast, is not expressible as `map`:
+it reads the whole fiber at a residual key, sitting with the whole-bag
+(aggregate-shaped) operations, and it changes the key.  The pair thus
+spans the two shapes of fiber operation: row-wise and key-extending one
+way, fiber-collapsing the other.
 
-- The Enrollment-style finer key is one Tier A step away:
-  `|> extend_key subject`.  `extend_key` **consumes** `functional(subject)`
-  to yield a `singletons` result, so the long form loses nothing except
-  the spelling of its identity.
-- Stored long data is unaffected: a store must key its axis (ADR 0001), so
-  a `grades` store is keyed by (name, subject).  Widening it composes
-  `shrink_key subject |> pivot subject score`, where `shrink_key` carries
-  its honest completeness discharge and establishes `functional(subject)`
-  by provenance (the dropped column was part of the identity).
-- Duplicated measurements reduce by `group_map` aggregation before the
-  pivot; a `pivot_table`-style aggregating pivot is future sugar over
-  `group_map |> pivot`, never a primitive.
-- Computed reshapes are `map`'s job; the bag `unpivot` is itself only a
-  `map` plus enum typing.
+**Coverage by composition:**
 
-### 2.  The tracked facts: graded qualifiers, not new axes
+- Partial or heterogeneous folds: project upstream, then `unpivot`.
+- The bag long form (name as an attribute): `|> shrink_key name`, with
+  its own honest completeness discharge (ADR 0017, unchanged).
+- A long table with extra attributes: drop or aggregate them before
+  `pivot`; widening several value columns is several pivots joined.
+- Duplicated measurements (several rows per (key, variant)): the input is
+  not `singletons`, so `pivot` rejects it; reduce with `group_map`
+  aggregation first.  A `pivot_table`-style aggregating pivot is future
+  sugar over `group_map |> pivot`, never a primitive.
+- Sparse stored data pivots **directly**: `grades |> pivot subject score`
+  is admissible as-is and yields `real?` spread columns, honestly.
 
-The qualifier row stays the closed four of ADR 0013 (cardinality,
-totality, completeness, lineage).  Two of its entries become **graded by a
-key extension** instead of being single points:
+### 2.  `complete_over`: one fact, and how it survives the primitives
 
-- **`functional(c)`** is cardinality read at the extended key: at most one
-  row per (key, c-value), i.e. `singletons` over key + {c}.  Today's
-  `singletons` / `bag` is the degenerate grade (extension by nothing).
-- **`saturated(c)`** and **`complete_over S`** are completeness read at an
-  extended, respectively coarser, key.  `saturated(c)` (for a
-  finite-enumerable attribute `c`) says every present key's bag covers all
-  of `c`'s variants; equivalently, `extend_key c` of the table is complete
-  over the original key.  `complete_over S` says every present S-fiber
-  holds all its real rows; it is monotone in `S`, and the current global
-  bit is the current-key grade.  This promotes the operational reading of
-  `09-typing-reference.md` section 3.4 into a carried fact.
+**`complete_over S`**, for a coarser key `S`, is section 3.4's coarser-key
+completeness promoted to a tracked, parameterized fact: every S-fiber
+present in the table holds all its possible rows.  On a long table whose
+dropped axis is enum-domained, "all its possible rows" is concrete: the
+fiber covers the variant rectangle, which is decidable per fiber and is
+exactly what `pivot`'s totality upgrade needs.  The full-rectangle case is
+the "exhaustive" corollary section 3.4 already names, localized to the
+residual key.
 
-`unpivot` establishes `functional(name)` and `saturated(name)` with one
-mechanism because it is the operation that materializes the key extension.
-The M0 freeze's shape is preserved, and the grading stays inside ADR 0004's
-propagation-combinator framework.
+This is **not a new qualifier axis**, and after this ADR the reshape pair
+introduces no new fact at all.  The row stays the closed four of ADR 0013;
+`complete_over S` is the completeness entry read at a coarser key (the
+global bit is the current-key grade), and uniqueness needs nothing,
+because the key already carries it.  That asymmetry is why this
+formulation was chosen over the earlier bag draft: properties of the
+reshape live on the index, where the key discipline already does half the
+work, instead of being imputed to attributes (see Alternatives).
 
-Establishment, consumption, and conservative propagation:
+- **Establish**: `unpivot`, by mechanism, over the old key, exactly when
+  every folded column is total.  By witness: `completeness_check` (ADR
+  0017), which for an enum axis can check the rectangle.  By fiat:
+  `assume`, locally and auditably owned by the author, per the project's
+  `assume` philosophy.  The reserved `@complete_over` annotation and a
+  `collect` source (globally, by mechanism) remain as in section 8.
+- **Consume**: `pivot`'s totality upgrade over the residual key, and
+  `shrink_key`'s obligation (ADR 0017, unchanged).
 
-- `functional(c)`: established by `unpivot` (its name column) and by
-  `shrink_key` (each dropped former key column); consumed by `pivot`'s
-  gate and by `extend_key c`'s upgrade to `singletons`.  Preserved by
-  `split`, by the joins (the right side is keyed, so row counts cannot
-  grow), and by a non-expanding `map` that copies `c` verbatim; destroyed
-  by expanding maps and by `bind`.
-- `saturated(c)`: established by `unpivot` by mechanism; consumed by
-  `pivot`'s totality upgrade.  Preserved by `split` (the whole bag rides
-  with its residual key, which is the content of `pivotAttr_splitSafe`),
-  by `left_join`, and by non-dropping maps that copy `c`; destroyed by
-  dropping maps and by `inner_join`.
-- `complete_over S`: established by assertion (`completeness_check`,
-  `assume`, the reserved `@complete_over`) or by mechanism (`collect`,
-  globally); consumed by `shrink_key`.
+**Propagation is the design's remaining work**, and the conservative
+table is:
 
-At the storage boundary the graded cardinality has a cheap physical
-witness: a view carrying `functional(c)` materializes with a `UNIQUE`
-constraint over its index columns plus `c`, generalizing the composite
-primary key a `singletons` table gets
-(`docs/toolkit/00-storage-backend.md`).  The facts remain proven at
-compile time and trusted at runtime; the constraint is defense in depth,
-turning a frontend/runtime disagreement into a loud transaction failure
-instead of a silently persisted violation.
+- **Preserved** by `extend_key` and `shrink_key` (they re-slot columns;
+  the rows, hence the fibers, are unchanged); by `left_join` (adds
+  columns, never drops rows); by `group_map` (one output row per present
+  key in the aggregate shape, one per input row in the window shape); by
+  a provably non-dropping `map` (the checker's collection-size analysis
+  already distinguishes a body with no `( )` branch); and by `bind` when
+  both sides carry the fact (a union of full fibers is full).
+- **Destroyed** by a `map` whose body can drop, by `inner_join`, and by
+  `split` (a key predicate can discriminate within a fiber; recognizing
+  predicates that provably ignore the dropped axes is the axis-aware
+  refinement in Open questions).
+- `unpivot` and `pivot` translate the fact across the key change: a
+  pre-existing `complete_over S` survives `unpivot` when the fold drops
+  nothing (all folded columns total), and survives `pivot` for any
+  `S` inside the residual key (the output has one row per present
+  residual key).
 
-**Assertions establish `complete_over` only, never `saturated`.**  A
-faithful observation of a sparse population cannot promise rectangularity:
-recording every enrollment does not create a science enrollment for a
-student who has none.  Sparse data therefore keeps a sound path,
-
-```mensura
-view back_to_students {
-  grades                       // stored long, keyed (name, subject)
-    |> assume { complete }     // faithful: all enrollments recorded
-    |> shrink_key subject      // functional(subject) by provenance
-    |> pivot subject score     // admissible; spread cells OPTIONAL
-}
-```
-
-with `real?` spread columns, while the mechanism path (the identity view)
-restores total columns.  Totality is exactly as reversible as the facts
-warrant.
+The physical witness comes free: the long form is keyed, so the composite
+primary key of the materialized table
+(`docs/toolkit/00-storage-backend.md`) already enforces at most one row
+per (residual key, variant); a frontend/runtime disagreement fails the
+insert loudly.
 
 ### 3.  No multiplicity in cells
 
-A cell is 0-or-1, always (ADR 0010).  There is no `T*` cell type, and this
-ADR records that as a position, not an omission: multiplicity lives in the
-table-scoped cardinality qualifier (ADR 0013), now refined by
-`functional`, and in the transient expression-layer bags of
-`09-typing-reference.md` section 5.4, which only combinators may consume.
-Formally, `cellOf` reads the head of a multiset: zero rows give missing,
-one gives the value, and two or more are deliberately meaningless; the
-`functional` gate keeps that case unreachable.  A `real*` column would
-collapse the cardinality axis into the content, break the scalar storage
-mapping, and re-create the list-column problem the two-axis design avoids.
-When several values share a (key, name) cell, the language's answer is
+A cell is 0-or-1, always (ADR 0010).  There is no `T*` cell type, and
+this ADR records that as a position, not an omission: multiplicity lives
+in the table-scoped cardinality qualifier (ADR 0013) and in the transient
+expression-layer bags of `09-typing-reference.md` section 5.4, which only
+combinators may consume.  Formally, `cellOf` reads the head of a
+multiset; the two-or-more case is deliberately meaningless, and `pivot`'s
+`singletons` gate keeps it unreachable.  A `real*` column would collapse
+the cardinality axis into the content, break the scalar storage mapping,
+and re-create the list-column problem the two-axis design avoids.  When
+several values share a (key, variant) cell, the language's answer is
 `group_map` aggregation, chosen explicitly.
 
 ## Consequences
 
 Positive:
 
-- `pivot` and `unpivot` are a truly inverse pair on a stated domain, with
-  the mechanization target named (`pivot_unpivot` is the index-pair
-  precedent; the bag-pair identities are new `formal/` work).
-- The round trip is Tier A end to end: no `assume`, no completeness
-  discharge, lineage preserved, and usable after a `split`, since the bag
-  rides whole with its residual key.
-- `pivot` has one form; the index spelling reduces to a composition.
-- Sparse widening is honest (`real?` cells) and mechanism-established
-  totality is recovered exactly where it is warranted.
-- ADR 0016's surface spelling survives unchanged.
+- `pivot` and `unpivot` are mutually inverse on cleanly characterized
+  domains, in values always and in types for uniform-totality folds, with
+  no `assume`, no completeness discharge, and no saturation side
+  condition anywhere in the pair.
+- One `pivot` form, and **no new fact at all**: the pair reuses
+  `complete_over`, which ADR 0017 already consumes; `functional`,
+  `saturated`, and `exhaustive` from earlier drafts all disappear.  What
+  remains is the propagation table.
+- The long form is the honest finer unit (the Enrollment key), its value
+  column is always total, and sparse stored data pivots directly with
+  honest `real?` columns.
+- The surface shrinks: `unpivot name value`, two identifiers, no list.
+- The proven `pivot_unpivot` is the exact template for one direction; the
+  other direction gains an unconditional statement (modulo the total
+  value column) that reify semantics could not have.
 
 Negative:
 
-- Amends the freshly ratified ADR 0016 and the frozen effects of
-  `09-typing-reference.md` section 6.6.  Accepted: the project is pre-1.0
-  and the M0 freeze anticipated reconciliation rounds.
-- The long form no longer carries the finer identity in its key;
-  `extend_key` recovers it, consuming `functional`.
-- The qualifier machinery grows two graded facts with their propagation
-  rules; the grading must stay within ADR 0004's framework.
-- The M2 runtime's reshape operations and the index-form totality rule
-  need rework when this ADR is realized.
+- `pivot` drops lineage; reshape round trips are not usable inside split
+  pipelines without losing disjointness facts.  Real and proven
+  (`pivot_not_splitInvariant`); possibly softened later by axis-aware
+  lineage (Open questions).
+- Amends the freshly ratified ADR 0016 twice over (list-free fold, drop
+  semantics) and the frozen effects of `09-typing-reference.md` section
+  6.6.  Accepted: pre-1.0, and the M0 freeze anticipated reconciliation.
+- Heterogeneous wide tables must project before folding; the fold is
+  all-or-nothing by design.
+- The M2 runtime's reshape operations (which implement ADR 0016: list
+  form, reify semantics, an attribute pivot) and the index-form totality
+  rule need rework at realization; the formal `unpivot` needs its drop
+  variant and restated laws.
 
 Neutral:
 
-- Stores of long data still key their axis (ADR 0001), so the completeness
-  discharge survives exactly at the stored-widening boundary, where
-  sparseness is a real question.
+- Stores of long data are unaffected: they already key their axis (ADR
+  0001).  `shrink_key` and ADR 0017 are untouched.
 
 ## Alternatives considered
 
-1. **The index pair as the surface** (status quo plus a by-mechanism
-   discharge).  Matches `pivot_unpivot` as already proven, and the long
-   form carries the Enrollment identity directly.  Rejected: the inverse
-   direction stays Tier B, so the round trip is rejected after a `split`
-   and drops lineage; the pair is inverse but not freely composable, which
-   fails the driving requirement.
-2. **Bag primitive plus index sugar now.**  One inverse pair underneath,
-   both ergonomics on top.  Deferred rather than rejected: the sugar
-   (`pivot` on a key column elaborating to `shrink_key |> pivot`) can
-   return once the primitive pair has landed.
-3. **Rectangular `complete_over`** (bundling saturation into the asserted
-   fact).  Simpler, and runtime-checkable for enum axes, but a sparse
-   population then has no sound path to optional spread columns except a
-   false assertion.  Rejected for the two-level reading.
-4. **`T*` list cells** for multiple values per (key, name).  Rejected;
+1. **The bag pair** (the previous draft of this ADR): `unpivot` keeps the
+   key and emits name/value as attributes; `pivot` is the split-safe
+   `pivotAttr` form, so the round trip preserves lineage and composes
+   under `split`.  Rejected after discussion: it needs *two*
+   attribute-parameterized facts (`functional`, `saturated`) where the
+   index form needs *one* index-scoped fact, because the key discipline
+   already provides uniqueness; and with drop semantics the index pair's
+   inverse domain is at least as large.  The split-safety loss is priced
+   as lineage-drop, and the bag form remains reachable by composition
+   (`shrink_key`).  A fused attribute-position pivot recovering
+   `pivotAttr_splitSafe` may return later.
+2. **Reify semantics** (ADR 0016 and the current formal `unpivot`):
+   missing cells become rows with missing values.  Rejected: it breaks
+   `unpivot (pivot L) = L` on sparse tables (fabricated rows force a
+   saturation side condition) and lets missing values into the long
+   form's value column.
+3. **The explicit column list** (`unpivot name value (cols)`, ADR 0016).
+   Rejected in favor of the total fold: the pair's domain becomes
+   canonical (wide tables over one homogeneous value domain), the laws
+   lose a parameter, and exclusion is ordinary upstream projection.  The
+   explicit name/value identifiers, which ADR 0016's alternative 1
+   rightly demanded, are kept.
+4. **Rectangular `complete_over`** (bundling the rectangle fact into the
+   asserted completeness).  Rejected earlier in the discussion; under
+   drop semantics the question dissolves, since `pivot` demands no
+   completeness at all.
+5. **`T*` list cells** for multiple values per (key, variant).  Rejected;
    section 3.
-5. **Per-variant totality on the value column**, to make mixed-totality
-   folds exactly type-reversible.  Rejected: dependent-totality machinery
-   for a corner case; fold columns of equal totality instead, in two
-   `unpivot`s if needed.
+6. **A set-valued `complete_over`** (recording per variant which folded
+   columns were total) would make mixed-totality folds round-trip their
+   types exactly.  Not adopted: one parameterized fact plus its
+   propagation table is the whole design, and the refinement can be added
+   compatibly if a use case demands it (Open questions).
 
 ## Open questions
 
-- **The tag's typing surface.**  The synthesized enum (current mechanism)
-  versus referencing a declared enum (`unpivot subject:Subject ...`): the
-  declared form round-trips nominally with stores that declare the enum,
-  but folds become sensitive to variant renames, and the synthesized enum
-  does not compare equal to a declared one today.  Its own ADR when
-  reshape meets nominal enums.
-- **Softening `shrink_key`.**  Whether an undischarged `shrink_key` should
-  yield an `Incomplete`-marked result instead of a rejection, moving the
-  demand to the eventual consumers (the M6 learning operations).
-- **Representation of the graded qualifiers.**  A single witness set per
-  axis versus an antichain of key extensions; decided at realization.
+- **The tag's typing surface.**  The synthesized enum versus referencing
+  a declared enum (`unpivot subject:Subject score`): the declared form
+  round-trips nominally with stores that declare the enum, but folds
+  become sensitive to variant renames.  Its own ADR when reshape meets
+  nominal enums.
+- **A per-variant refinement of `complete_over`.**  A set-valued form
+  would make mixed-totality folds type-exact through the round trip;
+  deferred until a use case demands it.
+- **Store-level declaration.**  When a unit's index field is an enum, a
+  store could declare rectangularity via the reserved `@complete_over`,
+  letting stored long data pivot to total columns.
+- **Axis-aware lineage.**  `pivot` could preserve lineage when every
+  upstream split predicate provably ignores the spread axis; whether the
+  lineage hierarchy should carry per-axis information is a later round.
+- **All-optional folds.**  `pivot (unpivot W) = W` needs one total folded
+  column; whether `unpivot` should warn or reject when every attribute is
+  optional, rather than silently shrinking the key set.
 - **Recognizing the desugared form.**  Whether the checker should detect
-  the literal-tagged tuple pattern in a bare `map` and grant `functional`
-  and `saturated` there too, making `unpivot` pure sugar with no
-  privileged status.  Doable but brittle (an `if` in the body breaks the
-  pattern); recorded as a question, not a commitment.
-- **Formal work items.**  Mechanize the bag `unpivot` (map plus tag), the
-  two bag-pair round-trip identities and their domain conditions, and the
-  propagation lemmas for `functional` and `saturated`.
+  the map-plus-`extend_key` idiom and grant the `unpivot` facts to it,
+  making the primitive pure sugar with no privileged status.  Doable but
+  brittle; recorded as a question, not a commitment.
+- **Formal work items.**  The drop-variant `unpivot`, both round-trip
+  laws with the domains stated above, and the propagation lemmas for
+  `complete_over` (one per row of the table in section 2).
