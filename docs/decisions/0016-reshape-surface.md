@@ -10,6 +10,13 @@ only the surface; it adds no typing rule.  Implemented for M1 on the
 Tier A; the index form of `pivot` is Tier B, landing with the completeness
 machinery of ADR 0017).
 
+Amended by `docs/decisions/0020-reshape-as-a-true-inverse-pair`: the column
+list is dropped (the fold is total over the attributes), a missing cell
+yields no long row instead of a row with a missing value, and `pivot`
+keeps only the index form, with the completeness obligation replaced by an
+`exhaustive`-gated totality upgrade.  The explicit name/value identifiers
+ratified here are kept.
+
 ## Context
 
 `09` (the typing reference) marks its surface syntax "preliminary".  For the
