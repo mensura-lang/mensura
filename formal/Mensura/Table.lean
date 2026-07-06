@@ -62,7 +62,12 @@ on functional tables (`pivot_unpivot`), and `taggedSplit` inverts `taggedBind`
 (ADR 0020: a missing cell yields no long row) is split-safe
 (`unpivotDrop_splitSafe`) and forms a *mutually* inverse pair with `pivot`
 on functional minimal tables (`pivot_unpivotDrop`, `unpivotDrop_pivot`),
-the long-to-wide-to-long direction carrying no completeness side condition.  All bind-homomorphisms plus
+the long-to-wide-to-long direction carrying no completeness side condition.
+`Exhaustive` (every present residual key carries every name) is the
+rectangle fact that upgrades `pivot`'s output to `Total`
+(`pivot_total_of_exhaustive`); `unpivotDrop` establishes it from a `Total`
+wide table (`unpivotDrop_exhaustive`) and its output is `Minimal`
+unconditionally (`unpivotDrop_minimal`).  All bind-homomorphisms plus
 `aggregate` are `SplitSafe` and compose; `project` and `pivot` are not.  The
 chapter's minimality assumption is `Minimal`, preserved by `bind` and `split`.
 The `bind` unit laws over `empty`, the `map` identity/fusion laws, the join
@@ -759,6 +764,80 @@ theorem unpivotDrop_pivot [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
       funext u'
       cases u'
       exact hv.symm
+
+/-- Every cell of every present row is known: the table-level reading of
+"all columns total" (ADR 0010's default).  Row-wise stronger than
+`Substantive`, hence stronger than `Minimal` on a nonempty schema. -/
+def Total (T : Table K H σ) : Prop := ∀ k, ∀ f ∈ T.rows k, ∀ h, f h ≠ none
+
+/-- The rectangle fact of ADR 0020: every residual key present in a long
+table carries a row for **every** name `n`.  The reference is the name
+type's whole domain, not a population -- which is exactly what
+distinguishes it from the (unmechanized, population-relative)
+`complete_over` and makes it the fact that licenses `pivot`'s totality
+upgrade (`pivot_total_of_exhaustive`). -/
+def Exhaustive (T : Table (K × N) H σ) : Prop :=
+  ∀ k, (∃ n, T.Present (k, n)) → ∀ n, T.Present (k, n)
+
+/-- `unpivotDrop`'s output is minimal unconditionally: every long row it
+emits carries a known value, by construction. -/
+theorem unpivotDrop_minimal (T : Table K N (fun _ => V)) :
+    Minimal (unpivotDrop T) := by
+  rintro ⟨k, n⟩ f hf
+  simp only [unpivotDrop] at hf
+  obtain ⟨g, _, hfg⟩ := Multiset.mem_bind.mp hf
+  refine ⟨(), ?_⟩
+  cases hgn : g n with
+  | none => simp [hgn] at hfg
+  | some v =>
+      simp only [hgn] at hfg
+      simp [Multiset.mem_singleton.mp hfg]
+
+/-- `unpivotDrop` establishes the rectangle by mechanism on a `Total` wide
+table (ADR 0020: "every folded column is total"): each source row emits
+one long row per name, so a residual key present for one name is present
+for all. -/
+theorem unpivotDrop_exhaustive {T : Table K N (fun _ => V)} (hTot : Total T) :
+    Exhaustive (unpivotDrop T) := by
+  rintro k ⟨n₀, hn₀⟩ n
+  simp only [Table.Present, unpivotDrop] at hn₀ ⊢
+  obtain ⟨x, hx⟩ := Multiset.exists_mem_of_ne_zero hn₀
+  obtain ⟨f, hf, _⟩ := Multiset.mem_bind.mp hx
+  obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp (hTot k f hf n)
+  refine Multiset.card_pos.mp (Multiset.card_pos_iff_exists_mem.mpr
+    ⟨fun _ => some v, Multiset.mem_bind.mpr ⟨f, hf, ?_⟩⟩)
+  simp [hv]
+
+/-- The totality upgrade of ADR 0020, semantically: pivoting an exhaustive,
+minimal long table yields only known cells.  `Exhaustive` supplies the row
+at every `(k, n)` and `Minimal` supplies the value in it; no
+population-relative completeness fact appears, which is the content of the
+ADR's `exhaustive` / `complete_over` distinction. -/
+theorem pivot_total_of_exhaustive [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
+    (hE : Exhaustive L) (hM : Minimal L) : Total (pivot L) := by
+  intro k f hf n
+  by_cases hg : ∀ n', (L.rows (k, n')).card = 0
+  · simp [pivot, hg] at hf
+  · have hfF : f = fun n' => cellOf (L.rows (k, n')) := by
+      simp only [pivot] at hf
+      rw [if_neg hg] at hf
+      exact Multiset.mem_singleton.mp hf
+    obtain ⟨n₀, hn₀⟩ := not_forall.mp hg
+    have hpres : L.rows (k, n) ≠ 0 := by
+      refine hE k ⟨n₀, fun h0 => hn₀ ?_⟩ n
+      simp [h0]
+    have htl : (L.rows (k, n)).toList ≠ [] := by
+      simpa [Multiset.toList_eq_nil] using hpres
+    obtain ⟨g, l, hl⟩ := List.exists_cons_of_ne_nil htl
+    have hgmem : g ∈ L.rows (k, n) := by
+      rw [← Multiset.mem_toList, hl]
+      exact List.mem_cons_self
+    obtain ⟨u, hu⟩ := hM (k, n) g hgmem
+    have hu' : g () ≠ none := by cases u; exact hu
+    have hcell : cellOf (L.rows (k, n)) = g () := by
+      simp [cellOf, hl]
+    rw [hfF]
+    simpa [hcell] using hu'
 
 /-! ### Tagged bind / split: reversibility -/
 
