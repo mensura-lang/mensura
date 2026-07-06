@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.  Amends `docs/decisions/0016-reshape-surface.md`: `unpivot`
+Accepted.  Amends `docs/decisions/0016-reshape-surface.md`: `unpivot`
 loses its column list (the fold is total over the attributes) and changes
 its missing-cell semantics (dropped rows, not reified missing values), and
 `pivot` keeps only the index form, with no completeness obligation.
