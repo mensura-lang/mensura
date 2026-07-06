@@ -13,7 +13,11 @@ unit Machine {
   id: string
 }
 
-enum MachineStatus { "operational", "degraded", "failure" }
+enum MachineStatus {
+  "operational"
+  "degraded"
+  "failure"
+}
 
 // A unit-agnostic structural contract: any store of commissioned equipment.
 shape Commissioned {

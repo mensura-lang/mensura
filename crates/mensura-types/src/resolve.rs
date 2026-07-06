@@ -1240,7 +1240,7 @@ mod tests {
         let src = r#"
             unit Person { id: string }
             unit Department { code: string }
-            enum Status { "active", "inactive" }
+            enum Status { "active" "inactive" }
 
             store departments {
               unit { Department }
@@ -1362,7 +1362,7 @@ mod tests {
 
     #[test]
     fn duplicate_enum_variant_is_rejected() {
-        let src = r#"enum Bad { "a", "a" }"#;
+        let src = r#"enum Bad { "a" "a" }"#;
         let errs = errors(src);
         assert!(errs[0].message.contains("duplicate enum variant `a`"));
     }
@@ -1393,7 +1393,7 @@ mod tests {
     fn conforming_store_resolves() {
         let src = r#"
             unit Person { id: string }
-            enum Status { "active", "inactive" }
+            enum Status { "active" "inactive" }
             shape PersonRecord {
               unit { Person }
               attr { admission: date }

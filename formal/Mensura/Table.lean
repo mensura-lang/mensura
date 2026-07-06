@@ -58,9 +58,25 @@ disjoint tables, bind undoes split, bind is commutative and associative,
 bind-homomorphism but not disjointness-preserving, `pivot` is *not even*
 split-invariant (a name-separating split breaks it) though it inverts `unpivot`
 on functional tables (`pivot_unpivot`), and `taggedSplit` inverts `taggedBind`
-(`taggedSplit_taggedBind_left`/`_right`).  All bind-homomorphisms plus
+(`taggedSplit_taggedBind_left`/`_right`).  The drop-variant `unpivotDrop`
+(ADR 0020: a missing cell yields no long row) is split-safe
+(`unpivotDrop_splitSafe`) and forms a *mutually* inverse pair with `pivot`
+on functional minimal tables (`pivot_unpivotDrop`, `unpivotDrop_pivot`),
+the long-to-wide-to-long direction carrying no completeness side condition.
+`Exhaustive` (every present residual key carries every name) is the
+rectangle fact that upgrades `pivot`'s output to `Total`
+(`pivot_total_of_exhaustive`); `unpivotDrop` establishes it from a `Total`
+wide table (`unpivotDrop_exhaustive`) and its output is `Minimal`
+unconditionally (`unpivotDrop_minimal`).  The rectangle propagates through
+a non-dropping `map`, `leftJoin`, `aggregate`, and the `bind` of two
+carriers (`map_exhaustive`, `leftJoin_exhaustive`, `aggregate_exhaustive`,
+`bind_exhaustive`), and `split` destroys it (`split_not_exhaustive`).  All bind-homomorphisms plus
 `aggregate` are `SplitSafe` and compose; `project` and `pivot` are not.  The
 chapter's minimality assumption is `Minimal`, preserved by `bind` and `split`.
+The `bind` unit laws over `empty`, the `map` identity/fusion laws, the join
+pushdowns (`map` fusion into both joins, left-column `filter` past both
+joins), and the `split`/`bind` cancellations are stated as bare equations,
+seeding the future rewrite-rule set (ADR 0008).
 
 This completes the operations of the chapter's data-handling algebra.  Future
 directions: the grouped/arranged (window) operations of the chapter's "Other
@@ -105,6 +121,12 @@ def Row.elim (f : Row H σ) (r : Row G τ) : Row (H ⊕ G) (Sum.elim σ τ) :=
   fun c => match c with
     | Sum.inl h => f h
     | Sum.inr g => r g
+
+@[simp] theorem Row.elim_inl (f : Row H σ) (r : Row G τ) (h : H) :
+    f.elim r (Sum.inl h) = f h := rfl
+
+@[simp] theorem Row.elim_inr (f : Row H σ) (r : Row G τ) (g : G) :
+    f.elim r (Sum.inr g) = r g := rfl
 
 /-- A row is present when it has positive cardinality. -/
 def Table.Present (T : Table K H σ) (k : K) : Prop := T.rows k ≠ 0
@@ -636,6 +658,312 @@ theorem pivot_unpivot [Fintype N] [Nonempty N] {T : Table K N (fun _ => V)}
     rw [if_neg hguard]
     simp [unpivot, hf, Multiset.map_singleton]
 
+/-! ### The drop-variant unpivot: a truly inverse pair (ADR 0020)
+
+`unpivot` above *reifies* a missing wide cell as a long row holding `none`.
+That asymmetry is what blocks the long-to-wide-to-long round trip on sparse
+tables: `pivot` sends an absent row to a missing cell, and the reify
+variant sends the missing cell back to a *present* row, fabricating rows
+the sparse table never had.  The drop variant
+(`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`) removes the
+asymmetry: a missing cell yields no long row, so value-missing in the wide
+table and row-absent in the long table carry the same information, and the
+pair becomes mutually inverse on functional, minimal tables -- with no
+completeness or saturation side condition in either direction. -/
+
+/-- The drop-variant of def:pivot-w2l (ADR 0020): spread each name-column
+`n` of a wide row into its own output key `(k, n)`, emitting a long row
+only when the cell is present.  The long value column is total by
+construction.  Being `Multiset.bind`-shaped per output key over a single
+input key (compare `ungroup`), it is a bind-homomorphism, hence
+split-safe. -/
+def unpivotDrop (T : Table K N (fun _ => V)) : Table (K × N) Unit (fun _ => V) :=
+  ⟨fun p => (T.rows p.1).bind (fun f =>
+    match f p.2 with
+    | some v => {fun _ => some v}
+    | none => 0)⟩
+
+/-- `unpivotDrop` is a bind-homomorphism: the drop is decided per input
+row, so it distributes over every bind. -/
+theorem unpivotDrop_bindHom : BindHom (unpivotDrop (K := K) (N := N) (V := V)) := by
+  intro T₀ T₁
+  apply Table.ext_rows
+  rintro ⟨k, n⟩
+  simp only [unpivotDrop, bind]
+  exact Multiset.add_bind _ _ _
+
+theorem unpivotDrop_preservesDisjoint :
+    PreservesDisjoint (unpivotDrop (K := K) (N := N) (V := V)) := by
+  intro T₀ T₁ hdisj
+  rintro ⟨k, n⟩
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [unpivotDrop, h])
+  · exact Or.inr (by simp [unpivotDrop, h])
+
+/-- `unpivotDrop` is split-safe, like the reify variant: dropping a missing
+cell is a per-row decision. -/
+theorem unpivotDrop_splitSafe : SplitSafe (unpivotDrop (K := K) (N := N) (V := V)) :=
+  ⟨unpivotDrop_preservesDisjoint, unpivotDrop_bindHom.splitInvariant⟩
+
+/-- `pivot` inverts `unpivotDrop` on functional, **minimal** wide tables.
+Minimality is load-bearing where it was not for the reify variant
+(`pivot_unpivot`): a wide row whose cells are all missing yields no long
+rows, so its key would vanish; the chapter's standing minimality
+assumption rules exactly those rows out (ADR 0020's "at least one total
+folded column" is the surface approximation of it). -/
+theorem pivot_unpivotDrop [Fintype N] {T : Table K N (fun _ => V)}
+    (hT : Functional T) (hM : Minimal T) : pivot (unpivotDrop T) = T := by
+  apply Table.ext_rows
+  intro k
+  rcases Nat.lt_or_ge (T.rows k).card 1 with hc | hc
+  · have h0 : T.rows k = 0 := Multiset.card_eq_zero.mp (by omega)
+    simp [pivot, unpivotDrop, h0]
+  · have hc1 : (T.rows k).card = 1 := le_antisymm (hT k) hc
+    obtain ⟨f, hf⟩ := Multiset.card_eq_one.mp hc1
+    obtain ⟨n₀, hn₀⟩ := hM k f (by rw [hf]; exact Multiset.mem_singleton_self f)
+    obtain ⟨v₀, hv₀⟩ := Option.ne_none_iff_exists'.mp hn₀
+    have hguard : ¬ (∀ n, ((unpivotDrop T).rows (k, n)).card = 0) := by
+      intro hall
+      have h1 := hall n₀
+      simp [unpivotDrop, hf, hv₀] at h1
+    simp only [pivot]
+    rw [if_neg hguard, hf, Multiset.singleton_inj]
+    funext n
+    cases hfn : f n <;> simp [unpivotDrop, hf, hfn]
+
+/-- `unpivotDrop` inverts `pivot` on functional, minimal long tables --
+with **no completeness or saturation side condition**: an absent `(k, n)`
+row pivots to a missing cell, which the drop variant sends back to an
+absent row, so a sparse long table round-trips as it is.  This direction
+is not statable for the reify variant, and it is the mechanized content of
+ADR 0020's inverse contract.  Minimality here says every long row's value
+is known, which is the invariant `unpivotDrop`'s own output satisfies by
+construction. -/
+theorem unpivotDrop_pivot [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
+    (hL : Functional L) (hM : Minimal L) : unpivotDrop (pivot L) = L := by
+  apply Table.ext_rows
+  rintro ⟨k, n⟩
+  by_cases hg : ∀ n', (L.rows (k, n')).card = 0
+  · -- Every fiber at `k` is empty: both sides are empty at `(k, n)`.
+    have h0 : L.rows (k, n) = 0 := Multiset.card_eq_zero.mp (hg n)
+    simp [unpivotDrop, pivot, hg, h0]
+  · -- Some fiber is present: the one wide row reads back cell by cell.
+    rcases Nat.lt_or_ge (L.rows (k, n)).card 1 with hc | hc
+    · have h0 : L.rows (k, n) = 0 := Multiset.card_eq_zero.mp (by omega)
+      simp only [unpivotDrop, pivot]
+      rw [if_neg hg]
+      simp [h0]
+    · have hc1 : (L.rows (k, n)).card = 1 := le_antisymm (hL (k, n)) hc
+      obtain ⟨g, hgrow⟩ := Multiset.card_eq_one.mp hc1
+      obtain ⟨u, hu⟩ := hM (k, n) g (by rw [hgrow]; exact Multiset.mem_singleton_self g)
+      have hu' : g () ≠ none := by cases u; exact hu
+      obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp hu'
+      simp only [unpivotDrop, pivot]
+      rw [if_neg hg]
+      have hcell : cellOf (L.rows (k, n)) = some v := by
+        rw [hgrow, cellOf_singleton, hv]
+      simp only [Multiset.singleton_bind, hcell]
+      rw [hgrow, Multiset.singleton_inj]
+      funext u'
+      cases u'
+      exact hv.symm
+
+/-- Every cell of every present row is known: the table-level reading of
+"all columns total" (ADR 0010's default).  Row-wise stronger than
+`Substantive`, hence stronger than `Minimal` on a nonempty schema. -/
+def Total (T : Table K H σ) : Prop := ∀ k, ∀ f ∈ T.rows k, ∀ h, f h ≠ none
+
+/-- The rectangle fact of ADR 0020: every residual key present in a long
+table carries a row for **every** name `n`.  The reference is the name
+type's whole domain, not a population -- which is exactly what
+distinguishes it from the (unmechanized, population-relative)
+`complete_over` and makes it the fact that licenses `pivot`'s totality
+upgrade (`pivot_total_of_exhaustive`). -/
+def Exhaustive (T : Table (K × N) H σ) : Prop :=
+  ∀ k, (∃ n, T.Present (k, n)) → ∀ n, T.Present (k, n)
+
+/-- `unpivotDrop`'s output is minimal unconditionally: every long row it
+emits carries a known value, by construction. -/
+theorem unpivotDrop_minimal (T : Table K N (fun _ => V)) :
+    Minimal (unpivotDrop T) := by
+  rintro ⟨k, n⟩ f hf
+  simp only [unpivotDrop] at hf
+  obtain ⟨g, _, hfg⟩ := Multiset.mem_bind.mp hf
+  refine ⟨(), ?_⟩
+  cases hgn : g n with
+  | none => simp [hgn] at hfg
+  | some v =>
+      simp only [hgn] at hfg
+      simp [Multiset.mem_singleton.mp hfg]
+
+/-- `unpivotDrop` establishes the rectangle by mechanism on a `Total` wide
+table (ADR 0020: "every folded column is total"): each source row emits
+one long row per name, so a residual key present for one name is present
+for all. -/
+theorem unpivotDrop_exhaustive {T : Table K N (fun _ => V)} (hTot : Total T) :
+    Exhaustive (unpivotDrop T) := by
+  rintro k ⟨n₀, hn₀⟩ n
+  simp only [Table.Present, unpivotDrop] at hn₀ ⊢
+  obtain ⟨x, hx⟩ := Multiset.exists_mem_of_ne_zero hn₀
+  obtain ⟨f, hf, _⟩ := Multiset.mem_bind.mp hx
+  obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp (hTot k f hf n)
+  refine Multiset.card_pos.mp (Multiset.card_pos_iff_exists_mem.mpr
+    ⟨fun _ => some v, Multiset.mem_bind.mpr ⟨f, hf, ?_⟩⟩)
+  simp [hv]
+
+/-- The totality upgrade of ADR 0020, semantically: pivoting an exhaustive,
+minimal long table yields only known cells.  `Exhaustive` supplies the row
+at every `(k, n)` and `Minimal` supplies the value in it; no
+population-relative completeness fact appears, which is the content of the
+ADR's `exhaustive` / `complete_over` distinction. -/
+theorem pivot_total_of_exhaustive [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
+    (hE : Exhaustive L) (hM : Minimal L) : Total (pivot L) := by
+  intro k f hf n
+  by_cases hg : ∀ n', (L.rows (k, n')).card = 0
+  · simp [pivot, hg] at hf
+  · have hfF : f = fun n' => cellOf (L.rows (k, n')) := by
+      simp only [pivot] at hf
+      rw [if_neg hg] at hf
+      exact Multiset.mem_singleton.mp hf
+    obtain ⟨n₀, hn₀⟩ := not_forall.mp hg
+    have hpres : L.rows (k, n) ≠ 0 := by
+      refine hE k ⟨n₀, fun h0 => hn₀ ?_⟩ n
+      simp [h0]
+    have htl : (L.rows (k, n)).toList ≠ [] := by
+      simpa [Multiset.toList_eq_nil] using hpres
+    obtain ⟨g, l, hl⟩ := List.exists_cons_of_ne_nil htl
+    have hgmem : g ∈ L.rows (k, n) := by
+      rw [← Multiset.mem_toList, hl]
+      exact List.mem_cons_self
+    obtain ⟨u, hu⟩ := hM (k, n) g hgmem
+    have hu' : g () ≠ none := by cases u; exact hu
+    have hcell : cellOf (L.rows (k, n)) = g () := by
+      simp [cellOf, hl]
+    rw [hfF]
+    simpa [hcell] using hu'
+
+/-! ### Propagation of the rectangle fact
+
+The key-preserving rows of ADR 0020 section 2's conservative table: a
+non-dropping `map` preserves `Exhaustive` (hence so does `leftJoin`, whose
+body never drops), `aggregate` preserves it (one output row per present
+key), and the `bind` of two carriers preserves it.  `split` destroys it
+(`split_not_exhaustive`): a predicate can read the name axis and cut a
+fiber, which is the honest price of keeping the name in the key --
+contrast `pivotAttr_splitSafe`, where the whole bag rides with its
+residual key. -/
+
+/-- A non-dropping `map` (every row yields at least one output row)
+preserves row presence in both directions. -/
+theorem map_present_iff {φ : K → Row H σ → Multiset (Row H' σ')}
+    (hφ : ∀ k f, φ k f ≠ 0) (T : Table K H σ) (k : K) :
+    (map φ T).Present k ↔ T.Present k := by
+  simp only [Table.Present, map]
+  constructor
+  · intro h hrows
+    exact h (by simp [hrows])
+  · intro h h0
+    obtain ⟨f, hf⟩ := Multiset.exists_mem_of_ne_zero h
+    obtain ⟨y, hy⟩ := Multiset.exists_mem_of_ne_zero (hφ k f)
+    have hmem : y ∈ (T.rows k).bind (φ k) := Multiset.mem_bind.mpr ⟨f, hf, hy⟩
+    rw [h0] at hmem
+    exact Multiset.notMem_zero _ hmem
+
+/-- A non-dropping `map` preserves the rectangle: presence is preserved in
+both directions, so full fibers stay full.  A `map` that can drop (a
+filter) is excluded, and rightly so: it can empty one name of a fiber. -/
+theorem map_exhaustive {φ : (K × N) → Row H σ → Multiset (Row H' σ')}
+    (hφ : ∀ p f, φ p f ≠ 0) {T : Table (K × N) H σ} (hE : Exhaustive T) :
+    Exhaustive (map φ T) := by
+  rintro k ⟨n₀, h₀⟩ n
+  rw [map_present_iff hφ]
+  exact hE k ⟨n₀, (map_present_iff hφ T (k, n₀)).mp h₀⟩ n
+
+/-- `leftJoin` preserves the rectangle: its body emits the unmatched row
+with missing right columns rather than dropping it, so it is a
+non-dropping `map`. -/
+theorem leftJoin_exhaustive (key : (K × N) → U) (right : Table U G τ)
+    {T : Table (K × N) H σ} (hE : Exhaustive T) :
+    Exhaustive (leftJoin key right T) := by
+  refine map_exhaustive (fun p f => ?_) hE
+  by_cases hR : (right.rows (key p)).card = 0
+  · simp only [if_pos hR]
+    intro h0
+    simpa using congrArg Multiset.card h0
+  · simp only [if_neg hR]
+    intro h0
+    exact hR (by simpa using congrArg Multiset.card h0)
+
+/-- `aggregate` preserves the rectangle: it collapses each present fiber
+to one row and leaves absent fibers absent, so presence is untouched. -/
+theorem aggregate_exhaustive (f : (K × N) → Multiset (Row H σ) → Row H σ)
+    {T : Table (K × N) H σ} (hE : Exhaustive T) :
+    Exhaustive (aggregate f T) := by
+  have hiff : ∀ p, (aggregate f T).Present p ↔ T.Present p := by
+    intro p
+    simp only [Table.Present, aggregate]
+    constructor
+    · intro h hrows
+      exact h (by simp [hrows])
+    · intro h
+      rw [if_neg (fun hc => h (Multiset.card_eq_zero.mp hc))]
+      intro h0
+      simpa using congrArg Multiset.card h0
+  rintro k ⟨n₀, h₀⟩ n
+  rw [hiff]
+  exact hE k ⟨n₀, (hiff (k, n₀)).mp h₀⟩ n
+
+/-- The `bind` of two carriers of the rectangle carries it: a fiber present
+in the union is present on one side, whose fullness fills the union. -/
+theorem bind_exhaustive {T₀ T₁ : Table (K × N) H σ}
+    (h₀ : Exhaustive T₀) (h₁ : Exhaustive T₁) : Exhaustive (bind T₀ T₁) := by
+  have hiff : ∀ p, (bind T₀ T₁).Present p ↔ T₀.Present p ∨ T₁.Present p := by
+    intro p
+    simp only [Table.Present, bind]
+    have hadd : T₀.rows p + T₁.rows p = 0 ↔ T₀.rows p = 0 ∧ T₁.rows p = 0 := by
+      constructor
+      · intro hst
+        have hc := congrArg Multiset.card hst
+        simp only [Multiset.card_add, Multiset.card_zero] at hc
+        rw [Nat.add_eq_zero_iff] at hc
+        exact ⟨Multiset.card_eq_zero.mp hc.1, Multiset.card_eq_zero.mp hc.2⟩
+      · rintro ⟨hs, ht⟩
+        simp [hs, ht]
+    constructor
+    · intro hne
+      by_cases h0' : T₀.rows p = 0
+      · exact Or.inr fun h1 => hne (hadd.mpr ⟨h0', h1⟩)
+      · exact Or.inl h0'
+    · rintro (h | h) h0
+      · exact h (hadd.mp h0).1
+      · exact h (hadd.mp h0).2
+  rintro k ⟨n₀, h₀'⟩ n
+  rw [hiff]
+  rcases (hiff (k, n₀)).mp h₀' with h | h
+  · exact Or.inl (h₀ k ⟨n₀, h⟩ n)
+  · exact Or.inr (h₁ k ⟨n₀, h⟩ n)
+
+/-- `split` does *not* preserve the rectangle: a predicate that reads the
+name axis cuts a fiber, leaving one side with some names of a key but not
+others.  This is ADR 0020's "destroyed by `split`" row, and the honest
+price of the index formulation; recognizing predicates that provably
+ignore the name axis is that ADR's axis-aware open question. -/
+theorem split_not_exhaustive :
+    ¬ ∀ (s : Unit × Bool → Bool) (T : Table (Unit × Bool) Unit (fun _ => Unit)),
+        Exhaustive T → Exhaustive (split s T).1 := by
+  intro h
+  set T : Table (Unit × Bool) Unit (fun _ => Unit) :=
+    ⟨fun _ => {fun _ => some ()}⟩ with hT
+  have hTE : Exhaustive T := by
+    rintro k - n
+    intro h0
+    simpa [hT] using congrArg Multiset.card h0
+  have hpres : (split (fun p => p.2) T).1.Present ((), false) := by
+    intro h0
+    simpa [hT, split] using congrArg Multiset.card h0
+  have hnot := h (fun p => p.2) T hTE () ⟨false, hpres⟩ true
+  simp [Table.Present, split] at hnot
+
 /-! ### Tagged bind / split: reversibility -/
 
 /-- `Multiset.bind` with `singleton` is the identity (the monad return law). -/
@@ -662,6 +990,143 @@ theorem taggedSplit_taggedBind_right [DecidableEq S] {s₀ s₁ : S} (hne : s₀
   intro k
   simp [taggedSplit, taggedBind, map, bind, Multiset.add_bind, Multiset.bind_map,
         Multiset.bind_singleton, bind_singleton_id, Multiset.bind_zero, hne]
+
+/-! ### Equational laws: the rewrite-rule seeds
+
+Per ADR 0008, algebraic laws are stated in equational form (`lhs = rhs`
+under named side conditions) so they translate directly into rewrite rules
+once the processing layer grows an optimizing plan IR.  The laws below are
+the prototypical plan rewrites: `empty` completes `bind`'s commutative
+monoid (unit laws); `map` carries identity and fusion laws (fusion subsumes
+filter/filter, filter/mutate, and select fusion, since all are `map`s, ADR
+0015); the joins absorb a preceding `map` and commute with a left-column
+`filter` (pushdown); and `split`/`bind` cancel in both directions
+(`bind_split` above, `split_bind` below). -/
+
+/-- The empty table: no rows at any key.  The identity of `bind`
+(`bind_empty`, `empty_bind`), completing the commutative monoid that
+`bind_comm` and `bind_assoc` establish. -/
+def empty : Table K H σ := ⟨fun _ => 0⟩
+
+/-- Right unit: `bind T empty = T`. -/
+@[simp] theorem bind_empty (T : Table K H σ) : bind T empty = T := by
+  apply Table.ext_rows
+  intro k
+  simp [bind, empty]
+
+/-- Left unit: `bind empty T = T`. -/
+@[simp] theorem empty_bind (T : Table K H σ) : bind empty T = T := by
+  apply Table.ext_rows
+  intro k
+  simp [bind, empty]
+
+/-- `map` annihilates `empty`: mapping over no rows yields no rows. -/
+@[simp] theorem map_empty (φ : K → Row H σ → Multiset (Row H' σ')) :
+    map φ (empty : Table K H σ) = empty := by
+  apply Table.ext_rows
+  intro k
+  simp [map, empty]
+
+/-- Identity law: mapping each row to its singleton is the identity. -/
+@[simp] theorem map_id (T : Table K H σ) : map (fun _ f => {f}) T = T := by
+  apply Table.ext_rows
+  intro k
+  simp [map, bind_singleton_id]
+
+/-- Fusion law: two consecutive `map`s collapse into one whose body binds
+the second body over the first's output rows.  The prototypical plan
+rewrite; with `map_id` it makes `map` bodies a monoid under Kleisli-style
+composition. -/
+theorem map_map (ψ : K → Row H' σ' → Multiset (Row H'' σ''))
+    (φ : K → Row H σ → Multiset (Row H' σ')) (T : Table K H σ) :
+    map ψ (map φ T) = map (fun k f => (φ k f).bind (ψ k)) T := by
+  apply Table.ext_rows
+  intro k
+  simp only [map]
+  exact Multiset.bind_assoc
+
+/-- def:filtering as a named operation: keep each row iff `p` holds.  A
+`map`, so every `map` law applies; named so the pushdown laws below read
+the way the optimizer will use them. -/
+def filter (p : K → Row H σ → Bool) : Table K H σ → Table K H σ :=
+  map (fun k f => bif p k f then {f} else 0)
+
+/-- Join pushdown, fusion form: a `map` feeding `innerJoin` fuses into one
+`map` whose body joins each of the `map`'s output rows.  An instance of
+`map_map`, stated separately because a plan IR carries the join as a node,
+not as its `map` body. -/
+theorem innerJoin_map (key : K → U) (right : Table U G τ)
+    (φ : K → Row H σ → Multiset (Row H' σ')) (T : Table K H σ) :
+    innerJoin key right (map φ T)
+      = map (fun k f => (φ k f).bind
+          (fun g => (right.rows (key k)).map (fun r => g.elim r))) T :=
+  map_map _ φ T
+
+/-- Join pushdown, fusion form, for `leftJoin`. -/
+theorem leftJoin_map (key : K → U) (right : Table U G τ)
+    (φ : K → Row H σ → Multiset (Row H' σ')) (T : Table K H σ) :
+    leftJoin key right (map φ T)
+      = map (fun k f => (φ k f).bind (fun g =>
+          let R := right.rows (key k)
+          if R.card = 0 then {g.elim (fun _ => none)}
+          else R.map (fun r => g.elim r))) T :=
+  map_map _ φ T
+
+/-- Filter pushdown through `innerJoin`: a filter that reads only the left
+columns (syntactically, only `Sum.inl` columns of the joined row) commutes
+below the join.  The optimizer's directed use is left to right: filter
+before joining. -/
+theorem innerJoin_filter_pushdown (key : K → U) (right : Table U G τ)
+    (p : K → Row H σ → Bool) (T : Table K H σ) :
+    filter (fun k g => p k (fun h => g (Sum.inl h))) (innerJoin key right T)
+      = innerJoin key right (filter p T) := by
+  simp only [filter, innerJoin, map_map]
+  apply Table.ext_rows
+  intro k
+  simp only [map]
+  refine Multiset.bind_congr (fun f _ => ?_)
+  cases hp : p k f <;>
+    simp [hp, Multiset.bind_map, Multiset.bind_singleton]
+
+/-- Filter pushdown through `leftJoin`: valid because a left row's copies
+(matched or the missing-padded survivor) all agree on the left columns, so
+the filter keeps or drops them together. -/
+theorem leftJoin_filter_pushdown (key : K → U) (right : Table U G τ)
+    (p : K → Row H σ → Bool) (T : Table K H σ) :
+    filter (fun k g => p k (fun h => g (Sum.inl h))) (leftJoin key right T)
+      = leftJoin key right (filter p T) := by
+  simp only [filter, leftJoin, map_map]
+  apply Table.ext_rows
+  intro k
+  simp only [map]
+  refine Multiset.bind_congr (fun f _ => ?_)
+  cases hp : p k f <;>
+    by_cases hR : (right.rows (key k)).card = 0 <;>
+    simp [hp, hR, Multiset.bind_map, Multiset.bind_singleton]
+
+/-- Split undoes bind, the cancellation dual of `bind_split`: when `T₀`
+lives on the keys `s` routes left and `T₁` on the keys `s` routes right,
+splitting their bind recovers the pair.  The hypotheses are the routing
+side conditions a rewrite must check. -/
+theorem split_bind (s : K → Bool) {T₀ T₁ : Table K H σ}
+    (h₀ : ∀ k, s k = true → T₀.rows k = 0)
+    (h₁ : ∀ k, s k = false → T₁.rows k = 0) :
+    split s (bind T₀ T₁) = (T₀, T₁) := by
+  have e₁ : (split s (bind T₀ T₁)).1 = T₀ := by
+    apply Table.ext_rows
+    intro k
+    simp only [split, bind]
+    cases hs : s k
+    · simp [h₁ k hs]
+    · simp [h₀ k hs]
+  have e₂ : (split s (bind T₀ T₁)).2 = T₁ := by
+    apply Table.ext_rows
+    intro k
+    simp only [split, bind]
+    cases hs : s k
+    · simp [h₁ k hs]
+    · simp [h₀ k hs]
+  exact Prod.ext e₁ e₂
 
 /-! ### Minimality (the chapter's no-all-missing-row assumption) -/
 

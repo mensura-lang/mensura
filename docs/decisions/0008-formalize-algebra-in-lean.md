@@ -43,6 +43,13 @@ before it is committed to as the M0 calculus.  Concretely:
 - Each definition box in the chapter maps to a Lean definition that records
   the chapter's `\label` in its doc comment, so the formalization and the
   source stay traceable.
+- Algebraic laws are stated in **equational form** where possible: a left
+  term equals a right term under explicitly stated side conditions (for
+  example disjointness), rather than as bespoke predicates that bury the
+  equation.  Equations double as rewrite rules: the processing layer plans
+  to optimize pipeline plans by term rewriting (equality saturation) once a
+  plan IR exists, and a law already phrased as `lhs = rhs` with named
+  side conditions translates directly into a rule backed by its Lean lemma.
 - The first proof obligations are: split and bind are mutual inverses on
   disjoint tables, and the Tier A operations are split-invariant.  The binary
   split-invariance definition is settled here, closing the chapter's open

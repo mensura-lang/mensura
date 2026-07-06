@@ -3,7 +3,10 @@ unit Machine {
   id: string
 }
 
-enum MachineStatus { "operational", "failure" }
+enum MachineStatus {
+  "operational"
+  "failure"
+}
 
 store machines {
   unit { Machine }

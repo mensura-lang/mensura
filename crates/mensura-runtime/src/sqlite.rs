@@ -289,7 +289,7 @@ mod tests {
     fn create_table_sql_for_enum_has_check() {
         let src = r#"
             unit U { id: string }
-            enum Status { "active", "inactive" }
+            enum Status { "active" "inactive" }
             store s { unit { U } attr { status: Status } }
         "#;
         let sql = create_table_sql(&schema(src, "s").shape());
@@ -326,7 +326,7 @@ mod tests {
     fn enum_check_constraint_is_enforced() {
         let src = r#"
             unit U { id: string }
-            enum Status { "active", "inactive" }
+            enum Status { "active" "inactive" }
             store s { unit { U } attr { status: Status } }
         "#;
         let mut db = SqliteBackend::open_in_memory().unwrap();

@@ -135,8 +135,8 @@ It is a table-level qualifier with two states:
   with no row is simply unobserved.  Singletons is the normal state at unit
   boundaries and after operations that reduce each group to one representative.
 - **Bag** (written `card 0..*`): a key may hold any number of rows, including
-  zero.  Bag cardinality is the transient state produced by `shrink_key`,
-  index `pivot`, and any `group_map` that returns more than one row per group.
+  zero.  Bag cardinality is the transient state produced by `shrink_key` and
+  any `group_map` that returns more than one row per group.
 
 Cardinality is *not* a count stored in the data; it is a compile-time bound
 on the number of rows per key.
@@ -171,11 +171,14 @@ appears in the table, the table holds *all* the rows that belong to that key
 under the current grouping.  It is not the same as totality (which is about
 individual cell values) and not the same as cardinality (which counts rows).
 
-Completeness is relevant at Tier B operations (`shrink_key`, index `pivot`):
-to safely fold a key component into a non-index column, the pipeline must
-know that no row belonging to any key is missing from that key's group.
-Without completeness, a group-wise aggregate over an incomplete group would
-silently ignore the missing rows.
+Completeness is relevant at `shrink_key`: to safely fold a key component
+into a non-index column, the pipeline must know that no row belonging to
+any key is missing from that key's group.  Without completeness, a
+group-wise aggregate over an incomplete group would silently ignore the
+missing rows.  (`pivot` needs no such fact: an absent row simply becomes a
+missing cell; the related, domain-relative fact `exhaustive` decides
+whether its spread columns come out total.  See
+`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.)
 
 Completeness is established by mechanism (a `collect` source guarantees it),
 by explicit check (`completeness_check { ... }`), by annotation
@@ -287,12 +290,13 @@ An operation is **split-safe** if it is split-invariant *and* it preserves
 the disjointness facts in the lineage qualifier.
 
 **Tier A** operations are split-safe: `map`, `group_map`, `extend_key`,
-`left_join`, `inner_join`, `split`, `bind`, `unpivot`, and the attribute form
-of `pivot`.  They compose freely and require no extra ceremony around splits.
+`left_join`, `inner_join`, `split`, `bind`, and `unpivot`.  They compose
+freely and require no extra ceremony around splits.
 
-**Tier B** operations are not split-invariant: `shrink_key` and the index
-form of `pivot`.  Each must discharge a completeness obligation before it is
-admitted, and each drops the lineage qualifier on its output.
+**Tier B** operations are not split-invariant: `shrink_key` and `pivot`.
+Both drop the lineage qualifier on their output; `shrink_key` must
+additionally discharge a completeness obligation before it is admitted
+(`pivot` needs none: an absent row becomes a missing cell, ADR 0020).
 
 The central guarantee of Mensura is that a pipeline composed entirely of
 Tier A operations cannot introduce data leakage between disjoint partitions.
@@ -348,7 +352,7 @@ deferred to a later implementation slice.
 ### Enum
 
 An **enum** is a named finite set of string-valued variants:
-`enum Status { "active", "inactive", "suspended" }`.  Enum names follow
+`enum Status { "active" "inactive" "suspended" }`.  Enum names follow
 PascalCase (they are types); variants are string literals and may contain
 characters that are not valid in identifiers.
 
@@ -356,8 +360,8 @@ Enums have two important properties.  First, they are **equatable** (can be
 used as index fields) because equality between enum values is exact string
 comparison.  Second, they are **finite-enumerable**: their variants can be
 spread across column names, which is what makes them the valid domain for
-`unpivot`'s synthesised name column and for the column being spread in an
-index-form `pivot`.
+`unpivot`'s synthesised name column and for the key column being spread by
+`pivot`.
 
 `bool` is equatable but not finite-enumerable in Mensura, because spreading
 `true`/`false` across column names and then pivoting back would not round-trip
@@ -420,13 +424,14 @@ warnings.
    for how each qualifier propagates and how the content changes.
 
 3. **Split-invariance is the default.** Chapter 5's Tier A operations
-   (`bind`, `split`, `unpivot`, the attribute form of `pivot`, `map`,
-   `group_map`, `extend_key`, and `left_join`/`inner_join` against a fixed
-   table) are split-invariant by construction and require no extra ceremony.
-   The Tier B operations (`shrink_key`, which drops a key component, and the
-   index form of `pivot`) break split-invariance and require an explicit
-   `completeness_check { … }` stage, or a `@complete_over` annotation on
-   their source, to be admissible.  See `docs/language/07-pipelines.md`.
+   (`bind`, `split`, `unpivot`, `map`, `group_map`, `extend_key`, and
+   `left_join`/`inner_join` against a fixed table) are split-invariant by
+   construction and require no extra ceremony.  The Tier B operations break
+   split-invariance: `shrink_key`, which drops a key component, requires an
+   explicit `completeness_check { … }` stage or a `@complete_over`
+   annotation on its source to be admissible, and `pivot`, which spreads a
+   key axis, needs no discharge but drops the lineage qualifier
+   (ADR 0020).  See `docs/language/07-pipelines.md`.
 
 4. **Indexes and physical units are part of the type.** Each table declares its
    index columns, and each column declares its domain, including physical
