@@ -17,7 +17,8 @@ use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
-    Cardinality, Column, Completeness, Content, Lineage, Qualifiers, SplitId, TableType, Totality,
+    Cardinality, Column, Completeness, Content, Exhaustive, Lineage, Qualifiers, SplitId,
+    TableType, Totality,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -187,7 +188,10 @@ enum JoinKind {
 /// right table by a key over the left row. Adds the right table's non-index
 /// columns; `left_join` makes them optional, `inner_join` keeps their totality.
 /// The right table is a store (`Singletons`, functional), so cardinality is
-/// preserved; completeness on the left and lineage are preserved.
+/// preserved; completeness on the left and lineage are preserved. `left_join`
+/// never drops a row, so it carries `exhaustive` (`leftJoin_exhaustive`);
+/// `inner_join` can drop unmatched rows out of a fiber, destroying it
+/// (ADR 0020 section 2).
 fn op_join(
     sources: &Sources,
     input: PipeTy,
@@ -276,6 +280,10 @@ fn op_join(
             cardinality: left.qualifiers.cardinality,
             totality,
             completeness: left.qualifiers.completeness,
+            exhaustive: match kind {
+                JoinKind::Left => left.qualifiers.exhaustive,
+                JoinKind::Inner => Exhaustive::new(),
+            },
             lineage: left.qualifiers.lineage,
         },
     }))
@@ -286,12 +294,14 @@ fn op_join(
 /// bare row keeps, `(a, b)` expands, an `if` filters or branches). The non-index
 /// columns are the collection's row schema; the index is preserved; cardinality
 /// is the maximum collection size (`<= 1` keeps the input bound, `>= 2` is a
-/// `Bag`).
+/// `Bag`). A body that can drop (some branch yields fewer rows than it was
+/// given) may leave holes in a fiber, so it forfeits `exhaustive`; a provably
+/// non-dropping body carries it (`map_exhaustive`, ADR 0020 section 2).
 fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "map", 2, span)?;
     let ctx = Context::row(params[0], params[1], &table);
-    let (schema, max_size) = row_collection(&ctx, body, &table)?;
+    let (schema, sizes) = row_collection(&ctx, body, &table)?;
     let Some(schema) = schema else {
         return Err(error(
             "a `map` body that always drops the row cannot infer the output \
@@ -300,10 +310,15 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
         ));
     };
     let (columns, totality) = schema_to_content(schema);
-    let cardinality = if max_size <= 1 {
+    let cardinality = if sizes.max <= 1 {
         table.qualifiers.cardinality
     } else {
         Cardinality::Bag
+    };
+    let exhaustive = if sizes.min >= 1 {
+        table.qualifiers.exhaustive
+    } else {
+        Exhaustive::new()
     };
     Ok(PipeTy::Table(TableType {
         content: Content {
@@ -314,9 +329,18 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
             cardinality,
             totality,
             completeness: table.qualifiers.completeness,
+            exhaustive,
             lineage: table.qualifiers.lineage,
         },
     }))
+}
+
+/// The collection-size bounds of a `map` body: how few and how many output
+/// rows one input row can yield.
+#[derive(Clone, Copy)]
+struct SizeBounds {
+    min: usize,
+    max: usize,
 }
 
 /// One column of a `map` output row, before it becomes table content.
@@ -330,18 +354,18 @@ struct RowColumn {
 type RowSchema = Vec<RowColumn>;
 
 /// Type a `map` body as a collection of value rows (ADR 0015), returning the
-/// shared row schema (or `None` if the body always drops) and the maximum number
-/// of output rows. `( )` is empty (0), `(a, b, ...)` expands (n), an `if`
-/// branches (max of the two), and any other body is a single row (1).
+/// shared row schema (or `None` if the body always drops) and the collection's
+/// size bounds. `( )` is empty (0), `(a, b, ...)` expands (n), an `if`
+/// branches (the bounds join), and any other body is a single row (1).
 fn row_collection(
     ctx: &Context,
     body: &Expr,
     input: &TableType,
-) -> Result<(Option<RowSchema>, usize), Vec<TypeError>> {
+) -> Result<(Option<RowSchema>, SizeBounds), Vec<TypeError>> {
     match &body.kind {
         ExprKind::Tuple(items) => {
             if items.is_empty() {
-                return Ok((None, 0));
+                return Ok((None, SizeBounds { min: 0, max: 0 }));
             }
             let mut errs = Vec::new();
             let mut schema: Option<RowSchema> = None;
@@ -365,7 +389,13 @@ fn row_collection(
             if !errs.is_empty() {
                 return Err(errs);
             }
-            Ok((schema, items.len()))
+            Ok((
+                schema,
+                SizeBounds {
+                    min: items.len(),
+                    max: items.len(),
+                },
+            ))
         }
         ExprKind::If { cond, then, els } => {
             let mut errs = require_known_bool(ctx, cond);
@@ -399,9 +429,18 @@ fn row_collection(
                 (None, Some(b)) => Some(b),
                 (None, None) => None,
             };
-            Ok((schema, then_size.max(els_size)))
+            Ok((
+                schema,
+                SizeBounds {
+                    min: then_size.min.min(els_size.min),
+                    max: then_size.max.max(els_size.max),
+                },
+            ))
         }
-        _ => Ok((Some(single_row_schema(ctx, body, input)?), 1)),
+        _ => Ok((
+            Some(single_row_schema(ctx, body, input)?),
+            SizeBounds { min: 1, max: 1 },
+        )),
     }
 }
 
@@ -528,7 +567,10 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// result cardinality is **inferred from the return**: all single-valued fields
 /// are the aggregate shape (one row per key, `Singletons`); bag-valued fields are
 /// the window shape (one output row per input row, `Bag`). The index,
-/// completeness, and lineage are preserved.
+/// completeness, and lineage are preserved; `exhaustive` is carried (one output
+/// row per present key in the aggregate shape, one per input row in the window
+/// shape, so no fiber loses a row; `fiberMap_exhaustive`, with
+/// `aggregate_exhaustive` the aggregate-shape special case).
 fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "group_map", 2, span)?;
@@ -543,6 +585,7 @@ fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec
             cardinality,
             totality,
             completeness: table.qualifiers.completeness,
+            exhaustive: table.qualifiers.exhaustive,
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -623,7 +666,10 @@ fn group_record_content(
 
 /// `split |k| pred` (section 6.5, Tier A): route each key to one side of a pair
 /// by a predicate over the key. Adds sibling lineage tags; content, cardinality,
-/// and completeness are unchanged on both sides.
+/// and completeness are unchanged on both sides. `exhaustive` is destroyed on
+/// both sides: the predicate reads the full key, so it can send two variants of
+/// the same residual fiber to different sides (`split_not_exhaustive`,
+/// ADR 0020 section 2).
 fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "split", 1, span)?;
@@ -634,15 +680,16 @@ fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
     let id = SplitId(span.start as u32);
     let (left, right) = table.qualifiers.lineage.split(id);
     Ok(PipeTy::Pair(
-        with_lineage(&table, left),
-        with_lineage(&table, right),
+        split_side(&table, left),
+        split_side(&table, right),
     ))
 }
 
 /// `bind` (section 6.5, Tier A): the union of a pair of tables of the same
 /// schema. Cardinality is `Singletons` iff both inputs are and their lineages
 /// are disjoint, else `Bag`; completeness holds iff both inputs are complete;
-/// the lineage tag-sets union.
+/// `exhaustive` holds where both inputs carry it (a union of full fibers is
+/// full, `bind_exhaustive`); the lineage tag-sets union.
 fn op_bind(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     if !args.is_empty() {
         return Err(error("`bind` takes no arguments", span));
@@ -673,24 +720,34 @@ fn op_bind(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Type
     } else {
         Completeness::Incomplete
     };
+    let exhaustive: Exhaustive = a
+        .qualifiers
+        .exhaustive
+        .intersection(&b.qualifiers.exhaustive)
+        .cloned()
+        .collect();
     Ok(PipeTy::Table(TableType {
         content: a.content,
         qualifiers: Qualifiers {
             cardinality,
             totality: a.qualifiers.totality,
             completeness,
+            exhaustive,
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
     }))
 }
 
-fn with_lineage(table: &TableType, lineage: Lineage) -> TableType {
+/// One side of a `split`: the same table under a branch lineage, with the
+/// row-presence fact forfeited (`split_not_exhaustive`).
+fn split_side(table: &TableType, lineage: Lineage) -> TableType {
     TableType {
         content: table.content.clone(),
         qualifiers: Qualifiers {
             cardinality: table.qualifiers.cardinality,
             totality: table.qualifiers.totality.clone(),
             completeness: table.qualifiers.completeness,
+            exhaustive: Exhaustive::new(),
             lineage,
         },
     }
@@ -737,7 +794,12 @@ fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
 
 /// `extend_key cols` (section 6.3, Tier A): promote each named column into the
 /// index. A column must be total to enter the key (ADR 0013); cardinality,
-/// completeness, and lineage are preserved.
+/// completeness, and lineage are preserved. `exhaustive` is **forfeited**,
+/// against ADR 0020 section 2's "preserved" sketch: the promoted column
+/// refines the residual key, which can cut a fiber (rows
+/// `(s, math, score=5)` and `(s, port, score=7)` are exhaustive in the
+/// subject axis at residual key `s`, but not at `(s, 5)` after
+/// `extend_key score`), so the carry is unsound as stated.
 fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
@@ -753,6 +815,7 @@ fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
             errs.push(e);
         }
     }
+    table.qualifiers.exhaustive.clear();
     if errs.is_empty() {
         Ok(PipeTy::Table(table))
     } else {
@@ -846,19 +909,29 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     table.qualifiers.cardinality = Cardinality::Bag;
     table.qualifiers.lineage = Lineage::dropped();
     // Completeness stays Complete (now over the coarser retained key).
+    // `exhaustive` is forfeited: ADR 0020 section 2 sketches the retained-axis
+    // carry (a union of full fibers is full), but the key-changing propagation
+    // rows are the ADR's open formal work item, so the checker stays
+    // conservative until they are mechanized.
+    table.qualifiers.exhaustive.clear();
     Ok(PipeTy::Table(table))
 }
 
-/// `unpivot name value (cols...)` (section 6.6, Tier A, ADR 0016): fold the
-/// named value columns into one `value` column, spreading their *names* into a
-/// new `enum` index column `name`. The folded columns must be non-index and
-/// share one domain. Cardinality, completeness, and lineage are preserved
-/// (`unpivot_splitSafe`, `unpivot_preservesDisjoint`).
+/// `unpivot name value` (section 6.6, Tier A, ADR 0020): fold **all**
+/// attribute columns, which must share one domain, into one `value` column,
+/// spreading their *names* into a new `enum` index column `name`. A missing
+/// cell yields no row (drop semantics), so `value` is total by construction
+/// (`unpivotDrop_minimal`). Cardinality and lineage are preserved
+/// (`unpivotDrop_splitSafe`, `unpivotDrop_preservesDisjoint`). Establishes
+/// `exhaustive(name)` exactly when every folded column is total
+/// (`unpivotDrop_exhaustive`); an optional folded column drops cells, which
+/// leaves holes and forfeits the row-presence facts.
 fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
-    let [name_arg, value_arg, cols_arg] = args else {
+    let [name_arg, value_arg] = args else {
         return Err(error(
-            "`unpivot` takes a name column, a value column, and a `(col, ...)` group",
+            "`unpivot` takes a name column and a value column; it folds all \
+             attribute columns (project first to exclude one)",
             span,
         ));
     };
@@ -874,97 +947,61 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
             value_arg.span,
         ));
     };
-    let ExprKind::Tuple(items) = &cols_arg.kind else {
-        return Err(error(
-            "`unpivot` expects a `(col, ...)` group of columns",
-            cols_arg.span,
-        ));
-    };
-    if items.is_empty() {
-        return Err(error(
-            "`unpivot` needs at least one column to fold",
-            cols_arg.span,
-        ));
-    }
-
-    // Collect the folded columns: each must exist, be non-index, and share one
-    // domain. A folded column that may be missing makes the `value` optional.
-    let mut folded: Vec<String> = Vec::new();
-    let mut domain: Option<ColumnType> = None;
-    let mut value_optional = false;
-    let mut errs = Vec::new();
-    for item in items {
-        let ExprKind::Name(col) = &item.kind else {
-            errs.push(te("a folded column must be an identifier", item.span));
-            continue;
-        };
-        if table.content.index.iter().any(|c| &c.name == col) {
-            errs.push(te(
-                format!("`{col}` is an index column, not a value column"),
-                item.span,
-            ));
-            continue;
-        }
-        let Some(c) = table.content.columns.iter().find(|c| &c.name == col) else {
-            errs.push(te(format!("unknown column `{col}`"), item.span));
-            continue;
-        };
-        match &domain {
-            None => domain = Some(c.domain.clone()),
-            Some(d) if *d == c.domain => {}
-            Some(_) => errs.push(te(
-                format!("folded columns must share the same domain; `{col}` differs"),
-                item.span,
-            )),
-        }
-        if folded.contains(col) {
-            errs.push(te(
-                format!("`unpivot` folds `{col}` more than once"),
-                item.span,
-            ));
-            continue;
-        }
-        if table.qualifiers.totality.is_optional(col) {
-            value_optional = true;
-        }
-        folded.push(col.clone());
-    }
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-    let domain = domain.expect("at least one column checked");
-
-    // The new name and value columns must differ and must not collide with a
-    // column that survives the fold or an existing index column (the
-    // no-duplicate-columns invariant every operation upholds, cf. `op_join`).
     if name_col == value_col {
         return Err(error(
             "`unpivot`'s name and value columns must differ",
             name_arg.span,
         ));
     }
-    let survives = |n: &str| {
-        table.content.index.iter().any(|c| c.name == n)
-            || (table.content.columns.iter().any(|c| c.name == n) && !folded.iter().any(|f| f == n))
+
+    // The fold is total over the attributes (exclusion is upstream
+    // projection), and they must share one domain.
+    let Some(first) = table.content.columns.first() else {
+        return Err(error(
+            "`unpivot` needs at least one attribute column to fold",
+            span,
+        ));
     };
-    if survives(value_col) {
-        errs.push(te(
-            format!("`unpivot` would duplicate column `{value_col}`"),
-            value_arg.span,
-        ));
+    let domain = first.domain.clone();
+    let mut errs = Vec::new();
+    for c in &table.content.columns[1..] {
+        if c.domain != domain {
+            errs.push(te(
+                format!(
+                    "`unpivot` folds all attribute columns, which must share one \
+                     domain; `{}` differs (project it away first)",
+                    c.name
+                ),
+                span,
+            ));
+        }
     }
-    if survives(name_col) {
-        errs.push(te(
-            format!("`unpivot` would duplicate column `{name_col}`"),
-            name_arg.span,
-        ));
+
+    // The new name and value columns must not collide with an index column
+    // (every attribute is folded, so only the key survives the fold).
+    for (arg, new_col) in [(name_arg, name_col), (value_arg, value_col)] {
+        if table.content.index.iter().any(|c| &c.name == new_col) {
+            errs.push(te(
+                format!("`unpivot` would duplicate column `{new_col}`"),
+                arg.span,
+            ));
+        }
     }
     if !errs.is_empty() {
         return Err(errs);
     }
 
-    // Remove the folded columns, add the `value` column and the `name` enum key.
-    table.content.columns.retain(|c| !folded.contains(&c.name));
+    // Fold: the attribute names become the `name` enum key, their cells the
+    // `value` column. A known cell keeps its row, a missing cell yields none,
+    // so `value` is total regardless of the folded columns' totality.
+    let folded: Vec<String> = table
+        .content
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    let all_total = folded.iter().all(|c| table.qualifiers.totality.is_total(c));
+    table.content.columns.clear();
     for col in &folded {
         table.qualifiers.totality.narrow(col);
     }
@@ -972,9 +1009,6 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
         name: value_col.clone(),
         domain,
     });
-    if value_optional {
-        table.qualifiers.totality.mark_optional(value_col.clone());
-    }
     table.content.index.push(Column {
         name: name_col.clone(),
         domain: ColumnType::Enum {
@@ -982,16 +1016,31 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
             variants: folded,
         },
     });
+    // A pre-existing row-presence fact would survive a total fold (ADR 0020
+    // section 2), but that carry crosses a key change, which is the ADR's
+    // open formal work item; the checker keeps only the fact it can establish
+    // by mechanism.
+    table.qualifiers.exhaustive.clear();
+    if all_total {
+        table.qualifiers.exhaustive.insert(name_col.clone());
+    } else {
+        // Dropped cells leave holes in the fibers: nothing is established,
+        // and the input's completeness fact is forfeited with the rows.
+        table.qualifiers.completeness = Completeness::Incomplete;
+    }
     Ok(PipeTy::Table(table))
 }
 
-/// `pivot name value` (section 6.6, ADR 0016): the inverse of `unpivot`.
-/// Attribute form (`name` is a non-index column): split-safe, admissible only
-/// when the input is `singletons` so each (key, name) cell holds at most one
-/// value (`pivotAttr_splitSafe`). The `name` column must be a finite-enumerable
-/// `enum` (its values become column names); each variant becomes a `value`-typed
-/// column. Lineage and completeness preserved. The index form (`name` in the
-/// key) is Tier B and handled in a later task.
+/// `pivot name value` (section 6.6, Tier B, ADR 0020): the inverse of
+/// `unpivot`, in one form. `name` must be an enum-domained **index** column
+/// (`extend_key` promotes an attribute first); the input must be
+/// `singletons` with `value` as its only attribute (the key discipline is
+/// what makes each spread cell well-defined). It consumes **no completeness
+/// fact**: an absent (key, variant) row becomes a missing cell, and the
+/// spread columns are total iff `exhaustive(name)` holds and `value` is
+/// total (`pivot_total_of_exhaustive`; the total `value` column is the
+/// `Minimal` hypothesis). Not split-invariant, so lineage is dropped
+/// (`pivot_not_splitInvariant`).
 fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     let [name_arg, value_arg] = args else {
@@ -1019,101 +1068,32 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         ));
     }
 
-    // Index form (Tier B, ADR 0017): `name` is a key column. Demands
-    // completeness over the key it leaves behind, drops lineage
-    // (`pivot_not_splitInvariant`).
-    if let Some(idx_pos) = table.content.index.iter().position(|c| &c.name == name_col) {
-        let ColumnType::Enum { variants, .. } = table.content.index[idx_pos].domain.clone() else {
+    // `name` spreads an index column; an attribute is rejected with the
+    // composition hint (ADR 0020: the bag long form is `extend_key` away).
+    let Some(idx_pos) = table.content.index.iter().position(|c| &c.name == name_col) else {
+        if table.content.columns.iter().any(|c| &c.name == name_col) {
             return Err(error(
-                format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
-                name_arg.span,
-            ));
-        };
-        if table.content.index.len() == 1 {
-            return Err(error(
-                "index-form `pivot` must leave at least one index column",
+                format!(
+                    "`pivot` spreads an index column; promote `{name_col}` with \
+                     `extend_key {name_col}` first"
+                ),
                 name_arg.span,
             ));
         }
-        if table.qualifiers.completeness != Completeness::Complete {
-            return Err(error(
-                "index-form `pivot` needs completeness over the retained key; \
-                 establish it with `completeness_check` or `assume { complete }`",
-                span,
-            ));
-        }
-        let Some(value_pos) = table
-            .content
-            .columns
-            .iter()
-            .position(|c| &c.name == value_col)
-        else {
-            return Err(error(
-                format!("unknown column `{value_col}`"),
-                value_arg.span,
-            ));
-        };
-        let value_domain = table.content.columns[value_pos].domain.clone();
-        // A spread variant must not collide with a surviving column (the name
-        // key and value column are about to be removed, so they do not count).
-        let mut errs = Vec::new();
-        for variant in &variants {
-            let dup = table
-                .content
-                .index
-                .iter()
-                .any(|c| &c.name == variant && &c.name != name_col)
-                || table
-                    .content
-                    .columns
-                    .iter()
-                    .any(|c| &c.name == variant && &c.name != value_col);
-            if dup {
-                errs.push(te(
-                    format!("`pivot` would duplicate column `{variant}`"),
-                    name_arg.span,
-                ));
-            }
-        }
-        if !errs.is_empty() {
-            return Err(errs);
-        }
-        table.content.index.remove(idx_pos);
-        table.content.columns.retain(|c| &c.name != value_col);
-        // Completeness over the retained key guarantees every (key, variant)
-        // row exists, so a spread cell is known exactly when the value column
-        // was total (`cellOf` in `formal/Mensura/Completeness.lean` reads an
-        // `Option`).
-        let value_optional = table.qualifiers.totality.is_optional(value_col);
-        table.qualifiers.totality.narrow(value_col);
-        for variant in variants {
-            if value_optional {
-                table.qualifiers.totality.mark_optional(variant.clone());
-            }
-            table.content.columns.push(Column {
-                name: variant,
-                domain: value_domain.clone(),
-            });
-        }
-        table.qualifiers.lineage = Lineage::dropped();
-        return Ok(PipeTy::Table(table));
-    }
-
-    // Attribute form: `name` is a non-index column.
-    let Some(name_pos) = table
-        .content
-        .columns
-        .iter()
-        .position(|c| &c.name == name_col)
-    else {
         return Err(error(format!("unknown column `{name_col}`"), name_arg.span));
     };
-    let ColumnType::Enum { variants, .. } = table.content.columns[name_pos].domain.clone() else {
+    let ColumnType::Enum { variants, .. } = table.content.index[idx_pos].domain.clone() else {
         return Err(error(
             format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
             name_arg.span,
         ));
     };
+    if table.content.index.len() == 1 {
+        return Err(error(
+            "`pivot` must leave at least one index column",
+            name_arg.span,
+        ));
+    }
     if table.qualifiers.cardinality != Cardinality::Singletons {
         return Err(error(
             "`pivot` requires a singletons input: each (key, name) cell must hold \
@@ -1132,18 +1112,26 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             value_arg.span,
         ));
     };
+    if table.content.columns.len() != 1 {
+        return Err(error(
+            format!(
+                "`pivot` requires `{value_col}` to be the only attribute column; \
+                 drop or aggregate the others first"
+            ),
+            span,
+        ));
+    }
     let value_domain = table.content.columns[value_pos].domain.clone();
-    // A spread variant must not collide with a surviving column (the name and
-    // value columns are about to be removed, so they do not count).
+    // A spread variant must not collide with a retained index column (the
+    // name key and value column are about to be removed).
     let mut errs = Vec::new();
     for variant in &variants {
-        let dup = table.content.index.iter().any(|c| &c.name == variant)
-            || table
-                .content
-                .columns
-                .iter()
-                .any(|c| &c.name == variant && &c.name != name_col && &c.name != value_col);
-        if dup {
+        if table
+            .content
+            .index
+            .iter()
+            .any(|c| &c.name == variant && &c.name != name_col)
+        {
             errs.push(te(
                 format!("`pivot` would duplicate column `{variant}`"),
                 name_arg.span,
@@ -1154,22 +1142,19 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         return Err(errs);
     }
 
-    // Drop the name and value columns, add one column per enum variant.  A
-    // `singletons` input holds at most one (name, value) pair per key, so
-    // with several variants the other spread cells are missing (`cellOf` in
-    // `formal/Mensura/Completeness.lean` reads an `Option`): each variant
-    // column is optional unless the enum has a single variant and the value
-    // column was total.
-    table
-        .content
-        .columns
-        .retain(|c| &c.name != name_col && &c.name != value_col);
-    let value_optional = table.qualifiers.totality.is_optional(value_col);
-    let single_variant = variants.len() == 1;
-    table.qualifiers.totality.narrow(name_col);
+    table.content.index.remove(idx_pos);
+    table.content.columns.clear();
+    // The totality upgrade (ADR 0020): the rectangle supplies the row at
+    // every (key, variant) and the total value column supplies the value in
+    // it (`pivot_total_of_exhaustive`). A single-variant enum is exhaustive
+    // trivially (`exhaustive_of_subsingleton`). Otherwise a spread cell may
+    // be absent-row-turned-missing, so the columns are optional.
+    let value_total = table.qualifiers.totality.is_total(value_col);
+    let rectangle = table.qualifiers.exhaustive.contains(name_col.as_str()) || variants.len() == 1;
+    let spread_total = rectangle && value_total;
     table.qualifiers.totality.narrow(value_col);
     for variant in variants {
-        if value_optional || !single_variant {
+        if !spread_total {
             table.qualifiers.totality.mark_optional(variant.clone());
         }
         table.content.columns.push(Column {
@@ -1177,6 +1162,12 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             domain: value_domain.clone(),
         });
     }
+    // The name axis leaves the key, consuming its fact. A fact over another
+    // axis of the residual key would survive (ADR 0020 section 2), but that
+    // carry crosses a key change, the ADR's open formal work item, so the
+    // checker stays conservative.
+    table.qualifiers.exhaustive.clear();
+    table.qualifiers.lineage = Lineage::dropped();
     Ok(PipeTy::Table(table))
 }
 
@@ -1681,47 +1672,82 @@ mod tests {
         assert!(errs[0].message.contains("key domain"));
     }
 
-    #[test]
-    fn unpivot_folds_columns_into_name_and_value() {
-        let s = sample_sources();
-        // Fold two `real` columns into one `enum`-keyed value column.
-        let t = table_of(
-            pipe_ty(&s, "readings |> unpivot metric reading (temperature, peak)").expect("ok"),
+    /// A homogeneous wide source, the shape `unpivot` folds: all attributes
+    /// share one domain. `sparse` marks `hi` optional.
+    fn wide_source(sparse: bool) -> Sources {
+        let wide = from_cols(
+            "wide",
+            "Slot",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("lo", ColumnType::Real, ColumnRole::Attr, false),
+                scol("hi", ColumnType::Real, ColumnRole::Attr, sparse),
+            ],
         );
-        assert!(t.content.index.iter().any(|c| c.name == "metric"));
-        assert!(matches!(
-            t.content
-                .index
-                .iter()
-                .find(|c| c.name == "metric")
-                .unwrap()
-                .domain,
-            ColumnType::Enum { .. }
-        ));
-        assert!(t.content.columns.iter().any(|c| c.name == "reading"));
-        assert!(!t.content.columns.iter().any(|c| c.name == "temperature"));
-        assert!(!t.content.columns.iter().any(|c| c.name == "peak"));
+        Sources::new().with("wide", wide)
+    }
+
+    #[test]
+    fn unpivot_folds_all_attributes_and_establishes_exhaustive() {
+        let s = wide_source(false);
+        let t = table_of(pipe_ty(&s, "wide |> unpivot metric reading").expect("ok"));
+        let metric = t
+            .content
+            .index
+            .iter()
+            .find(|c| c.name == "metric")
+            .expect("metric in the key");
+        assert!(matches!(metric.domain, ColumnType::Enum { .. }));
+        assert_eq!(t.content.columns.len(), 1);
+        assert_eq!(t.content.columns[0].name, "reading");
+        // Drop semantics: the long value column is total by construction.
+        assert!(t.qualifiers.totality.is_total("reading"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        // Every folded column is total: the rectangle holds by mechanism
+        // (`unpivotDrop_exhaustive`).
+        assert!(t.qualifiers.exhaustive.contains("metric"));
+    }
+
+    #[test]
+    fn unpivot_of_an_optional_column_establishes_nothing() {
+        let s = wide_source(true);
+        let t = table_of(pipe_ty(&s, "wide |> unpivot metric reading").expect("ok"));
+        // The dropped cells leave holes: no rectangle fact; the value column
+        // is still total (a missing cell yields no row).
+        assert!(t.qualifiers.exhaustive.is_empty());
+        assert!(t.qualifiers.totality.is_total("reading"));
     }
 
     #[test]
     fn unpivot_rejects_mismatched_domains() {
         let s = sample_sources();
-        // `temperature` is real, `note` is string: cannot share one value column.
-        let errs = pipe_ty(&s, "readings |> unpivot metric reading (temperature, note)")
-            .expect_err("domain mismatch");
-        assert!(errs[0].message.contains("same domain"));
+        // `readings` mixes real, bool, and string attributes: no shared domain.
+        let errs = pipe_ty(&s, "readings |> unpivot metric reading").expect_err("domain mismatch");
+        assert!(errs[0].message.contains("share one domain"));
     }
 
     #[test]
-    fn unpivot_needs_at_least_one_column() {
-        let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> unpivot metric reading ()").expect_err("no columns");
-        assert!(errs[0].message.contains("at least one column"));
+    fn unpivot_needs_an_attribute_to_fold() {
+        let bare = from_cols(
+            "bare",
+            "Slot",
+            vec![scol("ts", ColumnType::Int, ColumnRole::Index, false)],
+        );
+        let s = Sources::new().with("bare", bare);
+        let errs = pipe_ty(&s, "bare |> unpivot metric reading").expect_err("no attributes");
+        assert!(errs[0].message.contains("at least one attribute"));
     }
 
-    /// A source with a non-index `enum` column, for the attribute form of
-    /// `pivot` (which spreads a non-index enum column).
+    #[test]
+    fn unpivot_rejects_the_retired_column_list() {
+        let s = wide_source(false);
+        // ADR 0016's list form is gone: the fold is total over the attributes.
+        let errs = pipe_ty(&s, "wide |> unpivot metric reading (lo, hi)").expect_err("list form");
+        assert!(errs[0].message.contains("folds all attribute columns"));
+    }
+
+    /// A source with a non-index `enum` column: `pivot` rejects it with the
+    /// `extend_key` hint (the bag long form is composition, ADR 0020).
     fn enum_source() -> Sources {
         let obs = from_cols(
             "obs",
@@ -1745,99 +1771,122 @@ mod tests {
     }
 
     #[test]
-    fn pivot_attribute_form_spreads_an_enum_column() {
+    fn pivot_inverts_unpivot_with_no_discharge() {
+        let s = wide_source(false);
+        let whole = table_of(pipe_ty(&s, "wide").expect("source"));
+        let t = table_of(
+            pipe_ty(&s, "wide |> unpivot metric reading |> pivot metric reading").expect("ok"),
+        );
+        // The round trip restores the wide content with no `assume` and no
+        // completeness discharge (`pivot_unpivotDrop`); the rectangle
+        // established by `unpivot` upgrades the spread columns to total.
+        assert_eq!(t.content, whole.content);
+        assert!(t.qualifiers.totality.is_total("lo"));
+        assert!(t.qualifiers.totality.is_total("hi"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        // `pivot` drops lineage (`pivot_not_splitInvariant`) and consumes the
+        // rectangle.
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
+        assert!(t.qualifiers.exhaustive.is_empty());
+    }
+
+    #[test]
+    fn pivot_of_a_sparse_fold_spreads_optional_columns() {
+        let s = wide_source(true);
+        // `hi` is optional: `unpivot` establishes nothing, and `pivot`
+        // honestly yields optional spread columns (no obligation, ADR 0020).
+        let t = table_of(
+            pipe_ty(&s, "wide |> unpivot metric reading |> pivot metric reading").expect("ok"),
+        );
+        assert!(t.qualifiers.totality.is_optional("lo"));
+        assert!(t.qualifiers.totality.is_optional("hi"));
+    }
+
+    #[test]
+    fn pivot_rejects_an_attribute_name_column() {
         let s = enum_source();
-        // Spread the non-index enum `metric` into one column per variant.
-        let t = table_of(pipe_ty(&s, "obs |> pivot metric reading").expect("ok"));
+        // `metric` sits in attribute position: the bag long form is reachable
+        // by composition, so the rejection points at `extend_key`.
+        let errs = pipe_ty(&s, "obs |> pivot metric reading").expect_err("attribute position");
+        assert!(errs[0].message.contains("extend_key"));
+    }
+
+    #[test]
+    fn pivot_after_extend_key_spreads_a_promoted_enum() {
+        let s = enum_source();
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "obs |> map |_, r| (.metric = r.metric, .reading = r.reading) \
+                 |> extend_key metric |> pivot metric reading",
+            )
+            .expect("ok"),
+        );
         assert!(t.content.columns.iter().any(|c| c.name == "lo"));
         assert!(t.content.columns.iter().any(|c| c.name == "hi"));
-        assert!(!t.content.columns.iter().any(|c| c.name == "metric"));
-        assert!(!t.content.index.iter().any(|c| c.name == "metric"));
-        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
-        // A singletons input fills at most one variant per key, so the spread
-        // cells are optional (`cellOf` reads an `Option`).
+        // Stored sparse data pivots directly: no rectangle fact, so the
+        // spread columns are honestly optional (ADR 0020).
         assert!(t.qualifiers.totality.is_optional("lo"));
         assert!(t.qualifiers.totality.is_optional("hi"));
     }
 
     #[test]
     fn pivot_demands_singletons() {
-        let s = enum_source();
+        let s = wide_source(false);
         // A bag input (expanded by map) cannot pivot: cells are not card <= 1.
-        let errs =
-            pipe_ty(&s, "obs |> map |k, r| (r, r) |> pivot metric reading").expect_err("bag");
+        let errs = pipe_ty(
+            &s,
+            "wide |> unpivot metric reading |> map |k, r| (r, r) |> pivot metric reading",
+        )
+        .expect_err("bag");
         assert!(errs[0].message.contains("singletons"));
     }
 
     #[test]
     fn pivot_name_column_must_be_enum() {
-        let s = enum_source();
-        // `tag` is a plain string column, not a finite-enumerable enum.
-        let errs = pipe_ty(&s, "obs |> pivot tag reading").expect_err("not enumerable");
-        assert!(errs[0].message.contains("enum"));
+        let s = sample_sources();
+        // `ts` is an index column, but `int` is not finite-enumerable.
+        let errs = pipe_ty(&s, "readings |> extend_key machine |> pivot ts machine")
+            .expect_err("not enumerable");
+        assert!(errs[0].message.contains("finite-enumerable"));
     }
 
     #[test]
-    fn pivot_index_form_demands_completeness() {
-        let s = sample_sources();
-        // `unpivot` puts `metric` in the key; pivoting it back is the index form,
-        // which demands completeness over the retained key.
+    fn pivot_requires_the_value_to_be_the_only_attribute() {
+        let s = wide_source(false);
+        // A surviving second attribute must be dropped or aggregated first.
         let errs = pipe_ty(
             &s,
-            "readings |> unpivot metric reading (temperature, peak) |> pivot metric reading",
+            "wide |> unpivot metric reading \
+             |> map |_, r| (.reading = r.reading, .extra = 1) \
+             |> pivot metric reading",
         )
-        .expect_err("incomplete");
-        assert!(errs[0].message.contains("complete"));
+        .expect_err("extra attribute");
+        assert!(errs[0].message.contains("only attribute"));
     }
 
     #[test]
-    fn pivot_index_form_drops_lineage_and_spreads() {
-        let s = sample_sources();
-        // The unpivot/pivot round-trip restores the wide shape; the index form
-        // drops lineage.
-        let t = table_of(
-            pipe_ty(
-                &s,
-                "readings |> unpivot metric reading (temperature, peak) \
-                 |> assume { complete } |> pivot metric reading",
-            )
-            .expect("ok"),
-        );
-        assert!(!t.content.index.iter().any(|c| c.name == "metric"));
-        assert!(t.content.columns.iter().any(|c| c.name == "temperature"));
-        assert!(t.content.columns.iter().any(|c| c.name == "peak"));
-        assert_eq!(t.qualifiers.lineage, Lineage::root());
-        // `peak` is optional, so the folded value column was optional and the
-        // spread cells inherit it; completeness only guarantees the rows.
-        assert!(t.qualifiers.totality.is_optional("temperature"));
-        assert!(t.qualifiers.totality.is_optional("peak"));
-    }
-
-    #[test]
-    fn pivot_index_form_keeps_a_total_value_total() {
-        // Folding only total columns keeps the spread cells total: index-form
-        // completeness guarantees every (key, variant) row exists, and the
-        // value is always known.
-        let wide = from_cols(
-            "wide",
+    fn pivot_must_leave_an_index_column() {
+        // A long table keyed by the name axis alone cannot pivot.
+        let long = from_cols(
+            "long",
             "Slot",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
-                scol("lo", ColumnType::Real, ColumnRole::Attr, false),
-                scol("hi", ColumnType::Real, ColumnRole::Attr, false),
+                scol(
+                    "metric",
+                    ColumnType::Enum {
+                        name: "Metric".to_string(),
+                        variants: vec!["lo".to_string(), "hi".to_string()],
+                    },
+                    ColumnRole::Index,
+                    false,
+                ),
+                scol("reading", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("wide", wide);
-        let t = table_of(
-            pipe_ty(
-                &s,
-                "wide |> unpivot metric reading (lo, hi) \
-                 |> assume { complete } |> pivot metric reading",
-            )
-            .expect("ok"),
-        );
-        assert!(t.qualifiers.totality.is_total("lo"));
-        assert!(t.qualifiers.totality.is_total("hi"));
+        let s = Sources::new().with("long", long);
+        let errs = pipe_ty(&s, "long |> pivot metric reading").expect_err("empty key");
+        assert!(errs[0].message.contains("at least one index"));
     }
 
     #[test]
@@ -1925,29 +1974,16 @@ mod tests {
 
     #[test]
     fn unpivot_rejects_duplicate_output_column() {
-        let s = sample_sources();
-        // `flag` survives the fold, so naming the value column `flag` collides.
-        let errs = pipe_ty(&s, "readings |> unpivot metric flag (temperature, peak)")
-            .expect_err("duplicate");
-        assert!(errs[0].message.contains("would duplicate column `flag`"));
-    }
-
-    #[test]
-    fn unpivot_rejects_repeated_fold() {
-        let s = sample_sources();
-        let errs = pipe_ty(
-            &s,
-            "readings |> unpivot metric reading (temperature, temperature)",
-        )
-        .expect_err("repeated");
-        assert!(errs[0].message.contains("more than once"));
+        let s = wide_source(false);
+        // The new name column collides with the `ts` index column.
+        let errs = pipe_ty(&s, "wide |> unpivot ts reading").expect_err("duplicate");
+        assert!(errs[0].message.contains("would duplicate column `ts`"));
     }
 
     #[test]
     fn unpivot_rejects_name_equal_value() {
-        let s = sample_sources();
-        let errs =
-            pipe_ty(&s, "readings |> unpivot x x (temperature, peak)").expect_err("name == value");
+        let s = wide_source(false);
+        let errs = pipe_ty(&s, "wide |> unpivot x x").expect_err("name == value");
         assert!(errs[0].message.contains("must differ"));
     }
 
@@ -1960,28 +1996,164 @@ mod tests {
 
     #[test]
     fn pivot_rejects_variant_colliding_with_a_column() {
-        // A source whose enum variant `lo` collides with an existing column.
-        let obs = from_cols(
-            "obs",
-            "Obs",
+        // A retained index column `lo` collides with the spread variant `lo`.
+        let long = from_cols(
+            "long",
+            "Slot",
             vec![
                 scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("lo", ColumnType::Int, ColumnRole::Index, false),
                 scol(
                     "metric",
                     ColumnType::Enum {
                         name: "Metric".to_string(),
                         variants: vec!["lo".to_string(), "hi".to_string()],
                     },
-                    ColumnRole::Attr,
+                    ColumnRole::Index,
                     false,
                 ),
                 scol("reading", ColumnType::Real, ColumnRole::Attr, false),
-                scol("lo", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("obs", obs);
-        let errs = pipe_ty(&s, "obs |> pivot metric reading").expect_err("collision");
+        let s = Sources::new().with("long", long);
+        let errs = pipe_ty(&s, "long |> pivot metric reading").expect_err("collision");
         assert!(errs[0].message.contains("would duplicate column `lo`"));
+    }
+
+    // Propagation of the rectangle fact (ADR 0020 section 2): each rule below
+    // is backed by a theorem in `formal/Mensura/` (section 11 of the typing
+    // reference); the key-changing carries stay conservative until their
+    // formal work item lands.
+
+    #[test]
+    fn exhaustive_survives_a_non_dropping_map() {
+        let s = wide_source(false);
+        // The body has no `( )` branch: `map_exhaustive`.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading |> map |_, r| (.r2 = r.reading)",
+            )
+            .expect("ok"),
+        );
+        assert!(t.qualifiers.exhaustive.contains("metric"));
+    }
+
+    #[test]
+    fn a_dropping_map_forfeits_exhaustive() {
+        let s = wide_source(false);
+        // A filter can empty one variant of a fiber (`map_exhaustive`'s
+        // non-dropping hypothesis is necessary).
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading \
+                 |> map |_, r| if r.reading > 0.0 then r else ()",
+            )
+            .expect("ok"),
+        );
+        assert!(t.qualifiers.exhaustive.is_empty());
+    }
+
+    #[test]
+    fn exhaustive_survives_group_map_and_bind_of_carriers() {
+        let s = wide_source(false);
+        // `fiberMap_exhaustive` (both `group_map` shapes) and
+        // `bind_exhaustive` (a union of full fibers is full).
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading \
+                 |> group_map |_, g| (.reading = max g.reading)",
+            )
+            .expect("ok"),
+        );
+        assert!(t.qualifiers.exhaustive.contains("metric"));
+        let bound = table_of(
+            pipe_ty(
+                &s,
+                "(wide |> unpivot metric reading, wide |> unpivot metric reading) |> bind",
+            )
+            .expect("ok"),
+        );
+        assert!(bound.qualifiers.exhaustive.contains("metric"));
+    }
+
+    #[test]
+    fn split_forfeits_exhaustive() {
+        let s = wide_source(false);
+        // A key predicate can cut a fiber across sides
+        // (`split_not_exhaustive`), so both branches lose the fact and the
+        // rebound table carries none.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading |> split |k| k.ts > 100 |> bind",
+            )
+            .expect("ok"),
+        );
+        assert!(t.qualifiers.exhaustive.is_empty());
+    }
+
+    #[test]
+    fn extend_key_forfeits_exhaustive() {
+        // The promoted column refines the residual key, which can cut a
+        // fiber: the ADR 0020 section 2 sketch does not hold for this row,
+        // so the checker forfeits the fact (see `op_extend_key`).
+        let wide = from_cols(
+            "wide",
+            "Slot",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("lo", ColumnType::String, ColumnRole::Attr, false),
+                scol("hi", ColumnType::String, ColumnRole::Attr, false),
+            ],
+        );
+        let s = Sources::new().with("wide", wide);
+        let t = table_of(
+            pipe_ty(&s, "wide |> unpivot metric reading |> extend_key reading").expect("ok"),
+        );
+        assert!(t.qualifiers.exhaustive.is_empty());
+    }
+
+    #[test]
+    fn inner_join_forfeits_exhaustive() {
+        let wide = from_cols(
+            "wide",
+            "Slot",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("lo", ColumnType::String, ColumnRole::Attr, false),
+                scol("hi", ColumnType::String, ColumnRole::Attr, false),
+            ],
+        );
+        let machines = from_cols(
+            "machines",
+            "Machine",
+            vec![
+                scol("machine", ColumnType::String, ColumnRole::Index, false),
+                scol("vendor", ColumnType::String, ColumnRole::Attr, false),
+            ],
+        );
+        let s = Sources::new().with("wide", wide).with("machines", machines);
+        // An unmatched row drops out of its fiber; `left_join` keeps it
+        // (`leftJoin_exhaustive`), `inner_join` does not.
+        let kept = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading |> left_join machines (|_, l| l.reading)",
+            )
+            .expect("ok"),
+        );
+        assert!(kept.qualifiers.exhaustive.contains("metric"));
+        let dropped = table_of(
+            pipe_ty(
+                &s,
+                "wide |> unpivot metric reading |> inner_join machines (|_, l| l.reading)",
+            )
+            .expect("ok"),
+        );
+        assert!(dropped.qualifiers.exhaustive.is_empty());
     }
 
     #[test]

@@ -1150,7 +1150,7 @@ mod tests {
 
     const ATTENTION: &str = r#"
         unit Machine { id: string }
-        enum MachineStatus { "operational", "degraded", "failure" }
+        enum MachineStatus { "operational" "degraded" "failure" }
         store machines {
           unit { Machine }
           attr {

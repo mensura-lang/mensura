@@ -1,8 +1,7 @@
-// Reject (resolve): attribute-form pivot demands singletons; the map expands
-// each row to a bag, so the (key, name) cell is no longer card <= 1.
-enum Metric { "lo" "hi" }
-unit Obs { ts: int }
-store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }
+// Reject (resolve): `pivot` demands singletons; the map expands each row to
+// a bag, so a (key, name) cell is no longer card <= 1.
+unit Reading { ts: int }
+store readings { unit { Reading } attr { temperature: real } attr { humidity: real } }
 view bad {
-  obs |> map |k, r| (r, r) |> pivot metric reading
+  readings |> unpivot metric reading |> map |k, r| (r, r) |> pivot metric reading
 }

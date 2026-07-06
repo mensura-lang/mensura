@@ -17,6 +17,6 @@ pub use model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, TableSh
 pub use pipe_check::{PipeTy, Sources, type_pipeline, type_view, type_view_body};
 pub use resolve::{ResolveError, resolve};
 pub use table::{
-    Branch, Cardinality, Completeness, Content, Lineage, Qualifiers, Side, SplitId, TableType,
-    Totality,
+    Branch, Cardinality, Completeness, Content, Exhaustive, Lineage, Qualifiers, Side, SplitId,
+    TableType, Totality,
 };

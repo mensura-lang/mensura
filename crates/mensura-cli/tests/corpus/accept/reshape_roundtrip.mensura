@@ -1,9 +1,9 @@
-// Accept: unpivot puts `metric` in the key; pivoting it back is the index form,
-// which is admissible once completeness is established (Tier B, ADR 0016/0017).
+// Accept: `unpivot` folds all attributes, puts `metric` in the key, and
+// establishes the rectangle by mechanism (every folded column is total);
+// pivoting back needs no completeness discharge and no `assume` (ADR 0020).
 unit Reading { ts: int }
 store readings { unit { Reading } attr { temperature: real } attr { humidity: real } }
 view wide {
-  readings |> unpivot metric reading (temperature, humidity)
-           |> assume { complete }
+  readings |> unpivot metric reading
            |> pivot metric reading
 }

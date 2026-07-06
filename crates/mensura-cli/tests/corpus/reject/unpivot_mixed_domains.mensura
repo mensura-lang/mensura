@@ -1,0 +1,7 @@
+// Reject (resolve): `unpivot` folds all attribute columns, which must share
+// one domain; a heterogeneous wide table is projected first.
+unit Reading { ts: int }
+store readings { unit { Reading } attr { temperature: real } attr { note: string } }
+view bad {
+  readings |> unpivot metric reading
+}

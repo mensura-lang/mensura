@@ -349,7 +349,7 @@ mod tests {
     fn scan_decodes_typed_rows_in_index_order() {
         let src = r#"
             unit Machine { id: string }
-            enum Status { "ok", "bad" }
+            enum Status { "ok" "bad" }
             store readings {
               unit { Machine }
               attr {

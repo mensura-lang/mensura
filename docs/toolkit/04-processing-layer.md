@@ -16,10 +16,13 @@ a table.
 
 - **Views over stores.**  Sources in a view body resolve to stores, exactly
   as the resolver presents them today.  View-on-view sources are deferred.
-- **Tier A only.**  Views host only Tier A pipelines in this round
-  (`10-views.md`, "Scope of this round"), so the runtime meets no Tier B
-  obligation.  When Tier B reaches views, its completeness discharge stays
-  a compile-time fact; the runtime trusts it.
+- **No runtime obligations.**  Views host Tier A pipelines plus `pivot`
+  in this round.  `pivot` is Tier B only for its lineage effect (ADR 0020:
+  it demands nothing and upgrades totality under `exhaustive`, all
+  compile-time facts), so batch evaluation is unaffected.  `shrink_key`,
+  whose completeness discharge is also a compile-time fact, stays
+  non-executable in this slice; when it lands, the runtime trusts the
+  discharge.
 - **One-shot batch recompute.**  A view is recomputed from its sources'
   current state every `mensura run`.  Until ingestion lands (M4) a store
   changes only between runs, so recompute-at-run is a complete semantics,
@@ -27,9 +30,9 @@ a table.
 - **`map` first.**  The first operation implemented end to end is `map`,
   which subsumes filtering (ADR 0015) and is what the committed
   `attention_needed` view in `docs/examples/fleet-monitoring.mensura`
-  needs.  The remaining Tier A operations (`extend_key`, `group_map`,
-  `split`/`bind`, the joins, `unpivot`, attribute `pivot`) follow the same
-  lowering and land incrementally within M2.
+  needs.  The remaining operations (`extend_key`, `group_map`,
+  `split`/`bind`, the joins, `unpivot`, `pivot`) follow the same lowering
+  and land incrementally within M2.
 
 ## Engine choice: batch recompute now, DBSP at M5
 
@@ -99,6 +102,17 @@ established that the body is well-typed, so evaluation cannot fail on
 shape, and a second IR would duplicate the algebra for no consumer.  A plan
 IR becomes worth its cost when the algebra grows optimizing rewrites or a
 DBSP lowering; that is M5's call.
+
+One consequence of evaluating the AST directly: the evaluator's columns
+carry their domain (`ColumnType`) where it is statically known, because
+`pivot` must recover the name column's declared enum variants at runtime
+(absent variants still become columns, so the variant set cannot be read
+off the data).  Propagation is deliberately conservative: a store column
+keeps its domain, structural operations carry it through, and a computed
+column drops to unknown, which only `pivot` consumes (it fails with an
+explicit "enum lost upstream" report rather than guessing).  The
+principled alternative, threading the checker's per-stage `TableType`
+through the view plan, is a natural part of the M5 plan IR.
 
 ## Evaluating a pipeline
 

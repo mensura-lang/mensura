@@ -6,10 +6,11 @@
 //! well-typed, so evaluation cannot fail on shape; every "internal" error
 //! here marks a case the frontend is supposed to have ruled out.  All Tier A
 //! operations execute (`map`, `group_map`, `extend_key`, the joins,
-//! `split`/`bind`, `unpivot`, attribute `pivot`), and the establish stages
-//! (`assume`, `completeness_check`) are identities: their facts are proven
-//! at compile time and trusted at runtime (`ROADMAP.md` M2).  The Tier B
-//! consumers (`shrink_key`, index-form `pivot`) are not yet executable.
+//! `split`/`bind`, `unpivot`), plus `pivot` (Tier B only for its lineage
+//! effect, ADR 0020; batch evaluation is unaffected), and the establish
+//! stages (`assume`, `completeness_check`) are identities: their facts are
+//! proven at compile time and trusted at runtime (`ROADMAP.md` M2).
+//! `shrink_key` is not yet executable.
 
 use std::collections::BTreeMap;
 
@@ -795,74 +796,64 @@ fn eval_join(
 // ---------------------------------------------------------------------------
 // unpivot / pivot
 
-/// `unpivot name value (cols...)` (section 6.6, ADR 0016): fold the named
-/// value columns into one `value` column, spreading their names into a new
-/// `enum` index column `name`.  A folded cell that is missing still yields
-/// its row (the value is missing, the row exists; the two axes are
-/// distinct).
+/// `unpivot name value` (section 6.6, ADR 0020): fold **all** attribute
+/// columns into one `value` column, spreading their names into a new `enum`
+/// index column `name`.  A missing cell yields **no row** (drop semantics),
+/// so the value column is total by construction (`unpivotDrop` in
+/// `formal/Mensura/Table.lean`).
 fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
-    let [name_arg, value_arg, cols_arg] = args else {
-        return internal("`unpivot` takes a name, a value, and a column group");
+    let [name_arg, value_arg] = args else {
+        return internal("`unpivot` takes a name column and a value column");
     };
     let (ExprKind::Name(name_col), ExprKind::Name(value_col)) = (&name_arg.kind, &value_arg.kind)
     else {
         return internal("`unpivot`'s name and value must be identifiers");
     };
-    let ExprKind::Tuple(items) = &cols_arg.kind else {
-        return internal("`unpivot` expects a `(col, ...)` group");
-    };
-    let mut folded: Vec<(String, usize)> = Vec::new();
+    // The folded columns share one domain (the checker's gate); the value
+    // column keeps it where every column still carries it.
     let mut value_ty: Option<ColumnType> = None;
-    for item in items {
-        let ExprKind::Name(name) = &item.kind else {
-            return internal("a folded column must be an identifier");
+    for (i, c) in input.attrs.iter().enumerate() {
+        value_ty = if i == 0 || value_ty == c.ty {
+            c.ty.clone()
+        } else {
+            None
         };
-        let Some(pos) = input.attr_position(name) else {
-            return internal(format!("`unpivot` on unknown column `{name}`"));
-        };
-        let ty = input.attrs[pos].ty.clone();
-        value_ty = match (folded.is_empty(), &value_ty) {
-            (true, _) => ty,
-            (false, prev) if *prev == ty => ty,
-            _ => None,
-        };
-        folded.push((name.clone(), pos));
     }
-    let survivors: Vec<usize> = (0..input.attrs.len())
-        .filter(|i| !folded.iter().any(|(_, p)| p == i))
-        .collect();
 
-    let variants: Vec<String> = folded.iter().map(|(n, _)| n.clone()).collect();
+    let variants: Vec<String> = input.attrs.iter().map(|c| c.name.clone()).collect();
     let mut index = input.index.clone();
     index.push(col(
         name_col.clone(),
         Some(ColumnType::Enum {
             name: name_col.clone(),
-            variants,
+            variants: variants.clone(),
         }),
     ));
-    let mut attrs: Vec<Col> = survivors.iter().map(|&i| input.attrs[i].clone()).collect();
-    attrs.push(col(value_col.clone(), value_ty));
+    let attrs = vec![col(value_col.clone(), value_ty)];
 
     let nkeys = input.key_len();
     let mut rows = Vec::new();
     for row in &input.rows {
-        for (fname, fpos) in &folded {
+        for (fpos, fname) in variants.iter().enumerate() {
+            let cell = &row[nkeys + fpos];
+            if *cell == Value::Missing {
+                continue;
+            }
             let mut out: Row = row[..nkeys].to_vec();
             out.push(Value::Enum(fname.clone()));
-            out.extend(survivors.iter().map(|&i| row[nkeys + i].clone()));
-            out.push(row[nkeys + fpos].clone());
+            out.push(cell.clone());
             rows.push(out);
         }
     }
     Ok(SourceTable { index, attrs, rows })
 }
 
-/// `pivot name value`, attribute form (section 6.6, `pivotAttr` in
-/// `formal/Mensura/Completeness.lean`): spread the enum `name` column into
-/// one column per variant, filled from `value`.  The input is `singletons`
-/// (the checker's gate), so each key fills exactly one variant; the other
-/// spread cells are missing.
+/// `pivot name value` (section 6.6, ADR 0020): the inverse of `unpivot`.
+/// `name` is an enum index column and `value` the only attribute (the
+/// checker's gates); each residual key's fiber gathers into one wide row,
+/// one column per variant, and an absent (key, variant) row becomes a
+/// missing cell.  Residual keys come out in key order, like `group_map`'s
+/// groups.
 fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let [name_arg, value_arg] = args else {
         return internal("`pivot` takes a name column and a value column");
@@ -871,56 +862,78 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
     else {
         return internal("`pivot`'s name and value must be identifiers");
     };
-    if input.index.iter().any(|c| &c.name == name_col) {
-        return err("index-form `pivot` is Tier B and not yet executable \
-             (docs/toolkit/04-processing-layer.md)");
-    }
-    let Some(name_pos) = input.attr_position(name_col) else {
-        return internal(format!("`pivot` on unknown column `{name_col}`"));
+    let Some(name_pos) = input.index.iter().position(|c| &c.name == name_col) else {
+        return internal(format!("`pivot` on non-index column `{name_col}`"));
     };
-    let Some(ColumnType::Enum { variants, .. }) = input.attrs[name_pos].ty.clone() else {
+    let Some(ColumnType::Enum { variants, .. }) = input.index[name_pos].ty.clone() else {
         return err(format!(
             "`pivot` cannot recover `{name_col}`'s enum variants: an upstream \
              stage computed the column, losing its declared enum; not yet \
              executable (docs/toolkit/04-processing-layer.md)"
         ));
     };
-    let Some(value_pos) = input.attr_position(value_col) else {
-        return internal(format!("`pivot` on unknown column `{value_col}`"));
-    };
-    let value_ty = input.attrs[value_pos].ty.clone();
-
-    let survivors: Vec<usize> = (0..input.attrs.len())
-        .filter(|&i| i != name_pos && i != value_pos)
-        .collect();
-    let mut attrs: Vec<Col> = survivors.iter().map(|&i| input.attrs[i].clone()).collect();
-    for variant in &variants {
-        attrs.push(col(variant.clone(), value_ty.clone()));
+    if input.attrs.len() != 1 || &input.attrs[0].name != value_col {
+        return internal("`pivot`'s value must be the only attribute column");
     }
+    let value_ty = input.attrs[0].ty.clone();
 
+    let index: Vec<Col> = input
+        .index
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != name_pos)
+        .map(|(_, c)| c.clone())
+        .collect();
+    let attrs: Vec<Col> = variants
+        .iter()
+        .map(|v| col(v.clone(), value_ty.clone()))
+        .collect();
+
+    // Gather each residual key's fiber: one slot per variant, missing where
+    // the (key, variant) row is absent.  The `singletons` gate makes each
+    // slot single-valued; a second write is a frontend/runtime disagreement.
     let nkeys = input.key_len();
-    let mut rows = Vec::new();
+    let mut groups: BTreeMap<Vec<KeyVal>, (Row, Vec<Value>)> = BTreeMap::new();
     for row in &input.rows {
-        let name_text = match &row[nkeys + name_pos] {
+        let residual: Vec<&Value> = row[..nkeys]
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != name_pos)
+            .map(|(_, v)| v)
+            .collect();
+        let key: Vec<KeyVal> = residual
+            .iter()
+            .map(|v| key_of(v))
+            .collect::<Result<_, _>>()?;
+        let variant_text = match &row[name_pos] {
             Value::Enum(s) | Value::String(s) => s.clone(),
             _ => return internal("`pivot`'s name cell is not an enum value"),
         };
-        let mut out: Row = row[..nkeys].to_vec();
-        out.extend(survivors.iter().map(|&i| row[nkeys + i].clone()));
-        for variant in &variants {
-            out.push(if *variant == name_text {
-                row[nkeys + value_pos].clone()
-            } else {
-                Value::Missing
-            });
+        let Some(slot) = variants.iter().position(|v| *v == variant_text) else {
+            return internal(format!(
+                "`pivot` met a value outside `{name_col}`'s declared enum"
+            ));
+        };
+        let entry = groups.entry(key).or_insert_with(|| {
+            (
+                residual.iter().map(|&v| v.clone()).collect(),
+                vec![Value::Missing; variants.len()],
+            )
+        });
+        if entry.1[slot] != Value::Missing {
+            return internal("`pivot` on a non-singletons input");
         }
-        rows.push(out);
+        entry.1[slot] = row[nkeys].clone();
     }
-    Ok(SourceTable {
-        index: input.index,
-        attrs,
-        rows,
-    })
+
+    let rows: Vec<Row> = groups
+        .into_values()
+        .map(|(mut key, slots)| {
+            key.extend(slots);
+            key
+        })
+        .collect();
+    Ok(SourceTable { index, attrs, rows })
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,7 +1258,7 @@ mod tests {
 
     const MACHINES: &str = r#"
         unit Machine { id: string }
-        enum MachineStatus { "operational", "degraded", "failure" }
+        enum MachineStatus { "operational" "degraded" "failure" }
         store machines {
           unit { Machine }
           attr {
@@ -1569,15 +1582,20 @@ mod tests {
     "#;
 
     #[test]
-    fn unpivot_folds_wide_columns_into_long_rows() {
+    fn unpivot_folds_all_attributes_and_drops_missing_cells() {
         let rows = eval_over(
-            READINGS,
-            r#"view long { readings |> unpivot metric reading (temperature, humidity) }"#,
+            SPARSE_READINGS,
+            r#"view long { readings |> unpivot metric reading }"#,
             &[(
                 "readings",
-                vec![vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)]],
+                vec![
+                    vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
+                    vec![Value::Int(2), Value::Real(21.0), Value::Missing],
+                ],
             )],
         );
+        // The missing humidity cell at ts=2 yields no row (drop semantics),
+        // so the value column is total.
         assert_eq!(
             rows,
             vec![
@@ -1591,62 +1609,70 @@ mod tests {
                     Value::Enum("humidity".into()),
                     Value::Real(30.0)
                 ],
+                vec![
+                    Value::Int(2),
+                    Value::Enum("temperature".into()),
+                    Value::Real(21.0)
+                ],
             ]
         );
     }
 
-    const OBS: &str = r#"
-        unit Obs { id: string }
-        enum Metric { "lo", "hi" }
-        store obs {
-          unit { Obs }
+    const SPARSE_READINGS: &str = r#"
+        unit Slot { ts: int }
+        store readings {
+          unit { Slot }
           attr {
-            metric: Metric
-            reading: real
-            tag: string
+            temperature: real
+            humidity: real?
           }
         }
     "#;
 
     #[test]
-    fn pivot_spreads_the_enum_and_leaves_other_cells_missing() {
+    fn pivot_inverts_unpivot_including_missing_cells() {
+        // The round trip (`pivot_unpivotDrop`): the absent long row at
+        // (ts=2, humidity) comes back as the missing cell it encoded.
         let rows = eval_over(
-            OBS,
-            r#"view wide { obs |> pivot metric reading }"#,
+            SPARSE_READINGS,
+            r#"view wide { readings |> unpivot metric reading |> pivot metric reading }"#,
             &[(
-                "obs",
+                "readings",
                 vec![
-                    vec![
-                        Value::String("a".into()),
-                        Value::Enum("lo".into()),
-                        Value::Real(1.5),
-                        Value::String("x".into()),
-                    ],
-                    vec![
-                        Value::String("b".into()),
-                        Value::Enum("hi".into()),
-                        Value::Real(2.5),
-                        Value::String("y".into()),
-                    ],
+                    vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
+                    vec![Value::Int(2), Value::Real(21.0), Value::Missing],
                 ],
             )],
         );
-        // Columns: id | tag, lo, hi.
         assert_eq!(
             rows,
             vec![
+                vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
+                vec![Value::Int(2), Value::Real(21.0), Value::Missing],
+            ]
+        );
+    }
+
+    #[test]
+    fn pivot_gathers_each_residual_fiber_into_one_wide_row() {
+        // Two long rows per slot gather into one wide row; keys come out in
+        // key order, like `group_map`'s groups.
+        let rows = eval_over(
+            READINGS,
+            r#"view wide { readings |> unpivot metric reading |> pivot metric reading }"#,
+            &[(
+                "readings",
                 vec![
-                    Value::String("a".into()),
-                    Value::String("x".into()),
-                    Value::Real(1.5),
-                    Value::Missing,
+                    vec![Value::Int(2), Value::Real(21.0), Value::Real(31.0)],
+                    vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
                 ],
-                vec![
-                    Value::String("b".into()),
-                    Value::String("y".into()),
-                    Value::Missing,
-                    Value::Real(2.5),
-                ],
+            )],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
+                vec![Value::Int(2), Value::Real(21.0), Value::Real(31.0)],
             ]
         );
     }
