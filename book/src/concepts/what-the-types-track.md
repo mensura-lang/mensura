@@ -62,10 +62,9 @@ to one value.  And reshaping a long table to a wide one is sound only when each
 cell it spreads holds at most one value:
 
 ```mensura,ignore
-readings
-|> extend_key machine
-|> group_map |k, g| (.temp_max = max g.temperature)   // card -> 1 per (.., machine)
-|> pivot name value                                // legal: each cell is card <= 1
+grades                                             // keyed by (student, subject)
+|> group_map |k, g| (.score = max g.score)         // card -> 1 per (student, subject)
+|> pivot subject score                             // legal: each cell is card <= 1
 ```
 
 **What other systems cannot do.**  Run the same reshape in pandas and a
@@ -85,12 +84,14 @@ schema and not about any single value; it is about whether a partition is fully
 materialized.
 
 Completeness is what licenses *coarsening* a key.  When you drop an index
-component (`shrink_key`) or pivot a key column, you are summing or folding across
-the rows that the dropped component used to separate.  That rollup means what you
-intend only if none of those rows are missing.  Formally, these are the Tier B
-operations, the ones that break split-invariance, and each is sound only over a
-partition that is complete over the key it retains.  So completeness is
-*established* before such an operation and *consumed* by it:
+component (`shrink_key`), you are summing or folding across the rows that the
+dropped component used to separate, and that rollup means what you intend only
+if none of those rows are missing.  (`pivot` also coarsens the key but needs no
+such license: an absent row simply becomes a missing cell, and a related fact,
+`exhaustive`, decides whether the spread columns come out total.)  Formally
+`shrink_key` breaks split-invariance and is sound only over a partition that is
+complete over the key it retains.  So completeness is *established* before it
+and *consumed* by it:
 
 ```mensura,ignore
 enrollments
@@ -154,9 +155,9 @@ established by `split` is carried, intact, through `map`, `filter`, the joins,
 and `group_map` to the point where `evaluate` consumes it.  Two operations lose
 it on purpose: `bind` unions two regions (so a merged table is disjoint from a
 third only if *both* halves were), and the key-changing operations `shrink_key`
-and the index form of `pivot` drop it, because a region described over the old
-key no longer denotes the same entities.  Past such a point the fact must be
-re-established with a check or relaxed with `assume`.
+and `pivot` drop it, because a region described over the old key no longer
+denotes the same entities.  Past such a point the fact must be re-established
+with a check or relaxed with `assume`.
 
 **What other systems cannot do.**  Leakage is the canonical, expensive, and
 *silent* failure of applied machine learning.  In scikit-learn with pandas you
