@@ -161,6 +161,27 @@ theorem fiberMap_keyLocal (Φ : K → Multiset (Row H σ) → Multiset (Row H' �
   simp only [fiberMap]
   rw [h]
 
+/-- A presence-preserving fiber action preserves the rectangle fact
+(ADR 0020 section 2): strictness keeps absent fibers absent, and the
+no-emptying hypothesis keeps present fibers present, so full fibers stay
+full.  Both `group_map` shapes satisfy it: the aggregate shape folds a
+present fiber to one row (`aggregate_exhaustive` is the special case), and
+the window shape emits one output row per input row. -/
+theorem fiberMap_exhaustive {Φ : (K × N) → Multiset (Row H σ) → Multiset (Row H' σ')}
+    (hΦ0 : Strict Φ) (hΦ : ∀ p m, m ≠ 0 → Φ p m ≠ 0)
+    {T : Table (K × N) H σ} (hE : Exhaustive T) : Exhaustive (fiberMap Φ T) := by
+  have hiff : ∀ p, (fiberMap Φ T).Present p ↔ T.Present p := by
+    intro p
+    simp only [Table.Present, fiberMap]
+    constructor
+    · intro h hrows
+      rw [hrows] at h
+      exact h (hΦ0 p)
+    · exact fun h => hΦ p _ h
+  rintro k ⟨n₀, h₀⟩ n
+  rw [hiff]
+  exact hE k ⟨n₀, (hiff (k, n₀)).mp h₀⟩ n
+
 /-! ### Converse: every key-local split-invariant operation is a strict fiber map -/
 
 /-- The table that holds `m` at key `k` and is empty elsewhere. -/

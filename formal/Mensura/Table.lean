@@ -842,6 +842,14 @@ theorem pivot_total_of_exhaustive [Fintype N] {L : Table (K × N) Unit (fun _ =>
     rw [hfF]
     simpa [hcell] using hu'
 
+/-- A single-variant name axis is exhaustive trivially: a present residual
+key has a row for some name, and there is only one name to have.  This
+backs the checker's single-variant refinement of the totality upgrade. -/
+theorem exhaustive_of_subsingleton [Subsingleton N] (T : Table (K × N) H σ) :
+    Exhaustive T := by
+  rintro k ⟨n₀, h₀⟩ n
+  rwa [Subsingleton.elim n n₀]
+
 /-! ### Propagation of the rectangle fact
 
 The key-preserving rows of ADR 0020 section 2's conservative table: a

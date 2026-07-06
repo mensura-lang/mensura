@@ -653,13 +653,16 @@ verbatim; the two files are `formal/Mensura/Table.lean` and
 - `pivot`: `pivot_not_splitInvariant`; the round trips `pivot_unpivotDrop`
   and `unpivotDrop_pivot`; the totality upgrade `pivot_total_of_exhaustive`.
 - `exhaustive` propagation: `map_exhaustive` (non-dropping maps),
-  `leftJoin_exhaustive`, `aggregate_exhaustive`, `bind_exhaustive`;
-  `split_not_exhaustive` witnesses the destroyed row.
+  `leftJoin_exhaustive`, `aggregate_exhaustive`, `bind_exhaustive`,
+  `exhaustive_of_subsingleton` (a single-variant axis is exhaustive
+  trivially); `split_not_exhaustive` witnesses the destroyed row.
 
 **`Completeness.lean`** -- reindexing layer, group/fiber operations:
 
 - `group_map` (`fiberMap`): `fiberMap_splitSafe`,
-  `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`.
+  `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`,
+  `fiberMap_exhaustive` (a presence-preserving fiber action carries the
+  rectangle: both `group_map` shapes).
 - `pivotAttr`: `pivotAttr_splitSafe`, `pivotAttr_reversible` (these back the
   bag-long alternative recorded, and not adopted, in ADR 0020; retained for
   a possible future fused attribute-position form).
