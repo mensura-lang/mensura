@@ -190,6 +190,17 @@ Completeness here is a fact about the **current** key.  "Completeness over a
 yields complete bags".  It is established and consumed where `shrink_key` needs
 it (section 8), not carried on every table.
 
+A second, **domain-relative** grade is tracked
+(`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`): for an
+enum-domained index column `A`, **`exhaustive(A)`** says every residual key
+present in the table carries its `(k, v)` row for every variant `v`.  Its
+reference is `A`'s finite type domain, not the population, so it is
+extensional and decidable per fiber; neither fact implies the other (a
+faithfully recorded but sparse table is complete without being exhaustive).
+It is established by `unpivot` by mechanism, by a `completeness_check`
+witness, or by `assume`, and consumed by `pivot`'s totality upgrade
+(section 6.6).
+
 ### 3.5  Lineage and disjointness (table-scoped qualifier)
 
 Each table carries a **lineage hierarchy**: a tree of tags recording the splits
@@ -443,31 +454,44 @@ both inputs were (`bind_disjoint_iff`).  Tier A.
 
 ### 6.6  `unpivot` / `pivot` (reshape long and wide)
 
-**`unpivot name value (cols)`** turns the named value columns into rows,
-spreading the column *name* into the key (the ratified surface,
-`docs/decisions/0016-reshape-surface.md`).  Content: the names move into a new
-`enum` index column `name`, the values into a single column `value`.
-Cardinality: preserved.  Completeness: preserved.  Lineage:
-preserved.  Tier A (`unpivot_splitSafe`, `unpivot_preservesDisjoint`).
+The surface is ADR 0016 as amended by
+`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`: the column list is
+gone (the fold is total over the attributes; exclusion is upstream
+projection), a missing cell yields no row, and `pivot` keeps one form.
 
-**`pivot name value`** is the inverse, with two forms of different status:
+**`unpivot name value`** folds **all** attribute columns, which must share
+one domain, into rows, spreading the column *name* into the key.  Content:
+the names move into a new `enum` index column `name`, the values into a
+single column `value`.  **A missing cell yields no row** (drop semantics),
+so `value` is total by construction.  Cardinality: preserved.
+Completeness: establishes `exhaustive(name)` exactly when every folded
+column is total (section 3.4).  Lineage: preserved.  Tier A
+(`unpivotDrop_splitSafe`).
 
-- **Attribute form** (`name` is a non-index column): split-safe, admissible
-  exactly when each (key, name) cell is **`singletons`** -- the guarantee an
-  upstream `group_map`/aggregate provides.  Lineage preserved.  Tier A
-  (`pivotAttr_splitSafe`; reversible against `unpivot` via
-  `pivotAttr_reversible`).
-- **Index form** (`name` is part of the key): not split-invariant, because a
-  split can cut across the spread names; lineage dropped.  Tier B
-  (`pivot_not_splitInvariant`).
+**`pivot name value`** is the inverse and has one form: `name` must be an
+enum-domained **index** column (`name` in attribute position is rejected,
+with a hint to `extend_key` first).  Admissible exactly when the input is
+**`singletons`** and its attributes are exactly `value` (drop or aggregate
+others first).  It consumes **no completeness fact**: an absent
+(key, variant) row becomes a missing cell.  The spread columns are total
+iff `exhaustive(name)` holds and `value` is total, optional otherwise
+(`pivot_total_of_exhaustive`).  Not split-invariant, because a split can
+cut across the spread names, so lineage is dropped.  Tier B
+(`pivot_not_splitInvariant`).
 
-The spread key column (for the index form, and for `unpivot`'s inverse) must be
-**finite-enumerable**, i.e. an `enum`, since its values become column names
-(ADR 0014); `bool` is excluded because `true`/`false` as column names break the
-round-trip.
+The pair is mutually inverse on functional, minimal tables:
+`pivot (unpivot W) = W` (`pivot_unpivotDrop`) and `unpivot (pivot L) = L`
+with no completeness side condition (`unpivotDrop_pivot`).  Value-missing
+in the wide table and row-absent in the long table carry the same
+information; that transposition is what the drop semantics makes bijective.
 
-So `pivot` is where cardinality tracking pays off: the attribute form
-type-checks only when the spread cell is `singletons`.
+The spread key column must be **finite-enumerable**, i.e. an `enum`, since
+its values become column names (ADR 0014); `bool` is excluded because
+`true`/`false` as column names break the round-trip.
+
+So `pivot` is where cardinality tracking pays off: it type-checks only when
+each spread cell is known to hold at most one value, which the long form's
+key discipline provides.
 
 ## 7.  Tier A / Tier B and split-safety
 
@@ -488,11 +512,14 @@ boundary, and `PreservesDisjoint` is what lets the lineage hierarchy carry a
 disjointness fact through a Tier A pipeline intact (section 9).
 
 - **Tier A** (split-safe): `map`, `group_map`, `extend_key`, `left_join`,
-  `inner_join`, `split`, `bind`, `unpivot`, attribute `pivot`.  They compose
-  freely and carry cardinality, completeness, and lineage facts end to end.
-- **Tier B** (split-breaking): `shrink_key` and index `pivot`.  Each is sound
-  only over a complete partition, so each must discharge a **completeness
-  obligation** to be admitted (section 8), and each drops the lineage fact.
+  `inner_join`, `split`, `bind`, `unpivot`.  They compose freely and carry
+  cardinality, completeness, and lineage facts end to end.
+- **Tier B** (split-breaking): `shrink_key` and `pivot`.  Each drops the
+  lineage fact.  `shrink_key` is additionally sound only over a complete
+  partition, so it must discharge a **completeness obligation** to be
+  admitted (section 8); `pivot` demands nothing (an absent row becomes a
+  missing cell) and instead upgrades its spread columns' totality under
+  `exhaustive` (section 6.6, ADR 0020).
 
 ## 8.  Completeness: establish, preserve, consume
 
@@ -508,11 +535,13 @@ one of three ways (`07`, "Tier B and completeness"):
 - **annotation**: `@complete_over(col)` on a source store, establishing the fact
   globally (grammar deferred to the annotation family, section 13).
 
-Tier A operations **preserve** completeness; `shrink_key` (and index `pivot`)
-**consume** it, at the coarser retained key.  This coarser-key obligation is the
-operational reading of "completeness over a partial key": it is discharged where
+Tier A operations **preserve** completeness; `shrink_key` **consumes** it,
+at the coarser retained key.  This coarser-key obligation is the operational
+reading of "completeness over a partial key": it is discharged where
 `shrink_key` runs, and the shrunk result is then complete over the new key.
-`assume { ... }` is the escape hatch when the obligation cannot be discharged.
+`assume { ... }` is the escape hatch when the obligation cannot be
+discharged.  (`pivot` formerly carried the same obligation; ADR 0020
+dissolves it into the `exhaustive` totality upgrade of section 6.6.)
 
 ```
 enrollments
@@ -552,10 +581,10 @@ test, it is decidable with no solver.  What each primitive does to the tags:
 | `map` / `group_map` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
 | `extend_key` | tags carried | preserved | `ungroup_preservesDisjoint` |
 | `left_join` / `inner_join` | tags carried | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
-| `unpivot` | tags carried | preserved | `unpivot_preservesDisjoint` |
+| `unpivot` | tags carried | preserved | `unpivotDrop_preservesDisjoint` |
 | `split` | adds two sibling branch tags | establishes | `split_disjoint` |
 | `bind` | unions the tag-sets | disjoint from `c` iff both were | `bind_disjoint_iff` |
-| `shrink_key` / index `pivot` | tags dropped (key change) | re-establish or assume | `project_not_preservesDisjoint`, `pivot_not_splitInvariant` |
+| `shrink_key` / `pivot` | tags dropped (key change) | re-establish or assume | `project_not_preservesDisjoint`, `pivot_not_splitInvariant` |
 
 Anything the hierarchy cannot decide is delegated:
 
@@ -594,9 +623,8 @@ the primary split-safety / disjointness backing; section 11 has the full index.
 | `inner_join` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `innerJoin_splitSafe` |
 | `split` | unchanged | unchanged | unchanged | unchanged | adds branches | A | `split_disjoint` |
 | `bind` | unchanged | `singletons` if disjoint, else `bag` | pres. | iff both | unions tags | A | `bind_split` |
-| `unpivot` | names -> key | pres. | pres. | pres. | carried | A | `unpivot_splitSafe` |
-| `pivot` (attr) | gather by name | demands `singletons` | pres. | pres. | carried | A | `pivotAttr_splitSafe` |
-| `pivot` (index) | names leave key | -- | -- | -- | dropped | B | `pivot_not_splitInvariant` |
+| `unpivot` | all attrs -> (name, value); missing cells drop | pres. | `value` total | establishes `exhaustive` | carried | A | `unpivotDrop_splitSafe` |
+| `pivot` | name leaves key, variants spread | demands `singletons` | per `exhaustive` | not consumed | dropped | B | `pivot_not_splitInvariant`, `pivot_total_of_exhaustive` |
 
 ## 11.  Lean theorem index
 
@@ -613,20 +641,28 @@ verbatim; the two files are `formal/Mensura/Table.lean` and
   `ungroup_splitInvariant`.
 - joins: `leftJoin_splitSafe`, `leftJoin_preservesDisjoint`,
   `innerJoin_splitSafe`, `innerJoin_preservesDisjoint`.
-- `unpivot`: `unpivot_splitSafe`, `unpivot_preservesDisjoint`.
+- `unpivot` (the drop variant, `unpivotDrop`): `unpivotDrop_splitSafe`,
+  `unpivotDrop_bindHom`, `unpivotDrop_preservesDisjoint`,
+  `unpivotDrop_minimal`, `unpivotDrop_exhaustive`.  (The reify variant's
+  `unpivot_splitSafe` / `pivot_unpivot` remain for comparison.)
 - `split` / `bind`: `split_disjoint`, `bind_split`, `bind_comm`, `bind_assoc`,
   `bind_disjoint_iff`.
 - lineage tags: `addTag`, `dropTag`, `taggedBind`, `taggedSplit`,
   `taggedSplit_taggedBind_left`, `taggedSplit_taggedBind_right`.
 - `shrink_key` (`project`): `project_not_preservesDisjoint`.
-- index `pivot`: `pivot_not_splitInvariant`; `pivot_unpivot`.
+- `pivot`: `pivot_not_splitInvariant`; the round trips `pivot_unpivotDrop`
+  and `unpivotDrop_pivot`; the totality upgrade `pivot_total_of_exhaustive`.
+- `exhaustive` propagation: `map_exhaustive` (non-dropping maps),
+  `leftJoin_exhaustive`, `aggregate_exhaustive`, `bind_exhaustive`;
+  `split_not_exhaustive` witnesses the destroyed row.
 
 **`Completeness.lean`** -- reindexing layer, group/fiber operations:
 
 - `group_map` (`fiberMap`): `fiberMap_splitSafe`,
   `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`.
-- attribute `pivot` (`pivotAttr`): `pivotAttr_splitSafe`,
-  `pivotAttr_reversible`.
+- `pivotAttr`: `pivotAttr_splitSafe`, `pivotAttr_reversible` (these back the
+  bag-long alternative recorded, and not adopted, in ADR 0020; retained for
+  a possible future fused attribute-position form).
 - sugar already proved Tier A: `filterRows_splitSafe`, `mutateCol_splitSafe`,
   `antiJoin_splitSafe`, `distinct_splitSafe` (these back named forms deferred in
   section 13, recorded here so implementers know the proofs exist).
@@ -651,7 +687,9 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 - Split then demand: `split` establishes structural disjointness that a later
   disjointness-demanding site consumes without a check (the learning-operation
   syntax itself is deferred, section 13).
-- Attribute `pivot` after an aggregate that yields `singletons`.
+- `pivot` of an enum key axis on a `singletons` long table whose only
+  attribute is the value column; a sparse input is admitted, with optional
+  spread columns (ADR 0020).
 
 **Must reject:**
 
@@ -665,8 +703,9 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 - A `map` body that names an index column in its output record, or one that
   always drops (`map |k, r| ()`, no schema to infer); an `if` with a non-`bool`
   condition or branches of different type (ADR 0015).
-- Attribute `pivot` where the spread cell may hold more than one value (not
-  `singletons`).
+- `pivot` of a `bag` input (a (key, name) cell may hold more than one
+  value); `pivot` naming a non-index column (`extend_key` it first); and
+  `unpivot` over attributes of differing domains (project first).
 
 ## 13.  Open points (the deferred ledger)
 

@@ -203,43 +203,58 @@ specified in `08-lineage.md`.
 ### `unpivot` / `pivot` - reshape long and wide
 
 ```
-wide |> unpivot metric reading (temperature, humidity)  // long, keyed by (..., metric)
-long |> pivot metric reading                            // wide form
+wide |> unpivot metric reading    // long, keyed by (..., metric)
+long |> pivot metric reading      // wide form
 ```
 
-The ratified surface is in `docs/decisions/0016-reshape-surface.md`:
-`unpivot name value (col, ...)` names the new key and value columns
-explicitly, and `pivot name value` selects the attribute or index form by
-where `name` sits.
+The ratified surface is `docs/decisions/0016-reshape-surface.md` as amended
+by `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`: `unpivot name
+value` names the new key and value columns explicitly and folds **all**
+attribute columns (excluding a column is upstream projection), and
+`pivot name value` spreads an enum **index** column.  The pair is designed
+to be truly inverse; feature coverage comes from composing with the other
+primitives.
 
-**`unpivot name value (cols)`** turns the named value columns into rows,
-spreading the column *name* into the key.  Content: the names move into a new
-`enum` index column, the values into a single column.  Cardinality: preserved.
-Completeness: preserved.  Tier A (`unpivot_splitSafe`).
+**`unpivot name value`** turns the value columns (which must share one
+domain) into rows, spreading the column *name* into the key.  Content: the
+names move into a new `enum` index column, the values into a single column.
+**A missing cell yields no row**, so the value column is total by
+construction.  Cardinality: preserved.  Completeness: establishes
+`exhaustive(name)` exactly when every folded column is total.  Tier A
+(`unpivotDrop_splitSafe`).
 
-**`pivot name value`** is the inverse: it gathers, for each key, the values
-indexed by the `name` column into one wide row.  It has two forms with
-different status:
+**`pivot name value`** is the inverse: it gathers, for each residual key,
+the values indexed by the `name` key column into one wide row.  `name` in
+attribute position is rejected (promote it with `extend_key` first).  It is
+admissible exactly when the input is `singletons` with `value` as its only
+attribute, and it consumes **no completeness fact**: an absent
+(key, variant) row becomes a missing cell, and the spread columns are total
+iff `exhaustive(name)` holds and the value column is total.  Not
+split-invariant, so lineage is dropped.  Tier B (`pivot_not_splitInvariant`,
+`pivot_total_of_exhaustive`).
 
-- **Attribute form** (the `name` is a non-index column): split-safe, and
-  admissible exactly when each (key, name) cell is **`singletons`** - which is
-  the cardinality guarantee an upstream `group_map`/aggregate provides.  Tier A
-  (`pivotAttr_splitSafe`; reversible against `unpivot` via `pivotAttr_reversible`).
-- **Index form** (the `name` is part of the key): not split-invariant, because
-  a split can cut across the spread names.  Tier B (`pivot_not_splitInvariant`).
+The pair is mutually inverse on functional, minimal tables
+(`pivot_unpivotDrop`, `unpivotDrop_pivot`): value-missing in the wide table
+and row-absent in the long table carry the same information, so a sparse
+long table round-trips as it is, with no discharge and no `assume`.
 
-So `pivot` is where cardinality tracking pays off directly: the attribute form
-type-checks only when the cell it spreads is known to hold at most one value.
+So `pivot` is where cardinality tracking pays off directly: it type-checks
+only when each cell it spreads is known to hold at most one value, which
+the long form's key discipline provides.
 
 ## Tier B and completeness
 
-Two operations are Tier B: **`shrink_key`** and the **index form of `pivot`**.
-Each is sound only over a complete partition, so each *consumes* a completeness
-fact about its input.  The M1 surface for establishing and consuming the fact
-is ratified in `docs/decisions/0017-completeness-establish-consume.md`: M1
-ships the `completeness_check` and `assume { complete }` stages (with
-key-context asserts), and defers `collect`-by-mechanism completeness and the
-`@complete_over` annotation.  Completeness is established in one of three ways:
+Two operations are Tier B: **`shrink_key`** and **`pivot`**.  Both change
+the key and drop the lineage fact.  Only `shrink_key` *consumes* a
+completeness fact: it is sound only over a complete partition.  (`pivot`'s
+former obligation is dissolved by ADR 0020: an absent row becomes a missing
+cell, and `exhaustive` decides the spread columns' totality instead.)  The
+M1 surface for establishing and consuming the fact is ratified in
+`docs/decisions/0017-completeness-establish-consume.md`: M1 ships the
+`completeness_check` and `assume { complete }` stages (with key-context
+asserts), and defers `collect`-by-mechanism completeness and the
+`@complete_over` annotation.  Completeness is established in one of three
+ways:
 
 - **`completeness_check { assert ... }`**, a pipe stage that *establishes* the
   fact locally.  It is an ordinary stage (`completeness_check` applied to a
@@ -278,8 +293,8 @@ operator requires a **single known value** (`card 1` and not missing), the bag
 combinators (`sum`, `min`, `max`, `count`, `any`, `all`, `in`; `mean` is
 derived, `sum(x) / to_real(count(x))`, ADR 0014) bring a many-row bag
 down to one value, and a missing value is made known by a default, an
-aggregate, or an `is known` narrowing.  At the pipeline level `pivot`'s
-attribute form is admitted only at `singletons` (at most one row per key).
+aggregate, or an `is known` narrowing.  At the pipeline level `pivot` is
+admitted only at `singletons` (at most one row per key).
 ADR 0010 settles the total/optional axis and its `?` marker; how
 `singletons` / `bag` (and the derived `exhaustive`) are written in a type
 stays the content/types document's job.  This document specifies how each operation

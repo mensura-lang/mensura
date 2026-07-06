@@ -30,8 +30,9 @@ tracks" and "Tier B and completeness"):
 - established by mechanism (`collect` is complete by construction), by a check
   (`completeness_check { assert ... }`), or by a source annotation
   (`@complete_over(col)`);
-- preserved by Tier A operations, *demanded* (consumed) by the Tier B
-  operations `shrink_key` and the index form of `pivot`;
+- preserved by Tier A operations, *demanded* (consumed) by `shrink_key`
+  (`pivot`'s former demand is dissolved by
+  `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`);
 - relaxable by `assume { ... }` when the obligation cannot be discharged.
 
 This document gives **disjointness** the same surface.  Disjointness is the
@@ -138,11 +139,11 @@ Tier A pipeline carries a disjointness fact end to end.  Per primitive:
 | `group_map` | one output key per input key | preserved | `fiberMap_splitSafe` |
 | `extend_key` | key refines, support splits | preserved | `ungroup_preservesDisjoint` |
 | `left_join` / `inner_join` | fixed-right, key-preserving | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
-| `unpivot` | names move into the key | preserved | `unpivot_preservesDisjoint` |
+| `unpivot` | names move into the key | preserved | `unpivotDrop_preservesDisjoint` |
 | `split` | region splits by `pred` / `not pred` | established | `split_disjoint` |
 | `bind` | regions union | weakened (see below) | `bind_disjoint_iff` |
 | `shrink_key` | key coarsens, rows merge | **not preserved** | `project_not_preservesDisjoint` |
-| index `pivot` | names leave the key | not preserved | `pivot_not_splitInvariant` |
+| `pivot` | names leave the key | not preserved | `pivot_not_splitInvariant` |
 
 **`split` refines.**  As above, `split` is the establishing mechanism; in
 region terms it cuts `R` into two exclusive sub-regions.
@@ -165,13 +166,13 @@ not a precondition for `bind` to be defined, it is a fact `bind` consumes
 when two halves are recombined and a guarantee (`card <= 1`) that disjoint
 inputs buy.
 
-**`shrink_key` and index `pivot` break it.**  These are the key-changing
+**`shrink_key` and `pivot` break it.**  These are the key-changing
 operations, and they are exactly where disjointness is lost.  `shrink_key`
 drops an index component, merging rows that a split had separated by that
 component; the formalization proves the underlying `project` does not preserve
 disjointness (`project_not_preservesDisjoint`), which is why the reindexing
-entry of `07-pipelines.md` already cites that theorem for `shrink_key`.  The
-index form of `pivot` is not even split-invariant (`pivot_not_splitInvariant`).
+entry of `07-pipelines.md` already cites that theorem for `shrink_key`.
+`pivot` is not even split-invariant (`pivot_not_splitInvariant`).
 Past one of these, an upstream disjointness fact no longer holds over the new
 key and must be re-established (by a check) or assumed.
 
@@ -206,7 +207,7 @@ disjointness has a decidable fragment ... and falls back to `assume`").
 fragment by construction.
 
 The hard case is the key-change cliff: after `shrink_key`, a join that changes
-the unit, or an index `pivot`, a region expressed over the old key no longer
+the unit, or a `pivot`, a region expressed over the old key no longer
 denotes the same entities, so the solver cannot transport the fact.  Modeling
 disjointness as a *check* (rather than a monolithic solver over full lineage
 trees) is what lets the language degrade gracefully here: the fact simply

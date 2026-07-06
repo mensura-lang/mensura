@@ -184,10 +184,11 @@ and are noted here only so the scope is unambiguous:
 - **Enforcing `singletons`.**  A syntax that requires a view's output to be
   0-or-1 per key (the unit discipline of ADR 0001).  No clause does this in this
   round; a shape claim checks content, not cardinality.
-- **Tier B inside a view.**  Hosting `shrink_key` and the index form of `pivot`
-  in a view body, and discharging their completeness obligation
-  (`completeness_check`, `@complete_over`, a `collect` source, or `assume`) at
-  the hosting site (`09-typing-reference.md`, section 8).
+- **Tier B inside a view.**  Hosting `shrink_key` and `pivot` in a view
+  body, and discharging `shrink_key`'s completeness obligation
+  (`completeness_check`, `@complete_over`, a `collect` source, or `assume`)
+  at the hosting site (`09-typing-reference.md`, section 8; `pivot` carries
+  no obligation, ADR 0020).
 - **Lineage-demanding sites.**  The learning operations (`fit`/`evaluate`) that
   *consume* disjointness when fed two views (`09-typing-reference.md`, section
   9, deferred ledger).
