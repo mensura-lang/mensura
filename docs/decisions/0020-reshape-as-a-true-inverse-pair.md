@@ -354,9 +354,14 @@ Neutral:
   the map-plus-`extend_key` idiom and grant the `unpivot` facts to it,
   making the primitive pure sugar with no privileged status.  Doable but
   brittle; recorded as a question, not a commitment.
-- **Formal work items.**  The drop-variant `unpivot`, both round-trip
-  laws with the domains stated above (mechanized as `unpivotDrop`,
-  `pivot_unpivotDrop`, `unpivotDrop_pivot` in `formal/Mensura/Table.lean`;
-  the side condition is the chapter's `Minimal`), and the propagation
-  lemmas for the row-presence facts (one per row of the table in
-  section 2).
+- **Formal work items.**  Mechanized in `formal/Mensura/Table.lean`: the
+  drop-variant `unpivot` and both round-trip laws (`unpivotDrop`,
+  `pivot_unpivotDrop`, `unpivotDrop_pivot`; the side condition is the
+  chapter's `Minimal`); the rectangle fact and the totality upgrade
+  (`Exhaustive`, `Total`, `unpivotDrop_exhaustive`,
+  `pivot_total_of_exhaustive`); and the key-preserving propagation rows
+  (`map_exhaustive` for non-dropping maps, `leftJoin_exhaustive`,
+  `aggregate_exhaustive`, `bind_exhaustive`, with `split_not_exhaustive`
+  witnessing the destroyed row).  Still open: a population model so
+  `complete_over` itself can be stated, and the key-changing propagation
+  rows (`extend_key`/`shrink_key` re-slotting).
