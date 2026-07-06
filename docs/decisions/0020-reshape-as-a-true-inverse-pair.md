@@ -6,10 +6,11 @@ Proposed.  Amends `docs/decisions/0016-reshape-surface.md`: `unpivot`
 loses its column list (the fold is total over the attributes) and changes
 its missing-cell semantics (dropped rows, not reified missing values), and
 `pivot` keeps only the index form, with no completeness obligation.
-Promotes the coarser-key completeness that
-`docs/language/09-typing-reference.md` section 3.4 reads only
-operationally into a tracked, parameterized fact (`complete_over`) with
-propagation rules through the primitives.  To be realized in
+Refines the reading of `docs/language/09-typing-reference.md`
+section 3.4 in two directions, kept deliberately distinct: its
+"exhaustive" corollary becomes a tracked fact on enum index axes, and its
+coarser-key completeness (`complete_over`, ADR 0017's obligation) stays
+population-relative.  To be realized in
 `09-typing-reference.md` (sections 3.4, 6.6, 8, 10),
 `docs/language/07-pipelines.md`, the Lean development under `formal/`, and
 the `mensura-types` / `mensura-runtime` implementation; until then the
@@ -90,11 +91,11 @@ attribute columns, which must share one scalar domain.
   the folded column names.  `value` carries the folded cells.
 - **A missing cell yields no row.**  The long form's value column is
   therefore always total: missing values never enter the long table.
-- Establishes **`complete_over` the old key** by mechanism when every
-  folded column is total: each old row then yields one long row per
-  variant, so every residual fiber covers the whole axis.  When some
-  folded column is optional, the dropped cells leave holes and no fact is
-  established (section 2).  Cardinality is preserved.
+- Establishes **`exhaustive(name)`** by mechanism when every folded
+  column is total: each old row then yields one long row per variant, so
+  every residual fiber covers the whole axis.  When some folded column is
+  optional, the dropped cells leave holes and no fact is established
+  (section 2).  Cardinality is preserved.
 - Excluding a column, or unpivoting a heterogeneous wide table, is
   upstream composition: project first (a `map` today; a `select`/`drop`
   sugar may come later).  ADR 0016's rationale for explicit *identifiers*
@@ -113,8 +114,7 @@ attribute columns, which must share one scalar domain.
 - **No completeness obligation.**  An absent (key, variant) row simply
   becomes a missing cell.  ADR 0017's pivot obligation dissolves into a
   totality upgrade: the spread columns are total iff the input is
-  `complete_over` the residual key and the value column is total;
-  optional otherwise.
+  `exhaustive(name)` and the value column is total; optional otherwise.
 - **Lineage is dropped** (`pivot_not_splitInvariant`).  This is the one
   cost the index form pays, and it is honest: pivoting after a split that
   discriminated the spread axis genuinely differs from pivoting the
@@ -126,9 +126,9 @@ definitions:
 - `pivot (unpivot W) = W` for every `singletons` wide table `W` with at
   least one total folded column.  Values round-trip exactly, including
   missing cells.  Types round-trip exactly when the folded columns share
-  one totality: all total gives `complete_over` back, hence total spread
-  columns; a mixed fold coarsens every spread column to optional (a
-  per-variant refinement is an open question).  (The side condition
+  one totality: all total gives `exhaustive(name)` back, hence total
+  spread columns; a mixed fold coarsens every spread column to optional
+  (a per-variant refinement is an open question).  (The side condition
   exists because a row whose folded cells are all missing drops with its
   key; one total column guarantees every key survives.)
 - `unpivot (pivot L) = L` for every `singletons` long table `L` whose
@@ -145,10 +145,11 @@ drop is a conditional collection) followed by `extend_key name`.  The
 specification takes that as its definition.  What the name adds is the
 typing theorem: the desugared form types as a `bag` with a plain string
 tag, while `unpivot` is entitled to the enum typing of `name`, the
-`singletons` cardinality over the extended key, and `complete_over` the
-old key, all by construction.  `pivot`, by contrast, is not expressible
-as `map`: it reads the whole fiber at a residual key, sitting with the
-whole-bag (aggregate-shaped) operations, and it changes the key.  The pair thus
+`singletons` cardinality over the extended key, and (for a fold of total
+columns) `exhaustive(name)`, all by construction.  `pivot`, by contrast,
+is not expressible as `map`: it reads the whole fiber at a residual key,
+sitting with the whole-bag (aggregate-shaped) operations, and it changes
+the key.  The pair thus
 spans the two shapes of fiber operation: row-wise and key-extending one
 way, fiber-collapsing the other.
 
@@ -166,37 +167,48 @@ way, fiber-collapsing the other.
 - Sparse stored data pivots **directly**: `grades |> pivot subject score`
   is admissible as-is and yields `real?` spread columns, honestly.
 
-### 2.  `complete_over`: one fact, and how it survives the primitives
+### 2.  `exhaustive`: the rectangle fact, distinct from `complete_over`
 
-**`complete_over S`**, for a coarser key `S`, is section 3.4's coarser-key
-completeness promoted to a tracked, parameterized fact: every S-fiber
-present in the table holds all its possible rows.  On a long table whose
-dropped axis is enum-domained, "all its possible rows" is concrete: the
-fiber covers the variant rectangle, which is decidable per fiber and is
-exactly what `pivot`'s totality upgrade needs.  The full-rectangle case is
-the "exhaustive" corollary section 3.4 already names, localized to the
-residual key.
+Two different "all rows present" facts meet at the reshape pair, and this
+ADR keeps them apart deliberately (an intermediate draft merged them; the
+merge is unsound, see Alternatives):
 
-This is **not a new qualifier axis**, and after this ADR the reshape pair
-introduces no new fact at all.  The row stays the closed four of ADR 0013;
-`complete_over S` is the completeness entry read at a coarser key (the
-global bit is the current-key grade), and uniqueness needs nothing,
-because the key already carries it.  That asymmetry is why this
-formulation was chosen over the earlier bag draft: properties of the
-reshape live on the index, where the key discipline already does half the
-work, instead of being imputed to attributes (see Alternatives).
+- **`exhaustive(A)`**, for an enum-domained index column `A`: every
+  residual key present in the table carries its `(k, v)` row for **every
+  variant** `v`.  The reference is `A`'s *type domain* (the variant set),
+  so the fact is extensional and decidable per fiber.  The name is
+  section 3.4's "exhaustive" corollary, localized to one axis.
+- **`complete_over S`** (ADR 0017, unchanged): every present S-fiber
+  holds all its rows *of the population*, the sampling-frame reading of
+  section 3.4.  This is `shrink_key`'s obligation, and it stays
+  population-relative.
 
-- **Establish**: `unpivot`, by mechanism, over the old key, exactly when
-  every folded column is total.  By witness: `completeness_check` (ADR
-  0017), which for an enum axis can check the rectangle.  By fiat:
-  `assume`, locally and auditably owned by the author, per the project's
-  `assume` philosophy.  The reserved `@complete_over` annotation and a
-  `collect` source (globally, by mechanism) remain as in section 8.
-- **Consume**: `pivot`'s totality upgrade over the residual key, and
-  `shrink_key`'s obligation (ADR 0017, unchanged).
+Neither implies the other.  A faithfully recorded but sparse enrollment
+store is `complete_over name` without being exhaustive: a never-enrolled
+subject has no real row to record.  Conversely, a table padded with
+fabricated variant rows is exhaustive without being complete over
+anything.  `pivot`'s totality upgrade needs the rectangle, not
+faithfulness: granting total spread columns to faithful-but-sparse data
+would write missing values into total columns.  So the upgrade consumes
+`exhaustive`, never `complete_over`.
 
-**Propagation is the design's remaining work**, and the conservative
-table is:
+This is still **not a new qualifier axis**.  The row stays the closed
+four of ADR 0013: both facts are grades of the completeness entry, read
+against two different references (the axis' finite type domain; the
+population).  Uniqueness needs nothing, because the key already carries
+it; that is why this formulation needs one new fact where the bag draft
+needed two (see Alternatives).
+
+- **Establish**: `unpivot`, by mechanism, exactly when every folded
+  column is total.  By witness: `completeness_check` (ADR 0017), which
+  can decide the rectangle for an enum axis.  By fiat: `assume`, locally
+  and auditably owned by the author.  A store-level declaration is
+  deferred (Open questions).
+- **Consume**: `pivot`'s totality upgrade over the residual key.
+
+**Propagation is the design's remaining work.**  `exhaustive` and
+`complete_over` are both row-presence facts, so one conservative table
+serves both:
 
 - **Preserved** by `extend_key` and `shrink_key` (they re-slot columns;
   the rows, hence the fibers, are unchanged); by `left_join` (adds
@@ -209,10 +221,10 @@ table is:
   `split` (a key predicate can discriminate within a fiber; recognizing
   predicates that provably ignore the dropped axes is the axis-aware
   refinement in Open questions).
-- `unpivot` and `pivot` translate the fact across the key change: a
-  pre-existing `complete_over S` survives `unpivot` when the fold drops
-  nothing (all folded columns total), and survives `pivot` for any
-  `S` inside the residual key (the output has one row per present
+- `unpivot` and `pivot` translate row-presence facts across the key
+  change: a pre-existing fact survives `unpivot` when the fold drops
+  nothing (all folded columns total), and any fact over a sub-key of the
+  residual key survives `pivot` (the output has one row per present
   residual key).
 
 The physical witness comes free: the long form is keyed, so the composite
@@ -243,10 +255,11 @@ Positive:
   domains, in values always and in types for uniform-totality folds, with
   no `assume`, no completeness discharge, and no saturation side
   condition anywhere in the pair.
-- One `pivot` form, and **no new fact at all**: the pair reuses
-  `complete_over`, which ADR 0017 already consumes; `functional`,
-  `saturated`, and `exhaustive` from earlier drafts all disappear.  What
-  remains is the propagation table.
+- One `pivot` form and **one new fact**, `exhaustive`, index-scoped and
+  decidable; `functional` and `saturated` from the bag draft disappear
+  (the key carries uniqueness), and `complete_over` stays exactly what
+  ADR 0017 already consumes.  What remains is the propagation table,
+  shared by both row-presence facts.
 - The long form is the honest finer unit (the Enrollment key), its value
   column is always total, and sparse stored data pivots directly with
   honest `real?` columns.
@@ -300,15 +313,21 @@ Neutral:
    lose a parameter, and exclusion is ordinary upstream projection.  The
    explicit name/value identifiers, which ADR 0016's alternative 1
    rightly demanded, are kept.
-4. **Rectangular `complete_over`** (bundling the rectangle fact into the
-   asserted completeness).  Rejected earlier in the discussion; under
-   drop semantics the question dissolves, since `pivot` demands no
-   completeness at all.
+4. **A single `complete_over` serving both readings** (an intermediate
+   draft of this ADR, in two flavors: defining the asserted fact as the
+   rectangle, or letting the population fact feed the totality upgrade).
+   Rejected as unsound in the second flavor and mislabeled in the first:
+   population-relative completeness holds for faithfully recorded sparse
+   data, and consuming it for `pivot`'s totality upgrade would grant
+   total spread columns whose cells are missing, while redefining it as
+   the rectangle silently changes what `shrink_key`'s obligation means.
+   The type-domain and sampling-frame references are different facts and
+   stay named apart.
 5. **`T*` list cells** for multiple values per (key, variant).  Rejected;
    section 3.
-6. **A set-valued `complete_over`** (recording per variant which folded
+6. **A set-valued `exhaustive`** (recording per variant which folded
    columns were total) would make mixed-totality folds round-trip their
-   types exactly.  Not adopted: one parameterized fact plus its
+   types exactly.  Not adopted now: the all-or-nothing fact plus the
    propagation table is the whole design, and the refinement can be added
    compatibly if a use case demands it (Open questions).
 
@@ -319,11 +338,11 @@ Neutral:
   round-trips nominally with stores that declare the enum, but folds
   become sensitive to variant renames.  Its own ADR when reshape meets
   nominal enums.
-- **A per-variant refinement of `complete_over`.**  A set-valued form
-  would make mixed-totality folds type-exact through the round trip;
-  deferred until a use case demands it.
+- **A per-variant refinement of `exhaustive`.**  A set-valued form would
+  make mixed-totality folds type-exact through the round trip; deferred
+  until a use case demands it.
 - **Store-level declaration.**  When a unit's index field is an enum, a
-  store could declare rectangularity via the reserved `@complete_over`,
+  store could declare the axis exhaustive (rectangular by policy),
   letting stored long data pivot to total columns.
 - **Axis-aware lineage.**  `pivot` could preserve lineage when every
   upstream split predicate provably ignores the spread axis; whether the
@@ -336,5 +355,8 @@ Neutral:
   making the primitive pure sugar with no privileged status.  Doable but
   brittle; recorded as a question, not a commitment.
 - **Formal work items.**  The drop-variant `unpivot`, both round-trip
-  laws with the domains stated above, and the propagation lemmas for
-  `complete_over` (one per row of the table in section 2).
+  laws with the domains stated above (mechanized as `unpivotDrop`,
+  `pivot_unpivotDrop`, `unpivotDrop_pivot` in `formal/Mensura/Table.lean`;
+  the side condition is the chapter's `Minimal`), and the propagation
+  lemmas for the row-presence facts (one per row of the table in
+  section 2).
