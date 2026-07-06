@@ -68,7 +68,7 @@ item          = unit_decl | store_decl | shape_decl | enum_decl | view_decl ;
 unit_decl     = "unit" ident "{" { field } "}" ;
 field         = ident ":" type ;
 
-enum_decl     = "enum" ident "{" string { "," string } "}" ;
+enum_decl     = "enum" ident "{" string { string } "}" ;
 
 store_decl    = "store" ident [ conforms ] "{" unit_clause { store_block } "}" ;
 conforms      = ":" shape_ref { "," shape_ref } ;
@@ -107,8 +107,10 @@ named_type    = ident ;
   (below), whose own `}` terminates it, so no new declaration grammar is
   needed; a view hosts an ordinary pipeline expression.
 - **`enum_decl`**: `enum` selects it; the name, `{`, and the string-literal
-  variants follow unambiguously.  An empty `{ }` is rejected (an enum needs at
-  least one variant).
+  variants follow unambiguously.  Variants are juxtaposed with no separator,
+  like the entries of an `attr` block: after a variant the next token is
+  either a string (another variant) or `}` (the enum closes), so one token
+  decides.  An empty `{ }` is rejected (an enum needs at least one variant).
 - **`conforms`**: after a store name the next token is either `:` (the
   clause is present) or `{` (it is absent).  One token decides.
 - **`shape_ref`**: after the shape name, `[` opens an argument list and any
@@ -170,7 +172,7 @@ subset.
   (`Tabular[Person]`) use `[ ]`, leaving `( )` free for grouping, collections,
   and records in the expression sublanguage.  No declaration form uses `( )`.
 - **`enum` is a top-level declaration.**  An enumerated type is declared once,
-  `enum Name { "v1", "v2" }`, and referenced by name in a field's type.  Its
+  `enum Name { "v1" "v2" }`, and referenced by name in a field's type.  Its
   name is a type (PascalCase); its variants are **string literals**, so their
   values are explicit and may contain characters that are not valid
   identifiers (`"in-progress"`, spaces, accents), which also matches how
@@ -226,7 +228,8 @@ store departments {
 }
 
 enum Status {
-  "active", "inactive"
+  "active"
+  "inactive"
 }
 
 store persons : Ageable["birthdate"] {

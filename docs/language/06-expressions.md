@@ -282,7 +282,11 @@ An enumerated type is declared once, by name, and referenced by that
 name, rather than written inline at each use:
 
 ```
-enum Status { "active", "inactive", "in-progress" }
+enum Status {
+  "active"
+  "inactive"
+  "in-progress"
+}
 ```
 
 `Status` is a type, so it is PascalCase, and its variants are string

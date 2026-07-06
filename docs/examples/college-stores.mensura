@@ -30,7 +30,7 @@ shape Ageable[date_field: string] {
 
 // A named enumerated type: a fixed set of string-literal values, referenced by
 // name below.
-enum Status { "active", "inactive" }
+enum Status { "active" "inactive" }
 
 store departments : Named, Ageable["foundation_day"] {
   unit { Department }

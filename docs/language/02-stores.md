@@ -40,7 +40,7 @@ A store declaration consists of a name, a unit reference, an optional
 `domain` block, and one or more `attr` blocks.
 
 ```
-enum Status { "active", "inactive" }
+enum Status { "active" "inactive" }
 
 store persons {
   unit { Person }
