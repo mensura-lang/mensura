@@ -58,7 +58,11 @@ disjoint tables, bind undoes split, bind is commutative and associative,
 bind-homomorphism but not disjointness-preserving, `pivot` is *not even*
 split-invariant (a name-separating split breaks it) though it inverts `unpivot`
 on functional tables (`pivot_unpivot`), and `taggedSplit` inverts `taggedBind`
-(`taggedSplit_taggedBind_left`/`_right`).  All bind-homomorphisms plus
+(`taggedSplit_taggedBind_left`/`_right`).  The drop-variant `unpivotDrop`
+(ADR 0020: a missing cell yields no long row) is split-safe
+(`unpivotDrop_splitSafe`) and forms a *mutually* inverse pair with `pivot`
+on functional minimal tables (`pivot_unpivotDrop`, `unpivotDrop_pivot`),
+the long-to-wide-to-long direction carrying no completeness side condition.  All bind-homomorphisms plus
 `aggregate` are `SplitSafe` and compose; `project` and `pivot` are not.  The
 chapter's minimality assumption is `Minimal`, preserved by `bind` and `split`.
 The `bind` unit laws over `empty`, the `map` identity/fusion laws, the join
@@ -645,6 +649,116 @@ theorem pivot_unpivot [Fintype N] [Nonempty N] {T : Table K N (fun _ => V)}
     simp only [pivot]
     rw [if_neg hguard]
     simp [unpivot, hf, Multiset.map_singleton]
+
+/-! ### The drop-variant unpivot: a truly inverse pair (ADR 0020)
+
+`unpivot` above *reifies* a missing wide cell as a long row holding `none`.
+That asymmetry is what blocks the long-to-wide-to-long round trip on sparse
+tables: `pivot` sends an absent row to a missing cell, and the reify
+variant sends the missing cell back to a *present* row, fabricating rows
+the sparse table never had.  The drop variant
+(`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`) removes the
+asymmetry: a missing cell yields no long row, so value-missing in the wide
+table and row-absent in the long table carry the same information, and the
+pair becomes mutually inverse on functional, minimal tables -- with no
+completeness or saturation side condition in either direction. -/
+
+/-- The drop-variant of def:pivot-w2l (ADR 0020): spread each name-column
+`n` of a wide row into its own output key `(k, n)`, emitting a long row
+only when the cell is present.  The long value column is total by
+construction.  Being `Multiset.bind`-shaped per output key over a single
+input key (compare `ungroup`), it is a bind-homomorphism, hence
+split-safe. -/
+def unpivotDrop (T : Table K N (fun _ => V)) : Table (K × N) Unit (fun _ => V) :=
+  ⟨fun p => (T.rows p.1).bind (fun f =>
+    match f p.2 with
+    | some v => {fun _ => some v}
+    | none => 0)⟩
+
+/-- `unpivotDrop` is a bind-homomorphism: the drop is decided per input
+row, so it distributes over every bind. -/
+theorem unpivotDrop_bindHom : BindHom (unpivotDrop (K := K) (N := N) (V := V)) := by
+  intro T₀ T₁
+  apply Table.ext_rows
+  rintro ⟨k, n⟩
+  simp only [unpivotDrop, bind]
+  exact Multiset.add_bind _ _ _
+
+theorem unpivotDrop_preservesDisjoint :
+    PreservesDisjoint (unpivotDrop (K := K) (N := N) (V := V)) := by
+  intro T₀ T₁ hdisj
+  rintro ⟨k, n⟩
+  rcases hdisj k with h | h
+  · exact Or.inl (by simp [unpivotDrop, h])
+  · exact Or.inr (by simp [unpivotDrop, h])
+
+/-- `unpivotDrop` is split-safe, like the reify variant: dropping a missing
+cell is a per-row decision. -/
+theorem unpivotDrop_splitSafe : SplitSafe (unpivotDrop (K := K) (N := N) (V := V)) :=
+  ⟨unpivotDrop_preservesDisjoint, unpivotDrop_bindHom.splitInvariant⟩
+
+/-- `pivot` inverts `unpivotDrop` on functional, **minimal** wide tables.
+Minimality is load-bearing where it was not for the reify variant
+(`pivot_unpivot`): a wide row whose cells are all missing yields no long
+rows, so its key would vanish; the chapter's standing minimality
+assumption rules exactly those rows out (ADR 0020's "at least one total
+folded column" is the surface approximation of it). -/
+theorem pivot_unpivotDrop [Fintype N] {T : Table K N (fun _ => V)}
+    (hT : Functional T) (hM : Minimal T) : pivot (unpivotDrop T) = T := by
+  apply Table.ext_rows
+  intro k
+  rcases Nat.lt_or_ge (T.rows k).card 1 with hc | hc
+  · have h0 : T.rows k = 0 := Multiset.card_eq_zero.mp (by omega)
+    simp [pivot, unpivotDrop, h0]
+  · have hc1 : (T.rows k).card = 1 := le_antisymm (hT k) hc
+    obtain ⟨f, hf⟩ := Multiset.card_eq_one.mp hc1
+    obtain ⟨n₀, hn₀⟩ := hM k f (by rw [hf]; exact Multiset.mem_singleton_self f)
+    obtain ⟨v₀, hv₀⟩ := Option.ne_none_iff_exists'.mp hn₀
+    have hguard : ¬ (∀ n, ((unpivotDrop T).rows (k, n)).card = 0) := by
+      intro hall
+      have h1 := hall n₀
+      simp [unpivotDrop, hf, hv₀] at h1
+    simp only [pivot]
+    rw [if_neg hguard, hf, Multiset.singleton_inj]
+    funext n
+    cases hfn : f n <;> simp [unpivotDrop, hf, hfn]
+
+/-- `unpivotDrop` inverts `pivot` on functional, minimal long tables --
+with **no completeness or saturation side condition**: an absent `(k, n)`
+row pivots to a missing cell, which the drop variant sends back to an
+absent row, so a sparse long table round-trips as it is.  This direction
+is not statable for the reify variant, and it is the mechanized content of
+ADR 0020's inverse contract.  Minimality here says every long row's value
+is known, which is the invariant `unpivotDrop`'s own output satisfies by
+construction. -/
+theorem unpivotDrop_pivot [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
+    (hL : Functional L) (hM : Minimal L) : unpivotDrop (pivot L) = L := by
+  apply Table.ext_rows
+  rintro ⟨k, n⟩
+  by_cases hg : ∀ n', (L.rows (k, n')).card = 0
+  · -- Every fiber at `k` is empty: both sides are empty at `(k, n)`.
+    have h0 : L.rows (k, n) = 0 := Multiset.card_eq_zero.mp (hg n)
+    simp [unpivotDrop, pivot, hg, h0]
+  · -- Some fiber is present: the one wide row reads back cell by cell.
+    rcases Nat.lt_or_ge (L.rows (k, n)).card 1 with hc | hc
+    · have h0 : L.rows (k, n) = 0 := Multiset.card_eq_zero.mp (by omega)
+      simp only [unpivotDrop, pivot]
+      rw [if_neg hg]
+      simp [h0]
+    · have hc1 : (L.rows (k, n)).card = 1 := le_antisymm (hL (k, n)) hc
+      obtain ⟨g, hgrow⟩ := Multiset.card_eq_one.mp hc1
+      obtain ⟨u, hu⟩ := hM (k, n) g (by rw [hgrow]; exact Multiset.mem_singleton_self g)
+      have hu' : g () ≠ none := by cases u; exact hu
+      obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp hu'
+      simp only [unpivotDrop, pivot]
+      rw [if_neg hg]
+      have hcell : cellOf (L.rows (k, n)) = some v := by
+        rw [hgrow, cellOf_singleton, hv]
+      simp only [Multiset.singleton_bind, hcell]
+      rw [hgrow, Multiset.singleton_inj]
+      funext u'
+      cases u'
+      exact hv.symm
 
 /-! ### Tagged bind / split: reversibility -/
 
