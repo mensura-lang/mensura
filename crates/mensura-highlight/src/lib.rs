@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn enum_variants_are_enum_members_not_strings() {
-        let ks = kinds(r#"enum Status { "active", "inactive" }"#);
+        let ks = kinds(r#"enum Status { "active" "inactive" }"#);
         assert_eq!(
             ks.iter()
                 .filter(|&&k| k == HighlightKind::EnumMember)

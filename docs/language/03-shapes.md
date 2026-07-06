@@ -37,7 +37,11 @@ store students : PersonRecord {
   attr { admission: date }
 }
 
-enum Rank { "assistant", "associate", "full" }
+enum Rank {
+  "assistant"
+  "associate"
+  "full"
+}
 
 store faculty : PersonRecord {
   unit { Person }

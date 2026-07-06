@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident("an enum name")?;
         self.expect(&TokenKind::LBrace, "`{` to open the enum body")?;
         let mut variants = vec![self.expect_str("an enum variant string")?];
-        while self.eat(&TokenKind::Comma) {
+        while !self.check(&TokenKind::RBrace) && !self.at_eof() {
             variants.push(self.expect_str("an enum variant string")?);
         }
         let end = self.expect(&TokenKind::RBrace, "`}` to close the enum")?;
@@ -1137,7 +1137,10 @@ mod tests {
     #[test]
     fn parses_enum_declaration_and_reference() {
         let src = r#"
-            enum Status { "active", "inactive" }
+            enum Status {
+              "active"
+              "inactive"
+            }
             store S { unit { U } attr { status: Status } }
         "#;
         let program = parse_str(src).unwrap();
@@ -1393,6 +1396,12 @@ mod tests {
     #[test]
     fn empty_enum_is_an_error() {
         let err = parse_str(r#"enum Status { }"#).unwrap_err();
+        assert!(err.message.contains("enum variant"));
+    }
+
+    #[test]
+    fn comma_between_enum_variants_is_an_error() {
+        let err = parse_str(r#"enum Status { "active", "inactive" }"#).unwrap_err();
         assert!(err.message.contains("enum variant"));
     }
 

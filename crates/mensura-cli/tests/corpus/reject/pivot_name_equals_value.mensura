@@ -1,5 +1,5 @@
 // Reject (resolve): pivot's name and value columns must differ.
-enum Metric { "lo", "hi" }
+enum Metric { "lo" "hi" }
 unit Obs { ts: int }
 store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }
 view bad {

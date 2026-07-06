@@ -352,7 +352,7 @@ deferred to a later implementation slice.
 ### Enum
 
 An **enum** is a named finite set of string-valued variants:
-`enum Status { "active", "inactive", "suspended" }`.  Enum names follow
+`enum Status { "active" "inactive" "suspended" }`.  Enum names follow
 PascalCase (they are types); variants are string literals and may contain
 characters that are not valid in identifiers.
 

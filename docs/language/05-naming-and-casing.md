@@ -39,7 +39,7 @@ resource.
 
 An `enum` is a named type, so its name is PascalCase (`Status`), like a
 `unit` or `shape`.  Its variants are string literals
-(`enum Status { "active", "inactive" }`), not identifiers, so the variant
+(`enum Status { "active" "inactive" }`), not identifiers, so the variant
 values themselves are unconstrained.
 
 A softer style layer sits on top of the enforced case rule and is not

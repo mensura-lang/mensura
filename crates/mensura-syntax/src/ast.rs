@@ -57,7 +57,7 @@ pub struct UnitDecl {
     pub span: Span,
 }
 
-/// `enum Name { "variant", ... }`
+/// `enum Name { "variant" ... }`
 ///
 /// A named enumerated type: a fixed set of string-literal variants, referenced
 /// by name in a field's type position.  Its name is a type (PascalCase); its
