@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = []
+# ///
 """Color the blueprint from the REAL state of the Lean code (ADR 0021).
 
 Mechanical, no intelligence: for each node `\\lean{Name}` in

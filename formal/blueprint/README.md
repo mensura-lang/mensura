@@ -11,10 +11,11 @@ reviewed artifact is the LaTeX source; rendering is optional.
 Run
 
 ```
-python3 blueprint/color.py
+uv run blueprint/color.py
 ```
 
-from anywhere.  It scans the Lean sources and sets or removes `\leanok`
+from anywhere (the script is stdlib-only and carries inline uv
+metadata, so no environment setup is needed).  It scans the Lean sources and sets or removes `\leanok`
 on every node: white = declaration absent (planned), blue = declared
 with `sorry` (branches only), green = sorry-free.  Do not write
 `\leanok` by hand; re-run the script after proving.
@@ -22,7 +23,8 @@ with `sorry` (branches only), green = sorry-free.  Do not write
 ## Rendering (optional)
 
 Install [leanblueprint](https://github.com/PatrickMassot/leanblueprint)
-(`pip install leanblueprint`), then from `formal/`:
+(`uv tool install leanblueprint`; plasTeX and its plugins come with it,
+inside the tool's own environment), then from `formal/`:
 
 - `leanblueprint web` renders the dashboard to `blueprint/web/`
   (open `index.html`; the dependency graph is under "Dependency graph");
