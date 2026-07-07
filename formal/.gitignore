@@ -1,4 +1,5 @@
 /.lake
+/blueprint/.venv
 /blueprint/web
 /blueprint/print
 /blueprint/src/web.paux
@@ -9,4 +10,5 @@
 /blueprint/src/*.fls
 /blueprint/src/*.fdb_latexmk
 /blueprint/src/*.synctex.gz
+/blueprint/src/*.pdf
 /blueprint/lean_decls
