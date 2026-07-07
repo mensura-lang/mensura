@@ -1,0 +1,26 @@
+name: Formal
+
+on:
+  pull_request:
+    paths:
+      - "formal/**"
+      - ".github/workflows/formal.yml"
+
+jobs:
+  formal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: No sorry or admit
+        run: |
+          if grep -rnE --include='*.lean' '\b(sorry|admit)\b' formal/Mensura formal/Mensura.lean formal/AxiomCheck.lean; then
+            echo "sorry/admit found; main must stay sorry-free (ADR 0021)" >&2
+            exit 1
+          fi
+      - name: Build
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal
+      - name: Axiom gate
+        working-directory: formal
+        run: lake env lean AxiomCheck.lean
