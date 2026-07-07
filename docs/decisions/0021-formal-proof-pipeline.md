@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.  Process-level: it changes how `formal/` is built, organized,
+Accepted.  Process-level: it changes how `formal/` is built, organized,
 and grown, not any language or checker semantics.  Realized in
 `.github/workflows/`, the layout of `formal/`, a blueprint under
 `formal/blueprint/`, and the developer tooling configuration at the
