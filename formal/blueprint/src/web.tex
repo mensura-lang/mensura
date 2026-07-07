@@ -1,0 +1,23 @@
+% Web version of the blueprint (dashboard).  Render with `leanblueprint web`
+% from `formal/`; color is derived from the code by `blueprint/color.py`.
+\documentclass{report}
+
+\usepackage{amssymb, amsthm, amsmath}
+\usepackage{hyperref}
+\usepackage[showmore, dep_graph]{blueprint}
+
+
+\input{macros/common}
+\input{macros/web}
+
+\home{https://github.com/mensura-lang/mensura}
+\github{https://github.com/mensura-lang/mensura}
+\dochome{https://github.com/mensura-lang/mensura/tree/main/formal}
+
+\title{Mensura: the data-handling algebra, formalized}
+\author{Filipe A. N. Verri}
+
+\begin{document}
+\maketitle
+\input{content}
+\end{document}

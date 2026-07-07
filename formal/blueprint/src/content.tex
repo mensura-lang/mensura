@@ -1,0 +1,888 @@
+% The blueprint of the Mensura formalization (ADR 0021).
+%
+% One node per result: \lean{...} links to the Lean declaration, \label
+% identifies the node, \uses{...} draws the dependency edges, and the
+% statement is authored here in mathematical language (the Lean signature
+% is the hint, not the text).
+%
+% Do NOT write \leanok by hand.  Color is derived from the code by
+% `formal/blueprint/color.py`: declaration absent = white (planned),
+% declared with sorry = blue (branches only), sorry-free = green.
+%
+% Source of the mathematics: Chapter 5 of F. A. N. Verri (2026),
+% Data Science Project: An Inductive Learning Approach, Leanpub,
+% doi:10.5281/zenodo.14498010.  Decision records: docs/decisions/.
+
+\chapter{The indexed table and split/bind}
+
+\begin{definition}[Indexed table]
+  \label{def:table}\lean{Mensura.Table}\leanok
+  A \emph{schema} is a column-name type $H$ with a per-column domain
+  $\sigma : H \to \mathrm{Type}$.  A \emph{nested row} is a dependent
+  function $(h : H) \to \mathrm{Option}\,(\sigma\,h)$, so each column
+  carries its own, possibly missing, value.  An \emph{indexed table} over
+  keys $K$ assigns to each key a multiset (bag) of nested rows; the empty
+  bag is an absent row.
+\end{definition}
+
+\begin{definition}[Split]
+  \label{def:split}\lean{Mensura.split}\uses{def:table}\leanok
+  An indicator $s : K \to \mathrm{Bool}$ routes each key's whole bag to
+  one of two output tables, leaving the other empty at that key
+  (def:split of the book).
+\end{definition}
+
+\begin{definition}[Bind]
+  \label{def:bind}\lean{Mensura.bind}\uses{def:table}\leanok
+  The multiset union of two tables' bags at each key: the book's cell
+  concatenation made order-free, commutative, associative, total, and
+  bias-free (def:bind).
+\end{definition}
+
+\begin{definition}[Disjoint tables]
+  \label{def:disjoint}\lean{Mensura.Disjoint}\uses{def:table}\leanok
+  Two tables are disjoint when at every key at least one of them is
+  empty (def:disjoint-tables).
+\end{definition}
+
+\begin{theorem}[A split yields disjoint halves]
+  \label{thm:split-disjoint}\lean{Mensura.split_disjoint}\leanok
+  \uses{def:split, def:disjoint}
+  The two halves of any split are disjoint.
+\end{theorem}
+\begin{proof}\leanok
+  At each key the indicator sends the bag to one side only.
+\end{proof}
+
+\begin{theorem}[Bind undoes split]
+  \label{thm:bind-split}\lean{Mensura.bind_split}\leanok
+  \uses{def:split, def:bind}
+  For every indicator $s$ and table $T$, binding the two halves of
+  $\mathrm{split}\,s\,T$ recovers $T$.
+\end{theorem}
+\begin{proof}\leanok
+  Key-by-key case analysis on $s$.
+\end{proof}
+
+\begin{theorem}[Bind is commutative]
+  \label{thm:bind-comm}\lean{Mensura.bind_comm}\uses{def:bind}\leanok
+  $\mathrm{bind}\,T_0\,T_1 = \mathrm{bind}\,T_1\,T_0$, unconditionally.
+\end{theorem}
+\begin{proof}\leanok
+  Multiset union is commutative.
+\end{proof}
+
+\begin{theorem}[Bind is associative]
+  \label{thm:bind-assoc}\lean{Mensura.bind_assoc}\uses{def:bind}\leanok
+  $\mathrm{bind}$ is associative.
+\end{theorem}
+\begin{proof}\leanok
+  Multiset union is associative.
+\end{proof}
+
+\begin{theorem}[Bind weakens disjointness]
+  \label{thm:bind-disjoint-iff}\lean{Mensura.bind_disjoint_iff}\leanok
+  \uses{def:bind, def:disjoint}
+  $\mathrm{bind}\,T_0\,T_1$ is disjoint from $T_2$ iff both $T_0$ and
+  $T_1$ are.  This backs the \texttt{bind} propagation rule of the
+  lineage system (\texttt{docs/language/08-lineage.md}).
+\end{theorem}
+\begin{proof}\leanok
+  A multiset sum is empty exactly when both summands are.
+\end{proof}
+
+\begin{definition}[Split-invariance]
+  \label{def:split-invariant}\lean{Mensura.SplitInvariant}\leanok
+  \uses{def:bind, def:disjoint}
+  An operation $f$ is \emph{split-invariant} when it distributes over
+  the bind of disjoint tables (def:split-invariance).  This is the
+  property Mensura tracks and enforces; disjointness is exactly what a
+  split produces.
+\end{definition}
+
+\begin{definition}[Bind-homomorphism]
+  \label{def:bindhom}\lean{Mensura.BindHom}\uses{def:bind}\leanok
+  An operation that distributes over \emph{every} bind: a full
+  commutative-monoid homomorphism, strictly stronger than
+  split-invariance.
+\end{definition}
+
+\begin{theorem}[Bind-homomorphisms are split-invariant]
+  \label{thm:bindhom-splitinvariant}\lean{Mensura.BindHom.splitInvariant}\leanok
+  \uses{def:bindhom, def:split-invariant}
+  Every bind-homomorphism is split-invariant.
+\end{theorem}
+\begin{proof}\leanok
+  Split-invariance asks the equation only on disjoint binds, a special
+  case.
+\end{proof}
+
+\begin{definition}[Disjointness preservation]
+  \label{def:preserves-disjoint}\lean{Mensura.PreservesDisjoint}\leanok
+  \uses{def:disjoint}
+  An operation preserves disjointness when it sends disjoint tables to
+  disjoint tables.  This is the missing ingredient that makes
+  split-invariance compositional.
+\end{definition}
+
+\begin{definition}[Split-safety]
+  \label{def:splitsafe}\lean{Mensura.SplitSafe}\leanok
+  \uses{def:split-invariant, def:preserves-disjoint}
+  An operation is \emph{split-safe} when it is split-invariant and
+  preserves disjointness: the class of operations safe to put in a
+  pipeline between a split and a bind.
+\end{definition}
+
+\begin{theorem}[Split-safe operations compose]
+  \label{thm:splitsafe-comp}\lean{Mensura.SplitSafe.comp}\leanok
+  \uses{def:splitsafe}
+  The composition of split-safe operations is split-safe, so a whole
+  pipeline of split-safe operations is split-invariant.
+\end{theorem}
+\begin{proof}\leanok
+  The disjointness $f$ preserves is exactly what feeds $g$'s
+  split-invariance.
+\end{proof}
+
+\begin{definition}[Minimality]
+  \label{def:minimal}\lean{Mensura.Minimal}\uses{def:table}\leanok
+  A table is \emph{minimal} when every nested row has at least one
+  present column (the book's standing no-all-missing-row assumption).
+\end{definition}
+
+\begin{theorem}[Bind preserves minimality]
+  \label{thm:minimal-bind}\lean{Mensura.Minimal.bind}\leanok
+  \uses{def:minimal, def:bind}
+  The bind of two minimal tables is minimal.
+\end{theorem}
+\begin{proof}\leanok
+  A row of the union is a row of one summand.
+\end{proof}
+
+\begin{theorem}[Split preserves minimality]
+  \label{thm:minimal-split}\lean{Mensura.Minimal.split}\leanok
+  \uses{def:minimal, def:split}
+  Both halves of a split of a minimal table are minimal.
+\end{theorem}
+\begin{proof}\leanok
+  Each half's rows are a sub-multiset of the input's.
+\end{proof}
+
+\chapter{The operations}
+
+\begin{definition}[Row-wise map]
+  \label{def:map}\lean{Mensura.map}\uses{def:table}\leanok
+  The single row-wise primitive: $\varphi\,k\,f$ sends a nested row to a
+  bag of output rows (empty drops it, a singleton keeps or transforms
+  it, several expand it).  It subsumes the book's def:selection,
+  def:mutating, def:filtering, and the row-expanding direction of
+  def:grouping.
+\end{definition}
+
+\begin{definition}[Left join]
+  \label{def:leftjoin}\lean{Mensura.leftJoin}\uses{def:map}\leanok
+  def:left-join against a fixed right table on shared index columns:
+  each present left row combines with every matching right row, or is
+  kept once with missing right columns when there is no match.  A map.
+\end{definition}
+
+\begin{definition}[Inner join]
+  \label{def:innerjoin}\lean{Mensura.innerJoin}\uses{def:map}\leanok
+  Like the left join, but an unmatched left row is dropped (def:join,
+  fixed-right form).  A map.
+\end{definition}
+
+\begin{definition}[Aggregate]
+  \label{def:aggregate}\lean{Mensura.aggregate}\uses{def:table}\leanok
+  def:aggregating: collapse each key's whole bag to a single row (empty
+  stays empty).  The folder sees the entire bag, so this is not a map.
+\end{definition}
+
+\begin{definition}[Ungroup]
+  \label{def:ungroup}\lean{Mensura.ungroup}\uses{def:table}\leanok
+  def:grouping: turn a distinguished total column into part of the key,
+  refining $K$ to $K \times \beta$.
+\end{definition}
+
+\begin{definition}[Project]
+  \label{def:project}\lean{Mensura.project}\uses{def:table}\leanok
+  def:projection: drop a finite index component $D$ from the key,
+  merging the bags of all dropped keys into one output key, each row
+  tagged with its $d$.  This changes the observational unit.
+\end{definition}
+
+\begin{definition}[Tagged bind]
+  \label{def:tagged-bind}\lean{Mensura.taggedBind}\leanok
+  \uses{def:bind, def:map}
+  def:tagged-bind: bind two tables while recording each row's source in
+  a fresh column.
+\end{definition}
+
+\begin{definition}[Tagged split]
+  \label{def:tagged-split}\lean{Mensura.taggedSplit}\uses{def:map}\leanok
+  def:tagged-split: recover the rows of one source, dropping the tag
+  column.  A map.
+\end{definition}
+
+\begin{theorem}[Tagged split inverts tagged bind]
+  \label{thm:tagged-inverse}\lean{Mensura.taggedSplit_taggedBind_left}\leanok
+  \uses{def:tagged-bind, def:tagged-split}
+  With distinct tags, recovering source $s_0$ from
+  $\mathrm{taggedBind}\,s_0\,s_1\,T_0\,T_1$ gives back $T_0$ (and
+  symmetrically for $s_1$).
+\end{theorem}
+\begin{proof}\leanok
+  $T_0$'s rows are kept and untagged; $T_1$'s carry the other tag and
+  are filtered out.
+\end{proof}
+
+\chapter{Split-safety}
+
+\begin{theorem}[Map is a bind-homomorphism]
+  \label{thm:map-bindhom}\lean{Mensura.map_bindHom}\leanok
+  \uses{def:map, def:bindhom}
+  Every map distributes over every bind.
+\end{theorem}
+\begin{proof}\leanok
+  Multiset bind distributes over multiset union.
+\end{proof}
+
+\begin{theorem}[Map is split-safe]
+  \label{thm:map-splitsafe}\lean{Mensura.map_splitSafe}\leanok
+  \uses{thm:map-bindhom, def:splitsafe}
+  Every map is split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  A bind-homomorphism is split-invariant, and a map sends empty bags to
+  empty bags, preserving disjointness.
+\end{proof}
+
+\begin{theorem}[Left join is split-safe]
+  \label{thm:leftjoin-splitsafe}\lean{Mensura.leftJoin_splitSafe}\leanok
+  \uses{def:leftjoin, def:splitsafe}
+  The fixed-right left join is split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  It is a map.
+\end{proof}
+
+\begin{theorem}[Inner join is split-safe]
+  \label{thm:innerjoin-splitsafe}\lean{Mensura.innerJoin_splitSafe}\leanok
+  \uses{def:innerjoin, def:splitsafe}
+  The fixed-right inner join is split-safe.  The book leaves the binary
+  join open (see the open problems chapter); in the unary form the only
+  effect is dropping unmatched left rows, a map.
+\end{theorem}
+\begin{proof}\leanok
+  It is a map.
+\end{proof}
+
+\begin{theorem}[Ungroup is split-safe]
+  \label{thm:ungroup-splitsafe}\lean{Mensura.ungroup_splitSafe}\leanok
+  \uses{def:ungroup, def:splitsafe}
+  Ungrouping is split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  Each output key reads a single input key through a multiset bind.
+\end{proof}
+
+\begin{theorem}[Aggregate is split-invariant]
+  \label{thm:aggregate-splitinvariant}\lean{Mensura.aggregate_splitInvariant}\leanok
+  \uses{def:aggregate, def:split-invariant}
+  Aggregation is split-invariant: a split never divides a key's bag, so
+  under disjointness folding the union equals folding the nonempty side.
+\end{theorem}
+\begin{proof}\leanok
+  At each key one summand is empty.
+\end{proof}
+
+\begin{theorem}[Aggregate is not a bind-homomorphism]
+  \label{thm:aggregate-not-bindhom}\lean{Mensura.aggregate_not_bindHom}\leanok
+  \uses{def:aggregate, def:bindhom}
+  On a key present in both summands, aggregation folds the merged bag to
+  one row but binds two aggregated rows.  This separates
+  split-invariance from the strictly stronger bind-homomorphism.
+\end{theorem}
+\begin{proof}\leanok
+  Counterexample with a single key present on both sides.
+\end{proof}
+
+\begin{theorem}[Aggregate is split-safe]
+  \label{thm:aggregate-splitsafe}\lean{Mensura.aggregate_splitSafe}\leanok
+  \uses{thm:aggregate-splitinvariant, def:splitsafe}
+  Aggregation preserves disjointness, hence is split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  An empty bag aggregates to an empty bag.
+\end{proof}
+
+\begin{theorem}[Project is a bind-homomorphism]
+  \label{thm:project-bindhom}\lean{Mensura.project_bindHom}\leanok
+  \uses{def:project, def:bindhom}
+  Projection distributes over every bind, so by the bare equation alone
+  it looks safe.
+\end{theorem}
+\begin{proof}\leanok
+  Multiset map and finite sums distribute over union.
+\end{proof}
+
+\begin{theorem}[Project does not preserve disjointness]
+  \label{thm:project-not-preservesdisjoint}
+  \lean{Mensura.project_not_preservesDisjoint}\leanok
+  \uses{def:project, def:preserves-disjoint}
+  Two rows a split separates by the dropped index land on the same
+  output key, so projection is \emph{not} split-safe: pipelines through
+  it (such as aggregate after project, the averaging case) can disagree
+  with the full-table result.
+\end{theorem}
+\begin{proof}\leanok
+  Counterexample splitting on the dropped Boolean index.
+\end{proof}
+
+\chapter{Equational laws}
+
+\begin{definition}[Empty table]
+  \label{def:empty}\lean{Mensura.empty}\uses{def:table}\leanok
+  The table with no rows at any key: the unit of bind, completing its
+  commutative monoid.
+\end{definition}
+
+\begin{theorem}[Map identity law]
+  \label{thm:map-id}\lean{Mensura.map_id}\uses{def:map}\leanok
+  Mapping each row to its singleton is the identity.
+\end{theorem}
+\begin{proof}\leanok
+  The multiset monad's return law.
+\end{proof}
+
+\begin{theorem}[Map fusion law]
+  \label{thm:map-fusion}\lean{Mensura.map_map}\uses{def:map}\leanok
+  Two consecutive maps collapse into one whose body binds the second
+  body over the first's output rows: the prototypical plan rewrite.
+\end{theorem}
+\begin{proof}\leanok
+  Associativity of multiset bind.
+\end{proof}
+
+\begin{definition}[Filter]
+  \label{def:filter}\lean{Mensura.filter}\uses{def:map}\leanok
+  def:filtering as a named operation: keep each row iff a predicate
+  holds.  A map, named so the pushdown laws read the way the optimizer
+  will use them.
+\end{definition}
+
+\begin{theorem}[Join absorbs a preceding map]
+  \label{thm:innerjoin-map}\lean{Mensura.innerJoin_map}\leanok
+  \uses{thm:map-fusion, def:innerjoin}
+  A map feeding an inner join fuses into a single map (and likewise for
+  the left join).
+\end{theorem}
+\begin{proof}\leanok
+  An instance of the fusion law.
+\end{proof}
+
+\begin{theorem}[Filter pushdown through the inner join]
+  \label{thm:innerjoin-filter-pushdown}
+  \lean{Mensura.innerJoin_filter_pushdown}\leanok
+  \uses{def:filter, def:innerjoin}
+  A filter reading only left columns commutes below the inner join.
+\end{theorem}
+\begin{proof}\leanok
+  Row-by-row case analysis on the predicate.
+\end{proof}
+
+\begin{theorem}[Filter pushdown through the left join]
+  \label{thm:leftjoin-filter-pushdown}
+  \lean{Mensura.leftJoin_filter_pushdown}\leanok
+  \uses{def:filter, def:leftjoin}
+  A filter reading only left columns commutes below the left join: all
+  copies of a left row agree on the left columns, so the filter keeps or
+  drops them together.
+\end{theorem}
+\begin{proof}\leanok
+  Case analysis on the predicate and on the presence of matches.
+\end{proof}
+
+\begin{theorem}[Split undoes bind]
+  \label{thm:split-bind}\lean{Mensura.split_bind}\leanok
+  \uses{def:split, def:bind}
+  When $T_0$ lives on the keys routed left and $T_1$ on the keys routed
+  right, splitting their bind recovers the pair: the cancellation dual
+  of \ref{thm:bind-split}, with the routing side conditions a rewrite
+  must check.
+\end{theorem}
+\begin{proof}\leanok
+  Key-by-key case analysis on the indicator.
+\end{proof}
+
+\chapter{Reshape and the inverse pair}
+
+\begin{definition}[Unpivot, reify variant]
+  \label{def:unpivot}\lean{Mensura.unpivot}\uses{def:table}\leanok
+  def:pivot-w2l: spread each name-column $n$ of a wide row into its own
+  output key $(k, n)$, carrying that column's value; a missing cell
+  becomes a long row holding a missing value.
+\end{definition}
+
+\begin{definition}[Pivot]
+  \label{def:pivot}\lean{Mensura.pivot}\uses{def:table}\leanok
+  def:pivot-l2w: gather the value at each name $n$ into one wide row per
+  key $k$; a key whose names are all empty stays absent.
+\end{definition}
+
+\begin{definition}[Functional table]
+  \label{def:functional}\lean{Mensura.Functional}\uses{def:table}\leanok
+  A table is functional when every key holds at most one nested row (the
+  book's ``card constant'' case).
+\end{definition}
+
+\begin{theorem}[Unpivot is split-safe]
+  \label{thm:unpivot-splitsafe}\lean{Mensura.unpivot_splitSafe}\leanok
+  \uses{def:unpivot, def:splitsafe}
+  The wide-to-long direction is split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  It is map-like over the input key.
+\end{proof}
+
+\begin{theorem}[Pivot is not split-invariant]
+  \label{thm:pivot-not-splitinvariant}\lean{Mensura.pivot_not_splitInvariant}\leanok
+  \uses{def:pivot, def:split-invariant}
+  A split that separates the names of one key yields two complementary
+  partial rows that bind keeps apart.  This refines the book, whose
+  pivot invariance relies on a cell-wise-merge bind this total-row model
+  deliberately does not have.
+\end{theorem}
+\begin{proof}\leanok
+  Counterexample splitting a two-name key by name.
+\end{proof}
+
+\begin{theorem}[Pivot inverts unpivot]
+  \label{thm:pivot-unpivot}\lean{Mensura.pivot_unpivot}\leanok
+  \uses{def:pivot, def:unpivot, def:functional}
+  On functional wide tables, pivoting an unpivoted table recovers it.
+\end{theorem}
+\begin{proof}\leanok
+  The single row per key reads back cell by cell.
+\end{proof}
+
+\begin{definition}[Unpivot, drop variant]
+  \label{def:unpivot-drop}\lean{Mensura.unpivotDrop}\uses{def:unpivot}\leanok
+  ADR 0020: a missing cell yields \emph{no} long row, so value-missing
+  in the wide table and row-absent in the long table carry the same
+  information.  The long value column is total by construction.
+\end{definition}
+
+\begin{theorem}[The drop variant is split-safe]
+  \label{thm:unpivotdrop-splitsafe}\lean{Mensura.unpivotDrop_splitSafe}\leanok
+  \uses{def:unpivot-drop, def:splitsafe}
+  Dropping a missing cell is a per-row decision, so the drop variant is
+  a bind-homomorphism, hence split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  Multiset bind distributes over union.
+\end{proof}
+
+\begin{theorem}[Pivot inverts the drop variant]
+  \label{thm:pivot-unpivotdrop}\lean{Mensura.pivot_unpivotDrop}\leanok
+  \uses{def:pivot, def:unpivot-drop, def:functional, def:minimal}
+  On functional, \emph{minimal} wide tables, pivoting the drop-variant
+  unpivot recovers the table.  Minimality is load-bearing: an
+  all-missing wide row would emit no long rows and its key would vanish.
+\end{theorem}
+\begin{proof}\leanok
+  The substantive column supplies a present long row; the rest reads
+  back cell by cell.
+\end{proof}
+
+\begin{theorem}[The drop variant inverts pivot]
+  \label{thm:unpivotdrop-pivot}\lean{Mensura.unpivotDrop_pivot}\leanok
+  \uses{def:pivot, def:unpivot-drop, def:functional, def:minimal}
+  On functional, minimal long tables the round trip long-to-wide-to-long
+  is the identity, with \emph{no completeness or saturation side
+  condition}: a sparse long table round-trips as it is.  This direction
+  is not statable for the reify variant; it is the mechanized content of
+  ADR 0020's inverse contract.
+\end{theorem}
+\begin{proof}\leanok
+  An absent $(k, n)$ row pivots to a missing cell, which the drop
+  variant sends back to an absent row.
+\end{proof}
+
+\chapter{The rectangle fact}
+
+\begin{definition}[Total table]
+  \label{def:total}\lean{Mensura.Total}\uses{def:table}\leanok
+  Every cell of every present row is known: the table-level reading of
+  ``all columns total'' (ADR 0010's default).
+\end{definition}
+
+\begin{definition}[Exhaustive long table]
+  \label{def:exhaustive}\lean{Mensura.Exhaustive}\uses{def:table}\leanok
+  ADR 0020's rectangle fact: every residual key present in a long table
+  carries a row for \emph{every} name.  The reference is the name type's
+  whole domain, not a population, which distinguishes it from the
+  population-relative \texttt{complete\_over}.
+\end{definition}
+
+\begin{theorem}[The drop variant's output is minimal]
+  \label{thm:unpivotdrop-minimal}\lean{Mensura.unpivotDrop_minimal}\leanok
+  \uses{def:unpivot-drop, def:minimal}
+  Every long row the drop variant emits carries a known value.
+\end{theorem}
+\begin{proof}\leanok
+  By construction of the drop.
+\end{proof}
+
+\begin{theorem}[The drop variant establishes the rectangle]
+  \label{thm:unpivotdrop-exhaustive}\lean{Mensura.unpivotDrop_exhaustive}\leanok
+  \uses{def:unpivot-drop, def:total, def:exhaustive}
+  On a total wide table, each source row emits one long row per name, so
+  a residual key present for one name is present for all.
+\end{theorem}
+\begin{proof}\leanok
+  Totality supplies the value at every name.
+\end{proof}
+
+\begin{theorem}[The totality upgrade]
+  \label{thm:pivot-total}\lean{Mensura.pivot_total_of_exhaustive}\leanok
+  \uses{def:pivot, def:exhaustive, def:minimal, def:total}
+  Pivoting an exhaustive, minimal long table yields only known cells:
+  exhaustiveness supplies the row at every $(k, n)$ and minimality the
+  value in it.  No population-relative completeness fact appears.
+\end{theorem}
+\begin{proof}\leanok
+  Read the guarded cell through the present fiber.
+\end{proof}
+
+\begin{theorem}[A non-dropping map preserves the rectangle]
+  \label{thm:map-exhaustive}\lean{Mensura.map_exhaustive}\leanok
+  \uses{def:map, def:exhaustive}
+  A map whose body emits at least one output row per input row preserves
+  exhaustiveness.  A dropping map (a filter) is excluded, and rightly
+  so: it can empty one name of a fiber.
+\end{theorem}
+\begin{proof}\leanok
+  Presence is preserved in both directions.
+\end{proof}
+
+\begin{theorem}[Left join preserves the rectangle]
+  \label{thm:leftjoin-exhaustive}\lean{Mensura.leftJoin_exhaustive}\leanok
+  \uses{def:leftjoin, def:exhaustive, thm:map-exhaustive}
+  The left join's body emits the unmatched row with missing right
+  columns rather than dropping it, so it is a non-dropping map.
+\end{theorem}
+\begin{proof}\leanok
+  Instance of the non-dropping map lemma.
+\end{proof}
+
+\begin{theorem}[Aggregate preserves the rectangle]
+  \label{thm:aggregate-exhaustive}\lean{Mensura.aggregate_exhaustive}\leanok
+  \uses{def:aggregate, def:exhaustive}
+  Aggregation collapses each present fiber to one row and leaves absent
+  fibers absent, so presence is untouched.
+\end{theorem}
+\begin{proof}\leanok
+  Presence is preserved in both directions.
+\end{proof}
+
+\begin{theorem}[Bind preserves the rectangle]
+  \label{thm:bind-exhaustive}\lean{Mensura.bind_exhaustive}\leanok
+  \uses{def:bind, def:exhaustive}
+  The bind of two exhaustive tables is exhaustive: a fiber present in
+  the union is present on one side, whose fullness fills the union.
+\end{theorem}
+\begin{proof}\leanok
+  Presence in the union decomposes over the summands.
+\end{proof}
+
+\begin{theorem}[Split destroys the rectangle]
+  \label{thm:split-not-exhaustive}\lean{Mensura.split_not_exhaustive}\leanok
+  \uses{def:split, def:exhaustive}
+  A predicate that reads the name axis cuts a fiber, leaving one side
+  with some names of a key but not others: ADR 0020's ``destroyed by
+  split'' row, and the honest price of keeping the name in the key.
+\end{theorem}
+\begin{proof}\leanok
+  Counterexample splitting on the name axis.
+\end{proof}
+
+\chapter{Safe completeness}
+
+\begin{definition}[Fiber map]
+  \label{def:fibermap}\lean{Mensura.fiberMap}\uses{def:table}\leanok
+  The output bag at each key is a function of the input bag at the
+  \emph{same} key and nothing else.  \texttt{map} and \texttt{aggregate}
+  are both fiber maps.
+\end{definition}
+
+\begin{definition}[Strict fiber action]
+  \label{def:strict}\lean{Mensura.Strict}\uses{def:fibermap}\leanok
+  A fiber action is strict when it sends the empty bag to the empty bag:
+  it does not fabricate rows for an absent key.
+\end{definition}
+
+\begin{definition}[Key-locality]
+  \label{def:keylocal}\lean{Mensura.KeyLocal}\uses{def:table}\leanok
+  A key-preserving operation is key-local when each output key depends
+  only on the input at that same key.
+\end{definition}
+
+\begin{theorem}[A strict fiber map is split-safe]
+  \label{thm:fibermap-splitsafe}\lean{Mensura.fiberMap_splitSafe}\leanok
+  \uses{def:fibermap, def:strict, def:splitsafe}
+  Every strict fiber map is split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  Under disjointness one summand is empty at each key, and strictness
+  makes folding the union the same as folding the nonempty side.
+\end{proof}
+
+\begin{theorem}[Split-invariance forces strictness at the empty table]
+  \label{thm:splitinvariant-empty}\lean{Mensura.splitInvariant_empty}\leanok
+  \uses{def:split-invariant}
+  A split-invariant operation maps the empty table to the empty table:
+  feeding it $\emptyset = \emptyset + \emptyset$ forces
+  $f\,\emptyset = f\,\emptyset + f\,\emptyset$.
+\end{theorem}
+\begin{proof}\leanok
+  A multiset equal to its own double is empty.
+\end{proof}
+
+\begin{theorem}[Safe completeness, key-preserving fragment]
+  \label{thm:fibermap-iff}\lean{Mensura.splitInvariant_keyLocal_iff_fiberMap}\leanok
+  \uses{def:fibermap, def:strict, def:keylocal, thm:fibermap-splitsafe,
+        thm:splitinvariant-empty}
+  A key-preserving operation is split-invariant and key-local \emph{iff}
+  it is a strict fiber map.  The split-invariant, key-local
+  transformations are exactly the strict fiber maps: nothing safe is
+  missing and nothing unsafe sneaks in.
+\end{theorem}
+\begin{proof}\leanok
+  Forward: run the operation on point tables to witness its fiber
+  action; key-locality makes the representation exact and
+  split-invariance makes it strict.  Backward: the strict fiber map
+  results.
+\end{proof}
+
+\begin{theorem}[Strictness is necessary]
+  \label{thm:nonstrict-not-splitinvariant}
+  \lean{Mensura.fiberMap_nonstrict_not_splitInvariant}\leanok
+  \uses{def:fibermap, def:strict, def:split-invariant}
+  A fiber map whose action fabricates a row for the empty fiber is not
+  split-invariant.
+\end{theorem}
+\begin{proof}\leanok
+  Constant-singleton counterexample on the empty table.
+\end{proof}
+
+\begin{theorem}[Key-locality is necessary]
+  \label{thm:keyswap-not-keylocal}\lean{Mensura.keySwap_not_keyLocal}\leanok
+  \uses{def:keylocal, def:split-invariant}
+  Swapping the two keys of a Boolean-indexed table is split-invariant
+  (even a bind-homomorphism) yet not key-local, so it is not a fiber
+  map: the characterization needs key-locality as a separate hypothesis.
+\end{theorem}
+\begin{proof}\leanok
+  The output at a key reads the other key.
+\end{proof}
+
+\begin{definition}[Reindexing fiber map]
+  \label{def:reindexmap}\lean{Mensura.reindexMap}\uses{def:fibermap}\leanok
+  Along $r : K' \to K$, the output bag at key $k'$ is a function of the
+  input bag at the single key $r\,k'$.  The fiber map is the $r = id$
+  case; \texttt{ungroup} and \texttt{unpivot} are $r = \pi_1$ cases.
+\end{definition}
+
+\begin{definition}[Locality along a reindexing]
+  \label{def:reindexlocal}\lean{Mensura.ReindexLocal}\uses{def:keylocal}\leanok
+  Each output key $k'$ depends only on the input at $r\,k'$; for
+  $r = id$ this is exactly key-locality.
+\end{definition}
+
+\begin{theorem}[A strict reindexing fiber map is split-safe]
+  \label{thm:reindexmap-splitsafe}\lean{Mensura.reindexMap_splitSafe}\leanok
+  \uses{def:reindexmap, def:strict, def:splitsafe}
+  The safe key-changing operations compose into split-invariant
+  pipelines just like the key-preserving ones.
+\end{theorem}
+\begin{proof}\leanok
+  As for the fiber map, at the reindexed key.
+\end{proof}
+
+\begin{theorem}[Safe completeness, key-changing fragment]
+  \label{thm:reindex-iff}
+  \lean{Mensura.splitInvariant_reindexLocal_iff_reindexMap}\leanok
+  \uses{def:reindexmap, def:reindexlocal, thm:reindexmap-splitsafe,
+        thm:splitinvariant-empty}
+  Along any $r : K' \to K$, an operation is split-invariant and
+  $r$-local \emph{iff} it is a strict reindexing fiber map over $r$: the
+  full generalization of the key-preserving characterization.
+\end{theorem}
+\begin{proof}\leanok
+  Same witnessing argument, run at the reindexed point table.
+\end{proof}
+
+\begin{theorem}[Unpivot is a reindexing fiber map]
+  \label{thm:unpivot-reindexmap}\lean{Mensura.unpivot_eq_reindexMap}\leanok
+  \uses{def:unpivot, def:reindexmap}
+  Definitionally, along $\pi_1$: a second, uniform proof of its
+  split-safety.
+\end{theorem}
+\begin{proof}\leanok
+  By unfolding.
+\end{proof}
+
+\begin{theorem}[Ungroup is a reindexing fiber map]
+  \label{thm:ungroup-reindexmap}\lean{Mensura.ungroup_eq_reindexMap}\leanok
+  \uses{def:ungroup, def:reindexmap}
+  Definitionally, along $\pi_1$.
+\end{theorem}
+\begin{proof}\leanok
+  By unfolding.
+\end{proof}
+
+\begin{definition}[Gather map]
+  \label{def:gathermap}\lean{Mensura.gatherMap}\uses{def:table}\leanok
+  The key-merging dual: one output key reads and combines the whole
+  fiber $\{(k, d) : d\}$ of input keys.  Exactly the shape that fails to
+  preserve disjointness.
+\end{definition}
+
+\begin{theorem}[An additive gather map is a bind-homomorphism]
+  \label{thm:gathermap-bindhom}\lean{Mensura.gatherMap_bindHom}\leanok
+  \uses{def:gathermap, def:bindhom}
+  When the combiner distributes over pointwise union of fibers, the
+  gather map distributes over every bind: why \texttt{project} is
+  split-invariant despite being unsafe.
+\end{theorem}
+\begin{proof}\leanok
+  Pointwise additivity.
+\end{proof}
+
+\begin{theorem}[Project is an additive gather map]
+  \label{thm:project-gathermap}\lean{Mensura.project_eq_gatherMap}\leanok
+  \uses{def:project, def:gathermap}
+  Definitionally; its combiner is additive
+  (\texttt{Mensura.project\_additiveGather}).  This places every
+  operation of the algebra: safe single-source operations are reindexing
+  fiber maps, and the unsafe key-merging one is a gather map.
+\end{theorem}
+\begin{proof}\leanok
+  By unfolding.
+\end{proof}
+
+\chapter{The verb catalogue}
+
+\begin{definition}[Filter rows]
+  \label{def:filter-rows}\lean{Mensura.filterRows}\uses{def:map}\leanok
+  dplyr \texttt{filter} / relational selection, as a map; split-safe
+  (machine-checked).
+\end{definition}
+
+\begin{definition}[Mutate]
+  \label{def:mutate}\lean{Mensura.mutateCol}\uses{def:map}\leanok
+  dplyr \texttt{mutate} / relational extension: add a derived column, as
+  a map; split-safe (machine-checked).
+\end{definition}
+
+\begin{definition}[Anti-join]
+  \label{def:antijoin}\lean{Mensura.antiJoin}\uses{def:map}\leanok
+  Set difference against a fixed table: keep the left rows with no match
+  on the right.  The one classical relational verb not among the
+  positive generators, recovered as a map; split-safe (machine-checked).
+\end{definition}
+
+\begin{definition}[Distinct]
+  \label{def:distinct}\lean{Mensura.distinct}\uses{def:fibermap}\leanok
+  Duplicate elimination per key.  Neither a per-row map nor a single-row
+  aggregate, but a strict fiber map, so split-safe directly by
+  \ref{thm:fibermap-splitsafe}: a concrete verb showing the fiber map
+  earns its keep as the universal safe primitive.
+\end{definition}
+
+\begin{definition}[Attribute pivot]
+  \label{def:pivotattr}\lean{Mensura.pivotAttr}\leanok
+  \uses{def:fibermap, def:pivot}
+  The relaxed pivot spreading a \emph{non-index} name column: the long
+  table is indexed by the residual key only, with (value, name) pairs in
+  the bag, so pivoting reads only one key's bag.
+\end{definition}
+
+\begin{theorem}[The attribute pivot is split-safe]
+  \label{thm:pivotattr-splitsafe}\lean{Mensura.pivotAttr_splitSafe}\leanok
+  \uses{def:pivotattr, thm:fibermap-splitsafe}
+  In contrast to the index-column pivot
+  (\ref{thm:pivot-not-splitinvariant}): the formal counterpart of the
+  book's relaxed pivot, safe when the name is an attribute, unsafe when
+  it is an index.
+\end{theorem}
+\begin{proof}\leanok
+  It is a strict fiber map.
+\end{proof}
+
+\begin{definition}[Name-total long table]
+  \label{def:nametotal}\lean{Mensura.NameTotal}\uses{def:table}\leanok
+  Each present key is the spread of one wide row: exactly one row per
+  name, with that name present.
+\end{definition}
+
+\begin{theorem}[Reversibility of the attribute pivot]
+  \label{thm:pivotattr-reversible}\lean{Mensura.pivotAttr_reversible}\leanok
+  \uses{def:pivotattr, def:unpivot, def:project, def:nametotal}
+  On name-total tables, project after unpivot after the attribute pivot
+  is the identity.  Of the three steps only the project is not
+  split-safe, so it is the lone unsafe step of the round trip.
+\end{theorem}
+\begin{proof}\leanok
+  The pivoted single row respreads to the universe of names, and the
+  projection re-tags each with its name.
+\end{proof}
+
+\chapter{Open problems}
+
+The white nodes below are planned, not yet formalized; the Lean names
+are the intended targets.
+
+\begin{definition}[Binary join]
+  \label{def:binary-join}\lean{Mensura.binaryInnerJoin}
+  \uses{def:innerjoin}
+  The join of \emph{two} table arguments, generalizing the fixed-right
+  form.  Requires a notion of split-invariance for binary operations,
+  which the book leaves open.
+\end{definition}
+
+\begin{theorem}[Split-invariance of the binary join]
+  \label{thm:binary-join-splitinvariant}
+  \lean{Mensura.binaryInnerJoin_splitInvariant}
+  \uses{def:binary-join, def:split-invariant}
+  The book's closing conjecture: state binary split-invariance (both
+  arguments split by compatible indicators) and settle it for the binary
+  inner join, which can erase rows from either side.
+\end{theorem}
+
+\begin{definition}[Arranged tables and window operations]
+  \label{def:arranged}\lean{Mensura.Arranged}\uses{def:table}
+  Order-dependent verbs (lag, cumulative sum, rank) are not bag
+  operations: lift the content from the bag monad to the list monad (an
+  explicit row-number index), as in the book's ``grouped and arranged''
+  section.  Deliberately not split-invariant; the point is to place them
+  precisely.
+\end{definition}
+
+\begin{theorem}[Axis-blind splits preserve the rectangle]
+  \label{thm:split-exhaustive-axis-blind}
+  \lean{Mensura.split_exhaustive_of_axis_blind}
+  \uses{def:split, def:exhaustive}
+  ADR 0020's open question: a split whose predicate provably ignores the
+  name axis preserves exhaustiveness, recovering the rectangle through
+  splits that only read the residual key.
+\end{theorem}
+
+\begin{definition}[Population-relative completeness]
+  \label{def:complete-over}\lean{Mensura.CompleteOver}\uses{def:table}
+  ADR 0017's \texttt{complete\_over}: completeness of a table over a
+  reference population at a coarser key, the population-relative
+  counterpart of \ref{def:exhaustive}.  Unmechanized; needed to back the
+  Tier B discharge rules with theorems.
+\end{definition}
