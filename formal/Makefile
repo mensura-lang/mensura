@@ -8,15 +8,16 @@
 
 BLUEPRINT := blueprint
 
-.PHONY: help cache build axioms color web pdf
+.PHONY: help cache build axioms color color-check web pdf
 
 help:
-	@echo "make cache   -- fetch the Mathlib build cache (once, before first build)"
-	@echo "make build   -- lake build the Lean development"
-	@echo "make axioms  -- run the axiom gate (AxiomCheck.lean)"
-	@echo "make color   -- derive blueprint node colors from the code"
-	@echo "make web     -- render the blueprint dashboard to blueprint/web/"
-	@echo "make pdf     -- build the blueprint PDF in blueprint/print/"
+	@echo "make cache       -- fetch the Mathlib build cache (once, before first build)"
+	@echo "make build       -- lake build the Lean development"
+	@echo "make axioms      -- run the axiom gate (AxiomCheck.lean)"
+	@echo "make color       -- derive blueprint node colors from the code"
+	@echo "make color-check -- fail if the blueprint drifted from the code (CI gate)"
+	@echo "make web         -- render the blueprint dashboard to blueprint/web/"
+	@echo "make pdf         -- build the blueprint PDF in blueprint/print/"
 
 cache:
 	lake exe cache get
@@ -29,6 +30,9 @@ axioms:
 
 color:
 	uv run $(BLUEPRINT)/color.py
+
+color-check:
+	python3 $(BLUEPRINT)/color.py --check
 
 web: color
 	cd $(BLUEPRINT)/src && uv run --project .. plastex -c plastex.cfg web.tex

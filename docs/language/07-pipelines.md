@@ -74,7 +74,7 @@ Three forms thread operations together, all from the expression sublanguage:
 
 The central guarantee is **split-safety**.  Every Tier A operation is
 `SplitSafe` (`PreservesDisjoint` and `SplitInvariant`), and split-safe
-operations are closed under composition (`SplitSafe.comp`, `Table.lean`).  So a
+operations are closed under composition (`SplitSafe.comp`, `Core/Defs.lean`).  So a
 pipeline built only from Tier A operations commutes with a split: running it on
 the whole table and running it on each side of a split and re-binding give the
 same result.  That is the formal content of "no leakage between train and

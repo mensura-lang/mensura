@@ -193,7 +193,7 @@ A table keys a **multiset of nested rows**: at a key there may be no row
 **cardinality**, and it is the only multiset in the model.  A single
 value inside a row is **not** a multiset: each value is either **known**
 or **missing**, always 0 or 1 (`Cell = Option` in
-`formal/Mensura/Table.lean`).  Cardinality (how many rows) and
+`formal/Mensura/Core/Defs.lean`).  Cardinality (how many rows) and
 missingness (whether a value is there) are orthogonal axes.
 
 A value-scoped expression runs at one row, so a bare column read there is
