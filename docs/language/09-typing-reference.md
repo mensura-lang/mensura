@@ -9,7 +9,7 @@ detailed enough that two people implementing independently would build
 compatible compilers" (`ROADMAP.md`, M0).  Until now those rules were correct
 but scattered: expressions in `06-expressions.md`, pipeline primitives in
 `07-pipelines.md`, the disjointness algebra in `08-lineage.md`, and the proofs
-in `formal/Mensura/{Table,Completeness}.lean`.
+in the themed modules under `formal/Mensura/`.
 
 ## Scope of this freeze
 
@@ -166,7 +166,8 @@ a corollary of two properties, so the lattice needs only two points.
 ### 3.3  Totality (column-scoped qualifier)
 
 Whether a non-index value is known or may be missing.  A cell is
-`Cell = Option` (`formal/Mensura/Table.lean`): known or missing, always 0 or 1.
+`Cell = Option` (`formal/Mensura/Core/Defs.lean`): known or missing, always
+0 or 1.
 Totality is a **per-column** fact: a value is **total** (always known) by
 default, and an **optional** value carries a `?` on its type (ADR 0010).  It is
 orthogonal to cardinality: cardinality counts rows at a key, totality asks
@@ -501,7 +502,7 @@ The central guarantee is **split-safety**.  In the formalization,
 SplitSafe op  :=  PreservesDisjoint op  and  SplitInvariant op
 ```
 
-(`formal/Mensura/Table.lean`).  Split-safe operations are closed under
+(`formal/Mensura/Core/Defs.lean`).  Split-safe operations are closed under
 composition (`SplitSafe.comp`) and identity is split-safe (`SplitSafe.id`), so a
 pipeline built only from Tier A operations commutes with a split: running it on
 the whole table equals running it on each side of a split and re-binding.  That
@@ -558,7 +559,7 @@ rejected.
 Split-safety is defined with `PreservesDisjoint` (section 7), so disjointness is
 part of the proven algebra.  This freeze *tracks* it with a **lineage
 hierarchy** rather than a symbolic key-predicate region.  In the formalization
-(`formal/Mensura/Table.lean`),
+(`formal/Mensura/Core/Defs.lean`),
 
 ```
 Disjoint T0 T1  :=  forall k, T0.rows k = 0  or  T1.rows k = 0
@@ -629,10 +630,12 @@ the primary split-safety / disjointness backing; section 11 has the full index.
 ## 11.  Lean theorem index
 
 Each rule above is backed by a theorem in the Lean formalization.  Names are
-verbatim; the two files are `formal/Mensura/Table.lean` and
-`formal/Mensura/Completeness.lean`.
+verbatim; the development lives in themed modules under `formal/Mensura/`
+(`Core/`, `SplitSafety.lean`, `Reshape.lean`, `Rectangle.lean`, and
+`Completeness/`).
 
-**`Table.lean`** -- core algebra, split-safety, disjointness, lineage tags:
+**Core algebra** (`Core/`, `SplitSafety.lean`, `Reshape.lean`,
+`Rectangle.lean`) -- split-safety, disjointness, reshape, lineage tags:
 
 - composition: `SplitSafe.comp`, `SplitSafe.id`; definitions `SplitSafe`,
   `SplitInvariant`, `PreservesDisjoint`, `Disjoint`.
@@ -656,7 +659,8 @@ verbatim; the two files are `formal/Mensura/Table.lean` and
   `leftJoin_exhaustive`, `aggregate_exhaustive`, `bind_exhaustive`;
   `split_not_exhaustive` witnesses the destroyed row.
 
-**`Completeness.lean`** -- reindexing layer, group/fiber operations:
+**Completeness layer** (`Completeness/`) -- reindexing layer, group/fiber
+operations:
 
 - `group_map` (`fiberMap`): `fiberMap_splitSafe`,
   `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`.
