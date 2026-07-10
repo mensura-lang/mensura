@@ -9,6 +9,13 @@ completeness fact in M1: the `completeness_check { assert ... }` and
 in `docs/language/09-typing-reference.md` sections 6.3, 6.6, 8, and 9; this ADR
 fixes only the surface.  Implemented for M1 on the `m1-completion` branch.
 
+Amended by `docs/decisions/0023-completeness-consumed-by-the-reducer`: the
+consumer moves from `shrink_key` (which now only propagates the fact, fine
+key to coarse key) to the reducing `group_map`; index `pivot` had already
+lost its obligation to
+`docs/decisions/0020-reshape-as-a-true-inverse-pair`.  The establishment
+surface ratified here is unchanged.
+
 ## Context
 
 A Tier B operation is sound only over a partition that is complete over the

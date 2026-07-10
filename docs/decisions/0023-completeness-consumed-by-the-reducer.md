@@ -2,19 +2,23 @@
 
 ## Status
 
-Proposed.  Under discussion in
-[issue #38](https://github.com/mensura-lang/mensura/issues/38) (Track 1).
+Accepted.  Resolves Track 1 of
+[issue #38](https://github.com/mensura-lang/mensura/issues/38).
 Amends the consumer placement of
-`docs/decisions/0017-completeness-establish-consume.md`, which names
+`docs/decisions/0017-completeness-establish-consume.md`, which named
 `shrink_key` (and index `pivot`, already dissolved by
 `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`) as the completeness
 consumer.  Independent of, but reinforced by,
 `docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`: 0022
 makes the completeness fact natural to establish at the source; this ADR
-fixes where it is consumed.  Nothing here changes `pipe_check` or the language
-docs until it is accepted and the backing lemma lands in `formal/` (repo rule:
+fixes where it is consumed.  The backing lemmas
+(`Mensura.project_completeWrt`, `Mensura.fiberCompleteWrt_of_functional`)
+are proved in `formal/Mensura/Completeness/CompleteOver.lean` (repo rule:
 propagation rules are backed by proofs or stay conservative,
-`docs/decisions/0021-formal-proof-pipeline.md`).
+`docs/decisions/0021-formal-proof-pipeline.md`).  Implemented in
+`pipe_check` and reflected in `docs/language/00-overview.md`,
+`07-pipelines.md`, `08-lineage.md`, `09-typing-reference.md` (sections 3.4,
+6.2, 6.3, 7, 8, 10, 11), and `10-views.md`.
 
 ## Context
 

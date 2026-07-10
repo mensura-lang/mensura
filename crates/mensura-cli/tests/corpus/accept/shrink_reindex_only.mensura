@@ -1,0 +1,8 @@
+// Accept: shrink_key with no downstream reducer needs no completeness
+// discharge (ADR 0023).  A possibly partial bag is an honest reindex; the
+// obligation belongs to the reducing group_map, and there is none here.
+unit Reading { ts: int }
+store readings { unit { Reading } attr { machine: string } }
+view long_form {
+  readings |> extend_key machine |> shrink_key machine
+}

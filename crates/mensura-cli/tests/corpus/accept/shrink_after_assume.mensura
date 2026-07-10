@@ -1,5 +1,6 @@
-// Accept: assume { complete } discharges shrink_key's completeness obligation,
-// then a group_map aggregate brings the bag back to singletons (ADR 0017).
+// Accept: assume { complete } establishes the fact, shrink_key propagates it
+// to the coarser key, and the reducing group_map consumes it (ADR 0017 as
+// amended by ADR 0023), bringing the bag back to singletons.
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } attr { credits: int } }
 view rollup {

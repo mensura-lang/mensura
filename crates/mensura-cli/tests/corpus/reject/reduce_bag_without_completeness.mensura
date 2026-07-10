@@ -1,0 +1,10 @@
+// Reject (resolve): a reducing group_map over an incomplete bag (ADR 0023).
+// The fold over a possibly partial bag is silently wrong, so the reducer
+// demands completeness and no establish step was written.
+unit Reading { ts: int }
+store readings { unit { Reading } attr { machine: string } attr { credits: int } }
+view bad {
+  readings |> extend_key machine
+           |> shrink_key machine
+           |> group_map |k, g| (.total = sum g.credits)
+}

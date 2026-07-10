@@ -566,16 +566,32 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// `group_map |k, g| record` (section 6.2, Tier A): transform each group. The
 /// result cardinality is **inferred from the return**: all single-valued fields
 /// are the aggregate shape (one row per key, `Singletons`); bag-valued fields are
-/// the window shape (one output row per input row, `Bag`). The index,
-/// completeness, and lineage are preserved; `exhaustive` is carried (one output
-/// row per present key in the aggregate shape, one per input row in the window
-/// shape, so no fiber loses a row; `fiberMap_exhaustive`, with
-/// `aggregate_exhaustive` the aggregate-shape special case).
+/// the window shape (one output row per input row, `Bag`). A **reducing** body
+/// (the aggregate shape) folds each key's bag, which is silently wrong on a
+/// partial bag, so it demands completeness over the current key (ADR 0023);
+/// at a `Singletons` input the obligation discharges trivially, since a
+/// present key's single row is the identity's whole fiber
+/// (`fiberCompleteWrt_of_functional`). The index, completeness, and lineage
+/// are preserved; `exhaustive` is carried (one output row per present key in
+/// the aggregate shape, one per input row in the window shape, so no fiber
+/// loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive` the
+/// aggregate-shape special case).
 fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "group_map", 2, span)?;
     let ctx = Context::group(params[0], params[1], &table);
     let (columns, totality, cardinality) = group_record_content(&ctx, body)?;
+    if cardinality == Cardinality::Singletons
+        && table.qualifiers.cardinality == Cardinality::Bag
+        && table.qualifiers.completeness != Completeness::Complete
+    {
+        return Err(error(
+            "a reducing `group_map` needs completeness over the current key (a \
+             fold over a partial bag is silently wrong); establish it with \
+             `completeness_check { ... }` or `assume { complete }` first",
+            span,
+        ));
+    }
     Ok(PipeTy::Table(TableType {
         content: Content {
             index: table.content.index,
@@ -850,23 +866,19 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     Ok(())
 }
 
-/// `shrink_key cols` (section 6.3, Tier B, ADR 0017): drop index components into
-/// the non-index part. Content: the named key columns become ordinary columns.
-/// Cardinality: rises to `bag` (rows that differed only in the dropped key now
-/// share a key). Completeness: **demanded** over the retained key (discharged by
-/// an upstream `completeness_check`/`assume`); the result is complete over the
-/// new key. Lineage: **dropped** (`project_not_preservesDisjoint`).
+/// `shrink_key cols` (section 6.3, Tier B, ADR 0017 as amended by ADR 0023):
+/// drop index components into the non-index part. Content: the named key
+/// columns become ordinary columns. Cardinality: rises to `bag` (rows that
+/// differed only in the dropped key now share a key). Completeness:
+/// **propagated**, not demanded: a table complete against a reference at the
+/// fine key stays complete against the coarsened reference at the retained key
+/// (`project_completeWrt`); the consumer is the reducing `group_map`
+/// downstream. Lineage: **dropped** (`project_not_preservesDisjoint`), the
+/// lineage break that keeps `shrink_key` Tier B on its own.
 fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
         return Err(error("`shrink_key` needs at least one column", span));
-    }
-    if table.qualifiers.completeness != Completeness::Complete {
-        return Err(error(
-            "`shrink_key` needs completeness over the retained key; establish it \
-             with `completeness_check { ... }` or `assume { complete }` first",
-            span,
-        ));
     }
     let mut errs = Vec::new();
     let mut to_drop: Vec<String> = Vec::new();
@@ -908,7 +920,9 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     table.content.columns.extend(dropped);
     table.qualifiers.cardinality = Cardinality::Bag;
     table.qualifiers.lineage = Lineage::dropped();
-    // Completeness stays Complete (now over the coarser retained key).
+    // Completeness carries over unchanged: whatever fact held at the fine key
+    // holds against the coarsened reference at the retained key
+    // (`project_completeWrt`, ADR 0023).
     // `exhaustive` is forfeited: ADR 0020 section 2 sketches the retained-axis
     // carry (a union of full fibers is full), but the key-changing propagation
     // rows are the ADR's open formal work item, so the checker stays
@@ -1890,10 +1904,11 @@ mod tests {
     }
 
     #[test]
-    fn shrink_key_demotes_after_establishing_completeness() {
+    fn shrink_key_propagates_completeness_to_the_coarser_key() {
         let s = sample_sources();
         // Promote `machine` into the key, establish completeness, then shrink it
-        // back out: result is a bag, complete, with lineage dropped.
+        // back out: result is a bag, still complete (against the coarsened
+        // reference, `project_completeWrt`), with lineage dropped.
         let t = table_of(
             pipe_ty(
                 &s,
@@ -1910,27 +1925,89 @@ mod tests {
     }
 
     #[test]
-    fn shrink_key_demands_completeness() {
+    fn shrink_key_alone_needs_no_completeness() {
         let s = sample_sources();
-        // No establish step: a bare store is incomplete, so shrink_key is rejected.
-        let errs = pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine")
-            .expect_err("incomplete");
-        assert!(errs[0].message.contains("complete"));
+        // ADR 0023: a reindex with no downstream reducer is admitted on its
+        // own; a possibly partial bag is an honest representation of the rows
+        // present, and the obligation belongs to the reducer.
+        let t = table_of(
+            pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine").expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        assert_eq!(t.qualifiers.lineage, Lineage::root());
+    }
+
+    #[test]
+    fn reducing_group_map_over_a_bag_demands_completeness() {
+        let s = sample_sources();
+        // The fold lands where the unsoundness is (ADR 0023): a reducing
+        // `group_map` over a possibly partial bag is rejected without an
+        // establish step.
+        let errs = pipe_ty(
+            &s,
+            "readings |> extend_key machine |> shrink_key machine \
+             |> group_map |k, g| (.n = count g.temperature)",
+        )
+        .expect_err("incomplete bag");
+        assert!(errs[0].message.contains("reducing `group_map`"), "{errs:?}");
+    }
+
+    #[test]
+    fn completeness_propagates_through_shrink_key_to_the_reducer() {
+        let s = sample_sources();
+        // The establish step may sit before or after `shrink_key`; either way
+        // the reducer's demand is met (ADR 0023).
+        for src in [
+            "readings |> extend_key machine |> assume { complete } |> shrink_key machine \
+             |> group_map |k, g| (.n = count g.temperature)",
+            "readings |> extend_key machine |> shrink_key machine |> assume { complete } \
+             |> group_map |k, g| (.n = count g.temperature)",
+        ] {
+            let t = table_of(pipe_ty(&s, src).expect("ok"));
+            assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        }
+    }
+
+    #[test]
+    fn window_group_map_over_a_bag_needs_no_completeness() {
+        let s = sample_sources();
+        // Only the reducing shape consumes the fact; a window body (a bag
+        // return) is one output row per input row, faithful on a partial bag.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> shrink_key machine \
+                 |> group_map |k, g| (.temps = g.temperature)",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    #[test]
+    fn reducing_group_map_over_singletons_discharges_trivially() {
+        let s = sample_sources();
+        // At `card <= 1` a present key's single row is its whole fiber
+        // (`fiberCompleteWrt_of_functional`), so the ordinary aggregation over
+        // a plain store is ceremony-free (ADR 0023).
+        let t = table_of(
+            pipe_ty(&s, "readings |> group_map |k, g| (.m = max g.temperature)").expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]
     fn shrink_key_cannot_empty_the_index() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> assume { complete } |> shrink_key ts")
-            .expect_err("empty index");
+        let errs = pipe_ty(&s, "readings |> shrink_key ts").expect_err("empty index");
         assert!(errs[0].message.contains("at least one index"));
     }
 
     #[test]
     fn shrink_key_unknown_column_errors() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> assume { complete } |> shrink_key bogus")
-            .expect_err("unknown");
+        let errs = pipe_ty(&s, "readings |> shrink_key bogus").expect_err("unknown");
         assert!(errs[0].message.contains("not an index column `bogus`"));
     }
 
@@ -2161,8 +2238,7 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> extend_key machine |> assume { complete } \
-             |> shrink_key machine machine",
+            "readings |> extend_key machine |> shrink_key machine machine",
         )
         .expect_err("repeated");
         assert!(errs[0].message.contains("more than once"));

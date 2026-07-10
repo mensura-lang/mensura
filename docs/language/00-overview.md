@@ -171,14 +171,17 @@ appears in the table, the table holds *all* the rows that belong to that key
 under the current grouping.  It is not the same as totality (which is about
 individual cell values) and not the same as cardinality (which counts rows).
 
-Completeness is relevant at `shrink_key`: to safely fold a key component
-into a non-index column, the pipeline must know that no row belonging to
-any key is missing from that key's group.  Without completeness, a
-group-wise aggregate over an incomplete group would silently ignore the
-missing rows.  (`pivot` needs no such fact: an absent row simply becomes a
-missing cell; the related, domain-relative fact `exhaustive` decides
-whether its spread columns come out total.  See
-`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.)
+Completeness is demanded where its absence would silently corrupt a
+result: at a **reducing `group_map`**, whose group-wise aggregate over an
+incomplete group would silently ignore the missing rows
+(`docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
+`shrink_key` propagates the fact from the fine key to the coarser one on
+the way there, and on a `singletons` input the reducer's demand discharges
+trivially (a present key's single row is its whole group), so the ordinary
+aggregation over a plain store needs no ceremony.  (`pivot` needs no such
+fact either: an absent row simply becomes a missing cell; the related,
+domain-relative fact `exhaustive` decides whether its spread columns come
+out total.  See `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.)
 
 Completeness is established by mechanism (a `collect` source guarantees it),
 by explicit check (`completeness_check { ... }`), by annotation
@@ -294,9 +297,11 @@ the disjointness facts in the lineage qualifier.
 freely and require no extra ceremony around splits.
 
 **Tier B** operations are not split-invariant: `shrink_key` and `pivot`.
-Both drop the lineage qualifier on their output; `shrink_key` must
-additionally discharge a completeness obligation before it is admitted
-(`pivot` needs none: an absent row becomes a missing cell, ADR 0020).
+Both drop the lineage qualifier on their output, and that is the whole
+content of the Tier: neither demands completeness (`shrink_key` propagates
+it to the coarser key, ADR 0023; for `pivot` an absent row becomes a
+missing cell, ADR 0020).  The completeness demand sits downstream, at the
+reducing `group_map`.
 
 The central guarantee of Mensura is that a pipeline composed entirely of
 Tier A operations cannot introduce data leakage between disjoint partitions.
@@ -427,11 +432,12 @@ warnings.
    (`bind`, `split`, `unpivot`, `map`, `group_map`, `extend_key`, and
    `left_join`/`inner_join` against a fixed table) are split-invariant by
    construction and require no extra ceremony.  The Tier B operations break
-   split-invariance: `shrink_key`, which drops a key component, requires an
-   explicit `completeness_check { … }` stage or a `@complete_over`
-   annotation on its source to be admissible, and `pivot`, which spreads a
-   key axis, needs no discharge but drops the lineage qualifier
-   (ADR 0020).  See `docs/language/07-pipelines.md`.
+   split-invariance and drop the lineage qualifier: `shrink_key`, which
+   drops a key component, and `pivot`, which spreads a key axis.  Neither
+   demands completeness; the demand sits at the reducing `group_map`, which
+   over a bag requires an explicit `completeness_check { … }` stage, a
+   `@complete_over` annotation on its source, or an `assume`
+   (ADR 0020, ADR 0023).  See `docs/language/07-pipelines.md`.
 
 4. **Indexes and physical units are part of the type.** Each table declares its
    index columns, and each column declares its domain, including physical
