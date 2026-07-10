@@ -1,6 +1,6 @@
-// Accept: shrink_key with no downstream reducer needs no completeness
-// discharge (ADR 0023).  A possibly partial bag is an honest reindex; the
-// obligation belongs to the reducing group_map, and there is none here.
+// Accept: an exact extend_key/shrink_key round trip is the identity
+// (ADR 0024, `project_ungroup`): the view's type is the store's own,
+// singletons included, so there is nothing to discharge anywhere.
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } }
 view long_form {

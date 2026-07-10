@@ -9,7 +9,7 @@
 //! Like `resolve` and `expr_check`, it collects all diagnostics rather than
 //! failing fast.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
 
@@ -17,8 +17,8 @@ use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
-    Cardinality, Column, Completeness, Content, Exhaustive, Lineage, Qualifiers, SplitId,
-    TableType, Totality,
+    Cardinality, Column, Completeness, Content, Exhaustive, KeyMove, KeyMoveFrame, Lineage,
+    Qualifiers, SplitId, TableType, Totality,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -95,6 +95,21 @@ pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeE
     }
 }
 
+/// Drop any pending key-move frame (ADR 0024); see [`dispatch_op`].
+fn clear_key_move(input: PipeTy) -> PipeTy {
+    match input {
+        PipeTy::Table(mut t) => {
+            t.key_move = None;
+            PipeTy::Table(t)
+        }
+        PipeTy::Pair(mut a, mut b) => {
+            a.key_move = None;
+            b.key_move = None;
+            PipeTy::Pair(a, b)
+        }
+    }
+}
+
 fn expect_table(pipe: PipeTy, span: Span) -> Result<TableType, Vec<TypeError>> {
     match pipe {
         PipeTy::Table(table) => Ok(table),
@@ -141,6 +156,14 @@ fn dispatch_op(
     input: PipeTy,
     span: Span,
 ) -> Result<PipeTy, Vec<TypeError>> {
+    // Any operation other than a key move invalidates a pending key-move
+    // frame (ADR 0024): the frame is a fact about the table exactly as it
+    // stands, and no other operation's rules consult or maintain it.  The
+    // key moves handle their own frames (restore, nest, or fall through).
+    let input = match op {
+        "extend_key" | "shrink_key" => input,
+        _ => clear_key_move(input),
+    };
     match op {
         "extend_key" => op_extend_key(input, args, span),
         "shrink_key" => op_shrink_key(input, args, span),
@@ -286,6 +309,7 @@ fn op_join(
             },
             lineage: left.qualifiers.lineage,
         },
+        key_move: None,
     }))
 }
 
@@ -332,6 +356,7 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
             exhaustive,
             lineage: table.qualifiers.lineage,
         },
+        key_move: None,
     }))
 }
 
@@ -604,6 +629,7 @@ fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec
             exhaustive: table.qualifiers.exhaustive,
             lineage: table.qualifiers.lineage,
         },
+        key_move: None,
     }))
 }
 
@@ -751,6 +777,7 @@ fn op_bind(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Type
             exhaustive,
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
+        key_move: None,
     }))
 }
 
@@ -766,6 +793,7 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
             exhaustive: Exhaustive::new(),
             lineage,
         },
+        key_move: None,
     }
 }
 
@@ -816,27 +844,57 @@ fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
 /// `(s, math, score=5)` and `(s, port, score=7)` are exhaustive in the
 /// subject axis at residual key `s`, but not at `(s, 5)` after
 /// `extend_key score`), so the carry is unsound as stated.
+///
+/// As the exact inverse of a pending `shrink_key` of the same columns, it
+/// instead restores the pre-demotion table verbatim (`ungroup_project`,
+/// ADR 0024): `project` tags every row with its own key component, so
+/// re-promoting files each row back where it came from.  Otherwise it
+/// records a promotion frame for a matching `shrink_key` to consume.
 fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
         return Err(error("`extend_key` needs at least one column", span));
     }
     let mut errs = Vec::new();
+    let mut cols: Vec<(&str, Span)> = Vec::new();
     for arg in args {
         let ExprKind::Name(col) = &arg.kind else {
             errs.push(te("`extend_key` expects column names", arg.span));
             continue;
         };
-        if let Err(e) = promote_to_index(&mut table, col, arg.span) {
+        cols.push((col, arg.span));
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let requested: BTreeSet<String> = cols.iter().map(|(c, _)| c.to_string()).collect();
+    if let Some(frame) = table.key_move.take() {
+        if frame.kind == KeyMove::Demoted
+            && requested == frame.columns
+            && requested.len() == cols.len()
+        {
+            return Ok(PipeTy::Table(frame.saved));
+        }
+        // Not the inverse move: the frame stays true of the pre-promotion
+        // table, so it rides along inside the new frame's snapshot.
+        table.key_move = Some(frame);
+    }
+    let saved = table.clone();
+    for (col, span) in &cols {
+        if let Err(e) = promote_to_index(&mut table, col, *span) {
             errs.push(e);
         }
     }
-    table.qualifiers.exhaustive.clear();
-    if errs.is_empty() {
-        Ok(PipeTy::Table(table))
-    } else {
-        Err(errs)
+    if !errs.is_empty() {
+        return Err(errs);
     }
+    table.qualifiers.exhaustive.clear();
+    table.key_move = Some(Box::new(KeyMoveFrame {
+        kind: KeyMove::Promoted,
+        columns: requested,
+        saved,
+    }));
+    Ok(PipeTy::Table(table))
 }
 
 fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), TypeError> {
@@ -875,6 +933,13 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
 /// (`project_completeWrt`); the consumer is the reducing `group_map`
 /// downstream. Lineage: **dropped** (`project_not_preservesDisjoint`), the
 /// lineage break that keeps `shrink_key` Tier B on its own.
+///
+/// As the exact inverse of a pending `extend_key` of the same columns, it
+/// instead restores the pre-promotion table verbatim (`project_ungroup`,
+/// ADR 0024; the promoted columns were total, `extend_key`'s own gate, so
+/// the round trip is the identity in content and in every qualifier).
+/// Otherwise it records a demotion frame for a matching `extend_key` to
+/// consume.
 fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
@@ -910,6 +975,16 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
             span,
         ));
     }
+    let requested: BTreeSet<String> = to_drop.iter().cloned().collect();
+    if let Some(frame) = table.key_move.take() {
+        if frame.kind == KeyMove::Promoted && requested == frame.columns {
+            return Ok(PipeTy::Table(frame.saved));
+        }
+        // Not the inverse move: the frame stays true of the pre-demotion
+        // table, so it rides along inside the new frame's snapshot.
+        table.key_move = Some(frame);
+    }
+    let saved = table.clone();
     // Move each dropped key column into the non-index part.
     let (dropped, kept): (Vec<Column>, Vec<Column>) = table
         .content
@@ -928,6 +1003,11 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     // rows are the ADR's open formal work item, so the checker stays
     // conservative until they are mechanized.
     table.qualifiers.exhaustive.clear();
+    table.key_move = Some(Box::new(KeyMoveFrame {
+        kind: KeyMove::Demoted,
+        columns: requested,
+        saved,
+    }));
     Ok(PipeTy::Table(table))
 }
 
@@ -1930,10 +2010,13 @@ mod tests {
         let s = sample_sources();
         // ADR 0023: a reindex with no downstream reducer is admitted on its
         // own; a possibly partial bag is an honest representation of the rows
-        // present, and the obligation belongs to the reducer.
-        let t = table_of(
-            pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine").expect("ok"),
-        );
+        // present, and the obligation belongs to the reducer.  Shrinking a
+        // column other than the promoted one keeps this a genuine reindex
+        // rather than an ADR 0024 round trip.
+        let t =
+            table_of(pipe_ty(&s, "readings |> extend_key machine |> shrink_key ts").expect("ok"));
+        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.columns.iter().any(|c| c.name == "ts"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
         assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
         assert_eq!(t.qualifiers.lineage, Lineage::root());
@@ -1944,14 +2027,83 @@ mod tests {
         let s = sample_sources();
         // The fold lands where the unsoundness is (ADR 0023): a reducing
         // `group_map` over a possibly partial bag is rejected without an
-        // establish step.
+        // establish step.  The reindex must not be an exact ADR 0024 round
+        // trip, or the singletons input would discharge trivially.
         let errs = pipe_ty(
             &s,
-            "readings |> extend_key machine |> shrink_key machine \
+            "readings |> extend_key machine |> shrink_key ts \
              |> group_map |k, g| (.n = count g.temperature)",
         )
         .expect_err("incomplete bag");
         assert!(errs[0].message.contains("reducing `group_map`"), "{errs:?}");
+    }
+
+    #[test]
+    fn key_move_round_trip_restores_the_table_exactly() {
+        let s = sample_sources();
+        // ADR 0024: an exact promote/demote round trip is the identity
+        // (`project_ungroup`), in content (order included) and in every
+        // qualifier, so the type is the source's own.
+        let base = table_of(pipe_ty(&s, "readings").expect("ok"));
+        let t = table_of(
+            pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine").expect("ok"),
+        );
+        assert_eq!(t, base);
+    }
+
+    #[test]
+    fn key_move_round_trip_restores_in_the_demote_first_order() {
+        // The opposite composition (`ungroup_project`, ADR 0024) restores
+        // unconditionally: the demoted column is total by construction.
+        let events = from_cols(
+            "events",
+            "Event",
+            vec![
+                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("machine", ColumnType::String, ColumnRole::Index, false),
+                scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+        );
+        let s = Sources::new().with("events", events);
+        let base = table_of(pipe_ty(&s, "events").expect("ok"));
+        let t = table_of(
+            pipe_ty(&s, "events |> shrink_key machine |> extend_key machine").expect("ok"),
+        );
+        assert_eq!(t, base);
+    }
+
+    #[test]
+    fn key_move_frames_nest_and_unwind() {
+        let s = sample_sources();
+        // Chained promotions unwind through the frame stack (ADR 0024): each
+        // frame's snapshot carries the one beneath it.
+        let base = table_of(pipe_ty(&s, "readings").expect("ok"));
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> extend_key flag \
+                 |> shrink_key flag |> shrink_key machine",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t, base);
+    }
+
+    #[test]
+    fn reducing_group_map_after_an_exact_round_trip_is_admitted() {
+        let s = sample_sources();
+        // ADR 0024 composed with ADR 0023: the round trip restores the
+        // `singletons` cardinality, so the reducer's obligation discharges
+        // trivially (`fiberCompleteWrt_of_functional`) with no establish step.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> shrink_key machine \
+                 |> group_map |k, g| (.n = count g.temperature)",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]

@@ -221,11 +221,44 @@ pub struct Qualifiers {
     pub lineage: Lineage,
 }
 
+/// The direction of the key move that recorded a [`KeyMoveFrame`] (ADR 0024).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyMove {
+    /// `extend_key`: attribute columns were promoted into the index.
+    Promoted,
+    /// `shrink_key`: index columns were demoted into the attributes.
+    Demoted,
+}
+
+/// The inverse-pair witness (ADR 0024,
+/// `docs/decisions/0024-key-moves-as-a-true-inverse-pair.md`): the table
+/// exactly as it stood before the most recent key move, together with the
+/// moved column set.  The exactly inverse move restores `saved` verbatim,
+/// backed by the cancellation laws `project_ungroup` / `ungroup_project`
+/// (`formal/Mensura/Laws.lean`).  The frame is a semantic fact about the
+/// table it is attached to (applying the inverse move yields `saved`), not
+/// a record of history, so frames nest through chained moves via the
+/// `saved` table's own frame; every *other* operation clears it centrally
+/// in the pipeline dispatch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyMoveFrame {
+    pub kind: KeyMove,
+    /// The moved columns, as a set: the inverse move must name exactly
+    /// these, in any order and without repetition.
+    pub columns: BTreeSet<String>,
+    /// The table before the move, its own frame included (the stack).
+    pub saved: TableType,
+}
+
 /// `Table<Qs, C>`: structure plus scoped qualifiers (ADR 0013).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableType {
     pub content: Content,
     pub qualifiers: Qualifiers,
+    /// The pending key-move frame (ADR 0024): `Some` exactly when the
+    /// table is the direct output of an `extend_key`/`shrink_key` with no
+    /// operation applied since.
+    pub key_move: Option<Box<KeyMoveFrame>>,
 }
 
 impl TableType {
@@ -264,6 +297,7 @@ impl TableType {
                 exhaustive: Exhaustive::new(),
                 lineage: Lineage::root(),
             },
+            key_move: None,
         }
     }
 }
@@ -337,6 +371,7 @@ mod tests {
                 exhaustive: Exhaustive::new(),
                 lineage: Lineage::root(),
             },
+            key_move: None,
         };
         assert_eq!(t.content.index.len(), 1);
         assert_eq!(t.content.columns[0].domain, ColumnType::String);

@@ -8,9 +8,11 @@ an optimizing plan IR.  The laws below are the prototypical plan rewrites:
 `empty` completes `bind`'s commutative monoid (unit laws); `map` carries
 identity and fusion laws (fusion subsumes filter/filter, filter/mutate, and
 select fusion, since all are `map`s, ADR 0015); the joins absorb a preceding
-`map` and commute with a left-column `filter` (pushdown); and `split`/`bind`
+`map` and commute with a left-column `filter` (pushdown); `split`/`bind`
 cancel in both directions (`bind_split` in `Mensura.Core.Defs`, `split_bind`
-below).
+below); and `ungroup`/`project` -- the algebra's `extend_key`/`shrink_key` --
+cancel in both directions on the domain the checker enforces
+(`project_ungroup`, `ungroup_project`, ADR 0024).
 -/
 
 import Mensura.Core.Ops
@@ -146,5 +148,77 @@ theorem split_bind (s : K → Bool) {T₀ T₁ : Table K H σ}
     · simp [h₁ k hs]
     · simp [h₀ k hs]
   exact Prod.ext e₁ e₂
+
+/-! ### `ungroup` / `project`: the key-move cancellation (ADR 0024)
+
+`ungroup` is the algebra's `extend_key` (promote the distinguished column
+into the key) and `project` its `shrink_key` (demote a key component into
+a column).  On the domain the checker already enforces -- `extend_key`
+requires the promoted column total -- they cancel in both directions, so
+the key moves form a true inverse pair like the reshape pair of ADR 0020.
+The cancellation is what entitles the checker to treat an exact
+`extend_key c |> shrink_key c` round trip as the identity in *all*
+tracked facts: the composite is literally `id`, which is `SplitSafe` and
+preserves every property by rewriting. -/
+
+/-- A finite sum of binds of one multiset is the bind of the pointwise
+sum: `Multiset.bind` is additive in its function argument
+(`Multiset.bind_add`), so it commutes with `∑`. -/
+theorem sum_bind {α β γ : Type _} [Fintype γ] (m : Multiset α)
+    (F : γ → α → Multiset β) :
+    ∑ c : γ, m.bind (F c) = m.bind (fun a => ∑ c : γ, F c a) := by
+  refine Multiset.induction_on m (by simp) (fun a m ih => ?_)
+  simp [Multiset.cons_bind, Finset.sum_add_distrib, ih]
+
+/-- The bind of a finite sum of multisets is the sum of the binds:
+`Multiset.bind` is additive in its multiset argument
+(`Multiset.add_bind`), so it commutes with `∑`. -/
+theorem bind_sum {α β γ : Type _} (s : Finset γ) (m : γ → Multiset α)
+    (ψ : α → Multiset β) :
+    (∑ c ∈ s, m c).bind ψ = ∑ c ∈ s, (m c).bind ψ := by
+  classical
+  refine Finset.induction_on s (by simp) (fun {a} {t} ha ih => ?_)
+  simp [Finset.sum_insert ha, Multiset.add_bind, ih]
+
+/-- **`shrink_key` undoes `extend_key` (ADR 0024).**  `ungroup` promotes
+the distinguished column into the key, dropping any row whose value there
+is missing; when that column is **total** -- exactly the gate `extend_key`
+enforces ("narrow it first") -- no row drops, and `project` re-tags each
+row with the key component it was filed under, rebuilding the original
+row.  The hypothesis is the pair's inverse-domain side condition, enforced
+by the checker at `extend_key`. -/
+theorem project_ungroup {D : Type} [Fintype D] [DecidableEq D]
+    {T : Table K (H ⊕ Unit) (Sum.elim σ (fun _ => D))}
+    (htot : ∀ k, ∀ f ∈ T.rows k, f (Sum.inr ()) ≠ none) :
+    project (ungroup T) = T := by
+  apply Table.ext_rows
+  intro k
+  simp only [project, ungroup, Multiset.map_bind]
+  rw [sum_bind]
+  conv_rhs => rw [← bind_singleton_id (T.rows k)]
+  refine Multiset.bind_congr (fun f hf => ?_)
+  obtain ⟨d₀, hd₀⟩ := Option.ne_none_iff_exists'.mp (htot k f hf)
+  have hrow : Row.elim (fun h => f (Sum.inl h)) (fun _ => some d₀) = f := by
+    funext c
+    cases c with
+    | inl h => rfl
+    | inr u => cases u; exact hd₀.symm
+  simp [hd₀, apply_ite, Finset.sum_ite_eq]
+  exact hrow
+
+/-- **`extend_key` undoes `shrink_key` (ADR 0024)** -- with no side
+condition: `project` tags every demoted row with its own key component,
+so the demoted column is total by construction, and `ungroup` files every
+row back under exactly the key it came from. -/
+theorem ungroup_project {D : Type} [Fintype D] [DecidableEq D]
+    (T : Table (K × D) H σ) : ungroup (project T) = T := by
+  apply Table.ext_rows
+  rintro ⟨k, d⟩
+  simp only [ungroup, project, bind_sum, Multiset.bind_map, Row.elim_inr, Row.elim_inl]
+  calc ∑ d' : D, (T.rows (k, d')).bind (fun f => if d' = d then {f} else 0)
+      = ∑ d' : D, (if d' = d then T.rows (k, d') else 0) :=
+        Finset.sum_congr rfl (fun d' _ => by
+          by_cases h : d' = d <;> simp [h, bind_singleton_id])
+    _ = T.rows (k, d) := by simp
 
 end Mensura
