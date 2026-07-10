@@ -7,22 +7,23 @@
 //!
 //! Shapes (`docs/language/03-shapes.md`) are validated here too: each store or
 //! view that claims conformance with a `:` clause is checked against the shape's
-//! structure.  A store is checked against its declared columns; a view against
-//! its computed output content, ignoring cardinality
-//! (`docs/language/10-views.md`).  Shapes carry no storage, so they produce no
+//! structure and cardinality.  A store is checked against its declared columns;
+//! a view against its computed output content and cardinality (ADR 0022 amends
+//! ADR 0012: the shape's `attr` / `attr*` blocks now constrain cardinality,
+//! `docs/language/10-views.md`).  Shapes carry no storage, so they produce no
 //! [`Schema`]; a store yields a [`Schema`] and a view a [`ViewPlan`]
 //! (`docs/toolkit/04-processing-layer.md`).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use mensura_syntax::{
-    Block, EnumDecl, Expr, ExprKind, Field, Item, NameSeg, NameTemplate, Program, ShapeArg,
+    Attr, Block, EnumDecl, Expr, ExprKind, Field, Item, NameSeg, NameTemplate, Program, ShapeArg,
     ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, TypeExpr, UnitDecl, ViewDecl, is_identifier,
 };
 
 use crate::model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
 use crate::pipe_check::{Sources, type_view};
-use crate::table::TableType;
+use crate::table::{Cardinality, TableType};
 
 /// A resolution failure, located by a source span.
 #[derive(Clone, Debug, PartialEq)]
@@ -245,8 +246,8 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                 Ok(output) => {
                     // Check the optional `: Shape` conformance clause against
                     // the view's computed output content (index + named
-                    // columns by type/totality), ignoring cardinality
-                    // (10-views.md, ADR 0013).
+                    // columns by type/totality) and cardinality (10-views.md,
+                    // ADR 0013, ADR 0022).
                     check_view_conformance(
                         v,
                         &output,
@@ -390,6 +391,8 @@ fn resolve_store(
         ));
     }
 
+    let cardinality = declared_cardinality(&s.attrs, "store", &mut errors);
+
     // Columns in storage order: index fields, then attributes in declaration
     // order.  Compound units surface here: an index field whose type
     // references another unit is rejected by `resolve_type`.
@@ -406,12 +409,12 @@ fn resolve_store(
             enums,
         );
     }
-    for f in &s.attrs {
+    for a in &s.attrs {
         add_column(
             &mut columns,
             &mut seen,
             &mut errors,
-            f,
+            &a.field,
             ColumnRole::Attr,
             units,
             enums,
@@ -423,10 +426,41 @@ fn resolve_store(
             store: s.name.name.clone(),
             unit: s.unit.name.clone(),
             columns,
+            cardinality,
             span: s.span,
         })
     } else {
         Err(errors)
+    }
+}
+
+/// The cardinality a store or shape declares through its attribute blocks
+/// (ADR 0022): `Singletons` when every attribute is `attr`, `Bag` when every
+/// attribute is `attr*`.  Mixing the two is the ADR's deferred refinement (a
+/// singleton column inside a `bag` store needs bag-construction syntax that
+/// does not exist yet), so it is rejected here; per-entity constants belong
+/// in a companion `singletons` store joined via `domain`.  `what` names the
+/// construct for the diagnostic ("store" or "shape").
+fn declared_cardinality(attrs: &[Attr], what: &str, errors: &mut Vec<ResolveError>) -> Cardinality {
+    let many = attrs.iter().filter(|a| a.many.is_some()).count();
+    if many == 0 {
+        Cardinality::Singletons
+    } else if many == attrs.len() {
+        Cardinality::Bag
+    } else {
+        let star = attrs
+            .iter()
+            .find_map(|a| a.many)
+            .expect("a mixed attribute list has an `attr*` block");
+        errors.push(ResolveError::new(
+            format!(
+                "a {what} cannot mix `attr` and `attr*` blocks: an `attr` column \
+                 inside a `bag` {what} is not yet supported; keep per-entity \
+                 constants in a companion `singletons` store (ADR 0022)"
+            ),
+            star,
+        ));
+        Cardinality::Bag
     }
 }
 
@@ -458,13 +492,18 @@ struct ResolvedAttr {
 }
 
 /// A shape resolved for conformance: its parameters in order (with kinds),
-/// how it constrains the unit, and its attributes.  Attribute names are kept
-/// as templates because they are not concrete until a claim binds the shape's
-/// `string` parameters.
+/// how it constrains the unit, its attributes, and the cardinality it
+/// demands of a conforming table (ADR 0022, amending ADR 0012).  Attribute
+/// names are kept as templates because they are not concrete until a claim
+/// binds the shape's `string` parameters.
 struct ResolvedShape {
     params: Vec<(String, ParamKind)>,
     unit: ShapeUnit,
     attrs: Vec<ResolvedAttr>,
+    /// `Singletons` when the shape has no `attr*` block (the strict reading:
+    /// an all-`attr` shape requires a `singletons` target), `Bag` when its
+    /// attributes are `attr*`.
+    cardinality: Cardinality,
 }
 
 fn resolve_shape(
@@ -548,12 +587,17 @@ fn resolve_shape(
         .map(|(n, _)| n.as_str())
         .collect();
 
+    // The cardinality the shape demands of a conforming table (ADR 0022):
+    // computed from its `attr` / `attr*` blocks exactly as for a store.
+    let cardinality = declared_cardinality(&sh.attrs, "shape", &mut errors);
+
     // Attributes.  A name may interpolate `string` parameters; its type must
     // be a primitive or enum (compound types stay deferred via `resolve_type`).
     let mut attrs = Vec::new();
     let mut seen_literals: HashSet<&str> = HashSet::new();
     for a in &sh.attrs {
-        for seg in &a.name.segments {
+        let f = &a.field;
+        for seg in &f.name.segments {
             let NameSeg::Param(p) = seg else { continue };
             if !str_params.contains(p.name.as_str()) {
                 errors.push(ResolveError::new(
@@ -564,20 +608,20 @@ fn resolve_shape(
         }
         // A literal attribute name is checked here; an interpolated one is
         // checked on the conforming store's resolved column instead.
-        if let Some(lit) = a.name.as_literal() {
-            check_case(lit, a.name.span, Case::Snake, "attribute", &mut errors);
+        if let Some(lit) = f.name.as_literal() {
+            check_case(lit, f.name.span, Case::Snake, "attribute", &mut errors);
             if !seen_literals.insert(lit) {
                 errors.push(ResolveError::new(
                     format!("duplicate attribute `{lit}`"),
-                    a.name.span,
+                    f.name.span,
                 ));
             }
         }
-        match resolve_type(&a.ty, units, enums) {
+        match resolve_type(&f.ty, units, enums) {
             Ok(ty) => attrs.push(ResolvedAttr {
-                name: a.name.clone(),
+                name: f.name.clone(),
                 ty,
-                optional: a.ty.is_optional(),
+                optional: f.ty.is_optional(),
             }),
             Err(e) => errors.push(e),
         }
@@ -588,6 +632,7 @@ fn resolve_shape(
             params,
             unit,
             attrs,
+            cardinality,
         })
     } else {
         Err(errors)
@@ -644,6 +689,26 @@ fn check_conformance(
                     shape_ref_label(claim),
                     req,
                     schema.unit
+                ),
+                claim.span,
+            ));
+            continue;
+        }
+
+        // Cardinality (ADR 0022, amending ADR 0012): a shape with no `attr*`
+        // requires a `singletons` target; `attr*` attributes require the
+        // columns be bag-valued, which in the uniform-store scope means a
+        // `bag` store.
+        if schema.cardinality != shape.cardinality {
+            errors.push(ResolveError::new(
+                format!(
+                    "store `{}` claims `{}`, which requires a `{}` tabulation \
+                     ({}), but the store is `{}`",
+                    s.name.name,
+                    shape_ref_label(claim),
+                    cardinality_word(shape.cardinality),
+                    attr_block_word(shape.cardinality),
+                    cardinality_word(schema.cardinality)
                 ),
                 claim.span,
             ));
@@ -779,14 +844,16 @@ fn bind_shape_args<'a>(
 
 /// Check every shape a view claims with its `:` clause against the view's
 /// computed output (`docs/language/10-views.md`, "Constraining a view with a
-/// shape").  Unlike a store, a view has no declared unit, so the check is
-/// content-only:
+/// shape").  Unlike a store, a view has no declared unit, so the structural
+/// check is content-based:
 ///
 /// - a unit-fixing shape requires the output's index to be exactly the unit's
-///   index fields, by name and type (cardinality is left free: a view may be
-///   `bag`);
+///   index fields, by name and type;
 /// - each shape attribute must appear among the output columns, index or
-///   non-index, with a matching type and totality.
+///   non-index, with a matching type and totality;
+/// - the shape's cardinality (its `attr` / `attr*` blocks, ADR 0022 amending
+///   ADR 0012) must match the output's computed cardinality: an all-`attr`
+///   shape requires `singletons`, an `attr*` shape requires `bag`.
 fn check_view_conformance(
     view: &ViewDecl,
     output: &TableType,
@@ -849,6 +916,24 @@ fn check_view_conformance(
                 ));
                 continue;
             }
+        }
+
+        // Cardinality (ADR 0022, amending ADR 0012): the shape's `attr` /
+        // `attr*` blocks constrain the output's computed cardinality.
+        if output.qualifiers.cardinality != shape.cardinality {
+            errors.push(ResolveError::new(
+                format!(
+                    "view `{}` claims `{}`, which requires a `{}` table ({}), \
+                     but the view's output is `{}`",
+                    view.name.name,
+                    shape_ref_label(claim),
+                    cardinality_word(shape.cardinality),
+                    attr_block_word(shape.cardinality),
+                    cardinality_word(output.qualifiers.cardinality)
+                ),
+                claim.span,
+            ));
+            continue;
         }
 
         // Content attributes: each must appear somewhere in the output (index
@@ -989,6 +1074,23 @@ fn shape_ref_label(r: &ShapeRef) -> String {
 /// The total/optional axis as a word for diagnostics (ADR 0010).
 fn totality_word(optional: bool) -> &'static str {
     if optional { "optional" } else { "total" }
+}
+
+/// The cardinality axis as a word for diagnostics (ADR 0022).
+fn cardinality_word(c: Cardinality) -> &'static str {
+    match c {
+        Cardinality::Singletons => "singletons",
+        Cardinality::Bag => "bag",
+    }
+}
+
+/// The attribute-block spelling that declares a cardinality, for diagnostics
+/// (ADR 0022).
+fn attr_block_word(c: Cardinality) -> &'static str {
+    match c {
+        Cardinality::Singletons => "its attributes are `attr`",
+        Cardinality::Bag => "its attributes are `attr*`",
+    }
 }
 
 fn type_name(ty: &ColumnType) -> String {
@@ -1790,13 +1892,20 @@ mod tests {
     #[test]
     fn fleet_monitoring_example_resolves() {
         // The fleet-monitoring example grows milestone by milestone; its
-        // compilable subset must keep resolving.
+        // compilable subset must keep resolving.  Today it declares the
+        // `machines` singletons store and the `readings` bag store (ADR 0022).
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/examples/fleet-monitoring.mensura");
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let schemas = resolve_str(&src).expect("example should resolve");
-        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas.len(), 2);
+        let by = |n: &str| schemas.iter().find(|s| s.store == n).unwrap();
+        assert_eq!(
+            by("machines").cardinality,
+            crate::table::Cardinality::Singletons
+        );
+        assert_eq!(by("readings").cardinality, crate::table::Cardinality::Bag);
     }
 
     // --- Casing convention (docs/language/05-naming-and-casing.md) ---
@@ -2016,6 +2125,198 @@ mod tests {
         assert!(errs.iter().any(|e| {
             e.message
                 .contains("type `string` in the shape but `real` in the view")
+        }));
+    }
+
+    // --- Store cardinality (ADR 0022) ---
+
+    // A bag store: the machine is the entity, its readings recur.
+    const BAG_READINGS: &str = r#"
+        unit Machine { id: string }
+        store readings {
+          unit { Machine }
+          attr* {
+            kelvin: real
+            rpm:    int
+          }
+        }
+    "#;
+
+    #[test]
+    fn bag_store_resolves_with_bag_cardinality() {
+        let schemas = resolve_str(BAG_READINGS).expect("should resolve");
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].cardinality, crate::table::Cardinality::Bag);
+        // The storage mapping follows: no primary key for a bag store.
+        assert!(!schemas[0].shape().keyed);
+    }
+
+    #[test]
+    fn plain_store_stays_singletons() {
+        // The default is unchanged (ADR 0001): no `attr*` block, `card <= 1`.
+        let src = r#"
+            unit Machine { id: string }
+            store machines { unit { Machine } attr { commissioned: date } }
+        "#;
+        let schemas = resolve_str(src).expect("should resolve");
+        assert_eq!(
+            schemas[0].cardinality,
+            crate::table::Cardinality::Singletons
+        );
+        assert!(schemas[0].shape().keyed);
+    }
+
+    #[test]
+    fn mixed_attr_blocks_are_rejected() {
+        // ADR 0022's deferred refinement: an `attr` column inside a `bag`
+        // store needs bag-construction syntax that does not exist yet.
+        let src = r#"
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr  { location: string }
+              attr* { kelvin: real }
+            }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("cannot mix `attr` and `attr*`")),
+            "expected the mixed-cardinality rejection, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn reducing_view_over_a_bag_store_demands_completeness() {
+        // A bag store's groups can be partial, so the ADR 0023 reducer
+        // obligation bites; `assume { complete }` (or a future source-level
+        // fact) discharges it.
+        let bad = format!(
+            "{BAG_READINGS}
+            view stats {{ readings |> group_map |k, g| (.max_kelvin = max g.kelvin) }}"
+        );
+        let errs = errors(&bad);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("reducing `group_map`")),
+            "expected the reducer completeness demand, got: {errs:?}"
+        );
+
+        let ok = format!(
+            "{BAG_READINGS}
+            view stats {{
+              readings |> assume {{ complete }}
+                       |> group_map |k, g| (.max_kelvin = max g.kelvin)
+            }}"
+        );
+        let program = resolve_program(&ok).expect("assume discharges the reducer");
+        assert_eq!(
+            program.views[0].cardinality,
+            crate::table::Cardinality::Singletons
+        );
+    }
+
+    #[test]
+    fn split_on_a_bag_store_routes_whole_entities() {
+        // The point of the entity-keyed bag (ADR 0022): `split` hashes the
+        // entity key, so tracked disjointness coincides with the leakage
+        // boundary and the split re-binds losslessly.
+        let src = format!(
+            "{BAG_READINGS}
+            view roundtrip {{
+              let parts = readings |> split |k| k.id == \"m1\";
+              parts |> bind
+            }}"
+        );
+        let program = resolve_program(&src).expect("should resolve");
+        assert_eq!(program.views[0].cardinality, crate::table::Cardinality::Bag);
+    }
+
+    // --- Shapes constrain cardinality (ADR 0022, amending ADR 0012) ---
+
+    #[test]
+    fn bag_shape_conforms_to_bag_store() {
+        let src = r#"
+            unit Machine { id: string }
+            shape SensorLog { attr* { kelvin: real } }
+            store readings : SensorLog {
+              unit { Machine }
+              attr* { kelvin: real }
+            }
+        "#;
+        assert_eq!(resolve_str(src).expect("should resolve").len(), 1);
+    }
+
+    #[test]
+    fn all_attr_shape_rejects_a_bag_store() {
+        // The strict reading: a shape with no `attr*` requires `singletons`.
+        let src = r#"
+            unit Machine { id: string }
+            shape Calibrated { attr { kelvin: real } }
+            store readings : Calibrated {
+              unit { Machine }
+              attr* { kelvin: real }
+            }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message.contains("requires a `singletons` tabulation")
+                && e.message.contains("but the store is `bag`")
+        }));
+    }
+
+    #[test]
+    fn bag_shape_rejects_a_singletons_store() {
+        let src = r#"
+            unit Machine { id: string }
+            shape SensorLog { attr* { kelvin: real } }
+            store calibration : SensorLog {
+              unit { Machine }
+              attr { kelvin: real }
+            }
+        "#;
+        let errs = errors(src);
+        assert!(errs.iter().any(|e| {
+            e.message.contains("requires a `bag` tabulation")
+                && e.message.contains("but the store is `singletons`")
+        }));
+    }
+
+    #[test]
+    fn mixed_shape_blocks_are_rejected() {
+        let src = r#"
+            shape Confused {
+              attr  { a: int }
+              attr* { b: int }
+            }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("cannot mix `attr` and `attr*`"))
+        );
+    }
+
+    #[test]
+    fn view_cardinality_is_checked_against_the_claimed_shape() {
+        // A bag-shaped view satisfies an `attr*` shape and fails an
+        // all-`attr` one; the singletons summary is the mirror image.
+        let ok = format!(
+            "{BAG_READINGS}
+            shape SensorLog {{ attr* {{ kelvin: real }} }}
+            view log : SensorLog {{ readings |> map |k, r| r }}"
+        );
+        resolve_program(&ok).expect("a bag view satisfies an attr* shape");
+
+        let bad = format!(
+            "{BAG_READINGS}
+            shape Calibrated {{ attr {{ kelvin: real }} }}
+            view log : Calibrated {{ readings |> map |k, r| r }}"
+        );
+        let errs = errors(&bad);
+        assert!(errs.iter().any(|e| {
+            e.message.contains("requires a `singletons` table")
+                && e.message.contains("but the view's output is `bag`")
         }));
     }
 }

@@ -1,0 +1,9 @@
+// Reject (resolve): a store mixing `attr` and `attr*` blocks (ADR 0022).
+// A singleton column inside a bag store is the deferred refinement; the
+// per-entity constant belongs in a companion singletons store.
+unit Machine { id: string }
+store readings {
+  unit { Machine }
+  attr  { location: string }
+  attr* { kelvin: real }
+}

@@ -2,18 +2,24 @@
 
 ## Status
 
-Proposed.  Under discussion in
+Accepted.  Resolves the bag-store track of
 [issue #38](https://github.com/mensura-lang/mensura/issues/38).  Revisits the
 `card <= 1` boundary rule of
 `docs/decisions/0001-unit-as-identity-discipline.md` (specifically its
-rejected alternative 3) and extends the store surface of
-`docs/decisions/0002-stores-tabulate-units.md`.  Nothing here is ratified: no
-grammar, checker, or storage change follows until this ADR is accepted.  It is
-paired with, but independent of, the completeness-placement erratum proposed in
-`docs/decisions/0023-completeness-consumed-by-the-reducer.md` (that one fixes a
-propagation rule; this one changes what may enter the system).  Both proposals
-together are the response to
-[issue #38](https://github.com/mensura-lang/mensura/issues/38).
+rejected alternative 3, scoping the rule to `singletons` stores without
+touching unit-as-identity) and extends the store surface of
+`docs/decisions/0002-stores-tabulate-units.md`; amends
+`docs/decisions/0012-view-hosting.md` (shapes now constrain cardinality).
+It is paired with, but independent of, the completeness-placement erratum of
+`docs/decisions/0023-completeness-consumed-by-the-reducer.md` (that one fixes
+a propagation rule; this one changes what may enter the system).  Both
+together are the response to issue #38.  The surface is specified in
+`docs/language/01-units.md`, `02-stores.md`, `03-shapes.md`, `04-grammar.md`,
+`09-typing-reference.md`, and `10-views.md`, the storage mapping in
+`docs/toolkit/00-storage-backend.md`, and the implementation spans the
+parser (`attr*`), the resolver (declared cardinality, mixed blocks rejected,
+cardinality conformance), and the SQLite backend (unkeyed table plus a
+covering index).
 
 ## Context
 

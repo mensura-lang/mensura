@@ -61,27 +61,37 @@ enter the system.  Those concerns belong on stores.
 
 ## Cardinality
 
-For any unit `U` and any tuple of index values `k`, any tabulation of
-observations of `U` has cardinality 0 or 1 at `k`: the entity is
-either observed (cardinality 1) or not (cardinality 0).  This is
-Wickham's rule that each row is one observation, restated as a
-property of the unit.
+For any unit `U` and any tuple of index values `k`, a **`singletons`**
+tabulation of observations of `U` has cardinality 0 or 1 at `k`: the
+entity is either observed (cardinality 1) or not (cardinality 0).  This
+is Wickham's rule that each row is one observation, restated as a
+property of the unit, and it is the default at every unit boundary.
 
 The chapter's algebra (Chapter 5 of Data Science Project: An Inductive
 Learning Approach, F. A. N. Verri, 2026, doi: 10.5281/zenodo.14498010)
 allows row cardinality greater than 1.  Mensura models this as a key
 carrying many rows (a *bag*), following the row-multiset model
-(ADR 0015), and accepts it as a *transient state inside the algebra*:
-an operation like `shrink_key` can produce a result in which one key
-carries multiple rows, and a later `group_map` may reduce each group back
-to a single row (cardinality 0 or 1).  Transient states are well-formed
-inside a pipeline; they are ill-formed at unit boundaries (a `store`, a
-`collect`, a `view`, a function signature that promises a tabulation
-of a unit).
+(ADR 0015).  A bag arises in two ways.  Inside the algebra it is a
+*transient state*: an operation like `shrink_key` can produce a result
+in which one key carries multiple rows, and a later `group_map` may
+reduce each group back to a single row.  At the store boundary it is a
+*declared state*
+(`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`):
+a store of recurring observations may opt into `bag` cardinality with
+`attr*` blocks (`02-stores.md`), keeping the entity as its key.  In
+either case the cardinality is a property of the *tabulation*; the unit
+itself stays pure identity, and an undeclared duplicate at a
+`singletons` boundary (a plain `store`, a `collect`, a function
+signature that promises a 0-or-1 tabulation) remains ill-formed.
 
 The practical consequence: if your data has cardinality greater than 1
-for the chosen indexes, the unit's identity criterion is wrong.  Add
-the disambiguating column to the index, or split the unit.
+for the chosen indexes, either the observations genuinely recur for one
+entity (declare a `bag` store keyed by that entity) or the unit's
+identity criterion is wrong (add the disambiguating column to the
+index, or split the unit).  Which modelling to pick is the author's
+declaration of the validation granularity: entity-keyed bags make a
+`split` route whole entities, while time-in-index keys are what
+temporal cross-validation wants.
 
 This row cardinality (how many rows a key has, 0 for "not sampled") is a
 different axis from whether a *value* is missing.  An index field is

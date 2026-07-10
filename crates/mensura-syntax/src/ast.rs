@@ -80,6 +80,17 @@ pub struct Field {
     pub span: Span,
 }
 
+/// One attribute of a store or shape: the `name: type` field plus its
+/// declared cardinality (`attr` versus `attr*`, ADR 0022).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attr {
+    pub field: Field,
+    /// The span of the `*` when the attribute came from an `attr*` block:
+    /// the column is bag-valued (many observations per key).  `None` is a
+    /// plain `attr` (singleton) column.
+    pub many: Option<Span>,
+}
+
 /// `store Name [: ShapeRef, ...] { unit { U } (attr|domain block)* }`
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreDecl {
@@ -88,8 +99,9 @@ pub struct StoreDecl {
     pub unit: Ident,
     /// The shapes claimed by the `:` conformance clause, in source order.
     pub conforms: Vec<ShapeRef>,
-    /// The attributes of all `attr` blocks, merged in source order.
-    pub attrs: Vec<Field>,
+    /// The attributes of all `attr` and `attr*` blocks, merged in source
+    /// order.
+    pub attrs: Vec<Attr>,
     pub domain: Vec<DomainEntry>,
     pub span: Span,
 }
@@ -136,8 +148,9 @@ pub struct ShapeDecl {
     /// The unit named by the `unit { U }` clause, if any.  `None` is a
     /// unit-agnostic shape.
     pub unit: Option<Ident>,
-    /// The attributes of all `attr` blocks, merged in source order.
-    pub attrs: Vec<Field>,
+    /// The attributes of all `attr` and `attr*` blocks, merged in source
+    /// order.
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 

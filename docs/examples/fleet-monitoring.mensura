@@ -51,3 +51,25 @@ store machines : Commissioned {
 view attention_needed : Tabular[Machine] {
   machines |> map |_, r| if r.status == "degraded" then r else ()
 }
+
+// Recurring observations are an entity-keyed bag store (ADR 0022): the
+// machine is the identity and its readings recur, so the attributes are
+// declared `attr*` (many observations per key).  Keying by the entity keeps
+// a `split` routing whole machines, so tracked disjointness coincides with
+// the leakage boundary; a per-machine constant (its location, say) would
+// live in a companion `singletons` store such as `machines`, not in the bag.
+store readings {
+  unit { Machine }
+  attr* {
+    kelvin: real
+  }
+}
+
+// Reducing a bag folds each machine's readings, which is silently wrong on a
+// partial bag, so the reducing `group_map` demands completeness (ADR 0023).
+// Until ingestion (M4) establishes the fact at the source by mechanism, the
+// view assumes it, locally and visibly.
+view machine_temperature : Tabular[Machine] {
+  readings |> assume { complete }
+           |> group_map |k, g| (.max_kelvin = max g.kelvin)
+}

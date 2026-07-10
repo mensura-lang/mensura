@@ -157,7 +157,11 @@ row); `bag` allows any number, including none (`card 0`, "not sampled").
 Cardinality is a single table-scoped classification: it is one uniform bound
 that holds for every key, so "per key" names the *subject* of the bound, not its
 scope (ADR 0013).  Operations move it along the chain (section 6); `singletons`
-is the stronger fact and never arises by accident.
+is the stronger fact and never arises by accident.  A source enters at its
+**declared** cardinality
+(`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`):
+a plain `attr` store is `singletons` (the ADR 0001 boundary discipline) and
+an `attr*` store of recurring observations is a `bag` keyed by the entity.
 
 A third notion, **exhaustive** (every key has exactly one row), is *derived*, not
 a stored level: `exhaustive = singletons and completeness` (section 3.4).  It is

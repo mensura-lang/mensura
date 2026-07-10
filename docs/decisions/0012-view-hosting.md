@@ -6,6 +6,12 @@ Accepted.  Specified in `docs/language/10-views.md`, with the grammar addition
 in `docs/language/04-grammar.md` and the naming rule in
 `docs/language/05-naming-and-casing.md`.
 
+Amended by
+`docs/decisions/0022-observations-as-bags-declared-store-cardinality`: the
+deferral of "enforcing `singletons` via a shape" is resolved; a shape claim
+now constrains cardinality through its `attr` / `attr*` blocks (an
+all-`attr` shape requires a `singletons` output, an `attr*` shape a `bag`).
+
 ## Context
 
 The pipeline algebra is frozen (`docs/language/07-pipelines.md`,

@@ -99,6 +99,17 @@ policy annotations, an API surface, or any storage commitment; those
 are store concerns.  A program containing only shape
 declarations is well-typed but observes no data.
 
+Because the attribute language is the store's, a shape also writes
+`attr` and `attr*` blocks with the same meaning
+(`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`,
+amending `docs/decisions/0012-view-hosting.md`): a shape claim
+constrains **cardinality**, not only content.  A shape with no `attr*`
+block requires the conforming table to be `singletons` (the strict
+reading, including a unit-only marker shape); an `attr*` shape requires
+its columns to be bag-valued, which in the current uniform-store scope
+means a `bag` table.  Like a store, a shape does not mix the two block
+forms (rejected as not yet supported).
+
 ## The unit clause (optional)
 
 A shape's `unit { ... }` clause says which unit a conforming table must
@@ -232,6 +243,9 @@ compiler verifies that:
 - If the shape pins a unit (concrete or via a `Unit` parameter), the
   store's unit equals it; a unit-agnostic shape imposes no unit
   constraint.
+- The store's declared cardinality matches the shape's (ADR 0022): an
+  all-`attr` shape requires a `singletons` store, an `attr*` shape a
+  `bag` store.
 - Every attribute required by the shape is present in the store, with
   the same name (after interpolation) and the same type (including
   optionality).

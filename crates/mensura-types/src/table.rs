@@ -230,8 +230,10 @@ pub struct TableType {
 
 impl TableType {
     /// Present a resolved store schema to the pipeline as a table value
-    /// (`docs/language/10-views.md`, "Sources resolve by name"). A store is a
-    /// unit tabulation (ADR 0001): `Singletons`, index columns total, non-index
+    /// (`docs/language/10-views.md`, "Sources resolve by name"). Cardinality
+    /// is the store's declared one (ADR 0022): `Singletons` for a plain
+    /// `attr` store (the ADR 0001 discipline), `Bag` for an `attr*` store
+    /// (many observations per entity). Index columns are total; non-index
     /// columns optional per their declared `?`. A bare store is `Incomplete`
     /// (only a `collect` is complete by mechanism, `09` section 8) and untagged.
     pub fn from_store(schema: &Schema) -> TableType {
@@ -256,7 +258,7 @@ impl TableType {
         TableType {
             content: Content { index, columns },
             qualifiers: Qualifiers {
-                cardinality: Cardinality::Singletons,
+                cardinality: schema.cardinality,
                 totality,
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
@@ -364,6 +366,7 @@ mod tests {
                 col("temperature", ColumnType::Real, ColumnRole::Attr, false),
                 col("note", ColumnType::String, ColumnRole::Attr, true),
             ],
+            cardinality: Cardinality::Singletons,
             span: Span::new(0, 0),
         };
 
@@ -383,5 +386,26 @@ mod tests {
         assert!(t.qualifiers.totality.is_optional("note"));
         assert!(t.qualifiers.totality.is_total("temperature"));
         assert!(t.qualifiers.totality.is_total("machine"));
+    }
+
+    #[test]
+    fn from_store_lifts_the_declared_bag_cardinality() {
+        // An `attr*` store enters the pipeline as a `Bag` (ADR 0022); it is
+        // still `Incomplete` (establishment is an annotation or a `collect`).
+        let schema = Schema {
+            store: "readings".to_string(),
+            unit: "Machine".to_string(),
+            columns: vec![
+                col("machine", ColumnType::String, ColumnRole::Index, false),
+                col("kelvin", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+            cardinality: Cardinality::Bag,
+            span: Span::new(0, 0),
+        };
+        let t = TableType::from_store(&schema);
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        // The storage shape follows: a bag store is unkeyed.
+        assert!(!schema.shape().keyed);
     }
 }

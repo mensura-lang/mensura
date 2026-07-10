@@ -100,11 +100,13 @@ A **row** is a record of values, one per column (index and non-index), stored
 in a table.  Within a key's group, there may be zero, one, or many rows.
 
 An **observation** is a row viewed from the unit perspective: one recorded
-instance of a unit.  At unit boundaries (stores, collect declarations), the
-0-or-1 rule applies: each entity is either unobserved (no row at its key) or
-observed exactly once (one row).  Inside pipelines, the two terms are
-interchangeable; "observation" is preferred when emphasising the statistical
-or unit-theoretic character of the data.
+instance of a unit.  At a `singletons` boundary (a plain store or collect
+declaration), the 0-or-1 rule applies: each entity is either unobserved (no
+row at its key) or observed exactly once (one row).  A `bag` store
+(ADR 0022) instead holds many observations per entity: the key says what
+the observations are about, not that there is one.  Inside pipelines, the
+two terms are interchangeable; "observation" is preferred when emphasising
+the statistical or unit-theoretic character of the data.
 
 "Row" is used in database contexts to mean any record in a relation, and in
 pandas/Polars to mean a positionally indexed record.  Mensura does not give
@@ -132,11 +134,14 @@ are ML-community names for specific uses of columns.
 It is a table-level qualifier with two states:
 
 - **Singletons** (written `card ≤ 1`): each key has at most one row.  A key
-  with no row is simply unobserved.  Singletons is the normal state at unit
-  boundaries and after operations that reduce each group to one representative.
+  with no row is simply unobserved.  Singletons is the default at unit
+  boundaries and the state after operations that reduce each group to one
+  representative.
 - **Bag** (written `card 0..*`): a key may hold any number of rows, including
-  zero.  Bag cardinality is the transient state produced by `shrink_key` and
-  any `group_map` that returns more than one row per group.
+  zero.  Bag cardinality arises transiently from `shrink_key` and from any
+  `group_map` that returns more than one row per group, and as a *declared*
+  state on a store of recurring observations (an `attr*` store keyed by the
+  entity, ADR 0022).
 
 Cardinality is *not* a count stored in the data; it is a compile-time bound
 on the number of rows per key.
@@ -201,9 +206,9 @@ The Mensura type of a table is `Table<Qs, C>`: a row of **qualifiers** `Qs`
 and a **content** schema `C`.
 
 The chapter's model permits bag cardinality (multiple rows per key) as a
-general case.  Mensura further restricts this at unit boundaries to the
-0-or-1 rule and uses bag cardinality only as a transient state inside
-pipelines.
+general case.  Mensura defaults unit boundaries to the 0-or-1 rule; a store
+may opt into `bag` cardinality for recurring observations (`attr*`,
+ADR 0022), and bags also arise transiently inside pipelines.
 
 The formal model in `formal/Mensura/Core/Defs.lean` represents a table as
 `K → Multiset (Row H σ)`, where a `Row` is a dependent function from column

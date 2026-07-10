@@ -1371,6 +1371,7 @@ mod tests {
             store: store.to_string(),
             unit: unit.to_string(),
             columns,
+            cardinality: Cardinality::Singletons,
             span: Span::new(0, 0),
         })
     }
