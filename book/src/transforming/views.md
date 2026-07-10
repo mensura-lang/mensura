@@ -7,14 +7,13 @@ columns in `attr` blocks, a view names a pipeline and lets the algebra decide
 what comes out.
 
 ```mensura
-{{#include ../examples/view-summary.mensura}}
+{{#include ../examples/view-celsius.mensura}}
 ```
 
-`readings` is a source, referred to by name.  The `|>` pipe threads it through
-two stages: `extend_key machine` moves `machine` into the key, and `group_map`
-reduces each group to a single record.  The view's schema, its index, and its
-tracked properties are whatever that pipeline produces; a view has no `attr`
-block because it declares nothing, it computes.
+`readings` is a source, referred to by name.  The `|>` pipe feeds it to `map`,
+which rewrites each row into one carrying a `celsius` column.  The view's
+schema, its index, and its tracked properties are whatever that pipeline
+produces; a view has no `attr` block because it declares nothing, it computes.
 
 ## The body is a block
 
@@ -31,6 +30,25 @@ Here `split` routes each row wholly to one side of a pair by a predicate over
 the key, and `bind` merges the pair back into one table.  There is no special
 pipeline grammar: stages compose left to right, `let` names a table, and a tuple
 brings several tables together for a merge like `bind`.
+
+## Aggregating over a group
+
+To summarize a machine's readings, you *coarsen* the key.  `readings` is keyed
+by `(machine, ts)`, so `shrink_key ts` drops `ts` out of the key: the rows that
+differed only in their timestamp now share the key `machine` and form one group,
+which `group_map` reduces to a single record per machine.  Grouping is coarsening
+the key, not refining it.
+
+```mensura
+{{#include ../examples/view-aggregate.mensura}}
+```
+
+Coarsening a key is sound only over a partition with no missing rows, so
+`shrink_key` demands the [completeness](../concepts/what-the-types-track.md)
+fact.  Here `assume { complete }` supplies it by fiat, locally and visibly; a
+`completeness_check { ... }` stage would establish it by proof instead.  This
+view type-checks today; executing a key-coarsening stage is the part of the
+runtime still being built (`docs/toolkit/04-processing-layer.md`).
 
 ## What a view tracks
 
@@ -56,9 +74,10 @@ check run against the computed schema rather than a declared one.
 {{#include ../examples/view-shape.mensura}}
 ```
 
-The `map` stage rewrites each reading into a record with a `celsius` column, so
-the output carries exactly what the `Celsius` shape requires.  A shape claim
-checks structure, not cardinality: it does not force a view to `singletons`.
+This is the `celsius` view from the top of the page with a `: Celsius` shape
+claim added.  Its `map` stage yields a record with a `celsius` column, so the
+output carries exactly what the shape requires.  A shape claim checks structure,
+not cardinality: it does not force a view to `singletons`.
 
 ## Creating a view
 
