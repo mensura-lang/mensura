@@ -49,6 +49,35 @@ reload your shell and use the `Makefile` targets:
 | `make fmt` | `cargo fmt --all` |
 | `make install` | installs the `mensura` binary |
 
+### Formal development
+
+The machine-checked proofs behind the type system live in `formal/`, a
+Lean 4 project (see `docs/decisions/0021-formal-proof-pipeline.md`).
+Two extra tools are needed:
+
+- [elan](https://github.com/leanprover/elan), the Lean toolchain
+  manager; the toolchain pinned in `formal/lean-toolchain` is fetched
+  automatically.
+- [uv](https://docs.astral.sh/uv/), which resolves the Python tooling
+  declared in `formal/blueprint/pyproject.toml` (plasTeX and the
+  leanblueprint plugins, locked in `formal/blueprint/uv.lock`) on
+  first use.  There is no separate install step.
+
+From `formal/` (or with `make -C formal <target>`):
+
+| Target | Effect |
+|--------|--------|
+| `make cache` | fetch the Mathlib build cache (run once, before the first build) |
+| `make build` | `lake build` the Lean development |
+| `make axioms` | run the axiom gate (`AxiomCheck.lean`) |
+| `make color` | derive blueprint node colors from the code |
+| `make web` | render the blueprint dashboard to `formal/blueprint/web/` |
+| `make pdf` | build the blueprint PDF (needs a TeX installation) |
+
+CI runs the same build, sorry scan, and axiom gate on every pull
+request that touches `formal/`.  The blueprint itself is documented in
+`formal/blueprint/README.md`.
+
 ## Learn more
 
 See `docs/language/00-overview.md` for what the language is and `ROADMAP.md`

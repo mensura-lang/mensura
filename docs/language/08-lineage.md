@@ -46,7 +46,8 @@ account of how that fact is established, propagated, demanded, and assumed.
 
 Completeness is a unary fact about one table (`complete_over(k)`).
 Disjointness is a relation between *two* tables: in the formalization
-(`formal/Mensura/Table.lean`, `def:disjoint-tables`),
+(`formal/Mensura/Core/Defs.lean`; blueprint node `def:disjoint`, the
+book's `def:disjoint-tables`),
 
 ```
 Disjoint T0 T1  :=  forall k, T0.rows k = 0  or  T1.rows k = 0
@@ -77,8 +78,8 @@ completeness.
 side of a pair by a predicate over the key.  The two halves carry the regions
 `R and pred` and `R and not pred`, which are disjoint because the predicates
 are mutually exclusive.  This is disjointness *by construction*: the
-formalization proves it as `split_disjoint` (`Table.lean`), the companion of
-`bind_split` (bind undoes split).  `split` is to disjointness what `collect`
+formalization proves it as `split_disjoint` (`Core/Defs.lean`), the
+companion of `bind_split` (bind undoes split).  `split` is to disjointness what `collect`
 is to completeness, the mechanism that needs no further discharge.
 
 ```
@@ -126,7 +127,7 @@ Decidability below).
 
 A table's region is moved by every operation, so a disjointness fact
 established upstream survives, strengthens, or is lost downstream.  In the
-formalization this is the `PreservesDisjoint` predicate (`Table.lean`,
+formalization this is the `PreservesDisjoint` predicate (`Core/Defs.lean`,
 `def`): an operation preserves disjointness when it sends disjoint inputs to
 disjoint outputs.  `SplitSafe` is exactly `PreservesDisjoint and
 SplitInvariant`, and split-safe operations compose (`SplitSafe.comp`), so a
@@ -156,7 +157,7 @@ must have been disjoint from `c`:
 Disjoint (bind a b) c   iff   Disjoint a c  and  Disjoint b c
 ```
 
-(proved as `bind_disjoint_iff` in `Table.lean`, a direct consequence of the
+(proved as `bind_disjoint_iff` in `Core/Defs.lean`, a direct consequence of the
 `bind` and `Disjoint` definitions).  So merging can only *grow* a
 region and therefore only *lose* disjointness facts: binding in a table that
 overlaps `c` destroys `Disjoint _ c`.  This is the precise content of "the
@@ -277,7 +278,7 @@ the ADR 0004 framework, and disjointness is its constraint hook:
 - **Propagation rules**: `preserve` for the key-preserving Tier A operations,
   `accumulate`/union for `bind`, a refining rule for `split`, and *drop* at the
   key-changing operations, each backed by a `PreservesDisjoint` theorem (or its
-  refutation) in `Table.lean`.
+  refutation) in `formal/Mensura/`.
 - **Constraint hook**: predicate disjointness at the consuming operations, with
   the uniform `assume` escape.
 
@@ -292,7 +293,7 @@ the one hook the ADR singles out.
 
 - **`bind` weakening lemma** (discharged).  `Disjoint (bind a b) c  iff
   Disjoint a c and Disjoint b c` is proved as `bind_disjoint_iff` in
-  `formal/Mensura/Table.lean`, backing the propagation rule for `bind`.
+  `formal/Mensura/Core/Defs.lean`, backing the propagation rule for `bind`.
 - **Region re-expression across key changes.**  Whether any key change admits a
   sound automatic transport of the region (rather than always dropping the
   fact) is open; the safe default specified here is to drop and re-establish.
@@ -310,6 +311,6 @@ the one hook the ADR singles out.
   defined.  Until then the check reads as established-by-assertion, like
   `assume`, but with a column named.
 - **Naming** (settled: "disjointness").  This document, and the term going
-  forward, use "disjointness", matching `Table.lean`'s `Disjoint`.  The earlier
+  forward, use "disjointness", matching `Core/Defs.lean`'s `Disjoint`.  The earlier
   working-branch spelling "disjointedness" is dropped.  (The ADR 0004
   "qualifier" naming question is separate and still open.)

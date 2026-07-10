@@ -202,7 +202,7 @@ general case.  Mensura further restricts this at unit boundaries to the
 0-or-1 rule and uses bag cardinality only as a transient state inside
 pipelines.
 
-The formal model in `formal/Mensura/Table.lean` represents a table as
+The formal model in `formal/Mensura/Core/Defs.lean` represents a table as
 `K → Multiset (Row H σ)`, where a `Row` is a dependent function from column
 names to optional typed values (`(h : H) → Option (σ h)`), and the content at
 each key is a multiset of such rows.  This differs from the chapter's
