@@ -88,22 +88,24 @@ Allow a store to declare its cardinality, defaulting to the current discipline.
   per-*store* (a tabulation choice), which is where `0002` already lives.
 
 **Surface: `attr` versus `attr*`.**  Cardinality is spelled by the attribute
-block, not a separate flag.  `attr { ... }` lists columns that are `card <= 1`
-per key; `attr* { ... }` lists columns that are `card >= 1` per key (the `*` is
-"many").  A store is `singletons` when it has no `attr*` block and a `bag` when
-it has one.  This choice is deliberate on three counts:
+block, not a separate flag.  A store uses `attr { ... }` for its columns when it
+is `singletons` and `attr* { ... }` for its columns when it is a `bag` (the `*`
+is "many"); it does **not mix the two** (see the deferred refinement below).  So
+a store is `singletons` when it has no `attr*` block and a `bag` when all its
+non-key columns are `attr*`.  This choice is deliberate on three counts:
 
 - **No new keyword.**  The keyword-free lexer reads `attr*` as the `attr`
   identifier followed by the `*` operator, matched by position like every other
   contextual keyword (`docs/language/04-grammar.md`).
-- **Per-column cardinality, not a whole-store boolean.**  In a `bag` store,
-  `attr { location }` alongside `attr* { ts, kelvin }` asserts a **functional
-  dependency**: `location` is constant within an entity, `ts`/`kelvin` vary.
-  The flat table is `card >= 1` over the key, with `location` determined by the
-  key alone (a checked invariant; storage may denormalize by repeating it).
-  This matches "cardinality is carried per column"
-  (`docs/language/09-typing-reference.md`, and the book's *What the types
-  track*).
+- **Uniform bag columns, nothing to reconcile.**  A `bag` store's non-key
+  columns are the columns of the same rows, so they co-vary and share one length
+  (the row count per key) by construction; there is no per-column size to align
+  and no functional-dependency invariant to enforce inside a store.  Per-entity
+  constant facts (a machine's `location`) are **not** folded into the bag: they
+  live in a companion `singletons` store keyed by the entity and joined via
+  `domain` (`0002`).  Every store is therefore cleanly one cardinality or the
+  other, and normalization is explicit rather than a hidden denormalized
+  constraint.
 - **Shapes get cardinality for free (resolves the `0012` deferral).**  A shape
   may write `attr` and `attr*` blocks with the same meaning, so a shape claim
   now constrains cardinality, not only content.  A shape with no `attr*`
@@ -112,6 +114,18 @@ it has one.  This choice is deliberate on three counts:
   which deferred "enforcing `singletons` via a shape."  (Open: whether an
   all-`attr` shape *forbids* any bag column or only constrains the columns it
   lists; the proposal takes the stricter "no `attr*` ⇒ `singletons`" reading.)
+
+**Deferred refinement: `attr` inside a `bag` store.**  The type model already
+carries cardinality *per column* (`docs/language/09-typing-reference.md`, and
+the book's *What the types track*), so a later round may let a `bag` store carry
+an `attr` (singleton) column alongside its `attr*` columns, read as one value
+repeated across the key's rows (a functional dependency, denormalized).  It is
+deferred, not adopted here, because constructing such a table needs an
+**expression-level syntax for building a bag from a singleton column** (how the
+one value aligns to the many rows) that the bag-building operators do not yet
+have.  Until that syntax exists, a column is either `attr` in a `singletons`
+store or `attr*` in a `bag` store, never mixed; per-entity constants use the
+companion-store form above.
 
 The block spelling is fixed here; the precise grammar production lands in the
 store and shape language documents once this ADR is accepted.
