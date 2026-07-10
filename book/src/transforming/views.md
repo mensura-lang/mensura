@@ -43,12 +43,18 @@ the key, not refining it.
 {{#include ../examples/view-aggregate.mensura}}
 ```
 
-Coarsening a key is sound only over a partition with no missing rows, so
-`shrink_key` demands the [completeness](../concepts/what-the-types-track.md)
-fact.  Here `assume { complete }` supplies it by fiat, locally and visibly; a
-`completeness_check { ... }` stage would establish it by proof instead.  This
-view type-checks today; executing a key-coarsening stage is the part of the
-runtime still being built (`docs/toolkit/04-processing-layer.md`).
+Coarsening a key is sound only when the groups it folds are whole, so
+`shrink_key` *consumes* a [completeness](../concepts/what-the-types-track.md)
+fact, and that fact has to be established on the pipeline *before* the stage
+that needs it, never after.  A raw `store` does not carry it: unlike a
+`collect`, which is a complete census by construction, a store accumulates
+observations that can have gaps (a machine offline for a stretch leaves holes
+in its readings), so completeness over `machine` is a claim you make, not a
+given.  `assume { complete }` makes that claim by fiat, locally and visibly,
+and is read as completeness over the retained key; a `completeness_check { ... }`
+stage would prove it instead.  This view type-checks today; executing a
+key-coarsening stage is the part of the runtime still being built
+(`docs/toolkit/04-processing-layer.md`).
 
 ## What a view tracks
 
