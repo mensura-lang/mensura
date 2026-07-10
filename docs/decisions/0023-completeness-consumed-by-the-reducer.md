@@ -78,17 +78,39 @@ Move the completeness obligation from the coarsening to the reduction.
   with no downstream reducer is admitted on its own and yields a `bag` over the
   coarser key.
 - **`shrink_key` propagates completeness from the fine key to the coarse key.**
-  If the input is complete over its key `(a, b)` in the non-trivial sense (no
-  row that should exist is absent), then after `shrink_key b` the result is
-  complete over `a`: no `a`-group is missing rows, because none of the
-  underlying `(a, b)` rows were missing.  `shrink_key` transforms the fact, it
-  does not consume or invent it.
+  Completeness is relative to a reference population `R` that says which rows
+  *should* exist (`CompleteWrt R T` in `formal/`): `T` is complete when it has a
+  row wherever `R` does.  If the input `T` is complete against `R` at the fine
+  key `(a, b)`, then after `shrink_key b` the result is complete against the
+  *coarsened* reference `shrink_key b R` at `a`: an `a`-group is present in the
+  projection exactly when some `(a, b)` in its fibre is present, and that fine
+  presence carries from `R` to `T`.  `shrink_key` transforms the fact, it does
+  not consume or invent it.
+
+  What this does **not** give is an absolute "no `a`-group is missing rows."
+  Completeness over `(a, b)` constrains only the rows for the `(a, b)` keys
+  `R` names; it says nothing about which `b` values `R` names per `a`.  If `R`
+  itself omits a `b` that should exist for some `a` (a whole row absent, not a
+  fiber gap), the projection is complete against `shrink_key b R` while the
+  `a`-group is genuinely short.  The stronger "every `b` that should exist for
+  this `a` is present" is a property of the reference (a source census,
+  `collect`, or `0022` bag-store fact that pins the full `b`-set per `a`), not
+  something `shrink_key` manufactures from fiberwise completeness.
 - **A reducing `group_map` consumes completeness.**  A `group_map` whose body
   folds a bag to a single record (`sum`, `max`, `count`, `mean`, ...) requires
   the fact "complete over the current key," because a fold over a partial bag
-  is silently wrong.  A **windowing** `group_map` (a bag return, one row per
-  input row: `rank`, `cumsum`) does **not** reduce a population to a claim and
-  carries no completeness obligation.
+  is silently wrong.
+- **On a `singletons` store's full key the obligation discharges trivially.**
+  The vacuity that made the old `shrink_key` placement test nothing is a
+  *feature* at the reducer: a reducing `group_map` over the full key of a
+  `singletons` store (`0022`) needs no `assume { complete }`, because
+  `card <= 1` means every group is a singleton and a singleton bag is whole by
+  construction.  So the ordinary aggregation over a plain store is
+  ceremony-free, and the discharge is only ever needed where completeness can
+  actually fail: a reduction over a `bag` store, or over a key coarsened below
+  the store's own (post-`shrink_key`).  The checker should recognize this base
+  case and satisfy the obligation from the store's declared cardinality rather
+  than demand an establishment step.
 - **Establishment is unchanged.**  `completeness_check`, `assume { complete }`,
   a source annotation, and (`0022`) a `bag` store's source-level fact all still
   establish completeness.  Only the consumer moves.
@@ -111,9 +133,12 @@ through it); what changes is that the *demand* is the reducer's, so a
 
 This is a propagation-rule change and does not land until proven:
 
-- **`shrink_key` completeness propagation.**  A lemma: input complete over
-  `(a, b)` implies output complete over `a` after `shrink_key b`.  *Drafted and
-  proved*: `Mensura.project_completeWrt` in
+- **`shrink_key` completeness propagation.**  A lemma: `T` complete against a
+  reference `R` at `(a, b)` implies `project T` complete against `project R` at
+  `a`.  The reference coarsens with the table; this is reference-relative
+  propagation, *not* the absolute "complete over `(a, b)` implies no `a`-group
+  is short" (which is false, since composite-key completeness does not pin the
+  `b`-set per `a`).  *Drafted and proved*: `Mensura.project_completeWrt` in
   `formal/Mensura/Completeness/CompleteOver.lean`, over the mechanization
   `Mensura.CompleteWrt` (population-relative completeness against a reference
   table, the honest reading of ADR 0017's `complete_over`).  Sorry-free and
@@ -122,6 +147,12 @@ This is a propagation-rule change and does not land until proven:
   made precise (it already exists as "single-record return vs bag return",
   `fiberMap` in `formal/`), with completeness required exactly for the
   reducing case.
+- **Trivial discharge at `card <= 1`.**  A lemma: a table that is `card <= 1`
+  over its key is `CompleteWrt` itself over that key (each fiber has at most
+  one row, so no row that should exist is absent).  This is the base case the
+  checker uses to discharge a reducing `group_map` over a `singletons` store's
+  full key with no establishment step, and it should fall out directly from the
+  `CompleteWrt` definition.
 - **Non-regression of `shrink_key`'s Tier.**  Confirm `shrink_key` stays Tier B
   purely on the lineage break (`project_not_preservesDisjoint` is unaffected).
 
@@ -133,9 +164,12 @@ Positive:
   so `shrink_key` used purely to reindex is no longer gratuitously rejected.
 - Provenance matches the "enters, transforms, is demanded" model: source
   establishes, `shrink_key` propagates, reducer consumes.
-- Composes cleanly with `0022`: a `bag` store establishes completeness at the
-  source and a reducing `group_map` consumes it with no `shrink_key` in
-  between.
+- Composes cleanly with `0022`, and more precisely than "a natural place to
+  establish": an entity-keyed `bag` store is where the *reference* population
+  lives (the full set of observations per entity), which is exactly the `R`
+  the propagation lemma coarsens and the reducer consumes, and which a
+  composite `(entity, time)` key structurally cannot express (its
+  completeness never pins the time-set per entity).
 
 Negative:
 

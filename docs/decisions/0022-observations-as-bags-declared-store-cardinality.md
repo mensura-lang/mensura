@@ -143,11 +143,13 @@ imposes on later work rather than as settled mechanism.
   declaration (it is the process-variant of a store,
   `docs/decisions/0006-transport-agnostic-surface.md`).
 - **Completeness.**  On a `bag` store, "complete over the key" is contentful
-  and establishable at the source (an annotation, or a `collect` mechanism),
-  and is consumed by a reducing `group_map` without an intervening
-  `shrink_key` (the consumer placement proposed in
-  `docs/decisions/0023-completeness-consumed-by-the-reducer.md`).  The two
-  tracks reinforce each other but neither depends on the other.
+  and establishable at the source (an annotation, or a `collect` mechanism):
+  the store pins the full set of observations per entity, so it is where the
+  *reference* population of `0023`'s `CompleteWrt` lives, the `R` its
+  propagation lemma coarsens and its reducing `group_map` consumes.  A
+  composite `(entity, time)` key cannot express that fact (its completeness
+  never pins the time-set per entity), which is cost 1 above restated.  The
+  two tracks reinforce each other but neither depends on the other.
 - **Disjointness / splitting.**  An entity-keyed `bag` store makes `split`
   route whole entities, so tracked disjointness coincides with the leakage
   boundary for entity-level cross-validation.
