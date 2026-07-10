@@ -30,9 +30,10 @@ def Total (T : Table K H σ) : Prop := ∀ k, ∀ f ∈ T.rows k, ∀ h, f h ≠
 /-- The rectangle fact of ADR 0020: every residual key present in a long
 table carries a row for **every** name `n`.  The reference is the name
 type's whole domain, not a population -- which is exactly what
-distinguishes it from the (unmechanized, population-relative)
-`complete_over` and makes it the fact that licenses `pivot`'s totality
-upgrade (`pivot_total_of_exhaustive`). -/
+distinguishes it from the population-relative `complete_over` (now
+mechanized as `Mensura.CompleteWrt` in `Completeness/CompleteOver.lean`)
+and makes it the fact that licenses `pivot`'s totality upgrade
+(`pivot_total_of_exhaustive`). -/
 def Exhaustive (T : Table (K × N) H σ) : Prop :=
   ∀ k, (∃ n, T.Present (k, n)) → ∀ n, T.Present (k, n)
 
