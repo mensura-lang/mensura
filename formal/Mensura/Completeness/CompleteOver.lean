@@ -9,15 +9,27 @@ gives it the honest mechanization: completeness is relative to a **reference
 table** `R` that stands for the intended full population, and a table `T` is
 complete when it has a row wherever the reference does.
 
-The headline result seeds ADR 0023: `project` (the algebra's `shrink_key`,
+Two results seed ADR 0023.  First, `project` (the algebra's `shrink_key`,
 `Mensura.project`) **propagates** completeness from the fine key `K × D` to
 the coarse key `K`.  It neither demands nor invents the fact; it carries it
 across the coarsening, which is why the ADR moves the *demand* onto the
 reducing `group_map` downstream and leaves `shrink_key` responsible only for
 its lineage break (`project_not_preservesDisjoint`).
+
+Second, the **trivial discharge at `card <= 1`**: `CompleteWrt` is key
+coverage (no key the population has is absent), but the fact a *fold* needs
+is fiber-level (no group it folds is partial), mechanized here as
+`FiberCompleteWrt`.  When the population itself is `Functional` (ADR 0001's
+identity discipline: at most one observation per identity exists in the
+world) and the table holds only genuine observations, every present key
+carries its whole fiber (`fiberCompleteWrt_of_functional`): a singleton
+group is either absent or whole, never partial.  This is the base case the
+checker uses to accept a reducing `group_map` over a `singletons` store's
+full key with no establishment step (ADR 0022 / 0023).
 -/
 
 import Mensura.Core.Ops
+import Mensura.Reshape
 
 namespace Mensura
 
@@ -53,5 +65,34 @@ theorem project_completeWrt {R T : Table (K × D) H σ}
   rw [Multiset.map_eq_zero] at hT ⊢
   by_contra hR0
   exact absurd hT (h (k, d) hR0)
+
+/-- **Fiber-level completeness**: every key present in `T` carries its whole
+population fiber.  This is the fact a reducing `group_map` needs for the rows
+it emits (a fold over a partial group is silently wrong); it is weaker than
+`CompleteWrt` in that it says nothing about keys absent from `T` (an absent
+key manifests as an absent output row, not a wrong value). -/
+def FiberCompleteWrt (R T : Table K H σ) : Prop :=
+  ∀ k, T.Present k → T.rows k = R.rows k
+
+/-- **Trivial discharge at `card <= 1` (ADR 0023).**  If the intended
+population `R` is `Functional` (ADR 0001's identity discipline as a fact about
+the world: an identity is observed once or not at all) and `T` holds only
+genuine observations (`T.rows k ≤ R.rows k`), then every present key of `T`
+carries its whole fiber: at `card <= 1` there is no middle ground between an
+absent group and a whole one.  This backs the checker rule that a reducing
+`group_map` over a `singletons` store's full key needs no establishment step.
+It does *not* give key coverage (`CompleteWrt R T`): whole keys may still be
+absent from `T`, and coarsening converts exactly that absence into a fiber
+gap, which is where `project_completeWrt` and the reference take over. -/
+theorem fiberCompleteWrt_of_functional {R T : Table K H σ}
+    (hR : Functional R) (hsub : ∀ k, T.rows k ≤ R.rows k) :
+    FiberCompleteWrt R T := by
+  intro k hk
+  have hk' : T.rows k ≠ 0 := hk
+  have hcard : (R.rows k).card ≤ (T.rows k).card := by
+    have h1 : (R.rows k).card ≤ 1 := hR k
+    have h2 : 0 < (T.rows k).card := Multiset.card_pos.mpr hk'
+    omega
+  exact Multiset.eq_of_le_of_card_le (hsub k) hcard
 
 end Mensura

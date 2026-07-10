@@ -103,14 +103,21 @@ Move the completeness obligation from the coarsening to the reduction.
 - **On a `singletons` store's full key the obligation discharges trivially.**
   The vacuity that made the old `shrink_key` placement test nothing is a
   *feature* at the reducer: a reducing `group_map` over the full key of a
-  `singletons` store (`0022`) needs no `assume { complete }`, because
-  `card <= 1` means every group is a singleton and a singleton bag is whole by
-  construction.  So the ordinary aggregation over a plain store is
-  ceremony-free, and the discharge is only ever needed where completeness can
-  actually fail: a reduction over a `bag` store, or over a key coarsened below
-  the store's own (post-`shrink_key`).  The checker should recognize this base
-  case and satisfy the obligation from the store's declared cardinality rather
-  than demand an establishment step.
+  `singletons` store (`0022`) needs no `assume { complete }`.  The reason is
+  `0001`'s identity discipline read as a fact about the *population*, not
+  just the table: an identity is observed once or not at all, so a present
+  group's single row is the identity's whole fiber, and at `card <= 1` there
+  is no middle ground between an absent group and a whole one (no partial
+  bag for a fold to be silently wrong on).  What `card <= 1` does *not* give
+  is key coverage: whole entities may be absent, which the aggregation
+  reports as an absent output row (honest), not a wrong value (silent), and
+  which turns into a fiber gap only after a coarsening, exactly where the
+  propagation rule and the reference take over.  So the ordinary aggregation
+  over a plain store is ceremony-free, and the discharge is only ever needed
+  where a present group can be partial: a reduction over a `bag` store, or
+  over a key coarsened below the store's own (post-`shrink_key`).  The
+  checker recognizes this base case from the store's declared cardinality
+  rather than demanding an establishment step.
 - **Establishment is unchanged.**  `completeness_check`, `assume { complete }`,
   a source annotation, and (`0022`) a `bag` store's source-level fact all still
   establish completeness.  Only the consumer moves.
@@ -147,12 +154,20 @@ This is a propagation-rule change and does not land until proven:
   made precise (it already exists as "single-record return vs bag return",
   `fiberMap` in `formal/`), with completeness required exactly for the
   reducing case.
-- **Trivial discharge at `card <= 1`.**  A lemma: a table that is `card <= 1`
-  over its key is `CompleteWrt` itself over that key (each fiber has at most
-  one row, so no row that should exist is absent).  This is the base case the
-  checker uses to discharge a reducing `group_map` over a `singletons` store's
-  full key with no establishment step, and it should fall out directly from the
-  `CompleteWrt` definition.
+- **Trivial discharge at `card <= 1`.**  A lemma: if the intended population
+  `R` has at most one row per key (`0001`'s identity discipline, stated as a
+  fact about the population) and the store `T` holds only genuine
+  observations (`T.rows k <= R.rows k`), then every key present in `T`
+  carries its whole fiber.  This is *fiber*-completeness, the fact a
+  reducing `group_map` needs for the rows it emits; it is not key coverage
+  (`CompleteWrt`), which `card <= 1` cannot supply and which an absent key
+  honestly manifests as an absent output row.  Coarsening converts exactly
+  that absence into a fiber gap, which is where the propagation lemma takes
+  over.  *Drafted and proved*: `Mensura.fiberCompleteWrt_of_functional` over
+  the new fiber-level notion `Mensura.FiberCompleteWrt` in
+  `formal/Mensura/Completeness/CompleteOver.lean`, with the `card <= 1`
+  hypothesis as the existing `Mensura.Functional`.  Sorry-free and within
+  the standard axiom set.
 - **Non-regression of `shrink_key`'s Tier.**  Confirm `shrink_key` stays Tier B
   purely on the lineage break (`project_not_preservesDisjoint` is unaffected).
 
