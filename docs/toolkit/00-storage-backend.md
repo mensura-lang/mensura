@@ -136,7 +136,8 @@ separate engine fed by the store's changes.
 ## Forward references
 
 - Reads, inserts, updates, and deletes (CRUD), and the delta/changelog write
-  path that feeds the processing layer.
+  path that feeds the processing layer.  The read side and batch view
+  materialization are specified in `04-processing-layer.md`.
 - Compound units, `domain` resolution, and foreign keys.
 - Schema migration when a store's shape changes between revisions
   (`mensura migrate` in `ROADMAP.md`).

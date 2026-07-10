@@ -2,9 +2,13 @@
 //!
 //! This is the boundary IR between the front end (lexer, parser, resolver)
 //! and the runtime.  A [`Schema`] is one store flattened into an ordered list
-//! of typed columns; it carries no AST and no syntax.
+//! of typed columns; a [`ViewPlan`] is one view's computed output plus its
+//! checked body, ready for the processing layer to evaluate
+//! (`docs/toolkit/04-processing-layer.md`).
 
-use mensura_syntax::Span;
+use mensura_syntax::{Block, Span};
+
+use crate::table::Cardinality;
 
 /// A resolved store: its name, the unit it tabulates, and its columns in
 /// storage order (index fields, then attributes in declaration order).
@@ -85,6 +89,73 @@ impl ColumnType {
     /// key-eligibility is exactly equatability (ADR 0014); `real` is excluded.
     pub fn is_key_eligible(&self) -> bool {
         self.is_equatable()
+    }
+}
+
+/// A whole resolved program: the boundary between the front end and the
+/// runtime.  Stores become tables ([`Schema`]); views become batch
+/// materializations ([`ViewPlan`], `docs/toolkit/04-processing-layer.md`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedProgram {
+    pub schemas: Vec<Schema>,
+    pub views: Vec<ViewPlan>,
+}
+
+/// A resolved view, ready for the processing layer: its computed output
+/// shape (read off the checked table type) and the checked body the runtime
+/// evaluates.  The body is the view's block AST; the checker has already
+/// established it well-typed, so evaluation cannot fail on shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewPlan {
+    pub name: String,
+    /// Output columns in storage order: the index columns, then the computed
+    /// attribute columns in the order the checker produced them.
+    pub columns: Vec<Column>,
+    /// The computed cardinality.  `Singletons` gets the composite primary
+    /// key over the index columns; a `Bag` view gets none.
+    pub cardinality: Cardinality,
+    /// The checked view body (`10-views.md`: `let` bindings, then a trailing
+    /// table expression).
+    pub body: Block,
+    /// The stores the body reads, by name.
+    pub sources: Vec<String>,
+    pub span: Span,
+}
+
+/// The table-level shape stores and views share at the storage boundary:
+/// what `scan` reads and `materialize_view` writes
+/// (`docs/toolkit/04-processing-layer.md`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableShape {
+    pub name: String,
+    /// Columns in storage order (index first, then attributes).
+    pub columns: Vec<Column>,
+    /// Whether rows are 0-or-1 per index tuple: `true` maps to a composite
+    /// primary key over the index columns, `false` (a `bag` view) to none.
+    pub keyed: bool,
+}
+
+impl Schema {
+    /// This store's storage shape.  A store is a unit tabulation (ADR 0001),
+    /// so it is always keyed.
+    pub fn shape(&self) -> TableShape {
+        TableShape {
+            name: self.store.clone(),
+            columns: self.columns.clone(),
+            keyed: true,
+        }
+    }
+}
+
+impl ViewPlan {
+    /// This view's storage shape; the primary key follows the computed
+    /// cardinality.
+    pub fn shape(&self) -> TableShape {
+        TableShape {
+            name: self.name.clone(),
+            columns: self.columns.clone(),
+            keyed: self.cardinality == Cardinality::Singletons,
+        }
     }
 }
 

@@ -16,6 +16,13 @@ population-relative.  To be realized in
 the `mensura-types` / `mensura-runtime` implementation; until then the
 implemented behavior is ADR 0016's.
 
+Erratum (2026-07-05): section 2's propagation table listed `extend_key`
+among the operations preserving the row-presence facts.  That row is
+unsound for `exhaustive` (the promoted column refines the residual key
+and can cut a fiber) and is corrected by a marked erratum in section 2;
+`extend_key` moves to the destroyed row.  Found while realizing the
+checker's propagation.
+
 ## Context
 
 The driving requirement, fixed during the design discussion this ADR
@@ -226,6 +233,25 @@ serves both:
   nothing (all folded columns total), and any fact over a sub-key of the
   residual key survives `pivot` (the output has one row per present
   residual key).
+
+**Erratum (2026-07-05).**  The `extend_key` half of the first row above
+is wrong for `exhaustive`: promotion is not mere re-slotting, because the
+promoted column *refines the residual key*, and a finer residual fiber
+can separate what a coarser one held together.  Concretely, a long table
+with rows `(s, math, score = 5)` and `(s, port, score = 7)` is exhaustive
+in the subject axis at residual key `s`; after `extend_key score` the
+residual key is `(s, score)`, and the present fiber at `(s, 5)` carries
+`math` but not `port`.  `complete_over` is unaffected, because its
+reference is the population and refinement loses no rows: a present finer
+fiber sits inside a present coarser one, which held all its population
+rows.  But one conservative table must take the weaker entry, so
+`extend_key` moves to the **destroyed** row, and the implemented checker
+forfeits the fact there.  `shrink_key` coarsens the residual key instead
+(a union of full fibers is full) and stays in the preserved row as
+sketched.  A mechanized witness for either key-changing row needs
+`Exhaustive` stated over a reindexed key, the same machinery the
+key-changing propagation rows in the formal work items (Open questions)
+already wait on.
 
 The physical witness comes free: the long form is keyed, so the composite
 primary key of the materialized table

@@ -4,11 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Runtime storage backends for Mensura stores."
+description = "Storage backends and the processing layer for Mensura."
 
 [dependencies]
+mensura-syntax = { workspace = true }
 mensura-types = { workspace = true }
 rusqlite = { workspace = true }
-
-[dev-dependencies]
-mensura-syntax = { workspace = true }

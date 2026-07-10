@@ -185,6 +185,13 @@ pub enum Completeness {
     Incomplete,
 }
 
+/// The domain-relative grade of the completeness entry (`09` section 3.4,
+/// ADR 0020), not a fifth qualifier axis: the enum-domained index columns `A`
+/// for which every residual key present in the table carries its `(k, v)` row
+/// for **every** variant `v`. Established by `unpivot` when every folded
+/// column is total; consumed by `pivot`'s totality upgrade.
+pub type Exhaustive = BTreeSet<String>;
+
 /// A type-level structural column: a name and its domain. This is `C`-side
 /// structure only; totality lives in the column-scoped [`Totality`] qualifier,
 /// not here.
@@ -208,6 +215,9 @@ pub struct Qualifiers {
     pub cardinality: Cardinality,
     pub totality: Totality,
     pub completeness: Completeness,
+    /// The second grade of the completeness entry (ADR 0020); see
+    /// [`Exhaustive`].
+    pub exhaustive: Exhaustive,
     pub lineage: Lineage,
 }
 
@@ -249,6 +259,7 @@ impl TableType {
                 cardinality: Cardinality::Singletons,
                 totality,
                 completeness: Completeness::Incomplete,
+                exhaustive: Exhaustive::new(),
                 lineage: Lineage::root(),
             },
         }
@@ -321,6 +332,7 @@ mod tests {
                 cardinality: Cardinality::Singletons,
                 totality: Totality::all_total(),
                 completeness: Completeness::Incomplete,
+                exhaustive: Exhaustive::new(),
                 lineage: Lineage::root(),
             },
         };

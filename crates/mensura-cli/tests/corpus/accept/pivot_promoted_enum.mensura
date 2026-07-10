@@ -1,0 +1,9 @@
+// Accept: `pivot` spreads an enum index column; a stored non-index enum is
+// promoted with `extend_key` first (composition, ADR 0020).  The sparse
+// store pivots directly, with optional spread columns.
+enum Metric { "lo" "hi" }
+unit Obs { ts: int }
+store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }
+view wide {
+  obs |> extend_key metric |> pivot metric reading
+}

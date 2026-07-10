@@ -395,6 +395,19 @@
   Read the guarded cell through the present fiber.
 \end{proof}
 
+\begin{theorem}[A single-variant name axis is exhaustive]
+  \label{thm:exhaustive-subsingleton}
+  \lean{Mensura.exhaustive_of_subsingleton}\leanok
+  \uses{def:exhaustive}
+  When the name type has at most one element, a present residual key has
+  a row for some name and there is only one name to have, so the table is
+  exhaustive trivially.  This backs the checker's single-variant
+  refinement of the totality upgrade.
+\end{theorem}
+\begin{proof}\leanok
+  The unique name equals any name by subsingleton elimination.
+\end{proof}
+
 \begin{theorem}[A non-dropping map preserves the rectangle]
   \label{thm:map-exhaustive}\lean{Mensura.map_exhaustive}\leanok
   \uses{def:map, def:exhaustive}
@@ -491,6 +504,20 @@
   action; key-locality makes the representation exact and
   split-invariance makes it strict.  Backward: the strict fiber map
   results.
+\end{proof}
+
+\begin{theorem}[A presence-preserving fiber map preserves the rectangle]
+  \label{thm:fibermap-exhaustive}\lean{Mensura.fiberMap_exhaustive}\leanok
+  \uses{def:fibermap, def:strict, def:exhaustive, thm:aggregate-exhaustive}
+  A strict fiber action that never empties a present fiber preserves
+  exhaustiveness: strictness keeps absent fibers absent and the
+  no-emptying hypothesis keeps present fibers present, so full fibers
+  stay full.  This is the universal form of which
+  \ref{thm:aggregate-exhaustive} and \ref{thm:map-exhaustive} are the two
+  principal cases.
+\end{theorem}
+\begin{proof}\leanok
+  Presence is preserved in both directions.
 \end{proof}
 
 \begin{definition}[Reindexing fiber map]

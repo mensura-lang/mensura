@@ -1,0 +1,20 @@
+// Accept: the reshape pair is a true inverse (ADR 0020), so the
+// round-tripped wide view conforms to the very shape its source store
+// does.  `Wide` fixes the unit and both total columns; `unpivot` folds
+// them (establishing the rectangle by mechanism) and `pivot` spreads them
+// back total, so the same shape checks on the store and on the view.
+unit Reading { ts: int }
+shape Wide {
+  unit { Reading }
+  attr { temperature: real }
+  attr { humidity: real }
+}
+store readings : Wide {
+  unit { Reading }
+  attr { temperature: real }
+  attr { humidity: real }
+}
+view wide : Wide {
+  readings |> unpivot metric reading
+           |> pivot metric reading
+}

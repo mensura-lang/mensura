@@ -199,8 +199,8 @@ and are noted here only so the scope is unambiguous:
   `docs/decisions/0005-identity-and-authorization.md`).
 - **Materialization at runtime.**  How `mensura run` computes a view over the
   storage backend (the DBSP-style processing layer, M2,
-  `docs/toolkit/00-storage-backend.md`); this document fixes the surface and the
-  typing, not the execution.
+  `docs/toolkit/04-processing-layer.md`); this document fixes the surface and
+  the typing, not the execution.
 
 ## Forward references
 

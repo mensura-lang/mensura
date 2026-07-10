@@ -4,14 +4,15 @@
 //!
 //! - `lex`   -- print the token stream of a source file (a lexer debug aid).
 //! - `check` -- typecheck a program without touching a database.
-//! - `run`   -- typecheck a program and create its stores in a database.
+//! - `run`   -- typecheck a program, create its stores in a database, and
+//!   materialize its views (`docs/toolkit/04-processing-layer.md`).
 //! - `lsp`   -- run the language server over stdio.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use mensura_runtime::{EnsureOutcome, SqliteBackend, StorageBackend};
+use mensura_runtime::{EnsureOutcome, SqliteBackend, StorageBackend, materialize_views};
 use mensura_syntax::{Span, parse, tokenize};
 
 #[derive(Parser)]
@@ -33,7 +34,8 @@ enum Command {
         /// The Mensura source file to check.
         file: PathBuf,
     },
-    /// Typecheck a program and create its stores in a database.
+    /// Typecheck a program, create its stores in a database, and
+    /// materialize its views.
     Run {
         /// The Mensura source file to run.
         file: PathBuf,
@@ -90,10 +92,16 @@ fn cmd_check(path: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match frontend(path, &src) {
-        Ok(schemas) => {
-            let n = schemas.len();
-            let noun = if n == 1 { "store" } else { "stores" };
-            println!("ok: {n} {noun}");
+        Ok(program) => {
+            let stores = program.schemas.len();
+            let views = program.views.len();
+            let store_noun = if stores == 1 { "store" } else { "stores" };
+            if views == 0 {
+                println!("ok: {stores} {store_noun}");
+            } else {
+                let view_noun = if views == 1 { "view" } else { "views" };
+                println!("ok: {stores} {store_noun}, {views} {view_noun}");
+            }
             ExitCode::SUCCESS
         }
         Err(()) => ExitCode::FAILURE,
@@ -104,7 +112,7 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
     let Some(src) = read_source(path) else {
         return ExitCode::FAILURE;
     };
-    let Ok(schemas) = frontend(path, &src) else {
+    let Ok(program) = frontend(path, &src) else {
         return ExitCode::FAILURE;
     };
 
@@ -124,7 +132,7 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
     if in_memory {
         eprintln!("note: using an in-memory database; pass --db <path> to persist");
     }
-    for schema in &schemas {
+    for schema in &program.schemas {
         match backend.ensure_store(schema) {
             Ok(EnsureOutcome::Created) => {
                 println!(
@@ -142,13 +150,25 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
             }
         }
     }
-    ExitCode::SUCCESS
+    match materialize_views(&mut backend, &program) {
+        Ok(views) => {
+            for (name, rows) in views {
+                let noun = if rows == 1 { "row" } else { "rows" };
+                println!("materialized view {name} ({rows} {noun})");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The shared compiler frontend: lex, parse, and resolve `src`, reporting every
-/// diagnostic to stderr.  Returns the resolved schemas on success, or `Err(())`
+/// diagnostic to stderr.  Returns the resolved program on success, or `Err(())`
 /// once diagnostics have been printed.  Both `check` and `run` build on it.
-fn frontend(path: &Path, src: &str) -> Result<Vec<mensura_types::Schema>, ()> {
+fn frontend(path: &Path, src: &str) -> Result<mensura_types::ResolvedProgram, ()> {
     let tokens = match tokenize(src) {
         Ok(tokens) => tokens,
         Err(err) => {
