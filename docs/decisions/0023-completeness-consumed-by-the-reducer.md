@@ -112,7 +112,12 @@ through it); what changes is that the *demand* is the reducer's, so a
 This is a propagation-rule change and does not land until proven:
 
 - **`shrink_key` completeness propagation.**  A lemma: input complete over
-  `(a, b)` implies output complete over `a` after `shrink_key b`.
+  `(a, b)` implies output complete over `a` after `shrink_key b`.  *Drafted and
+  proved*: `Mensura.project_completeWrt` in
+  `formal/Mensura/Completeness/CompleteOver.lean`, over the mechanization
+  `Mensura.CompleteWrt` (population-relative completeness against a reference
+  table, the honest reading of ADR 0017's `complete_over`).  Sorry-free and
+  within the standard axiom set.
 - **Reducer obligation.**  The reducing/​windowing distinction for `group_map`
   made precise (it already exists as "single-record return vs bag return",
   `fiberMap` in `formal/`), with completeness required exactly for the

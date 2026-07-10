@@ -25,6 +25,8 @@ Module map (each file imports only what it builds on):
     Reindex          its key-changing generalization; gatherMap and project
     Verbs            the derived verb catalogue (expressive completeness)
     PivotAttr        the split-safe attribute pivot and its reversibility
+    CompleteOver     population-relative completeness and its propagation
+                     through project/shrink_key (ADR 0023)
 
 The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
@@ -40,3 +42,4 @@ import Mensura.Completeness.FiberMap
 import Mensura.Completeness.Reindex
 import Mensura.Completeness.Verbs
 import Mensura.Completeness.PivotAttr
+import Mensura.Completeness.CompleteOver
