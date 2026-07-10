@@ -1,0 +1,12 @@
+// Reject (resolve): the indirect analogue of `unpivot_duplicate_column`.
+// `pivot` spreads `metric`'s enum variants into columns, and the variant
+// `ts` collides with the retained index column `ts` (from `Obs`).  The
+// conflict is sourced from the enum's variant set, not a directly named
+// column.  Diagnostic: "`pivot` would duplicate column `ts`"
+// (ADR 0020, pipe_check `op_pivot`).
+enum Metric { "ts" "hi" }
+unit Obs { ts: int }
+store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }
+view bad {
+  obs |> extend_key metric |> pivot metric reading
+}
