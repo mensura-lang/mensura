@@ -1,0 +1,11 @@
+unit Reading {
+  ts: int
+}
+store readings {
+  unit { Reading }
+  attr { kelvin: real }
+}
+view roundtrip {
+  let parts = readings |> split |k| k.ts < 100;
+  parts |> bind
+}

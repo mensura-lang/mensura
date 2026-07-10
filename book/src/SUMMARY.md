@@ -15,6 +15,12 @@
 - [Stores and attributes](modelling/stores.md)
 - [Shapes](modelling/shapes.md)
 
+# Transforming data
+
+- [Views](transforming/views.md)
+- [Reshaping rows with map](transforming/map.md)
+- [Pivoting and unpivoting](transforming/pivot.md)
+
 # Concepts
 
 - [The kernel operations](concepts/the-kernel.md)

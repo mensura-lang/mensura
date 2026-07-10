@@ -1,0 +1,13 @@
+unit Reading {
+  ts: int
+}
+store readings {
+  unit { Reading }
+  attr { machine: string }
+  attr { temperature: real }
+}
+view machine_max {
+  readings
+  |> extend_key machine
+  |> group_map |k, g| (.temp_max = max g.temperature)
+}

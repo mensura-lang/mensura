@@ -1,0 +1,12 @@
+enum Metric { "lo" "hi" }
+unit Obs {
+  ts: int
+}
+store obs {
+  unit { Obs }
+  attr { metric: Metric }
+  attr { reading: real }
+}
+view wide {
+  obs |> extend_key metric |> pivot metric reading
+}
