@@ -9,9 +9,11 @@ Proposed.  Under discussion in
 rejected alternative 3) and extends the store surface of
 `docs/decisions/0002-stores-tabulate-units.md`.  Nothing here is ratified: no
 grammar, checker, or storage change follows until this ADR is accepted.  It is
-paired with, but independent of, the completeness-placement erratum tracked in
-the same issue (that one fixes a propagation rule; this one changes what may
-enter the system).
+paired with, but independent of, the completeness-placement erratum proposed in
+`docs/decisions/0023-completeness-consumed-by-the-reducer.md` (that one fixes a
+propagation rule; this one changes what may enter the system).  Both proposals
+together are the response to
+[issue #38](https://github.com/mensura-lang/mensura/issues/38).
 
 ## Context
 
@@ -85,9 +87,34 @@ Allow a store to declare its cardinality, defaulting to the current discipline.
   per-*unit* (which would make identity itself ambiguous); this knob is
   per-*store* (a tabulation choice), which is where `0002` already lives.
 
-The exact surface (a keyword, an annotation, a `card` clause) is deferred to
-the store language document and is not fixed here; this ADR fixes only that the
-property exists, defaults to `singletons`, and lives on the store.
+**Surface: `attr` versus `attr*`.**  Cardinality is spelled by the attribute
+block, not a separate flag.  `attr { ... }` lists columns that are `card <= 1`
+per key; `attr* { ... }` lists columns that are `card >= 1` per key (the `*` is
+"many").  A store is `singletons` when it has no `attr*` block and a `bag` when
+it has one.  This choice is deliberate on three counts:
+
+- **No new keyword.**  The keyword-free lexer reads `attr*` as the `attr`
+  identifier followed by the `*` operator, matched by position like every other
+  contextual keyword (`docs/language/04-grammar.md`).
+- **Per-column cardinality, not a whole-store boolean.**  In a `bag` store,
+  `attr { location }` alongside `attr* { ts, kelvin }` asserts a **functional
+  dependency**: `location` is constant within an entity, `ts`/`kelvin` vary.
+  The flat table is `card >= 1` over the key, with `location` determined by the
+  key alone (a checked invariant; storage may denormalize by repeating it).
+  This matches "cardinality is carried per column"
+  (`docs/language/09-typing-reference.md`, and the book's *What the types
+  track*).
+- **Shapes get cardinality for free (resolves the `0012` deferral).**  A shape
+  may write `attr` and `attr*` blocks with the same meaning, so a shape claim
+  now constrains cardinality, not only content.  A shape with no `attr*`
+  requires the target be `singletons`; an `attr*` block requires the named
+  columns be bag-valued.  This **amends `docs/decisions/0012-view-hosting.md`**,
+  which deferred "enforcing `singletons` via a shape."  (Open: whether an
+  all-`attr` shape *forbids* any bag column or only constrains the columns it
+  lists; the proposal takes the stricter "no `attr*` ⇒ `singletons`" reading.)
+
+The block spelling is fixed here; the precise grammar production lands in the
+store and shape language documents once this ADR is accepted.
 
 Consequences for the rest of the system, stated as obligations this ADR
 imposes on later work rather than as settled mechanism.
@@ -104,11 +131,18 @@ imposes on later work rather than as settled mechanism.
 - **Completeness.**  On a `bag` store, "complete over the key" is contentful
   and establishable at the source (an annotation, or a `collect` mechanism),
   and is consumed by a reducing `group_map` without an intervening
-  `shrink_key`.  This is the clean provenance the completeness-placement track
-  wants; the two tracks reinforce each other but neither depends on the other.
+  `shrink_key` (the consumer placement proposed in
+  `docs/decisions/0023-completeness-consumed-by-the-reducer.md`).  The two
+  tracks reinforce each other but neither depends on the other.
 - **Disjointness / splitting.**  An entity-keyed `bag` store makes `split`
   route whole entities, so tracked disjointness coincides with the leakage
   boundary for entity-level cross-validation.
+- **Ordering.**  A `bag` store carries no row order.  When a `group_map` body
+  needs one (a window such as `cumsum g.price by g.date`, a rank, a lag), the
+  order is named at the operator by a `by` clause, not carried by the store,
+  so the dependency qualifier is not load-bearing here.  Tie-breaking on equal
+  keys and streaming window-closedness (M5) are left to the expression and
+  streaming documents.
 
 ## Consequences
 
@@ -173,19 +207,23 @@ Neutral:
    vacuous-completeness cost.  Out of scope here; noted for the lineage
    document.
 
-## Open questions
+Three of the questions this ADR opened are answered above and recorded here as
+closed: the **surface** is `attr` / `attr*`; **ordering** is named at the
+window operator (`by`), not carried by the store; **shapes** constrain
+cardinality through the same `attr` / `attr*` blocks (amending `0012`).  What
+remains open:
 
-- **Surface.**  Keyword vs annotation vs `card` clause, and how it reads next
-  to `unit { U }` and the attribute blocks.  Belongs in the store language
-  document once this ADR is accepted.
-- **Ordering / determinism.**  A `bag` store has no natural row order; window
-  operations need one from the dependency qualifier.  Does a `bag` store carry
-  an ordering, or is that always established in the pipeline?
-- **Shapes and conformance.**  Does a shape claim constrain a store's declared
-  cardinality, or only its content (mirroring the view rule in `0012`)?
-- **Interaction with `domain` resolution.**  A unit-reference field into a
-  `bag` store resolves to *which* observation?  `0002`'s one-level resolution
-  assumed a functional (`singletons`) target.
+- **Shape strictness.**  Does a shape with no `attr*` block *forbid* the target
+  from carrying any bag column, or only require the columns it names to be
+  `singletons`?  The proposal takes the stricter reading (no `attr*` ⇒
+  `singletons`); to be confirmed against real conformance cases.
+- **`domain` resolution into a `bag` store.**  The *direction* is settled: a
+  unit-reference field resolving into a `bag` store is a one-to-many match, so
+  it expands by cartesian product per key and the result is a `bag`, exactly
+  the join-cardinality rule already in `docs/language/07-pipelines.md` (a
+  non-functional right table raises the bound to `bag`).  What stays open is
+  the *surface* for a reference whose target is a bag, and whether `0002`'s
+  one-level `domain` resolution needs any change beyond admitting the expansion.
 - **Migration.**  Whether any current worked example or corpus program should
   be re-modelled as a `bag` store, or whether the default keeps them all valid
   unchanged (expected: unchanged).
