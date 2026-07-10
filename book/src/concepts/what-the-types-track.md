@@ -17,11 +17,14 @@ Three of those facts do the heavy lifting for correctness: **cardinality**,
 mathematically and, more to the point, about the mistakes they make
 *impossible to write* rather than merely possible to debug.
 
-> The syntax in this chapter previews operations that are still being built
-> (pipelines, splits, joins), so the snippets are marked as design previews and
-> are not yet checked by the compiler.  The [What's next](../whats-next.md) page
-> tracks the frontier.  The ideas, and the theorems behind them, are settled;
-> the spelling is not.  The full specifications live in
+> The pipeline algebra of this chapter type-checks and runs today: `map`,
+> `group_map`, `extend_key`/`shrink_key`, the joins, `split`/`bind`, and
+> `pivot`/`unpivot` all compile with `mensura check` and materialize with
+> `mensura run` (see the [Transforming data](../transforming/views.md)
+> chapters).  Two things remain design previews and are marked as such below:
+> the learning operations `fit`/`evaluate` that *consume* disjointness, and the
+> richer completeness witnesses.  The [What's next](../whats-next.md) page tracks
+> the frontier.  The full specifications live in
 > `docs/language/07-pipelines.md` and `docs/language/08-lineage.md`, each backed
 > by a machine-checked proof in `formal/`.
 
@@ -61,10 +64,8 @@ comparison) needs a *single known value*, not a bag; the bag combinators (`sum`,
 to one value.  And reshaping a long table to a wide one is sound only when each
 cell it spreads holds at most one value:
 
-```mensura,ignore
-grades                                             // keyed by (student, subject)
-|> group_map |k, g| (.score = max g.score)         // card -> 1 per (student, subject)
-|> pivot subject score                             // legal: each cell is card <= 1
+```mensura
+{{#include ../examples/grades-pivot.mensura}}
 ```
 
 **What other systems cannot do.**  Run the same reshape in pandas and a
