@@ -9,7 +9,7 @@
 //! Like `resolve` and `expr_check`, it collects all diagnostics rather than
 //! failing fast.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
 
@@ -17,8 +17,8 @@ use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
-    Cardinality, Column, Completeness, Content, Exhaustive, KeyMove, KeyMoveFrame, Lineage,
-    Qualifiers, SplitId, TableType, Totality,
+    Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage, Qualifiers,
+    SplitId, TableType, Totality,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -95,16 +95,18 @@ pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeE
     }
 }
 
-/// Drop any pending key-move frame (ADR 0024); see [`dispatch_op`].
-fn clear_key_move(input: PipeTy) -> PipeTy {
-    match input {
+/// Reset each output table's gradings to match its own scalar cardinality
+/// (ADR 0024): the conservative rule for every operation without a
+/// mechanized transport witness; see [`dispatch_op`].
+fn sync_functional(output: PipeTy) -> PipeTy {
+    match output {
         PipeTy::Table(mut t) => {
-            t.key_move = None;
+            t.sync_functional();
             PipeTy::Table(t)
         }
         PipeTy::Pair(mut a, mut b) => {
-            a.key_move = None;
-            b.key_move = None;
+            a.sync_functional();
+            b.sync_functional();
             PipeTy::Pair(a, b)
         }
     }
@@ -156,15 +158,7 @@ fn dispatch_op(
     input: PipeTy,
     span: Span,
 ) -> Result<PipeTy, Vec<TypeError>> {
-    // Any operation other than a key move invalidates a pending key-move
-    // frame (ADR 0024): the frame is a fact about the table exactly as it
-    // stands, and no other operation's rules consult or maintain it.  The
-    // key moves handle their own frames (restore, nest, or fall through).
-    let input = match op {
-        "extend_key" | "shrink_key" => input,
-        _ => clear_key_move(input),
-    };
-    match op {
+    let result = match op {
         "extend_key" => op_extend_key(input, args, span),
         "shrink_key" => op_shrink_key(input, args, span),
         "map" => op_map(input, args, span),
@@ -198,7 +192,16 @@ fn dispatch_op(
                 span,
             ))
         }
-    }
+    }?;
+    // Gradings are transformed only where a witness backs the transform
+    // (ADR 0024): the key moves derive cardinality from them, and the
+    // content-identity stages carry them.  Every other operation resets
+    // them to match its own output cardinality, the conservative rule
+    // until the per-op transport table is mechanized.
+    Ok(match op {
+        "extend_key" | "shrink_key" | "assume" | "completeness_check" => result,
+        _ => sync_functional(result),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -307,9 +310,9 @@ fn op_join(
                 JoinKind::Left => left.qualifiers.exhaustive,
                 JoinKind::Inner => Exhaustive::new(),
             },
+            functional: Functional::new(),
             lineage: left.qualifiers.lineage,
         },
-        key_move: None,
     }))
 }
 
@@ -354,9 +357,9 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
             totality,
             completeness: table.qualifiers.completeness,
             exhaustive,
+            functional: Functional::new(),
             lineage: table.qualifiers.lineage,
         },
-        key_move: None,
     }))
 }
 
@@ -627,9 +630,9 @@ fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec
             totality,
             completeness: table.qualifiers.completeness,
             exhaustive: table.qualifiers.exhaustive,
+            functional: Functional::new(),
             lineage: table.qualifiers.lineage,
         },
-        key_move: None,
     }))
 }
 
@@ -775,9 +778,9 @@ fn op_bind(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Type
             totality: a.qualifiers.totality,
             completeness,
             exhaustive,
+            functional: Functional::new(),
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
-        key_move: None,
     }))
 }
 
@@ -791,9 +794,9 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
             totality: table.qualifiers.totality.clone(),
             completeness: table.qualifiers.completeness,
             exhaustive: Exhaustive::new(),
+            functional: Functional::new(),
             lineage,
         },
-        key_move: None,
     }
 }
 
@@ -837,19 +840,21 @@ fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
 }
 
 /// `extend_key cols` (section 6.3, Tier A): promote each named column into the
-/// index. A column must be total to enter the key (ADR 0013); cardinality,
-/// completeness, and lineage are preserved. `exhaustive` is **forfeited**,
+/// index. A column must be total to enter the key (ADR 0013, and the
+/// `project_ungroup` inverse-domain side condition, ADR 0024); completeness
+/// and lineage are preserved. `exhaustive` is **forfeited**,
 /// against ADR 0020 section 2's "preserved" sketch: the promoted column
 /// refines the residual key, which can cut a fiber (rows
 /// `(s, math, score=5)` and `(s, port, score=7)` are exhaustive in the
 /// subject axis at residual key `s`, but not at `(s, 5)` after
 /// `extend_key score`), so the carry is unsound as stated.
 ///
-/// As the exact inverse of a pending `shrink_key` of the same columns, it
-/// instead restores the pre-demotion table verbatim (`ungroup_project`,
-/// ADR 0024): `project` tags every row with its own key component, so
-/// re-promoting files each row back where it came from.  Otherwise it
-/// records a promotion frame for a matching `shrink_key` to consume.
+/// Cardinality is **derived from the gradings** (ADR 0024): the gradings are
+/// facts about the flat table, so the move leaves them untouched and re-runs
+/// the subset check against the grown index. A `singletons` input stays
+/// `singletons` (`ungroup_functional`), and a `bag` whose grading fits the
+/// new index becomes `singletons`, the consumption being definitional (the
+/// grading *is* `Functional (ungroup T)` for the promoted columns).
 fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
@@ -867,19 +872,6 @@ fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     if !errs.is_empty() {
         return Err(errs);
     }
-    let requested: BTreeSet<String> = cols.iter().map(|(c, _)| c.to_string()).collect();
-    if let Some(frame) = table.key_move.take() {
-        if frame.kind == KeyMove::Demoted
-            && requested == frame.columns
-            && requested.len() == cols.len()
-        {
-            return Ok(PipeTy::Table(frame.saved));
-        }
-        // Not the inverse move: the frame stays true of the pre-promotion
-        // table, so it rides along inside the new frame's snapshot.
-        table.key_move = Some(frame);
-    }
-    let saved = table.clone();
     for (col, span) in &cols {
         if let Err(e) = promote_to_index(&mut table, col, *span) {
             errs.push(e);
@@ -889,11 +881,7 @@ fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
         return Err(errs);
     }
     table.qualifiers.exhaustive.clear();
-    table.key_move = Some(Box::new(KeyMoveFrame {
-        kind: KeyMove::Promoted,
-        columns: requested,
-        saved,
-    }));
+    table.derive_cardinality();
     Ok(PipeTy::Table(table))
 }
 
@@ -926,20 +914,17 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
 
 /// `shrink_key cols` (section 6.3, Tier B, ADR 0017 as amended by ADR 0023):
 /// drop index components into the non-index part. Content: the named key
-/// columns become ordinary columns. Cardinality: rises to `bag` (rows that
-/// differed only in the dropped key now share a key). Completeness:
+/// columns become ordinary columns. Cardinality: **derived from the
+/// gradings** (ADR 0024): the move leaves the gradings untouched and re-runs
+/// the subset check against the shrunken index, so a genuine coarsening
+/// rises to `bag` (no grading fits the retained key) while the round trip
+/// `extend_key c |> shrink_key c` re-derives `singletons` from the source
+/// grading (`project_ungroup`). Completeness:
 /// **propagated**, not demanded: a table complete against a reference at the
 /// fine key stays complete against the coarsened reference at the retained key
 /// (`project_completeWrt`); the consumer is the reducing `group_map`
 /// downstream. Lineage: **dropped** (`project_not_preservesDisjoint`), the
 /// lineage break that keeps `shrink_key` Tier B on its own.
-///
-/// As the exact inverse of a pending `extend_key` of the same columns, it
-/// instead restores the pre-promotion table verbatim (`project_ungroup`,
-/// ADR 0024; the promoted columns were total, `extend_key`'s own gate, so
-/// the round trip is the identity in content and in every qualifier).
-/// Otherwise it records a demotion frame for a matching `extend_key` to
-/// consume.
 fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
@@ -975,16 +960,6 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
             span,
         ));
     }
-    let requested: BTreeSet<String> = to_drop.iter().cloned().collect();
-    if let Some(frame) = table.key_move.take() {
-        if frame.kind == KeyMove::Promoted && requested == frame.columns {
-            return Ok(PipeTy::Table(frame.saved));
-        }
-        // Not the inverse move: the frame stays true of the pre-demotion
-        // table, so it rides along inside the new frame's snapshot.
-        table.key_move = Some(frame);
-    }
-    let saved = table.clone();
     // Move each dropped key column into the non-index part.
     let (dropped, kept): (Vec<Column>, Vec<Column>) = table
         .content
@@ -993,7 +968,7 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
         .partition(|c| to_drop.contains(&c.name));
     table.content.index = kept;
     table.content.columns.extend(dropped);
-    table.qualifiers.cardinality = Cardinality::Bag;
+    table.derive_cardinality();
     table.qualifiers.lineage = Lineage::dropped();
     // Completeness carries over unchanged: whatever fact held at the fine key
     // holds against the coarsened reference at the retained key
@@ -1003,11 +978,6 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     // rows are the ADR's open formal work item, so the checker stays
     // conservative until they are mechanized.
     table.qualifiers.exhaustive.clear();
-    table.key_move = Some(Box::new(KeyMoveFrame {
-        kind: KeyMove::Demoted,
-        columns: requested,
-        saved,
-    }));
     Ok(PipeTy::Table(table))
 }
 
@@ -1987,19 +1957,20 @@ mod tests {
     #[test]
     fn shrink_key_propagates_completeness_to_the_coarser_key() {
         let s = sample_sources();
-        // Promote `machine` into the key, establish completeness, then shrink it
-        // back out: result is a bag, still complete (against the coarsened
-        // reference, `project_completeWrt`), with lineage dropped.
+        // Promote `machine`, establish completeness, then genuinely coarsen
+        // by dropping `ts`: result is a bag (no grading fits the retained
+        // key), still complete (against the coarsened reference,
+        // `project_completeWrt`), with lineage dropped.
         let t = table_of(
             pipe_ty(
                 &s,
                 "readings |> extend_key machine |> assume { complete } \
-                 |> shrink_key machine",
+                 |> shrink_key ts",
             )
             .expect("ok"),
         );
-        assert!(!t.content.index.iter().any(|c| c.name == "machine"));
-        assert!(t.content.columns.iter().any(|c| c.name == "machine"));
+        assert!(!t.content.index.iter().any(|c| c.name == "ts"));
+        assert!(t.content.columns.iter().any(|c| c.name == "ts"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
         assert_eq!(t.qualifiers.completeness, Completeness::Complete);
         assert_eq!(t.qualifiers.lineage, Lineage::root());
@@ -2038,23 +2009,39 @@ mod tests {
         assert!(errs[0].message.contains("reducing `group_map`"), "{errs:?}");
     }
 
+    /// Equality up to attribute order (ADR 0024): a round trip restores the
+    /// index (order included), the attribute *set*, and every qualifier;
+    /// demoted columns re-enter at the end of the attribute list, so the
+    /// attribute order itself is not part of the restoration.
+    fn assert_restores(t: &TableType, base: &TableType) {
+        assert_eq!(t.content.index, base.content.index);
+        let names = |cols: &[Column]| -> BTreeMap<String, ColumnType> {
+            cols.iter()
+                .map(|c| (c.name.clone(), c.domain.clone()))
+                .collect()
+        };
+        assert_eq!(names(&t.content.columns), names(&base.content.columns));
+        assert_eq!(t.qualifiers, base.qualifiers);
+    }
+
     #[test]
-    fn key_move_round_trip_restores_the_table_exactly() {
+    fn round_trip_restores_the_source_type() {
         let s = sample_sources();
-        // ADR 0024: an exact promote/demote round trip is the identity
-        // (`project_ungroup`), in content (order included) and in every
-        // qualifier, so the type is the source's own.
+        // ADR 0024: the promote/demote round trip re-derives the source's
+        // type from the surviving grading (`project_ungroup` at the type
+        // level): `singletons` again, every qualifier restored.
         let base = table_of(pipe_ty(&s, "readings").expect("ok"));
         let t = table_of(
             pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine").expect("ok"),
         );
-        assert_eq!(t, base);
+        assert_restores(&t, &base);
     }
 
     #[test]
-    fn key_move_round_trip_restores_in_the_demote_first_order() {
+    fn round_trip_restores_in_the_demote_first_order() {
         // The opposite composition (`ungroup_project`, ADR 0024) restores
-        // unconditionally: the demoted column is total by construction.
+        // unconditionally: the demoted column is total by construction, and
+        // the source grading fits the re-grown index.
         let events = from_cols(
             "events",
             "Event",
@@ -2069,14 +2056,15 @@ mod tests {
         let t = table_of(
             pipe_ty(&s, "events |> shrink_key machine |> extend_key machine").expect("ok"),
         );
-        assert_eq!(t, base);
+        assert_restores(&t, &base);
     }
 
     #[test]
-    fn key_move_frames_nest_and_unwind() {
+    fn chained_moves_round_trip_through_one_grading() {
         let s = sample_sources();
-        // Chained promotions unwind through the frame stack (ADR 0024): each
-        // frame's snapshot carries the one beneath it.
+        // Chained promotions need no stack (ADR 0024): the single source
+        // grading survives every move untouched, and each demotion re-runs
+        // the subset check against the shrunken index.
         let base = table_of(pipe_ty(&s, "readings").expect("ok"));
         let t = table_of(
             pipe_ty(
@@ -2086,7 +2074,64 @@ mod tests {
             )
             .expect("ok"),
         );
-        assert_eq!(t, base);
+        assert_restores(&t, &base);
+    }
+
+    #[test]
+    fn round_trip_survives_a_content_identity_stage() {
+        let s = sample_sources();
+        // What a snapshot mechanism could not do (ADR 0024): the gradings
+        // ride through `assume`/`completeness_check`, so the round trip
+        // still restores `singletons` with an establish step between the
+        // moves.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> assume { complete } \
+                 |> shrink_key machine",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn promotion_consumes_a_grading_from_a_bag() {
+        let s = sample_sources();
+        // The cross-view shape in one pipeline (ADR 0024): the bag over
+        // `machine` still carries the `{ts}` grading, so promoting `ts`
+        // back is `singletons` again; consumption is definitional (the
+        // grading *is* `Functional (ungroup T)`).
+        let bag =
+            table_of(pipe_ty(&s, "readings |> extend_key machine |> shrink_key ts").expect("ok"));
+        assert_eq!(bag.qualifiers.cardinality, Cardinality::Bag);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine |> shrink_key ts |> extend_key ts",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn an_intervening_map_resets_the_gradings() {
+        let s = sample_sources();
+        // The conservative rule (ADR 0024): `map` has no transport witness,
+        // so it resets the gradings to its own output cardinality and the
+        // later demotion is a genuine coarsening, not a round trip.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> extend_key machine \
+                 |> map |k, r| (.temperature = r.temperature) \
+                 |> shrink_key machine",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
     }
 
     #[test]

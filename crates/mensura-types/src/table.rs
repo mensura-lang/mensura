@@ -192,6 +192,21 @@ pub enum Completeness {
 /// column is total; consumed by `pivot`'s totality upgrade.
 pub type Exhaustive = BTreeSet<String>;
 
+/// The key-graded cardinality facts (ADR 0024,
+/// `docs/decisions/0024-key-moves-as-a-true-inverse-pair.md`): column sets
+/// over the flat table, index and non-index columns alike, over which the
+/// table is known **functional** (grouping by the set yields at most one
+/// row, `Mensura.Functional` in `formal/`). The scalar [`Cardinality`] is
+/// the derived, `S = index` instance: a table is `Singletons` exactly when
+/// some grading is a subset of the current index (functionality is monotone
+/// upward, so a finer key stays functional). A grading is a fact about the
+/// flat table, indifferent to which of its columns currently form the key:
+/// the key moves re-derive cardinality and never touch the gradings, the
+/// content-identity stages carry them, and every other operation resets
+/// them to match its own output cardinality (the conservative rule until
+/// the per-op transport table is mechanized).
+pub type Functional = BTreeSet<BTreeSet<String>>;
+
 /// A type-level structural column: a name and its domain. This is `C`-side
 /// structure only; totality lives in the column-scoped [`Totality`] qualifier,
 /// not here.
@@ -218,36 +233,9 @@ pub struct Qualifiers {
     /// The second grade of the completeness entry (ADR 0020); see
     /// [`Exhaustive`].
     pub exhaustive: Exhaustive,
+    /// The key-graded cardinality facts (ADR 0024); see [`Functional`].
+    pub functional: Functional,
     pub lineage: Lineage,
-}
-
-/// The direction of the key move that recorded a [`KeyMoveFrame`] (ADR 0024).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum KeyMove {
-    /// `extend_key`: attribute columns were promoted into the index.
-    Promoted,
-    /// `shrink_key`: index columns were demoted into the attributes.
-    Demoted,
-}
-
-/// The inverse-pair witness (ADR 0024,
-/// `docs/decisions/0024-key-moves-as-a-true-inverse-pair.md`): the table
-/// exactly as it stood before the most recent key move, together with the
-/// moved column set.  The exactly inverse move restores `saved` verbatim,
-/// backed by the cancellation laws `project_ungroup` / `ungroup_project`
-/// (`formal/Mensura/Laws.lean`).  The frame is a semantic fact about the
-/// table it is attached to (applying the inverse move yields `saved`), not
-/// a record of history, so frames nest through chained moves via the
-/// `saved` table's own frame; every *other* operation clears it centrally
-/// in the pipeline dispatch.
-#[derive(Clone, Debug, PartialEq)]
-pub struct KeyMoveFrame {
-    pub kind: KeyMove,
-    /// The moved columns, as a set: the inverse move must name exactly
-    /// these, in any order and without repetition.
-    pub columns: BTreeSet<String>,
-    /// The table before the move, its own frame included (the stack).
-    pub saved: TableType,
 }
 
 /// `Table<Qs, C>`: structure plus scoped qualifiers (ADR 0013).
@@ -255,10 +243,6 @@ pub struct KeyMoveFrame {
 pub struct TableType {
     pub content: Content,
     pub qualifiers: Qualifiers,
-    /// The pending key-move frame (ADR 0024): `Some` exactly when the
-    /// table is the direct output of an `extend_key`/`shrink_key` with no
-    /// operation applied since.
-    pub key_move: Option<Box<KeyMoveFrame>>,
 }
 
 impl TableType {
@@ -288,17 +272,62 @@ impl TableType {
                 }
             }
         }
-        TableType {
+        let mut table = TableType {
             content: Content { index, columns },
             qualifiers: Qualifiers {
                 cardinality: schema.cardinality,
                 totality,
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
+                functional: Functional::new(),
                 lineage: Lineage::root(),
             },
-            key_move: None,
-        }
+        };
+        // A `singletons` store seeds its index as a grading (ADR 0024): the
+        // flat table is functional over the declared key by the ADR 0001
+        // discipline. A `bag` store starts with no grading.
+        table.sync_functional();
+        table
+    }
+
+    /// The current index as a name set, the right-hand side of the grading
+    /// subset check (ADR 0024).
+    fn index_names(&self) -> BTreeSet<String> {
+        self.content.index.iter().map(|c| c.name.clone()).collect()
+    }
+
+    /// Re-derive the scalar cardinality from the gradings (ADR 0024):
+    /// `Singletons` exactly when some grading is a subset of the current
+    /// index. Called by the key moves, which change the index and never the
+    /// gradings.
+    pub fn derive_cardinality(&mut self) {
+        let index = self.index_names();
+        self.qualifiers.cardinality = if self
+            .qualifiers
+            .functional
+            .iter()
+            .any(|grading| grading.is_subset(&index))
+        {
+            Cardinality::Singletons
+        } else {
+            Cardinality::Bag
+        };
+    }
+
+    /// Reset the gradings to match the scalar cardinality (ADR 0024): the
+    /// index itself if `Singletons`, nothing if `Bag`. The conservative rule
+    /// for every operation without a mechanized transport witness; the key
+    /// moves derive instead of reset, and the content-identity stages
+    /// (`assume`, `completeness_check`) carry the input's gradings.
+    pub fn sync_functional(&mut self) {
+        self.qualifiers.functional = match self.qualifiers.cardinality {
+            Cardinality::Singletons => {
+                let mut gradings = Functional::new();
+                gradings.insert(self.index_names());
+                gradings
+            }
+            Cardinality::Bag => Functional::new(),
+        };
     }
 }
 
@@ -369,9 +398,9 @@ mod tests {
                 totality: Totality::all_total(),
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
+                functional: Functional::new(),
                 lineage: Lineage::root(),
             },
-            key_move: None,
         };
         assert_eq!(t.content.index.len(), 1);
         assert_eq!(t.content.columns[0].domain, ColumnType::String);

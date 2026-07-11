@@ -408,18 +408,35 @@ concern (deferred); split-safety holds regardless.
 
 Reindexing is one idea in two directions; the direction fixes the Tier.
 
+Cardinality at the key moves is **key-graded** (ADR 0024): the qualifiers
+carry *gradings*, column sets over the flat table (index or not) over which
+the table is known functional (`Mensura.Functional`), and the scalar
+cardinality is derived as "some grading is a subset of the current index".
+A grading is a fact about the flat table, indifferent to which columns
+currently form the key, so the key moves change the index, leave the
+gradings untouched, and re-run the subset check; the content-identity
+stages (`assume`, `completeness_check`) carry the gradings; every other
+operation resets them to match its own output cardinality until its
+transport row is mechanized.  A `singletons` source seeds its index as a
+grading, which is what makes the pair truly inverse: either round-trip
+order restores `singletons` (`project_ungroup`, `ungroup_project`), and a
+`bag` whose grading fits the grown index promotes back to `singletons`.
+
 **`extend_key cols`** promotes non-index columns into the key.  Content: the
 named columns join the index.  Each promoted column must be **key-eligible**
-(equatable) and total, since it becomes part of the identity; a continuous
-`real` measurement is rejected (ADR 0014).  Cardinality: an entity's rows are
-redistributed across the finer key, so the bound cannot grow; preserved.
+(equatable) and total, since it becomes part of the identity (and totality
+is the `project_ungroup` inverse-domain side condition); a continuous
+`real` measurement is rejected (ADR 0014).  Cardinality: derived from the
+gradings; a `singletons` input stays `singletons` (`ungroup_functional`),
+and a `bag` carrying a grading inside the new index becomes `singletons`.
 Completeness: preserved.  Lineage: preserved.  Tier A (`ungroup_splitSafe`,
 `ungroup_preservesDisjoint`).
 
 **`shrink_key cols`** drops index components into the non-index part.  Content:
-the named key columns become ordinary columns.  Cardinality: rows that differed
-only in the dropped component now share a key, so the bound rises to **`bag`**
-(unless a following `group_map` reduces it).  Completeness: **propagated**
+the named key columns become ordinary columns.  Cardinality: derived from
+the gradings; on a genuine coarsening no grading fits the retained key and
+the bound rises to **`bag`** (unless a following `group_map` reduces it),
+while an exact round trip re-derives `singletons`.  Completeness: **propagated**
 from the fine key to the coarse key (ADR 0023): a table complete against a
 reference at `(a, b)` is complete against the coarsened reference at `a`
 (`project_completeWrt`), so the fact is transformed, not consumed, and a

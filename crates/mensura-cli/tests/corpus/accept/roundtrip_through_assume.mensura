@@ -1,0 +1,11 @@
+// Accept: the gradings ride through a content-identity stage (ADR 0024),
+// so the round trip restores singletons with an `assume` between the two
+// moves, and the reducer's obligation discharges trivially (ADR 0023).
+unit Reading { ts: int }
+store readings { unit { Reading } attr { machine: string } attr { credits: int } }
+view rollup {
+  readings |> extend_key machine
+           |> assume { complete }
+           |> shrink_key machine
+           |> group_map |k, g| (.total = sum g.credits)
+}
