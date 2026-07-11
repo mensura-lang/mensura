@@ -1,11 +1,25 @@
-// Accept: the gradings ride through a content-identity stage (ADR 0024),
-// so the round trip restores singletons with an `assume` between the two
-// moves, and the reducer's obligation discharges trivially (ADR 0023).
+// Accept: the gradings ride through a content-identity stage (ADR 0024).
+// `restored` puts an `assume` between the two moves; the `assume` is not
+// needed for acceptance, it is the intervening stage under test, and the
+// all-`attr` shape claim is what observes the restoration (a shape with
+// no `attr*` requires singletons, ADR 0022), so this file fails if the
+// gradings ever stop riding through `assume`.  `rollup` shows the round
+// trip needs no establishment step at all: the restored singletons input
+// discharges the reducer's obligation trivially (ADR 0023).
 unit Reading { ts: int }
-store readings { unit { Reading } attr { machine: string } attr { credits: int } }
-view rollup {
+shape PerReading {
+  unit { Reading }
+  attr { machine: string }
+  attr { credits: int }
+}
+store readings : PerReading { unit { Reading } attr { machine: string } attr { credits: int } }
+view restored : PerReading {
   readings |> extend_key machine
            |> assume { complete }
+           |> shrink_key machine
+}
+view rollup {
+  readings |> extend_key machine
            |> shrink_key machine
            |> group_map |k, g| (.total = sum g.credits)
 }
