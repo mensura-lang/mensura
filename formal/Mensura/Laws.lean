@@ -12,10 +12,13 @@ select fusion, since all are `map`s, ADR 0015); the joins absorb a preceding
 cancel in both directions (`bind_split` in `Mensura.Core.Defs`, `split_bind`
 below); and `ungroup`/`project` -- the algebra's `extend_key`/`shrink_key` --
 cancel in both directions on the domain the checker enforces
-(`project_ungroup`, `ungroup_project`, ADR 0024).
+(`project_ungroup`, `ungroup_project`, ADR 0024), with `ungroup`
+preserving functionality (`ungroup_functional`, the checker's
+"`extend_key` keeps `singletons`" row).
 -/
 
 import Mensura.Core.Ops
+import Mensura.Reshape
 
 namespace Mensura
 
@@ -220,5 +223,24 @@ theorem ungroup_project {D : Type} [Fintype D] [DecidableEq D]
         Finset.sum_congr rfl (fun d' _ => by
           by_cases h : d' = d <;> simp [h, bind_singleton_id])
     _ = T.rows (k, d) := by simp
+
+/-- **`extend_key` preserves `singletons` (ADR 0024).**  `ungroup` files
+each row of a key's group under the finer key its promoted column names,
+so a fiber of the output is a filtered subset of the input group: at most
+one row in, at most one row out.  This is the propagation row behind
+re-deriving `singletons` after a promotion; consuming a *grading* needs no
+lemma of its own, since the grading is by definition the statement
+`Functional (ungroup T)` for the promoted columns (ADR 0024). -/
+theorem ungroup_functional {β : Type} [DecidableEq β]
+    {T : Table K (H ⊕ Unit) (Sum.elim σ (fun _ => β))}
+    (hT : Functional T) : Functional (ungroup T) := by
+  rintro ⟨k, b⟩
+  rcases Nat.le_one_iff_eq_zero_or_eq_one.mp (hT k) with h0 | h1
+  · simp [ungroup, Multiset.card_eq_zero.mp h0]
+  · obtain ⟨f, hf⟩ := Multiset.card_eq_one.mp h1
+    simp only [ungroup, hf, Multiset.singleton_bind]
+    cases f (Sum.inr ()) with
+    | none => simp
+    | some w => split <;> (try split) <;> simp
 
 end Mensura

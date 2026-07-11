@@ -8,8 +8,12 @@ Extends the `extend_key`/`shrink_key` rules of
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md`, and mirrors
 the inverse-pair contract of
 `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.  The formal
-backing lands in `formal/Mensura/Laws.lean` (`project_ungroup`,
-`ungroup_project`); the checker realization in `mensura-types`.
+backing lives in `formal/Mensura/Laws.lean` (`project_ungroup`,
+`ungroup_project`, `ungroup_functional`); the checker realization in
+`mensura-types` (key-graded cardinality).  An earlier draft of this same
+ADR realized the contract with a key-move *frame* (a snapshot of the
+pre-move table type); that mechanism is superseded here and recorded under
+Alternatives considered.
 
 ## Context
 
@@ -33,6 +37,30 @@ checker types it as a strict loss:
 The same happens in the opposite order: `shrink_key c |> extend_key c`
 re-files every row under exactly the key it came from, yet types as if
 the table had been through a genuine reindex.
+
+The motivating case reaches past a single pipeline.  A `singletons` store
+keyed by `(machine_id, ts)` is reshaped by one view into a bag over
+`machine_id` (`shrink_key ts`), and a *second* view promotes `ts` back
+(`extend_key ts`), expecting the original `singletons` shape.  Whatever
+tracks the inverse must therefore be a fact that can live on a table's
+*type at a boundary* (a view's output schema), not a payload private to
+one pipeline walk: `resolve` persists a view's output as columns plus
+qualifiers (`ViewPlan`), and anything that cannot be stated there cannot
+serve the cross-view round trip even in principle.
+
+Which fact?  Completeness is the tempting candidate (the bag "still
+carries `complete_over(machine_id, ts)`"), and it is the wrong one.
+Completeness is a *presence* fact: no row that should exist is absent.
+It says nothing about *multiplicity*: a bag in which one machine carries
+two rows with the same `ts` can be perfectly complete, and promoting `ts`
+then yields two rows at one `(machine_id, ts)` key, a bag, not the
+original table.  What the promotion actually needs is that `ts` is
+**distinct within each machine's group**, equivalently that the table is
+*functional over the column set `{machine_id, ts}`*: grouping the flat
+table by those columns yields at most one row.  That is a cardinality
+fact graded by a column set, and it is exactly the information a
+`singletons` source over `(machine_id, ts)` starts with and never loses
+by being reindexed.
 
 The formal development already contains both operations: `extend_key` is
 the algebra's `ungroup` (def:grouping) and `shrink_key` its `project`
@@ -58,55 +86,96 @@ inverse pair, exactly parallel to `pivot_unpivotDrop`/`unpivotDrop_pivot`:
   component, so the demoted column is total by construction and
   re-promoting it restores the original filing.
 
-Both directions are equalities of tables, so the round trip preserves
-*every* property at once: cardinality, completeness, `exhaustive`,
-lineage, and content are facts about the table, and the table is the
-same.  In particular the composite is the identity, which is `SplitSafe`
-(`SplitSafe.id`), so the Tier B lineage drop of a lone `shrink_key` does
-not apply to an exact round trip.
+Both directions are equalities of tables, so semantically the round trip
+preserves *every* property at once.  In particular the composite is the
+identity, which is `SplitSafe` (`SplitSafe.id`), so the Tier B lineage
+drop of a lone `shrink_key` does not apply to an exact round trip.
 
-### 2.  Tracking: the key-move frame
+### 2.  Tracking: key-graded cardinality
 
-The checker's table type gains a **key-move frame**: after
-`extend_key cols` (or `shrink_key cols`), the output records the moved
-column set and the input table exactly as it stood, nested frames
-included.  The exactly inverse move (a `shrink_key`, respectively
-`extend_key`, naming the same column set) returns the snapshot verbatim
-instead of applying its conservative rules.  Any other operation clears
-the frame at the dispatch, in one central place.
+The checker tracks cardinality **graded by column sets**.  The qualifiers
+carry a set of *gradings*: column sets `S`, drawn from the flat table
+(index and non-index columns alike), over which the table is known
+**functional** (grouping by `S` yields at most one row;
+`Mensura.Functional` in `formal/`).  The scalar cardinality is then
+*derived*, not stored: a table is `singletons` exactly when some grading
+is a subset of the current index.  Functionality is monotone upward (a
+finer key can only shrink groups), so the subset check is sound.
 
-The frame is **not** a syntactic peephole and not a history hack: it is a
-semantic fact about the table it is attached to.  A promotion frame says
-"demoting these columns yields `saved`", which is `project_ungroup`
-applied to the current table; a demotion frame says the dual via
-`ungroup_project`.  Because the fact is self-justifying, frames nest and
-unwind correctly through chains
-(`extend_key a |> extend_key b |> shrink_key b |> shrink_key a`
-restores the original table in two steps), and a *mismatched* inverse
-move simply falls through to the conservative rules, burying the old
-frame inside the new one's snapshot, where it remains true.
+The rules, per operation:
 
-Clearing on every other operation is deliberately maximal for this
-first realization.  Several intermediate operations plainly preserve the
-fact (`assume`, `completeness_check`, a non-dropping `map` that neither
-reads nor writes the moved columns); admitting them is the per-op
-transport table sketched in Open questions, and each row of it needs its
-own mechanized witness before the checker may use it, the same standard
-ADR 0020 set for the `exhaustive` propagation rows.
+- **A source seeds the gradings.**  A `singletons` store contributes its
+  index as a grading; a `bag` store contributes none (ADR 0022).
+- **The key moves change the index, never the gradings.**  A grading is a
+  fact about the flat table, indifferent to which of its columns are
+  currently the key.  `extend_key C` grows the index and re-derives
+  cardinality; `shrink_key C` shrinks the index and re-derives
+  cardinality.  Everything else about the two operations stays per ADR
+  0023: `shrink_key` propagates completeness, drops lineage (its Tier B
+  break), and forfeits `exhaustive`; `extend_key` keeps its totality and
+  key-eligibility gates.
+- **Content-identity stages preserve the gradings.**  `assume` and
+  `completeness_check` do not touch the rows, so the fact rides through
+  them.
+- **Every other operation resets the gradings** to match its own computed
+  output cardinality: the current index if `singletons`, nothing if
+  `bag`.  This is deliberately maximal for the first realization; the
+  per-op transport table (which operations provably preserve a grading)
+  is an open question, and each admitted row needs its own mechanized
+  witness, the standard ADR 0020 set for the `exhaustive` rows.
+
+Why this realizes the inverse contract with no further machinery:
+
+- `T |> extend_key c |> shrink_key c`: the source grading (say `{ts}`)
+  survives both moves untouched; after the shrink the index is `{ts}`
+  again, the subset check finds the grading, and the table is
+  `singletons`.  This is `project_ungroup` read at the type level.
+- `T |> shrink_key c |> extend_key c`: the grading `{ts, c}` from the
+  `singletons` source is not a subset of the shrunken index (correctly a
+  `bag`), and is a subset again after the promotion (`singletons`
+  restored).  This is `ungroup_project` read at the type level.
+- The **cross-boundary round trip** falls out of the same check, because
+  a grading is a plain set of column sets: it is representable on a
+  view's output type, where a snapshot of a checker-internal table can
+  never be.  A bag over `machine_id` carrying the grading
+  `{machine_id, ts}` types `extend_key ts` as `singletons` no matter
+  where the bag came from, another pipeline, a view boundary, or (later)
+  a declared fact on a bag store.
+
+Consumption is definitional rather than rule-shaped: the grading *is*
+the statement `Functional (ungroup_C T)`, and `extend_key C` *is*
+`ungroup_C`, so promoting simply exposes what the fact already said.  The
+one propagation row that needs its own lemma is that `extend_key`
+preserves `singletons` (`ungroup_functional`: `Functional T` implies
+`Functional (ungroup T)`), which backs re-deriving `singletons` after a
+promotion from an already-`singletons` table.
 
 ### 3.  What changes downstream
 
-- `T |> extend_key c |> shrink_key c` now types exactly as `T`, in
-  content (original column order included) and in all four qualifier
-  axes.  A `singletons` source round-trips to `singletons`, so a
-  downstream reducing `group_map` is admitted by the ADR 0023 trivial
-  discharge instead of demanding a vacuous `assume { complete }`.
-- `T |> shrink_key c |> extend_key c` likewise restores `T`.
-- A `shrink_key` that is *not* the exact inverse of the pending
-  promotion (different columns, or any operation intervened) behaves
-  exactly as ADR 0023 specifies: cardinality to `bag`, completeness
-  propagated, lineage dropped, `exhaustive` forfeited.  Nothing in ADR
-  0022/0023 moves.
+- `T |> extend_key c |> shrink_key c` and `T |> shrink_key c |>
+  extend_key c` both restore the input's **cardinality**, content
+  columns, and totality.  A `singletons` source round-trips to
+  `singletons`, so a downstream reducing `group_map` is admitted by the
+  ADR 0023 trivial discharge instead of demanding a vacuous
+  `assume { complete }`.
+- The restoration composes through content-identity stages: an
+  `assume { complete }` or `completeness_check` *between* the moves does
+  not forfeit it (a frame-style mechanism would have).
+- Promoting a column set whose grading is already known types as
+  `singletons` even when the bag was built elsewhere, which is the
+  cross-view scenario above once view outputs become sources.
+- Two restorations are deliberately **not** claimed, conservative but
+  never unsound: `exhaustive` stays forfeited at `extend_key` (a graded
+  `exhaustive` is an open question), and `shrink_key` still drops
+  lineage even inside an exact round trip (today `Lineage::dropped()`
+  equals the root lineage, so nothing observable is lost; a graded
+  lineage is the principled fix).  Attribute *order* after a round trip
+  may also differ (demoted columns re-enter at the end of the attribute
+  list); the schema content is unchanged.
+- A `shrink_key` that is not an inverse of anything behaves exactly as
+  ADR 0023 specifies: cardinality to `bag` (no grading fits the retained
+  key), completeness propagated, lineage dropped, `exhaustive`
+  forfeited.  Nothing in ADR 0022/0023 moves.
 
 ### 4.  Runtime
 
@@ -123,31 +192,36 @@ Positive:
   both ways, with the inverse-domain side condition already enforced by
   the existing `extend_key` totality gate.
 - The "promote, work at the finer key, demote" idiom stops taxing the
-  program with a `bag` type and a lost lineage when nothing actually
-  happened between the moves.
-- One mechanism covers both directions and chains, with a single
-  clearing point in the dispatch, so the conservative behavior of every
-  other operation is untouched by construction.
+  program with a `bag` type when nothing between the moves disturbed the
+  fact.
+- The tracked fact is a set of column sets, the same shape as the
+  `exhaustive` qualifier: boundary-representable, so it extends to view
+  outputs (`ViewPlan`) and, later, to declared facts on bag stores and
+  shapes, unifying with ADR 0022's deferred per-column refinements.
+- Cardinality stops being a primitive two-state flag and becomes the
+  derived, `S = index` instance of one graded fact, which is the
+  direction the full key-graded design (Alternatives, 3) wants anyway.
 
 Negative:
 
-- The frame is all-or-nothing: any intervening operation forfeits the
-  restoration, even one that provably preserves the fact.  The cost is a
+- The reset-everywhere-else rule is all-or-nothing outside the key moves
+  and the content-identity stages: an intervening `map` forfeits the
+  gradings even when it provably preserves them.  The cost is a
   conservative type, never unsoundness; the transport table (Open
   questions) is the path to lifting it.
-- A snapshot of the table type rides along inside the checked type.  The
-  nesting depth is bounded by the pipeline's length, and view boundaries
-  (`resolve`) read only content and qualifiers, so the frame never
-  escapes into a schema.
+- Exact round trips no longer restore `exhaustive`, and attribute order
+  may change.  Both are strictly weaker restorations than a snapshot
+  gives; both are the honest price of tracking facts instead of
+  memoizing types, and neither loss is observable in any current corpus
+  program.
 
 Neutral:
 
 - ADR 0023's placement of the completeness obligation is unaffected: the
-  reducing `group_map` still demands the fact; an exact round trip now
-  simply presents the input's own cardinality to it.
-- The typing reference (`09` section 6.3) needs a paragraph for the
-  frame at its next editorial pass; until then this ADR is the
-  specification.
+  reducing `group_map` still demands the fact; a round trip now simply
+  presents the input's own cardinality to it.
+- The typing reference (`09` section 6.3) states the grading rules for
+  the two key moves; this ADR is the specification of the mechanism.
 
 ## Alternatives considered
 
@@ -156,32 +230,48 @@ Neutral:
    not about the table, so it cannot compose across parenthesized
    sub-pipelines or future view inlining, and it silently diverges from
    the formal statement, which is about tables.
-2. **Key-graded qualifiers**: state cardinality, completeness,
+2. **The key-move frame** (this ADR's earlier draft, superseded).  After
+   a key move, snapshot the pre-move table type; the exactly inverse
+   move returns the snapshot verbatim; any other operation clears it.
+   Sound (the snapshot is justified by the same two laws) and it
+   restores *everything*, `exhaustive` and column order included.
+   Rejected on three counts.  It is all-or-nothing by construction: only
+   the literally adjacent inverse restores, and even `assume` between
+   the moves forfeits it.  It is boundary-blind by construction: a
+   snapshot of a checker-internal type cannot be persisted on a view's
+   output schema, so the cross-view round trip that motivates the whole
+   design is unservable.  And it memoizes a type instead of tracking a
+   fact, which is against the grain of a checker whose every other
+   property is derived from how operations transform facts.  The graded
+   mechanism subsumes its cardinality restoration, which is the axis
+   with observable consequences today.
+3. **Key-graded everything**: state cardinality, completeness,
    `exhaustive`, and lineage at every coarsening of the current key
-   ("functional over `K`", the axis-aware lineage of ADR 0020's open
-   questions).  The principled generalization, and it would subsume the
-   frame (a promotion re-grades the input's full-key facts to the
-   subkey; a demotion re-grades them back).  Deferred: it touches every
-   propagation rule in the checker and needs a per-fact mechanization,
-   while the frame captures the exact-inverse fragment with two proven
-   equalities.  The frame is forward-compatible with it.
-3. **Teaching `shrink_key` to keep `singletons` when the retained key is
-   provably functional.**  A special case of alternative 2 (it needs
-   subkey cardinality anyway), and it restores only cardinality, not
-   lineage or `exhaustive`.
+   (axis-aware lineage, ADR 0020's open questions).  The full design
+   this ADR takes the first step of; adopting it wholesale touches every
+   propagation rule in the checker and needs a per-fact mechanization.
+   This ADR adopts exactly the cardinality axis, whose lemmas exist, and
+   stays forward-compatible with the rest.
 
 ## Open questions
 
-- **The transport table.**  Which operations between the two moves
-  preserve the frame: `assume` and `completeness_check` (they touch no
-  content), a provably non-dropping `map` that neither reads nor writes
-  the moved columns, `left_join`?  Each admitted row needs a mechanized
-  commutation witness (the op commutes with `project` on the frame's
-  domain), the ADR 0020 standard.
-- **Key-graded facts** (alternative 2) as the eventual home of the
-  frame, unifying it with axis-aware lineage.
-- **Partial inverses.**  `extend_key a b |> shrink_key b` restores
-  nothing today (the sets differ); with per-column frames it could
-  restore the `a`-only promotion.  Deferred until a use case demands it.
+- **The transport table.**  Which operations preserve a grading:
+  a non-dropping `map` that neither reads nor writes the graded columns,
+  `left_join` against a functional right table, `split`?  Each admitted
+  row needs a mechanized witness (the op preserves `Functional` on the
+  graded regrouping), the ADR 0020 standard.
+- **Graded `exhaustive` and graded lineage.**  The two axes an exact
+  round trip currently loses; alternative 3 is their eventual home.
+- **The declaration surface.**  A bag store or shape that *declares* a
+  grading (the `ReadingBack` problem: stating that `ts` is distinct
+  within each machine's bag), joining the `@complete_over` annotation
+  family and ADR 0022's shape-strictness open question; and the
+  persistence of gradings on `ViewPlan` once view outputs become sources
+  for downstream views.
+- **Partial inverses.**  `extend_key a b |> shrink_key b` restores the
+  `a`-only promotion exactly when a grading fits the retained key, so
+  the subset check already covers most of what per-column frames would
+  have; whether any residue remains is deferred until a use case
+  demands it.
 - **The eval shortcut.**  When `shrink_key` becomes executable, lower an
   exact round trip as the identity.
