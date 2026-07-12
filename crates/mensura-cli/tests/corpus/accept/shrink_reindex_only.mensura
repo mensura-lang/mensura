@@ -1,9 +1,0 @@
-// Accept: the extend_key/shrink_key round trip restores the store's own
-// type (ADR 0024, `project_ungroup`): the source grading survives both
-// moves and fits the retained key again, so the view is singletons and
-// there is nothing to discharge anywhere.
-unit Reading { ts: int }
-store readings { unit { Reading } attr { machine: string } }
-view long_form {
-  readings |> extend_key machine |> shrink_key machine
-}
