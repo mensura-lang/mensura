@@ -49,7 +49,7 @@ notation, what the per-concept documents decided, choosing the settled subset.
 Authority is layered:
 
 - The **Lean formalization** (`formal/Mensura/`) is ground truth for the
-  algebra.  Every split-safety, disjointness, and reindexing claim here is
+  algebra.  Every split-safety, disjointness, and rekeying claim here is
   backed by a named theorem, cited inline and indexed in section 11.
 - The **per-concept documents** (`00`, `06`, `07`, `08`, and the ADRs) remain
   authoritative for rationale, examples, and any prose this reference
@@ -75,30 +75,30 @@ concrete and closed.
 Table<Qs, C>
 
 C   structure (what the data is)
-      index columns
-      non-index columns
+      key columns
+      non-key columns
       column domains
 
 Qs  qualifiers (propagated facts; concrete and closed in this freeze)
       cardinality   (table):   singletons (card <= 1)  |  bag (card 0..many)
-      totality      (column):  total | optional, per non-index column
+      totality      (column):  total | optional, per non-key column
       completeness  (table):   whether each key's bag holds all its rows
       lineage       (table):   a hierarchy of tags, the carrier for disjointness
 ```
 
-- `C` is the **content**: the index (key) columns, the non-index columns, and
+- `C` is the **content**: the key columns, the non-key columns, and
   their domains.  It carries nothing propagated.  Reindexing moves columns
   between the key and the non-key part.
 - `Qs` is the **qualifier row**.  Each qualifier declares a **scope** that fixes
   which structural node it rides: **table** (one value for the whole table,
   possibly a universal over keys) or **column** (one value per column, spanning
-  index and non-index columns).  In this freeze `Qs` is the closed set
+  key and non-key columns).  In this freeze `Qs` is the closed set
   cardinality (section 3.2), totality (section 3.3), completeness (section 3.4),
   and lineage (section 3.5); the extensible qualifier framework, sampling, and
   dependency are deferred (section 13).
 - There is **no per-key scope**.  A fact "about keys" is either a universal over
   all keys (table scope: cardinality, completeness, the disjointness invariant)
-  or a fact on an index column (column scope on a key column).  A value that
+  or a fact on a key column (column scope on a key column).  A value that
   varies per runtime key-tuple is not type-level trackable (ADR 0013).
 
 The older `Table<S, D, L, C>` quadruple from early drafts of the overview is
@@ -138,11 +138,11 @@ qualify (ADR 0013).
 
 ### 3.1  Content schema (`C`)
 
-The index columns and the non-index columns with their domains: the pure
+The key columns and the non-key columns with their domains: the pure
 structure of the data, the ordinary record-of-columns part of the type.
 Cardinality and totality are not part of `C`; they are qualifiers in `Qs`
-(sections 3.2, 3.3).  Reindexing moves columns between the index and the
-non-index part.
+(sections 3.2, 3.3).  Reindexing moves columns between the key and the
+non-key part.
 
 ### 3.2  Cardinality (table-scoped qualifier)
 
@@ -169,14 +169,14 @@ a corollary of two properties, so the lattice needs only two points.
 
 ### 3.3  Totality (column-scoped qualifier)
 
-Whether a non-index value is known or may be missing.  A cell is
+Whether a non-key value is known or may be missing.  A cell is
 `Cell = Option` (`formal/Mensura/Core/Defs.lean`): known or missing, always
 0 or 1.
 Totality is a **per-column** fact: a value is **total** (always known) by
 default, and an **optional** value carries a `?` on its type (ADR 0010).  It is
 orthogonal to cardinality: cardinality counts rows at a key, totality asks
-whether one value is present.  Totality is column-scoped over both index and
-non-index columns; the index requires total values, so an `promote` that
+whether one value is present.  Totality is column-scoped over both key and
+non-key columns; the key requires total values, so an `promote` that
 promotes a column into the key demands it be total first, a constraint of the
 totality qualifier rather than a structural axiom (ADR 0013).
 
@@ -200,7 +200,7 @@ wherever the reference does.  The reference coarsens with the table, so
 
 A second, **domain-relative** grade is tracked
 (`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`): for an
-enum-domained index column `A`, **`exhaustive(A)`** says every residual key
+enum-domained key column `A`, **`exhaustive(A)`** says every residual key
 present in the table carries its `(k, v)` row for every variant `v`.  Its
 reference is `A`'s finite type domain, not the population, so it is
 extensional and decidable per fiber; neither fact implies the other (a
@@ -350,8 +350,8 @@ specifies the **primitives**; the named sugar (`filter`/`mutate`/`select`/
 `aggregate`/windows/`tagged_*`) is deferred (section 13).
 
 Pipeline lambdas are **key-first** (ADR 0015): `|k, r|` binds the key `k` (the
-index columns as single values) and the value row `r` (the non-index columns as
-single values); `|k, b|` binds `k` and the bag `b` (the non-index columns as
+key columns as single values) and the value row `r` (the non-key columns as
+single values); `|k, b|` binds `k` and the bag `b` (the non-key columns as
 bags); `split`'s `|k|` binds the key alone.  `|_, r|` ignores the key.  Read the
 key with `k.id` and a value with `r.x`.  Each entry states the effect on
 cardinality, totality, completeness, and lineage.
@@ -368,9 +368,9 @@ The key-first lambda receives the key `k` and value row `r` and returns a
 **collection of value rows** (the formal `Multiset`, ADR 0015): `()` drops the
 row, a bare row or record keeps one, `(a, b, ...)` expands to several (all
 sharing one schema), and `if c then ... else ...` branches between collections
-(a `()` branch adopts the other's schema).  Content: the non-index columns are
-the collection's row schema; the **index is preserved**, so an output record may
-not name an index column.  Cardinality: the **maximum collection size** -- `<=
+(a `()` branch adopts the other's schema).  Content: the non-key columns are
+the collection's row schema; the **key is preserved**, so an output record may
+not name a key column.  Cardinality: the **maximum collection size** -- `<=
 1` preserves the input bound (so filtering keeps `singletons`), `>= 2` yields
 `bag`.  Totality: as returned (optional if any contributing row's field is).
 Completeness: preserved.  Lineage: preserved.  Tier A (`flatMap_splitSafe`,
@@ -387,7 +387,7 @@ data |> map_bag |k, b| (.total = sum b.credits)
 ```
 
 The key-first lambda receives the key `k` (a single value, constant within the
-bag) and the bag `b` (the non-index columns as bags).  Content: the output
+bag) and the bag `b` (the non-key columns as bags).  Content: the output
 columns are the return's.  Cardinality:
 **inferred from the return** -- a single record yields `singletons` (one row per
 key, the aggregate shape, which later lets `pivot` meet its precondition); a bag
@@ -404,35 +404,35 @@ The window shape demands nothing.  Lineage: preserved.  Tier A
 (`rank`, `cumsum`) additionally need an ordering, a dependency-qualifier
 concern (deferred); split-safety holds regardless.
 
-### 6.3  `promote` / `demote` (reindexing)
+### 6.3  `promote` / `demote` (rekeying)
 
 Reindexing is one idea in two directions; the direction fixes the Tier.
 
 Cardinality at the key moves is **key-graded** (ADR 0024): the qualifiers
-carry *gradings*, column sets over the flat table (index or not) over which
+carry *gradings*, column sets over the flat table (key or not) over which
 the table is known functional (`Mensura.Functional`), and the scalar
-cardinality is derived as "some grading is a subset of the current index".
+cardinality is derived as "some grading is a subset of the current key".
 A grading is a fact about the flat table, indifferent to which columns
-currently form the key, so the key moves change the index, leave the
+currently form the key, so the key moves change the key, leave the
 gradings untouched, and re-run the subset check; the content-identity
 stages (`assume`, `completeness_check`) carry the gradings; every other
 operation resets them to match its own output cardinality until its
-transport row is mechanized.  A `singletons` source seeds its index as a
+transport row is mechanized.  A `singletons` source seeds its key as a
 grading, which is what makes the pair truly inverse: either round-trip
 order restores `singletons` (`demote_promote`, `promote_demote`), and a
-`bag` whose grading fits the grown index promotes back to `singletons`.
+`bag` whose grading fits the grown key promotes back to `singletons`.
 
-**`promote cols`** promotes non-index columns into the key.  Content: the
-named columns join the index.  Each promoted column must be **key-eligible**
+**`promote cols`** promotes non-key columns into the key.  Content: the
+named columns join the key.  Each promoted column must be **key-eligible**
 (equatable) and total, since it becomes part of the identity (and totality
 is the `demote_promote` inverse-domain side condition); a continuous
 `real` measurement is rejected (ADR 0014).  Cardinality: derived from the
 gradings; a `singletons` input stays `singletons` (`promote_functional`),
-and a `bag` carrying a grading inside the new index becomes `singletons`.
+and a `bag` carrying a grading inside the new key becomes `singletons`.
 Completeness: preserved.  Lineage: preserved.  Tier A (`promote_splitSafe`,
 `promote_preservesDisjoint`).
 
-**`demote cols`** drops index components into the non-index part.  Content:
+**`demote cols`** drops key components into the non-key part.  Content:
 the named key columns become ordinary columns.  Cardinality: derived from
 the gradings; on a genuine coarsening no grading fits the retained key and
 the bound rises to **`bag`** (unless a following `map_bag` reduces it),
@@ -495,7 +495,7 @@ projection), a missing cell yields no row, and `pivot` keeps one form.
 
 **`unpivot name value`** folds **all** attribute columns, which must share
 one domain, into rows, spreading the column *name* into the key.  Content:
-the names move into a new `enum` index column `name`, the values into a
+the names move into a new `enum` key column `name`, the values into a
 single column `value`.  **A missing cell yields no row** (drop semantics),
 so `value` is total by construction.  Cardinality: preserved.
 Completeness: establishes `exhaustive(name)` exactly when every folded
@@ -503,7 +503,7 @@ column is total (section 3.4).  Lineage: preserved.  Tier A
 (`unpivotDrop_splitSafe`).
 
 **`pivot name value`** is the inverse and has one form: `name` must be an
-enum-domained **index** column (`name` in attribute position is rejected,
+enum-domained **key** column (`name` in attribute position is rejected,
 with a hint to `promote` first).  Admissible exactly when the input is
 **`singletons`** and its attributes are exactly `value` (drop or aggregate
 others first).  It consumes **no completeness fact**: an absent
@@ -650,13 +650,13 @@ One row per primitive (pres. = preserved).  "card" gives the cardinality bound
 after the operation; at the key moves it is derived from the gradings
 (ADR 0024, section 6.3).  "lineage" is the effect on the tag hierarchy.
 Theorems are the primary split-safety / disjointness backing; section 11 has
-the full index.
+the full key.
 
 | op | content | card | total | complete | lineage | Tier | theorem |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `flat_map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `flatMap_splitSafe` |
 | `map_bag` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
-| `promote` | cols join index | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `promote_splitSafe`, `promote_functional` |
+| `promote` | cols join key | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `promote_splitSafe`, `promote_functional` |
 | `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | **propagated** (reference coarsens) | **dropped** | B | `demote_not_preservesDisjoint`, `demote_completeWrt`, `demote_promote` |
 | `lookup` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `lookup_splitSafe` |
 | `lookup_total` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `lookupTotal_splitSafe` |
@@ -665,7 +665,7 @@ the full index.
 | `unpivot` | all attrs -> (name, value); missing cells drop | pres. | `value` total | establishes `exhaustive` | carried | A | `unpivotDrop_splitSafe` |
 | `pivot` | name leaves key, variants spread | demands `singletons` | per `exhaustive` | not consumed | dropped | B | `pivot_not_splitInvariant`, `pivot_total_of_exhaustive` |
 
-## 11.  Lean theorem index
+## 11.  Lean theorem catalogue
 
 Each rule above is backed by a theorem in the Lean formalization.  Names are
 verbatim; the development lives in themed modules under `formal/Mensura/`
@@ -701,7 +701,7 @@ lineage tags:
   `exhaustive_of_subsingleton` (a single-variant axis is exhaustive
   trivially); `split_not_exhaustive` witnesses the destroyed row.
 
-**Completeness layer** (`Completeness/`) -- reindexing layer, fiber
+**Completeness layer** (`Completeness/`) -- rekeying layer, fiber
 operations, and population-relative completeness:
 
 - `map_bag` (`fiberMap`): `fiberMap_splitSafe`,
@@ -738,7 +738,7 @@ suite itself is M1 work (`ROADMAP.md`, M1).
   |> demote course |> map_bag ...` (the check establishes, `demote`
   propagates, the reducer consumes; ADR 0023).
 - Reindex only: `demote` with no downstream reducer and no establish
-  step (a possibly partial bag is an honest reindex; ADR 0023).
+  step (a possibly partial bag is an honest rekey; ADR 0023).
 - Reduce a plain store: `map_bag |k, b| (.m = max b.x)` straight over a
   `singletons` source, with no establish step (the trivial discharge).
 - Split and re-merge (`07`): `split |k| ...` then `(train, test) |> union`
@@ -760,11 +760,11 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 - A scalar operator applied to a bag, or to an optional value without narrowing
   (`r.x > 30` where `x` is optional or read at a `bag`).
 - Comparison chaining (`a < b < c`); a mixed positional/labeled `( )`.
-- A `flat_map` body that names an index column in its output record, or one that
+- A `flat_map` body that names a key column in its output record, or one that
   always drops (`flat_map |k, r| ()`, no schema to infer); an `if` with a non-`bool`
   condition or branches of different type (ADR 0015).
 - `pivot` of a `bag` input (a (key, name) cell may hold more than one
-  value); `pivot` naming a non-index column (`promote` it first); and
+  value); `pivot` naming a non-key column (`promote` it first); and
   `unpivot` over attributes of differing domains (project first).
 
 ## 13.  Open points (the deferred ledger)

@@ -42,8 +42,8 @@ Each is a pure function from a table to a table.
 | --- | --- |
 | `flat_map` | per-row transform returning a row multiset: rewrite, drop, or expand each row (so filtering is `flat_map` with `if c then r else ()`) |
 | `map_bag` | per-key transform over the whole bag (an aggregate, or a window) |
-| `promote` | move a non-index column *into* the key (refine the index) |
-| `demote` | move a column *out* of the key (coarsen the index) |
+| `promote` | move a non-key column *into* the key (refine the key) |
+| `demote` | move a column *out* of the key (coarsen the key) |
 | `lookup` / `lookup_total` | join the table against a fixed lookup table |
 | `split` | partition a table by a predicate over the key, into two halves |
 | `union` | merge two tables of the same schema into one |

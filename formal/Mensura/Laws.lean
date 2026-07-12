@@ -12,7 +12,7 @@ select fusion, since all are `flatMap`s, ADR 0015); the joins absorb a preceding
 cancel in both directions (`union_split` in `Mensura.Core.Defs`, `split_bind`
 below); and `promote`/`demote` -- the algebra's `promote`/`demote` --
 cancel in both directions on the domain the checker enforces
-(`demote_ungroup`, `promote_project`, ADR 0024), with `promote`
+(`demote_promote`, `promote_demote`, ADR 0024), with `promote`
 preserving functionality (`promote_functional`, the checker's
 "`promote` keeps `singletons`" row).
 -/
@@ -190,7 +190,7 @@ enforces ("narrow it first") -- no row drops, and `demote` re-tags each
 row with the key component it was filed under, rebuilding the original
 row.  The hypothesis is the pair's inverse-domain side condition, enforced
 by the checker at `promote`. -/
-theorem demote_ungroup {D : Type} [Fintype D] [DecidableEq D]
+theorem demote_promote {D : Type} [Fintype D] [DecidableEq D]
     {T : Table K (H ⊕ Unit) (Sum.elim σ (fun _ => D))}
     (htot : ∀ k, ∀ f ∈ T.rows k, f (Sum.inr ()) ≠ none) :
     demote (promote T) = T := by
@@ -213,7 +213,7 @@ theorem demote_ungroup {D : Type} [Fintype D] [DecidableEq D]
 condition: `demote` tags every demoted row with its own key component,
 so the demoted column is total by construction, and `promote` files every
 row back under exactly the key it came from. -/
-theorem promote_project {D : Type} [Fintype D] [DecidableEq D]
+theorem promote_demote {D : Type} [Fintype D] [DecidableEq D]
     (T : Table (K × D) H σ) : promote (demote T) = T := by
   apply Table.ext_rows
   rintro ⟨k, d⟩

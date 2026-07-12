@@ -1,19 +1,19 @@
 /-
-A split-safe pivot: spreading a non-index column.
+A split-safe pivot: spreading a non-key column.
 
-`Mensura.Reshape`'s `pivot` spreads a column that is part of the *index*
+`Mensura.Reshape`'s `pivot` spreads a column that is part of the *key*
 (`Table (K × N) Unit → Table K N`), and is not split-invariant
 (`pivot_not_splitInvariant`): a split can cut the spread column.  The same
-reshape becomes split-safe once the spread column `name` is a non-index
+reshape becomes split-safe once the spread column `name` is a non-key
 *attribute*: the long table is indexed by the residual key `K`, with the
 `(value, name)` pairs carried in the bag at each key (here `value = Sum.inl ()`,
 `name = Sum.inr ()`).  Then pivoting reads only one key's bag, so it is a strict
 `fiberMap`, hence `SplitSafe`.  This is the formal counterpart of the book's
 relaxed pivot: safe when `name` is an attribute, unsafe (a `demote`) when `name`
-is an index.
+is a key column.
 
 Reversibility is stated, not reproved here: recovering the long table from a
-wide one re-introduces `name` into the index via the existing `unpivot`, and a
+wide one re-introduces `name` into the key via the existing `unpivot`, and a
 `demote` (which is *not* split-safe, `demote_not_preservesDisjoint`) brings it
 back to attribute form, i.e. `T = demote (unpivot (pivotAttr T))` on tables that
 hold exactly one row per name.  The lone non-split-safe step is that `demote`.
@@ -38,7 +38,7 @@ noncomputable def valuesAt (n : N)
   (m.filter (fun r => (r (Sum.inr ()) : Cell N) = some n)).map
     (fun r => fun _ => (r (Sum.inl ()) : Cell V))
 
-/-- The relaxed, split-safe pivot.  `name` (`Sum.inr ()`) is a non-index column;
+/-- The relaxed, split-safe pivot.  `name` (`Sum.inr ()`) is a non-key column;
 each key's whole `(value, name)` bag is collapsed into one wide row `n ↦` the
 value stored at name `n`.  `noncomputable` because it reads values through
 `cellOf`. -/
@@ -62,7 +62,7 @@ theorem pivotAttr_strict :
   intro k
   simp
 
-/-- Hence the relaxed pivot is `SplitSafe` -- in contrast to the index-column
+/-- Hence the relaxed pivot is `SplitSafe` -- in contrast to the key-column
 `pivot`, which is not even split-invariant (`pivot_not_splitInvariant`). -/
 theorem pivotAttr_splitSafe :
     SplitSafe (pivotAttr (K := K) (V := V) (N := N)) := by
@@ -71,7 +71,7 @@ theorem pivotAttr_splitSafe :
 
 /-! ### Reversibility of the relaxed pivot
 
-`pivotAttr` is inverted by re-introducing `name` into the index with the existing
+`pivotAttr` is inverted by re-introducing `name` into the key with the existing
 `unpivot` and taking it back out with `demote`: `demote (unpivot (pivotAttr T)) = T`
 on tables that hold exactly one row per name.  Of the three steps only `demote`
 is not split safe (`demote_not_preservesDisjoint`), so it is the lone unsafe

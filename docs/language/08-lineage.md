@@ -171,9 +171,9 @@ inputs buy.
 
 **`demote` and `pivot` break it.**  These are the key-changing
 operations, and they are exactly where disjointness is lost.  `demote`
-drops an index component, merging rows that a split had separated by that
+drops a key component, merging rows that a split had separated by that
 component; the formalization proves the underlying `project` does not preserve
-disjointness (`demote_not_preservesDisjoint`), which is why the reindexing
+disjointness (`demote_not_preservesDisjoint`), which is why the rekeying
 entry of `07-pipelines.md` already cites that theorem for `demote`.
 `pivot` is not even split-invariant (`pivot_not_splitInvariant`).
 Past one of these, an upstream disjointness fact no longer holds over the new

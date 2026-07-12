@@ -7,7 +7,7 @@ features that make `.mensura` files legible in an editor today, **semantic
 token highlighting** and **diagnostics**.  Hover, completion, goto-definition,
 and find-references are forward references (see the end of this document).
 
-Scope follows the rest of the toolchain: units and scalar-index stores with
+Scope follows the rest of the toolchain: units and scalar-key stores with
 primitive attributes (`docs/language/01-units.md`,
 `docs/language/02-stores.md`), plus `view` bodies and the pipeline sublanguage
 (`docs/language/10-views.md`, `docs/language/07-pipelines.md`).  Compound

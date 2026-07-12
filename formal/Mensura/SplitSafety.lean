@@ -116,7 +116,7 @@ theorem demote_unionHom [Fintype D] :
 
 /-- ...yet `demote` does *not* preserve disjointness, so it is **not**
 `SplitSafe`.  Counterexample: two single-row tables that a split separates by the
-dropped index (`d = false` vs `d = true`) both land on the same output key once
+dropped key (`d = false` vs `d = true`) both land on the same output key once
 `d` is dropped.  This is precisely why a pipeline through `demote` -- e.g.
 `aggregate ∘ demote`, the averaging case -- can disagree with the full-table
 result: `aggregate` is then handed overlapping tables its guarantee does not

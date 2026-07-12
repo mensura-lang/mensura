@@ -6,7 +6,7 @@ it is enough to catch a misspelled column or a string added to an integer.
 
 Mensura tracks the schema too, but the schema is the least interesting part of
 a table's type.  A Mensura table is the indexed table of the design notes: a
-triple `(K, H, c)` of index (key) columns `K`, non-index columns `H`, and a
+triple `(K, H, c)` of key columns `K`, non-key columns `H`, and a
 cell function `c`.  Rows are *entities*, identified by their key.  On top of
 that structure the type carries facts about the *data itself*, facts a schema
 cannot express and that other tools therefore leave to runtime, to convention,
@@ -83,7 +83,7 @@ every key's bag has *all* of its rows present.  It is not about the
 schema and not about any single value; it is about whether a partition is fully
 materialized.
 
-Completeness is what licenses *coarsening* a key.  When you drop an index
+Completeness is what licenses *coarsening* a key.  When you drop a key
 component (`demote`), you are summing or folding across the rows that the
 dropped component used to separate, and that rollup means what you intend only
 if none of those rows are missing.  (`pivot` also coarsens the key but needs no

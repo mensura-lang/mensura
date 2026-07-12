@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted.  Renames a set of surface operations, lambda conventions, and
-formal identifiers so that every name says what it does to a reader with
-no SQL or PL folklore to unlearn.  Realized across the living documents
+Accepted.  Renames a set of surface operations, the identity terminology
+(index -> key), lambda conventions, and formal identifiers so that every
+name says what it does to a reader with no SQL or PL folklore to unlearn.  Realized across the living documents
 (`docs/language/`, `docs/toolkit/`), the book (`book/src/`), the examples
 and corpus, the checker/runtime/LSP/highlighter crates, and the Lean
 formalization (`formal/`).  `00-overview.md` carries the authoritative
@@ -66,6 +66,45 @@ targeted diagnostic is **not yet implemented**: `map` currently falls
 through to the generic "unsupported operation" path with an edit-distance
 suggestion.  The follow-up is flagged with a `TODO(ADR-0025)` at the
 operation-dispatch fallback in `mensura-types/src/pipe_check.rs`.
+
+## Term rename: index -> key
+
+The identity columns of a table were called the **index**, with three
+paired terms (`index field` at the declaration site, `index column` once
+tabulated, `index` for the whole set) and `key` reserved for a concrete
+tuple value.  That word is retired in favour of **key**:
+
+| Retired | Current |
+| --- | --- |
+| `index field` | `key field` |
+| `index column` | `key column` |
+| the `index` (the set) | the `key columns` (informally, "the key") |
+| `reindexing` / `reindex` | `rekeying` / `rekey` |
+
+Why: `index` is the one core term whose wrong prior actively predicts the
+wrong thing for the target audience.  In pandas `index` is the
+positional/row-label axis, exactly the meaning Mensura forbids; in
+databases it is a B-tree lookup structure.  The glossary previously spent
+a paragraph fighting those associations.  `key` already carried the
+value-level half of the identity (a concrete tuple), and the pipeline
+prose already said "move a column into the key", so promoting `key` to the
+schema-level term too (the way `key columns` and `key` share a root, as
+`index` and `key` did not) removes the false friend and unifies the pair.
+This also settles the inconsistency of coining new names for the moderate
+clashes (`project`, `group_map`) while keeping the borrowed word for the
+sharpest one.  `key-eligible` stays: it is a property of a value domain,
+and reads naturally.  The book's Chapter 5 keeps "index" (source
+material), and this ADR is the translation reference.
+
+**Preserved uses of "index".**  The word survives where it genuinely means
+something else: the storage layer's SQLite **covering index** and
+`CREATE INDEX` (a real B-tree), positional array indices in the
+implementation (`char_indices`, `line_index`, `legend_index`, `.index()`),
+and pandas error text quoted in the book.  In `formal/`, the mathematical
+`reindexMap` construction and the `Reindex` module keep their names (the
+"fiber" precedent above): they are general graded generalizations along a
+function, not the surface key move.  Only surface-describing Lean comments
+("index columns" -> "key columns") were changed.
 
 ## Conventions and prose
 

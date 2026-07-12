@@ -28,7 +28,7 @@ and the API for the data, but they agree on what the unit is.
 
 ## Unit declaration
 
-A unit declaration consists of a name and a list of *index fields*.
+A unit declaration consists of a name and a list of *key fields*.
 
 ```
 unit Person {
@@ -41,13 +41,13 @@ unit Course {
 }
 ```
 
-The fields are the index.  There is no nested `index { ... }` block
+The fields are the key.  There is no nested `key { ... }` block
 inside the unit; everything between the unit's braces is part of the
 identity discipline.  Two observations of `Course` are observations of
 the same Course iff they agree on `(name, year)`.
 
 Each field has a name and a type.  The type determines the value space
-of that index column.  An index field's type must be **key-eligible**:
+of that key column.  A key field's type must be **key-eligible**:
 a stable, comparable identity (`string`, `int`, `bool`, `date`, `enum`),
 never a continuous `real` measurement, since identity is decided by
 equality (ADR 0014).  Type annotations may carry domain restrictions
@@ -61,16 +61,16 @@ enter the system.  Those concerns belong on stores.
 
 ## Cardinality
 
-For any unit `U` and any tuple of index values `k`, a **`singletons`**
+For any unit `U` and any tuple of key values `k`, a **`singletons`**
 tabulation of observations of `U` has cardinality 0 or 1 at `k`: the
 entity is either observed (cardinality 1) or not (cardinality 0).  This
 is Wickham's rule that each row is one observation, restated as a
 property of the unit, and it is the default at every unit boundary.
-Equivalently, the tabulation is **functional** over its index: there is
+Equivalently, the tabulation is **functional** over its key: there is
 at most one row per key.  Functionality over a column set is
 the fact the checker actually carries (a *grading*, ADR 0024), with
 `singletons` as its reading at the current key; because the fact names
-columns rather than the key, reindexing can move a column out of the key
+columns rather than the key, rekeying can move a column out of the key
 and back without forgetting that the entity was observed at most once.
 
 The chapter's algebra (Chapter 5 of Data Science Project: An Inductive
@@ -91,24 +91,24 @@ itself stays pure identity, and an undeclared duplicate at a
 signature that promises a 0-or-1 tabulation) remains ill-formed.
 
 The practical consequence: if your data has cardinality greater than 1
-for the chosen indexes, either the observations genuinely recur for one
+for the chosen keys, either the observations genuinely recur for one
 entity (declare a `bag` store keyed by that entity) or the unit's
 identity criterion is wrong (add the disambiguating column to the
-index, or split the unit).  Which modelling to pick is the author's
+key, or split the unit).  Which modelling to pick is the author's
 declaration of the validation granularity: entity-keyed bags make a
-`split` route whole entities, while time-in-index keys are what
+`split` route whole entities, while keys that include a time component are what
 temporal cross-validation wants.
 
 This row cardinality (how many rows a key has, 0 for "not sampled") is a
-different axis from whether a *value* is missing.  An index field is
+different axis from whether a *value* is missing.  A key field is
 always known, so it never carries the `?` optional marker; only
-non-index attribute values may be missing
+non-key attribute values may be missing
 (`docs/decisions/0010-attribute-totality.md`).
 
 ## Compositional units
 
-An index field's type may be another unit.  When it is, the value of
-that field is the index of an observation of the referenced unit.
+A key field's type may be another unit.  When it is, the value of
+that field is the key of an observation of the referenced unit.
 
 ```
 unit Department {
@@ -123,7 +123,7 @@ unit Course {
 ```
 
 A `Course` is identified by `(department, name, year)`, where
-`department` is itself the index of a `Department`.  This is what
+`department` is itself the key of a `Department`.  This is what
 Wickham gestures at when he writes about cross-table references in
 tidy data: instead of a string foreign key, the field's type is the
 referenced unit, and the value is the referenced unit's identity.
@@ -136,14 +136,14 @@ needs no such resolution.  See `02-stores.md`.
 
 ### Hierarchical at the unit level, flat at the math level
 
-A compound unit's index is a tree.  `Course`'s index is
+A compound unit's key is a tree.  `Course`'s key is
 `(department: (code: string), name: string, year: int)`, where
 `department` is itself a tuple.  Mensura presents this hierarchy in
 syntax (a user writes `course.department.code`).
 
-The chapter's algebra takes flat tuples of index values.  A
-hierarchical index and a flat one are interchangeable: flattening a
-hierarchical index gives a flat tuple of scalars, and the algebra
+The chapter's algebra takes flat tuples of key values.  A
+hierarchical key and a flat one are interchangeable: flattening a
+hierarchical key gives a flat tuple of scalars, and the algebra
 operates on the flat form.  The hierarchy is presentation, not a new
 mathematical object, and the chapter's typing rules apply unchanged.
 
@@ -175,7 +175,7 @@ A unit declaration cannot contain:
   is nothing per-unit to set.
 - **Schema extension.**  Mensura does not have an `is`-extension form.
   A new unit is its own declaration; relationships between units go
-  through index-reference fields.
+  through key-reference fields.
 
 These are not arbitrary restrictions.  They reflect the design choice
 that a unit is an identity discipline and nothing more.  Two stores

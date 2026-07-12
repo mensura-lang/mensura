@@ -32,7 +32,7 @@ def flatMap (φ : K → Row H σ → Multiset (Row H' σ')) (T : Table K H σ) :
     Table K H' σ' :=
   ⟨fun k => (T.rows k).bind (φ k)⟩
 
-/-- def:left-join against a fixed right table, sharing index columns `U` and
+/-- def:left-join against a fixed right table, sharing key columns `U` and
 adding columns `G` (disjoint from `H` via `⊕`, with the combined schema
 `Sum.elim σ τ`).  Each present left row is combined with every matching right
 row, or kept once with missing right columns when there is no match (the "left"
@@ -80,7 +80,7 @@ def promote {β : Type} [DecidableEq β]
     | some w => if w = p.2 then {fun h => f (Sum.inl h)} else 0
     | none => 0)⟩
 
-/-- def:projection.  Drop the index component `D` from the key, turning it into a
+/-- def:projection.  Drop the key component `D` from the key, turning it into a
 new column (`Sum.inr ()`, domain `D`): the rows of every dropped key `(k, d)` are
 *merged* into the single output key `k`, each tagged with its `d`.  Needs `D`
 finite to sum over.  This *changes the observational unit*, and -- crucially --

@@ -64,10 +64,10 @@ fn col(name: impl Into<String>, ty: Option<ColumnType>) -> Col {
 }
 
 /// A table value flowing through a pipeline: its key/value column split and
-/// its rows (index values first, then attributes, positionally).
+/// its rows (key values first, then attributes, positionally).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceTable {
-    index: Vec<Col>,
+    key: Vec<Col>,
     attrs: Vec<Col>,
     rows: Vec<Row>,
 }
@@ -76,20 +76,20 @@ impl SourceTable {
     /// Present a store's scanned rows to the evaluator.  `rows` are in the
     /// schema's column order, as [`StorageBackend::scan`] returns them.
     pub fn from_store(schema: &Schema, rows: Vec<Row>) -> SourceTable {
-        let mut index = Vec::new();
+        let mut key = Vec::new();
         let mut attrs = Vec::new();
         for c in &schema.columns {
             let entry = col(c.name.clone(), Some(c.ty.clone()));
             match c.role {
-                ColumnRole::Index => index.push(entry),
+                ColumnRole::Key => key.push(entry),
                 ColumnRole::Attr => attrs.push(entry),
             }
         }
-        SourceTable { index, attrs, rows }
+        SourceTable { key, attrs, rows }
     }
 
     fn key_len(&self) -> usize {
-        self.index.len()
+        self.key.len()
     }
 
     fn attr_position(&self, name: &str) -> Option<usize> {
@@ -147,7 +147,7 @@ fn key_of(v: &Value) -> Result<KeyVal, EvalError> {
 }
 
 /// Evaluate a view plan over its sources, returning the materialized rows in
-/// the plan's column order (index columns, then attributes).
+/// the plan's column order (key columns, then attributes).
 pub fn eval_view(
     plan: &ViewPlan,
     sources: &BTreeMap<String, SourceTable>,
@@ -182,7 +182,7 @@ fn align(plan: &ViewPlan, table: SourceTable) -> Result<Vec<Row>, EvalError> {
         return Ok(Vec::new());
     }
     let actual: Vec<&String> = table
-        .index
+        .key
         .iter()
         .chain(table.attrs.iter())
         .map(|c| &c.name)
@@ -313,7 +313,7 @@ fn row_scope(table: &SourceTable, kname: &str, rname: &str, row: &Row) -> Scope 
     let (key, vals) = row.split_at(table.key_len());
     let mut scope = Scope::new();
     if kname != "_" {
-        scope.insert(kname.to_string(), record(&table.index, key));
+        scope.insert(kname.to_string(), record(&table.key, key));
     }
     if rname != "_" {
         scope.insert(rname.to_string(), record(&table.attrs, vals));
@@ -356,7 +356,7 @@ fn eval_flat_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
         }
     }
     Ok(SourceTable {
-        index: input.index,
+        key: input.key,
         attrs: schema,
         rows,
     })
@@ -415,7 +415,7 @@ fn flat_map_single_row(
         // A whole-row body: the checker reads the row record's fields off a
         // sorted map, so the output columns are alphabetical.
         ExprKind::Name(n) if n == rname => Ok(sorted_cols(&input.attrs)),
-        ExprKind::Name(n) if n == kname => Ok(sorted_cols(&input.index)),
+        ExprKind::Name(n) if n == kname => Ok(sorted_cols(&input.key)),
         ExprKind::If { then, els, .. } => {
             let a = flat_map_single_row(input, kname, rname, then)?;
             let b = flat_map_single_row(input, kname, rname, els)?;
@@ -462,7 +462,7 @@ fn static_domain(input: &SourceTable, kname: &str, rname: &str, expr: &Expr) -> 
                 .find(|c| c.name == field.name)
                 .and_then(|c| c.ty.clone()),
             ExprKind::Name(n) if n == kname => input
-                .index
+                .key
                 .iter()
                 .find(|c| c.name == field.name)
                 .and_then(|c| c.ty.clone()),
@@ -559,7 +559,7 @@ fn eval_map_bag(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
         let key = input.rows[members[0]][..nkeys].to_vec();
         let mut scope = Scope::new();
         if params[0] != "_" {
-            scope.insert(params[0].to_string(), record(&input.index, &key));
+            scope.insert(params[0].to_string(), record(&input.key, &key));
         }
         if params[1] != "_" {
             let bags: BTreeMap<String, RtVal> = input
@@ -608,7 +608,7 @@ fn eval_map_bag(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
         }
     }
     Ok(SourceTable {
-        index: input.index,
+        key: input.key,
         attrs,
         rows,
     })
@@ -658,7 +658,7 @@ fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<Co
 // promote
 
 /// `promote cols` (section 6.3): promote the named attribute columns into
-/// the index, in argument order.
+/// the key, in argument order.
 fn eval_promote(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     for arg in args {
         let ExprKind::Name(name) = &arg.kind else {
@@ -669,7 +669,7 @@ fn eval_promote(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, E
         };
         let nkeys = table.key_len();
         let column = table.attrs.remove(pos);
-        table.index.push(column);
+        table.key.push(column);
         for row in &mut table.rows {
             let v = row.remove(nkeys + pos);
             row.insert(nkeys, v);
@@ -691,7 +691,7 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
     for row in &input.rows {
         let mut scope = Scope::new();
         if params[0] != "_" {
-            scope.insert(params[0].to_string(), record(&input.index, &row[..nkeys]));
+            scope.insert(params[0].to_string(), record(&input.key, &row[..nkeys]));
         }
         if eval_bool(&scope, body)? {
             left_rows.push(row.clone());
@@ -700,12 +700,12 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
         }
     }
     let left = SourceTable {
-        index: input.index.clone(),
+        key: input.key.clone(),
         attrs: input.attrs.clone(),
         rows: left_rows,
     };
     let right = SourceTable {
-        index: input.index,
+        key: input.key,
         attrs: input.attrs,
         rows: right_rows,
     };
@@ -718,11 +718,11 @@ fn eval_bind(input: TableVal) -> Result<SourceTable, EvalError> {
     let TableVal::Pair(a, b) = input else {
         return internal("`union` expects a pair of tables");
     };
-    let index = unify_cols(a.index, b.index)?;
+    let key = unify_cols(a.key, b.key)?;
     let attrs = unify_cols(a.attrs, b.attrs)?;
     let mut rows = a.rows;
     rows.extend(b.rows);
-    Ok(SourceTable { index, attrs, rows })
+    Ok(SourceTable { key, attrs, rows })
 }
 
 // ---------------------------------------------------------------------------
@@ -736,7 +736,7 @@ enum JoinKind {
 
 /// `lookup` / `lookup_total right (|k, r| key)` (section 6.4): join a fixed
 /// right table by a key computed over the left row.  The right table is a
-/// store (keyed, single index column), so at most one row matches.
+/// store (keyed, single key column), so at most one row matches.
 fn eval_join(
     env: &BTreeMap<String, TableVal>,
     input: SourceTable,
@@ -753,7 +753,7 @@ fn eval_join(
         return internal(format!("unknown join target `{right_name}`"));
     };
     if right.key_len() != 1 {
-        return internal("a join's right table must have a single index column");
+        return internal("a join's right table must have a single key column");
     }
     let mut by_key: BTreeMap<KeyVal, &[Value]> = BTreeMap::new();
     for row in &right.rows {
@@ -784,7 +784,7 @@ fn eval_join(
     let mut attrs = input.attrs;
     attrs.extend(right.attrs.iter().cloned());
     Ok(SourceTable {
-        index: input.index,
+        key: input.key,
         attrs,
         rows,
     })
@@ -795,7 +795,7 @@ fn eval_join(
 
 /// `unpivot name value` (section 6.6, ADR 0020): fold **all** attribute
 /// columns into one `value` column, spreading their names into a new `enum`
-/// index column `name`.  A missing cell yields **no row** (drop semantics),
+/// key column `name`.  A missing cell yields **no row** (drop semantics),
 /// so the value column is total by construction (`unpivotDrop` in
 /// `formal/Mensura/Table.lean`).
 fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
@@ -818,8 +818,8 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
     }
 
     let variants: Vec<String> = input.attrs.iter().map(|c| c.name.clone()).collect();
-    let mut index = input.index.clone();
-    index.push(col(
+    let mut key = input.key.clone();
+    key.push(col(
         name_col.clone(),
         Some(ColumnType::Enum {
             name: name_col.clone(),
@@ -842,11 +842,11 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
             rows.push(out);
         }
     }
-    Ok(SourceTable { index, attrs, rows })
+    Ok(SourceTable { key, attrs, rows })
 }
 
 /// `pivot name value` (section 6.6, ADR 0020): the inverse of `unpivot`.
-/// `name` is an enum index column and `value` the only attribute (the
+/// `name` is an enum key column and `value` the only attribute (the
 /// checker's gates); each residual key's fiber gathers into one wide row,
 /// one column per variant, and an absent (key, variant) row becomes a
 /// missing cell.  Residual keys come out in key order, like `map_bag`'s
@@ -859,10 +859,10 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
     else {
         return internal("`pivot`'s name and value must be identifiers");
     };
-    let Some(name_pos) = input.index.iter().position(|c| &c.name == name_col) else {
-        return internal(format!("`pivot` on non-index column `{name_col}`"));
+    let Some(name_pos) = input.key.iter().position(|c| &c.name == name_col) else {
+        return internal(format!("`pivot` on non-key column `{name_col}`"));
     };
-    let Some(ColumnType::Enum { variants, .. }) = input.index[name_pos].ty.clone() else {
+    let Some(ColumnType::Enum { variants, .. }) = input.key[name_pos].ty.clone() else {
         return err(format!(
             "`pivot` cannot recover `{name_col}`'s enum variants: an upstream \
              stage computed the column, losing its declared enum; not yet \
@@ -874,8 +874,8 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
     }
     let value_ty = input.attrs[0].ty.clone();
 
-    let index: Vec<Col> = input
-        .index
+    let key: Vec<Col> = input
+        .key
         .iter()
         .enumerate()
         .filter(|&(i, _)| i != name_pos)
@@ -930,7 +930,7 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
             key
         })
         .collect();
-    Ok(SourceTable { index, attrs, rows })
+    Ok(SourceTable { key, attrs, rows })
 }
 
 // ---------------------------------------------------------------------------

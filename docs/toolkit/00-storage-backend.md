@@ -57,24 +57,24 @@ boundary between the front end and the runtime.
 A store becomes exactly one table.
 
 - **Table name**: the store name, quoted.
-- **Columns**: the unit's index fields first (in declaration order), then the
-  store's attributes (in declaration order).  Index fields supply identity;
+- **Columns**: the unit's key fields first (in declaration order), then the
+  store's attributes (in declaration order).  Key fields supply identity;
   attributes supply the accompanying data.
-- **Primary key**: for a `singletons` store (the default), the index
+- **Primary key**: for a `singletons` store (the default), the key
   columns, as a single composite `PRIMARY KEY`.  This enforces the 0-or-1
   cardinality rule of `docs/language/01-units.md` at the storage level: one
-  row per index tuple.
+  row per key tuple.
 - **Bag stores** (`attr*`,
   `docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`)
-  hold many rows per key, so their index columns cannot be a primary key.
+  hold many rows per key, so their key columns cannot be a primary key.
   The table is created with no `PRIMARY KEY`; SQLite's implicit rowid is
   the surrogate row identifier, and the backend adds a non-unique covering
-  index `"<store>_key"` over the index columns so key lookups stay fast.
-  Per-row addressability is lost, by definition.  Scans order by the index
+  index `"<store>_key"` over the key columns so key lookups stay fast.
+  Per-row addressability is lost, by definition.  Scans order by the key
   columns with the rowid as tiebreak, so they stay deterministic even
   though a bag carries no row order.
 - **Nullability**: a total attribute (the default) is `NOT NULL`; an optional
-  one (declared with a trailing `?`, ADR 0010) is nullable.  Index columns are
+  one (declared with a trailing `?`, ADR 0010) is nullable.  Key columns are
   always total, so the primary key is non-null too (this also sidesteps
   SQLite's legacy nullable-primary-key quirk).
 - **Creation**: `CREATE TABLE IF NOT EXISTS`.  The backend first checks

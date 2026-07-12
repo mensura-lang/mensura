@@ -73,7 +73,7 @@ pub enum Value {
 pub type Row = Vec<Value>;  // ordered per the table's column list
 ```
 
-A `Row` is positional: its values follow the table's column order (index
+A `Row` is positional: its values follow the table's column order (key
 columns first, then attributes; ADR 0019).  `Missing` is the runtime image
 of ADR 0010's optional values and round-trips with SQL `NULL`; the checker
 guarantees a total column never holds it.
@@ -144,8 +144,8 @@ A view materializes into a table by the same mapping stores use
 (`00-storage-backend.md`), with two differences:
 
 - **The primary key follows cardinality.**  A `singletons` view gets the
-  composite primary key over its index columns, as a store does.  A `bag`
-  view is admitted (`10-views.md`) and gets **no** primary key; its index
+  composite primary key over its key columns, as a store does.  A `bag`
+  view is admitted (`10-views.md`) and gets **no** primary key; its key
   columns are still `NOT NULL`, but several rows may share a key.
 - **Contents are replaced, not accumulated.**  Each `mensura run`
   recomputes the view inside one transaction: ensure the table exists,

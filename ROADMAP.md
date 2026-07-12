@@ -79,7 +79,7 @@ mensura/
   `formal/`: split-safety and its composition, completeness, the split-safe
   `pivotAttr` with its reversibility, and the `union` disjointness lemma.
 - **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
-  -> SQLite` is built for the "basic" subset: scalar-index units, stores with
+  -> SQLite` is built for the "basic" subset: scalar-key units, stores with
   primitive and `enum` attributes, shapes, and named enums.  The expression
   sublanguage and the full Tier A / Tier B pipeline algebra (the eight
   primitives, with cardinality, completeness, and tag-based disjointness) are

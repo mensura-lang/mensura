@@ -69,7 +69,7 @@ pub struct EnumDecl {
     pub span: Span,
 }
 
-/// A `name: type` pair: a unit index field, or an `attr` attribute of a
+/// A `name: type` pair: a unit key field, or an `attr` attribute of a
 /// store or shape.  The name may be backtick-quoted and, in a shape, may
 /// interpolate `string` parameters; a plain identifier is a single literal
 /// [`NameSeg`].

@@ -1,6 +1,6 @@
 // Fleet monitoring: the machine registry for a streaming
 // predictive-maintenance example.  This file grows as the language does; today
-// it holds only what the current implementation compiles (scalar-index units,
+// it holds only what the current implementation compiles (scalar-key units,
 // named enums, shapes, basic stores, and a simple view).
 //
 // Still to come, milestone by milestone:

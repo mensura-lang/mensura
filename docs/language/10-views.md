@@ -25,8 +25,8 @@ result can be queried like a store.  Three things follow from "derived by a
 pipeline":
 
 - **Its content is computed, not declared.**  A store enumerates its columns in
-  an `attr` block; a view does not.  The view's schema, its index columns,
-  and its non-index columns are whatever the pipeline produces.  A view
+  an `attr` block; a view does not.  The view's schema, its key columns,
+  and its non-key columns are whatever the pipeline produces.  A view
   therefore has no `attr` block.
 - **Its properties are derived from mechanism.**  This is overview pillar 7
   applied to a derived table: just as a `store` fixes its sampling and lineage
@@ -73,7 +73,7 @@ and all four tracked properties, scoped qualifiers in `Qs`
 (`docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`), are threaded
 through it and surface on the view:
 
-- **Content** (`C`): the index and non-index columns the pipeline yields, with
+- **Content** (`C`): the key and non-key columns the pipeline yields, with
   their domains.  This is the pure structure; the qualifiers below describe it.
 - **Cardinality** (table-scoped qualifier): `singletons` or `bag`, as the
   pipeline leaves it.  A summarizing view that ends in a single-record
@@ -101,7 +101,7 @@ discipline binds them.  A store of genuinely recurring observations may
 instead declare `bag` cardinality with `attr*` blocks, keyed by the entity
 the observations are about (ADR 0022, `02-stores.md`); an *accidental*
 duplicate at a plain store remains the sign of a too-coarse unit that wants
-a finer index.
+a finer key.
 
 ## Constraining a view with a shape
 
@@ -111,7 +111,7 @@ shape's `attr` / `attr*` blocks, its **cardinality** (ADR 0022, resolving
 the deferral of ADR 0012).
 
 - **A unit-fixing shape** such as `Tabular[Machine]` requires the view's output
-  to carry `Machine`'s index columns as its index (`03-shapes.md`, "The unit
+  to carry `Machine`'s key columns as its key (`03-shapes.md`, "The unit
   clause").
 - **A content shape** such as `Named` requires the output to carry the named
   columns, regardless of unit.
@@ -140,11 +140,11 @@ view machine_temperature : Tabular[Machine] {
 }
 ```
 
-`promote` adds `machine` to the key (content: index grows; cardinality and
+`promote` adds `machine` to the key (content: key grows; cardinality and
 completeness preserved); `map_bag` reduces each bag to one record, so the
 result is `singletons` per `(..., machine)` key (a fact the pipeline produces,
 not one the view imposes).  All Tier A, so it composes safely.  The view claims
-`Tabular[Machine]`, so the conformance check confirms the output's index is
+`Tabular[Machine]`, so the conformance check confirms the output's key is
 `Machine`'s and, since the shape has no `attr*` block, that the output is
 `singletons` (ADR 0022), which the `map_bag` supplies.
 

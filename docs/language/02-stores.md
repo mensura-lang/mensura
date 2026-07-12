@@ -60,10 +60,10 @@ surface is decided in
 
 ## Basic and compound stores
 
-A store of a *basic* unit (whose index fields are all scalar) needs no
-foreign-key resolution: its index values are concrete primitives.
+A store of a *basic* unit (whose key fields are all scalar) needs no
+foreign-key resolution: its key values are concrete primitives.
 
-A store of a *compound* unit (whose index has at least one
+A store of a *compound* unit (whose key has at least one
 unit-reference field) must declare where each unit-reference field
 resolves.  The `domain` block does this:
 
@@ -81,7 +81,7 @@ store student_grades {
 }
 ```
 
-`Enrollment` was declared in `01-units.md` with index fields
+`Enrollment` was declared in `01-units.md` with key fields
 `student: Person` and `course: Course`.  The `domain` block resolves
 each: rows of `student_grades` are constrained to `student` values
 that appear as observations in `students`, and `course` values that
@@ -98,7 +98,7 @@ Transitivity follows the store graph.
 The `attr` block lists the attributes that accompany each observation.
 Each attribute has a name and a type, exactly as in a shape
 (`03-shapes.md`).  The type may be a primitive (`string`, `int`,
-`real`, `date`, ...) or a unit reference, in the same way unit index
+`real`, `date`, ...) or a unit reference, in the same way unit key
 fields can be either.
 
 A value is **total** by default: in an observed row every attribute is
@@ -111,14 +111,14 @@ attr { last_service: date? }
 
 Whether a value may be missing is independent of how many rows a key has
 (its cardinality); `?` is the only per-attribute control over it, and an
-index field is always known, so `?` is not allowed there.  The default
+key field is always known, so `?` is not allowed there.  The default
 and the marker are decided in `docs/decisions/0010-attribute-totality.md`.
 
 When an attribute is a unit reference, the `domain` block must also
-resolve it.  The `domain` block does not distinguish between index
+resolve it.  The `domain` block does not distinguish between key
 unit-references and attribute unit-references; both are unit-reference
 fields needing FK resolution.  The block has one entry per
-unit-reference field, drawn from the unit's index and from the store's
+unit-reference field, drawn from the unit's key and from the store's
 own attributes alike.
 
 ```
@@ -148,7 +148,7 @@ attribute block is where it says so
 A store whose attributes are in plain `attr` blocks is a **`singletons`**
 tabulation, the default and the historical rule
 (`docs/decisions/0001-unit-as-identity-discipline.md`): for any tuple of
-index values there is **at most one** observation, and an accidental
+key values there is **at most one** observation, and an accidental
 duplicate is rejected.  This is right for entities: a `Person` or a
 `Course` is observed once or not at all.
 
@@ -192,9 +192,9 @@ Two consequences to know about:
   needs one (a window such as a running sum, a rank, a lag), the order is
   named at the operator by a `by` clause, not carried by the store; that
   surface lands with the expression and streaming documents.
-- **Storage.**  A `bag` store cannot use its index columns as a primary
+- **Storage.**  A `bag` store cannot use its key columns as a primary
   key; it maps to a table with a surrogate row identifier and a non-unique
-  covering index over the index columns
+  covering index over the key columns
   (`docs/toolkit/00-storage-backend.md`).  Per-row addressability is lost,
   by definition.
 
@@ -271,7 +271,7 @@ A store declaration cannot contain:
 
 - **The identity criterion** of its unit.  That is fixed by the unit
   declaration; the store cannot extend, restrict, or redefine it.
-- **Pipeline operations.**  Mapping, joining, reindexing, reshaping
+- **Pipeline operations.**  Mapping, joining, rekeying, reshaping
   belong to views and transforms (treated in the algebra document),
   not to store declarations.
 - **A per-row cardinality knob.**  A store's cardinality is declared once,

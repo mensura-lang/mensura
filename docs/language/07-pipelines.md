@@ -28,8 +28,8 @@ operation is read by what it does to the table's **content** and its
 **qualifiers** (the two parts of `Table<Qs, C>`, ADR 0013), and the type
 checker rejects a pipeline that would violate one of them:
 
-- **Content** (`C`): the structure, namely the index (key) columns and the
-  non-index columns with their domains.  Reindexing moves columns between the
+- **Content** (`C`): the structure, namely the key columns and the
+  non-key columns with their domains.  Reindexing moves columns between the
   key and the non-key part.
 - **Cardinality** (table-scoped qualifier): how many nested rows share a key,
   **singletons** (`card <= 1`) or **bag** (`card 0..*`).  Operations
@@ -39,7 +39,7 @@ checker rejects a pipeline that would violate one of them:
   which the table is known **functional** (at most one row per combination
   of values); `singletons` is derived as "some grading fits inside the
   current key" (ADR 0024), which is what makes the key moves invertible.
-- **Totality** (column-scoped qualifier): whether each non-index value is
+- **Totality** (column-scoped qualifier): whether each non-key value is
   known or may be missing (`Cell = Option`).  A value is total unless its
   type is marked `?` (ADR 0010); `lookup` makes its right columns
   optional, and a default, an aggregate, or an `is known` narrowing makes a
@@ -106,7 +106,7 @@ data |> flat_map |k, r| (.bmi = r.mass / r.height ^ 2.0)
 The key-first lambda receives the key and one value row and returns a
 **collection of value rows** (ADR 0015): a bare row or record keeps one,
 `()` drops the row, and `(a, b, ...)` expands to several.  Content: the
-output columns are those of the returned rows; the index is preserved.
+output columns are those of the returned rows; the key is preserved.
 Cardinality: the maximum collection size, so a body that returns at most one
 row preserves per-key cardinality and a body that may return two or more
 yields `bag`.  Completeness: preserved.  Tier A (`flatMap_splitSafe`).
@@ -146,7 +146,7 @@ a rank) additionally require an **ordering** within the bag, which is a
 dependency-qualifier concern, not a property of the algebra: split-safety holds
 regardless, but `rank`/`cumsum` are well-defined only on an ordered bag.
 
-### `promote` / `demote` - reindexing
+### `promote` / `demote` - rekeying
 
 Reindexing is one idea with two directions: move a column into the key, or move
 one out.  The direction fixes the Tier.
@@ -158,7 +158,7 @@ data |> demote course       // move `course` out of the key
 
 Cardinality at the key moves is **key-graded** (ADR 0024): the gradings are
 facts about the flat table, indifferent to which columns currently form the
-key, so a key move changes the index, leaves the gradings untouched, and
+key, so a key move changes the key, leaves the gradings untouched, and
 re-derives the scalar from the subset check.  That is what makes the pair
 truly inverse: `promote c |> demote c` and `demote c |>
 promote c` both restore the source cardinality (`demote_promote`,
@@ -166,13 +166,13 @@ promote c` both restore the source cardinality (`demote_promote`,
 `completeness_check`) carry the gradings; every other operation resets them
 to match its own output cardinality until its transport rule is mechanized.
 
-**`promote cols`** promotes non-index column(s) into the key.  Content: the
-named columns join the index.  Cardinality: derived from the gradings; a
+**`promote cols`** promotes non-key column(s) into the key.  Content: the
+named columns join the key.  Cardinality: derived from the gradings; a
 `singletons` input stays `singletons` (`promote_functional`), and a `bag`
-whose grading fits inside the grown index promotes to `singletons`.
+whose grading fits inside the grown key promotes to `singletons`.
 Completeness: preserved.  Tier A (`promote_splitSafe`).
 
-**`demote cols`** drops index component(s) into the non-index part.
+**`demote cols`** drops key component(s) into the non-key part.
 Content: the named key columns become ordinary columns.  Cardinality: derived
 from the gradings; on a genuine coarsening no grading fits the retained key,
 so per-key cardinality **grows** (the result is `bag` over the coarser key
@@ -182,7 +182,7 @@ re-derives `singletons`.  Completeness: **propagated**, not demanded
 complete against a reference at the fine key stays complete against the
 coarsened reference at the retained key (`demote_completeWrt`), and a
 `demote` with no downstream reducer is admitted on its own (a possibly
-partial bag is an honest reindex).  Tier B on the lineage break alone
+partial bag is an honest rekey).  Tier B on the lineage break alone
 (`demote_not_preservesDisjoint`).
 
 ### `lookup` / `lookup_total` - join a fixed table
@@ -240,13 +240,13 @@ The ratified surface is `docs/decisions/0016-reshape-surface.md` as amended
 by `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`: `unpivot name
 value` names the new key and value columns explicitly and folds **all**
 attribute columns (excluding a column is upstream projection), and
-`pivot name value` spreads an enum **index** column.  The pair is designed
+`pivot name value` spreads an enum **key** column.  The pair is designed
 to be truly inverse; feature coverage comes from composing with the other
 primitives.
 
 **`unpivot name value`** turns the value columns (which must share one
 domain) into rows, spreading the column *name* into the key.  Content: the
-names move into a new `enum` index column, the values into a single column.
+names move into a new `enum` key column, the values into a single column.
 **A missing cell yields no row**, so the value column is total by
 construction.  Cardinality: preserved.  Completeness: establishes
 `exhaustive(name)` exactly when every folded column is total.  Tier A
@@ -362,7 +362,7 @@ readings
 |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
 ```
 
-`promote` adds `machine` to the key (content: index grows; cardinality and
+`promote` adds `machine` to the key (content: key grows; cardinality and
 completeness preserved); `map_bag` reduces each bag to one record, so the
 result is **singletons** per `(…, machine)` key.  All Tier A, so it composes
 safely; it type-checks.

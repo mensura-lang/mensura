@@ -17,7 +17,7 @@ pub trait StorageBackend {
 
     /// Read a table's current rows, decoded to typed values in column order
     /// (`docs/toolkit/04-processing-layer.md`).  Rows come back ordered by
-    /// the index columns (with a storage-level tiebreak within a key on an
+    /// the key columns (with a storage-level tiebreak within a key on an
     /// unkeyed table), so a scan is deterministic.
     fn scan(&self, table: &TableShape) -> Result<Vec<Row>, StorageError>;
 

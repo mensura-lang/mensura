@@ -38,7 +38,7 @@
 \end{definition}
 
 \begin{definition}[Bind]
-  \label{def:union}\lean{Mensura.bind}\uses{def:table}\leanok
+  \label{def:union}\lean{Mensura.union}\uses{def:table}\leanok
   The multiset union of two tables' bags at each key: the book's cell
   concatenation made order-free, commutative, associative, total, and
   bias-free (def:union).
@@ -70,7 +70,7 @@
 \end{proof}
 
 \begin{theorem}[Bind is commutative]
-  \label{thm:union-comm}\lean{Mensura.bind_comm}\uses{def:union}\leanok
+  \label{thm:union-comm}\lean{Mensura.union_comm}\uses{def:union}\leanok
   $\mathrm{union}\,T_0\,T_1 = \mathrm{union}\,T_1\,T_0$, unconditionally.
 \end{theorem}
 \begin{proof}\leanok
@@ -78,7 +78,7 @@
 \end{proof}
 
 \begin{theorem}[Bind is associative]
-  \label{thm:union-assoc}\lean{Mensura.bind_assoc}\uses{def:union}\leanok
+  \label{thm:union-assoc}\lean{Mensura.union_assoc}\uses{def:union}\leanok
   $\mathrm{union}$ is associative.
 \end{theorem}
 \begin{proof}\leanok
@@ -86,7 +86,7 @@
 \end{proof}
 
 \begin{theorem}[Bind weakens disjointness]
-  \label{thm:union-disjoint-iff}\lean{Mensura.bind_disjoint_iff}\leanok
+  \label{thm:union-disjoint-iff}\lean{Mensura.union_disjoint_iff}\leanok
   \uses{def:union, def:disjoint}
   $\mathrm{union}\,T_0\,T_1$ is disjoint from $T_2$ iff both $T_0$ and
   $T_1$ are.  This backs the \texttt{union} propagation rule of the
@@ -141,7 +141,7 @@
 \chapter{The operations}
 
 \begin{definition}[Row-wise flatMap]
-  \label{def:flatMap}\lean{Mensura.map}\uses{def:table}\leanok
+  \label{def:flatMap}\lean{Mensura.flatMap}\uses{def:table}\leanok
   The single row-wise primitive: $\varphi\,k\,f$ sends a nested row to a
   bag of output rows (empty drops it, a singleton keeps or transforms
   it, several expand it).  It subsumes the book's def:selection,
@@ -209,7 +209,7 @@
 \chapter{Split-safety}
 
 \begin{theorem}[Map is split-safe]
-  \label{thm:flatMap-splitsafe}\lean{Mensura.map_splitSafe}\leanok
+  \label{thm:flatMap-splitsafe}\lean{Mensura.flatMap_splitSafe}\leanok
   \uses{def:flatMap, def:splitsafe}
   Every flatMap is split-safe.
 \end{theorem}
@@ -350,7 +350,7 @@
 \end{proof}
 
 \begin{theorem}[Project inverts promote]
-  \label{thm:demote-promote}\lean{Mensura.demote_ungroup}\leanok
+  \label{thm:demote-promote}\lean{Mensura.demote_promote}\leanok
   \uses{def:promote, def:demote}
   ADR 0024: when the promoted column is total (exactly the checker's
   \texttt{extend\_key} gate, which would otherwise drop rows at
@@ -365,7 +365,7 @@
 \end{proof}
 
 \begin{theorem}[Ungroup inverts demote]
-  \label{thm:promote-demote}\lean{Mensura.promote_project}\leanok
+  \label{thm:promote-demote}\lean{Mensura.promote_demote}\leanok
   \uses{def:promote, def:demote}
   ADR 0024, with no side condition: \texttt{demote} tags every demoted
   row with its own key component, so the demoted column is total by
@@ -437,7 +437,7 @@
 \end{proof}
 
 \begin{theorem}[A non-dropping flatMap preserves the rectangle]
-  \label{thm:flatMap-exhaustive}\lean{Mensura.map_exhaustive}\leanok
+  \label{thm:flatMap-exhaustive}\lean{Mensura.flatMap_exhaustive}\leanok
   \uses{def:flatMap, def:exhaustive}
   A flatMap whose body emits at least one output row per input row preserves
   exhaustiveness.  A dropping flatMap (a filter) is excluded, and rightly
@@ -468,7 +468,7 @@
 \end{proof}
 
 \begin{theorem}[Bind preserves the rectangle]
-  \label{thm:union-exhaustive}\lean{Mensura.bind_exhaustive}\leanok
+  \label{thm:union-exhaustive}\lean{Mensura.union_exhaustive}\leanok
   \uses{def:union, def:exhaustive}
   The union of two exhaustive tables is exhaustive: a fiber present in
   the union is present on one side, whose fullness fills the union.

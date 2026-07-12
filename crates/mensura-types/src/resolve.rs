@@ -245,7 +245,7 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
             match type_view(&sources, &v.body) {
                 Ok(output) => {
                     // Check the optional `: Shape` conformance clause against
-                    // the view's computed output content (index + named
+                    // the view's computed output content (key + named
                     // columns by type/totality) and cardinality (10-views.md,
                     // ADR 0013, ADR 0022).
                     check_view_conformance(
@@ -283,11 +283,11 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
 /// body, and the stores it reads.
 fn view_plan(v: &ViewDecl, output: &TableType, store_names: &HashSet<&str>) -> ViewPlan {
     let mut columns = Vec::new();
-    for c in &output.content.index {
+    for c in &output.content.key {
         columns.push(Column {
             name: c.name.clone(),
             ty: c.domain.clone(),
-            role: ColumnRole::Index,
+            role: ColumnRole::Key,
             optional: false,
             span: v.name.span,
         });
@@ -393,8 +393,8 @@ fn resolve_store(
 
     let cardinality = declared_cardinality(&s.attrs, "store", &mut errors);
 
-    // Columns in storage order: index fields, then attributes in declaration
-    // order.  Compound units surface here: an index field whose type
+    // Columns in storage order: key fields, then attributes in declaration
+    // order.  Compound units surface here: an key field whose type
     // references another unit is rejected by `resolve_type`.
     let mut columns = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -404,7 +404,7 @@ fn resolve_store(
             &mut seen,
             &mut errors,
             f,
-            ColumnRole::Index,
+            ColumnRole::Key,
             units,
             enums,
         );
@@ -847,10 +847,10 @@ fn bind_shape_args<'a>(
 /// shape").  Unlike a store, a view has no declared unit, so the structural
 /// check is content-based:
 ///
-/// - a unit-fixing shape requires the output's index to be exactly the unit's
-///   index fields, by name and type;
-/// - each shape attribute must appear among the output columns, index or
-///   non-index, with a matching type and totality;
+/// - a unit-fixing shape requires the output's key to be exactly the unit's
+///   key fields, by name and type;
+/// - each shape attribute must appear among the output columns, key or
+///   non-key, with a matching type and totality;
 /// - the shape's cardinality (its `attr` / `attr*` blocks, ADR 0022 amending
 ///   ADR 0012) must match the output's computed cardinality: an all-`attr`
 ///   shape requires `singletons`, an `attr*` shape requires `bag`.
@@ -883,9 +883,9 @@ fn check_view_conformance(
             continue;
         };
 
-        // A unit-fixing shape constrains the output's index structurally: a
+        // A unit-fixing shape constrains the output's key structurally: a
         // view carries no declared unit, so conformance is that the output's
-        // index columns are exactly the unit's index fields (10-views.md, "The
+        // key columns are exactly the unit's key fields (10-views.md, "The
         // unit clause").
         let required_unit = match &shape.unit {
             ShapeUnit::Agnostic => None,
@@ -895,17 +895,17 @@ fn check_view_conformance(
         if let Some(uname) = required_unit
             && let Some(unit) = units.get(uname).copied()
         {
-            let expected = unit_index_columns(unit, units, enums);
+            let expected = unit_key_columns(unit, units, enums);
             let actual: Vec<(String, ColumnType)> = output
                 .content
-                .index
+                .key
                 .iter()
                 .map(|c| (c.name.clone(), c.domain.clone()))
                 .collect();
             if !same_columns(&expected, &actual) {
                 errors.push(ResolveError::new(
                     format!(
-                        "view `{}` claims `{}`, which tabulates `{}`, but its index is {} rather than {}",
+                        "view `{}` claims `{}`, which tabulates `{}`, but its key is {} rather than {}",
                         view.name.name,
                         shape_ref_label(claim),
                         uname,
@@ -936,8 +936,8 @@ fn check_view_conformance(
             continue;
         }
 
-        // Content attributes: each must appear somewhere in the output (index
-        // or non-index), with a matching type and totality.
+        // Content attributes: each must appear somewhere in the output (key
+        // or non-key), with a matching type and totality.
         for attr in &shape.attrs {
             let want = render_template(&attr.name, &str_bind);
             if !is_identifier(&want) {
@@ -954,7 +954,7 @@ fn check_view_conformance(
             }
             let found = output
                 .content
-                .index
+                .key
                 .iter()
                 .chain(output.content.columns.iter())
                 .find(|c| c.name == want);
@@ -997,11 +997,11 @@ fn check_view_conformance(
     }
 }
 
-/// Resolve a unit's index fields to their `(name, type)` pairs, for structural
+/// Resolve a unit's key fields to their `(name, type)` pairs, for structural
 /// conformance of a view claiming a unit-fixing shape.  Fields that fail to
 /// resolve (for example a still-unsupported compound field) are skipped: such
 /// a unit cannot back a store either, and its error surfaces where it is used.
-fn unit_index_columns(
+fn unit_key_columns(
     unit: &UnitDecl,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
@@ -1019,7 +1019,7 @@ fn unit_index_columns(
 }
 
 /// Two column lists match iff they carry the same names, each with the same
-/// type.  Order is not significant: a view's index is a set of key columns, and
+/// type.  Order is not significant: a view's key is a set of key columns, and
 /// pipeline stages may present them in any order.
 fn same_columns(a: &[(String, ColumnType)], b: &[(String, ColumnType)]) -> bool {
     a.len() == b.len()
@@ -1131,16 +1131,16 @@ fn add_column(
     }
     // Index fields come from the unit and are checked at its declaration;
     // here only the store's own attributes are checked.
-    if role != ColumnRole::Index {
+    if role != ColumnRole::Key {
         check_case(&name, field.name.span, Case::Snake, "attribute", errors);
     }
-    // An index field is always known: whether the row exists at all is
+    // An key field is always known: whether the row exists at all is
     // cardinality, a separate axis from value missingness (ADR 0010).  `?` on
-    // an index field is rejected; an attribute may be optional.
-    let is_index = role == ColumnRole::Index;
-    if is_index && let Some(span) = field.ty.optional {
+    // an key field is rejected; an attribute may be optional.
+    let is_key = role == ColumnRole::Key;
+    if is_key && let Some(span) = field.ty.optional {
         errors.push(ResolveError::new(
-            format!("an index field cannot be optional: drop the `?` on `{name}`"),
+            format!("an key field cannot be optional: drop the `?` on `{name}`"),
             span,
         ));
     }
@@ -1151,12 +1151,12 @@ fn add_column(
             return;
         }
     };
-    // A key is identified by equality, so an index field must be key-eligible
+    // A key is identified by equality, so an key field must be key-eligible
     // (ADR 0014); `real` is a continuous measurement, not an identity.
-    if is_index && !ct.is_key_eligible() {
+    if is_key && !ct.is_key_eligible() {
         errors.push(ResolveError::new(
             format!(
-                "an index field must be a key-eligible type: `{}` cannot be a key",
+                "an key field must be a key-eligible type: `{}` cannot be a key",
                 type_name(&ct)
             ),
             field.ty.name.span,
@@ -1166,7 +1166,7 @@ fn add_column(
         name,
         ty: ct,
         role,
-        optional: field.ty.is_optional() && !is_index,
+        optional: field.ty.is_optional() && !is_key,
         span: field.name.span,
     });
 }
@@ -1205,7 +1205,7 @@ fn resolve_type(
     enums: &HashMap<&str, &EnumDecl>,
 ) -> Result<ColumnType, ResolveError> {
     // Resolve only the base type here; optionality (`?`) is read from the
-    // `TypeExpr` by the caller, which knows the column's role (an index field
+    // `TypeExpr` by the caller, which knows the column's role (an key field
     // may not be optional; ADR 0010).
     let id = &ty.name;
     match id.name.as_str() {
@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(plan.sources, vec!["machines".to_string()]);
         assert_eq!(plan.cardinality, crate::table::Cardinality::Singletons);
 
-        // Output columns in storage order: the index, then the computed
+        // Output columns in storage order: the key, then the computed
         // attributes in the order the checker produced them (a whole-row
         // `flat_map` body yields them alphabetically).
         let cols: Vec<(&str, ColumnRole, bool)> = plan
@@ -1285,7 +1285,7 @@ mod tests {
         assert_eq!(
             cols,
             vec![
-                ("id", ColumnRole::Index, false),
+                ("id", ColumnRole::Key, false),
                 ("last_service", ColumnRole::Attr, true),
                 ("status", ColumnRole::Attr, false),
             ]
@@ -1372,7 +1372,7 @@ mod tests {
         assert_eq!(
             cols,
             vec![
-                ("id", ColumnRole::Index, &ColumnType::String),
+                ("id", ColumnRole::Key, &ColumnType::String),
                 ("admission", ColumnRole::Attr, &ColumnType::Date),
                 (
                     "status",
@@ -1422,7 +1422,7 @@ mod tests {
 
     #[test]
     fn duplicate_column_is_rejected() {
-        // `id` is both the index field and a declared attribute.
+        // `id` is both the key field and a declared attribute.
         let src = r#"
             unit Person { id: string }
             store s { unit { Person } attr { id: string } }
@@ -1613,14 +1613,14 @@ mod tests {
         let by = |n: &str| readings.columns.iter().find(|c| c.name == n).unwrap();
         assert!(by("last_service").optional);
         assert!(!by("vibration").optional);
-        // The index is total even though `?` was not (and may not be) written.
+        // The key is total even though `?` was not (and may not be) written.
         assert!(!by("id").optional);
     }
 
     #[test]
     fn optional_index_field_is_rejected() {
         // Whether a row exists is cardinality, not value missingness; `?` on an
-        // index field is a hard error (ADR 0010).
+        // key field is a hard error (ADR 0010).
         let src = r#"
             unit Machine { id: string? }
             store readings { unit { Machine } }
@@ -1628,7 +1628,7 @@ mod tests {
         let errs = errors(src);
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("index field cannot be optional"))
+                .any(|e| e.message.contains("key field cannot be optional"))
         );
     }
 
@@ -1969,7 +1969,7 @@ mod tests {
 
     #[test]
     fn non_snake_index_attribute_is_rejected() {
-        // An index field is checked once, at the unit, and only once even when
+        // An key field is checked once, at the unit, and only once even when
         // several stores tabulate that unit.
         let src = r#"
             unit Person { personId: string }
@@ -1984,7 +1984,7 @@ mod tests {
                     .contains("attribute `personId` must be snake_case")
             })
             .collect();
-        assert_eq!(casing.len(), 1, "index field casing reported exactly once");
+        assert_eq!(casing.len(), 1, "key field casing reported exactly once");
     }
 
     #[test]
@@ -2041,8 +2041,8 @@ mod tests {
         assert!(errs.iter().any(|e| e.message.contains("bag")));
     }
 
-    // A summarizing view whose output index is `Machine`'s key and whose one
-    // non-index column is `temp_max: real` (`docs/language/10-views.md`).
+    // A summarizing view whose output key is `Machine`'s key and whose one
+    // non-key column is `temp_max: real` (`docs/language/10-views.md`).
     const SUMMARY_VIEW: &str = r#"
         unit Machine { id: string }
         store readings { unit { Machine } attr { temperature: real } }
@@ -2050,8 +2050,8 @@ mod tests {
 
     #[test]
     fn view_conforms_to_unit_fixing_shape() {
-        // A unit-fixing shape checks the output's index structurally: the view
-        // ends in `map_bag`, so its index is `Machine`'s `id`.
+        // A unit-fixing shape checks the output's key structurally: the view
+        // ends in `map_bag`, so its key is `Machine`'s `id`.
         let src = format!(
             "{SUMMARY_VIEW}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
@@ -2059,13 +2059,13 @@ mod tests {
               readings |> map_bag |k, b| (.temp_max = max b.temperature)
             }}"
         );
-        resolve_str(&src).expect("view carrying Machine's index conforms");
+        resolve_str(&src).expect("view carrying Machine's key conforms");
     }
 
     #[test]
     fn view_with_wrong_unit_index_is_rejected() {
-        // The view's index is `id`, but `Site`'s index is `code`, so a claim of
-        // `Tabular[Site]` fails the structural index check.
+        // The view's key is `id`, but `Site`'s key is `code`, so a claim of
+        // `Tabular[Site]` fails the structural key check.
         let src = format!(
             "{SUMMARY_VIEW}
             unit Site {{ code: string }}

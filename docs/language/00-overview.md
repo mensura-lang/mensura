@@ -34,7 +34,7 @@ vocabulary, a unit is an *observational unit*; Mensura makes the concept
 syntactic with the `unit` declaration.
 
 A unit declaration contains only an identity discipline: the list of
-**index fields** whose values jointly name one distinct instance.  It carries
+**key fields** whose values jointly name one distinct instance.  It carries
 no attributes, no change-control policy, and no storage commitment.  Those
 concerns belong on stores.
 
@@ -43,32 +43,32 @@ mass) and in testing (a unit test).  In Mensura, "unit" always means
 *observational unit* unless a qualifier like "physical unit" or "test unit"
 is present.
 
-### Index field, index column, index
+### Key field, key column, key columns
 
-An **index field** is a field declared inside a `unit { ... }` block.  It
+A **key field** is a field declared inside a `unit { ... }` block.  It
 contributes to the identity of observations of that unit.  Its type must be
 *key-eligible* (equatable: `string`, `int`, `bool`, `date`, or `enum`);
 continuous `real` is excluded because identity is decided by equality and
 float equality is unreliable.
 
-When the unit is tabulated in a store or view, each index field becomes an
-**index column** of the resulting table.  The set of index columns is the
-**index** of the table.
+When the unit is tabulated in a store or view, each key field becomes a
+**key column** of the resulting table.  The set of key columns is the
+schema-level identity of the table; informally, "the table's key columns".
 
-"Index" is used in three senses in the broader literature: a database index
-(a data structure for fast lookup), a positional index (a row number), and an
-identity index (a set of columns that name a row).  Mensura uses it
-exclusively in the third sense.  A Mensura index is never a row number and
-has nothing to do with B-trees.
+Mensura deliberately does not call this an **key**.  That word carries two
+strong wrong priors: in pandas it is the positional/row-label axis, and in
+databases it is a B-tree lookup structure.  A Mensura key is neither a row
+number nor a data structure; it is the set of columns that name a row.  The
+value-level counterpart of the key columns is the **key** (below).
 
 ### Key
 
-A **key** is a concrete tuple of index-column values.  It is the runtime
-counterpart of the index (which is the schema-level description of which
-columns form the identity).  The key `("MATH-101", 2025)` is a particular
-value of the index `(name: string, year: int)`.
+A **key** is a concrete tuple of key-column values.  It is the value-level
+counterpart of the key columns (the schema-level description of which columns
+form the identity).  The key `("MATH-101", 2025)` is a particular value of the
+key columns `(name: string, year: int)`.
 
-Two rows that agree on every index-column value share the same key.  A key
+Two rows that agree on every key-column value share the same key.  A key
 does not by itself constitute a row; it is the address at which rows may be
 found.  That is an important distinction of Relational algebra.
 
@@ -86,7 +86,7 @@ The distinction between unit and entity mirrors the distinction between type
 and value.  A unit is a category; an entity is a member.
 
 An entity is distinct from a row.  A key identifies an entity; a row is a
-record of non-index column values at that key.  When cardinality is at most 1
+record of non-key column values at that key.  When cardinality is at most 1
 (the normal state at unit boundaries), entity and row coincide in practice,
 but they are conceptually separate: an entity may be unobserved (cardinality
 0, no rows at its key) or observed once (cardinality 1, exactly one row).
@@ -96,7 +96,7 @@ bag (see below) holds more than one row.
 
 ### Row, observation
 
-A **row** is a record of values, one per column (index and non-index), stored
+A **row** is a record of values, one per column (key and non-key), stored
 in a table.  The rows at a key form that key's bag (see below); there may be
 zero, one, or many.
 
@@ -143,10 +143,10 @@ alone), and "group" imports GROUP BY intuitions that mislead here.
 
 ### Column, attribute
 
-A **column** is a named field in a table's schema.  Index columns form the
-key; non-index columns carry the per-entity data.
+A **column** is a named field in a table's schema.  Key columns form the
+key; non-key columns carry the per-entity data.
 
-**Attribute** is a synonym for non-index column, preferred in declaration
+**Attribute** is a synonym for non-key column, preferred in declaration
 contexts (store and shape bodies), where attributes are listed in an `attr`
 block.  An attribute is a name and a type; store and shape bodies use the
 same attribute language.
@@ -194,8 +194,8 @@ A column is **total** if its value is always known when a row is present.
 Totality is the default.  A column marked `?` is **optional**: its value may
 be **missing** (absent, null) even when the row exists.
 
-Index columns are always total; a key field cannot be missing.  Only
-non-index attributes may be optional.
+Key columns are always total; a key field cannot be missing.  Only
+non-key attributes may be optional.
 
 Totality and cardinality are independent axes.  A table can have singletons
 cardinality (at most one row per key) with optional columns (the row exists
@@ -234,7 +234,7 @@ by explicit check (`completeness_check { ... }`), by annotation
 A **table** in Mensura is inspired by the indexed-table model of Chapter 5 of
 *Data Science Project: An Inductive Learning Approach* (F. A. N. Verri, 2026;
 doi: 10.5281/zenodo.14498010): a mathematical object `(K, H, c)` where `K` is
-the set of index columns, `H` is the set of non-index columns, and `c` is a
+the set of key columns, `H` is the set of non-key columns, and `c` is a
 cell function mapping each `(key, column)` pair to an optional value.  A key
 may map to zero, one, or many rows; each cell in a row is either known or
 missing.
@@ -401,7 +401,7 @@ PascalCase (they are types); variants are string literals and may contain
 characters that are not valid in identifiers.
 
 Enums have two important properties.  First, they are **equatable** (can be
-used as index fields) because equality between enum values is exact string
+used as key fields) because equality between enum values is exact string
 comparison.  Second, they are **finite-enumerable**: their variants can be
 spread across column names, which is what makes them the valid domain for
 `unpivot`'s synthesised name column and for the key column being spread by
@@ -416,7 +416,7 @@ correctly in the general case.
 These are domain-level properties that determine which operations are
 available for a column's type.
 
-- **Key-eligible**: may appear as an index field.  Requires equatability.
+- **Key-eligible**: may appear as a key field.  Requires equatability.
   Key-eligible types: `string`, `int`, `bool`, `date`, `enum`.  `real` is
   excluded because float equality is unreliable.
 - **Equatable**: supports `==` and `!=`.  Same set as key-eligible.
@@ -453,16 +453,16 @@ warnings.
 1. **Tables are the central object.** A Mensura table is inspired by the indexed table
    of Chapter 5 of Data Science Project: An Inductive Learning Approach
    (F. A. N. Verri, 2026; doi: 10.5281/zenodo.14498010): a tuple
-   `(K, H, c)` of index columns, non-index columns, and a cell function.
+   `(K, H, c)` of key columns, non-key columns, and a cell function.
    Each row is an observation of an entity, addressed by its key (the tuple
-   of index-column values); a key may have zero, one, or many rows
+   of key-column values); a key may have zero, one, or many rows
    (cardinality), and individual cell values may be missing (optional).
    Values are total by default, with optional ones marked `?` (see
    `docs/decisions/0010-attribute-totality.md`).
 
 2. **The type of a table is `Table<Qs, C>`.** A table binding carries a row
    of **qualifiers** `Qs` and a **content** schema `C`, both checked at
-   compile time. `C`, the **content**, is the schema: index columns, non-index columns,
+   compile time. `C`, the **content**, is the schema: key columns, non-key columns,
    their domains, physical units, and semantic types.  Operations are
    typed as transformations on `Qs` and `C`; every primitive carries rules
    for how each qualifier propagates and how the content changes.
@@ -478,8 +478,8 @@ warnings.
    `@complete_over` annotation on its source, or an `assume`
    (ADR 0020, ADR 0023).  See `docs/language/07-pipelines.md`.
 
-4. **Indexes and physical units are part of the type.** Each table declares its
-   index columns, and each column declares its domain, including physical
+4. **Keys and physical units are part of the type.** Each table declares its
+   key columns, and each column declares its domain, including physical
    units and semantic refinements (CPF, email, regex-constrained strings).
    Physical-unit and semantic mismatches are compile errors, not runtime
    conversions.
