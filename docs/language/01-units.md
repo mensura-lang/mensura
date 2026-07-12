@@ -66,6 +66,12 @@ tabulation of observations of `U` has cardinality 0 or 1 at `k`: the
 entity is either observed (cardinality 1) or not (cardinality 0).  This
 is Wickham's rule that each row is one observation, restated as a
 property of the unit, and it is the default at every unit boundary.
+Equivalently, the tabulation is **functional** over its index: grouping
+by the index yields at most one row.  Functionality over a column set is
+the fact the checker actually carries (a *grading*, ADR 0024), with
+`singletons` as its reading at the current key; because the fact names
+columns rather than the key, reindexing can move a column out of the key
+and back without forgetting that the entity was observed at most once.
 
 The chapter's algebra (Chapter 5 of Data Science Project: An Inductive
 Learning Approach, F. A. N. Verri, 2026, doi: 10.5281/zenodo.14498010)

@@ -136,7 +136,8 @@ It is a table-level qualifier with two states:
 - **Singletons** (written `card ≤ 1`): each key has at most one row.  A key
   with no row is simply unobserved.  Singletons is the default at unit
   boundaries and the state after operations that reduce each group to one
-  representative.
+  representative or restore a key the table is known functional over
+  (ADR 0024).
 - **Bag** (written `card 0..*`): a key may hold any number of rows, including
   zero.  Bag cardinality arises transiently from `shrink_key` and from any
   `group_map` that returns more than one row per group, and as a *declared*
@@ -145,6 +146,14 @@ It is a table-level qualifier with two states:
 
 Cardinality is *not* a count stored in the data; it is a compile-time bound
 on the number of rows per key.
+
+The bound is tracked through **gradings** (ADR 0024): column sets over
+which the table is known to be **functional**, holding at most one row per
+combination of values.  A table is `singletons` exactly when some grading
+fits inside the current key.  Because a grading is a fact about the columns
+themselves, not about which of them currently form the key, moving a column
+out of the key and back (`shrink_key` then `extend_key`, or the reverse)
+restores `singletons` instead of leaving a spurious bag.
 
 The term "cardinality" has two other common meanings: in set theory, the size
 of a set; in database design, the number of distinct values in a column (used

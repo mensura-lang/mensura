@@ -647,15 +647,17 @@ then nothing consumes it, so the predicate fragment buys nothing.  In M1
 ## 10.  Consolidated effect matrix
 
 One row per primitive (pres. = preserved).  "card" gives the cardinality bound
-after the operation; "lineage" the effect on the tag hierarchy.  Theorems are
-the primary split-safety / disjointness backing; section 11 has the full index.
+after the operation; at the key moves it is derived from the gradings
+(ADR 0024, section 6.3).  "lineage" is the effect on the tag hierarchy.
+Theorems are the primary split-safety / disjointness backing; section 11 has
+the full index.
 
 | op | content | card | total | complete | lineage | Tier | theorem |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `map_splitSafe` |
 | `group_map` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
-| `extend_key` | cols join index | pres. | pres. | pres. | carried | A | `ungroup_splitSafe` |
-| `shrink_key` | key cols -> non-key | **-> bag** | pres. | **propagated** (reference coarsens) | **dropped** | B | `project_not_preservesDisjoint`, `project_completeWrt` |
+| `extend_key` | cols join index | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `ungroup_splitSafe`, `ungroup_functional` |
+| `shrink_key` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | **propagated** (reference coarsens) | **dropped** | B | `project_not_preservesDisjoint`, `project_completeWrt`, `project_ungroup` |
 | `left_join` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `leftJoin_splitSafe` |
 | `inner_join` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `innerJoin_splitSafe` |
 | `split` | unchanged | unchanged | unchanged | unchanged | adds branches | A | `split_disjoint` |
@@ -667,17 +669,19 @@ the primary split-safety / disjointness backing; section 11 has the full index.
 
 Each rule above is backed by a theorem in the Lean formalization.  Names are
 verbatim; the development lives in themed modules under `formal/Mensura/`
-(`Core/`, `SplitSafety.lean`, `Reshape.lean`, `Rectangle.lean`, and
-`Completeness/`).
+(`Core/`, `SplitSafety.lean`, `Reshape.lean`, `Rectangle.lean`, `Laws.lean`,
+and `Completeness/`).
 
 **Core algebra** (`Core/`, `SplitSafety.lean`, `Reshape.lean`,
-`Rectangle.lean`) -- split-safety, disjointness, reshape, lineage tags:
+`Rectangle.lean`, `Laws.lean`) -- split-safety, disjointness, reshape,
+lineage tags:
 
 - composition: `SplitSafe.comp`, `SplitSafe.id`; definitions `SplitSafe`,
   `SplitInvariant`, `PreservesDisjoint`, `Disjoint`.
 - `map`: `map_splitSafe`, `map_preservesDisjoint`, `map_splitInvariant`.
 - `extend_key` (`ungroup`): `ungroup_splitSafe`, `ungroup_preservesDisjoint`,
-  `ungroup_splitInvariant`.
+  `ungroup_splitInvariant`; the grading transport `ungroup_functional`
+  (over the `Functional` definition of `Reshape.lean`, ADR 0024).
 - joins: `leftJoin_splitSafe`, `leftJoin_preservesDisjoint`,
   `innerJoin_splitSafe`, `innerJoin_preservesDisjoint`.
 - `unpivot` (the drop variant, `unpivotDrop`): `unpivotDrop_splitSafe`,
@@ -688,7 +692,8 @@ verbatim; the development lives in themed modules under `formal/Mensura/`
   `bind_disjoint_iff`.
 - lineage tags: `addTag`, `dropTag`, `taggedBind`, `taggedSplit`,
   `taggedSplit_taggedBind_left`, `taggedSplit_taggedBind_right`.
-- `shrink_key` (`project`): `project_not_preservesDisjoint`.
+- `shrink_key` (`project`): `project_not_preservesDisjoint`; the key-move
+  round trips `project_ungroup` and `ungroup_project` (ADR 0024).
 - `pivot`: `pivot_not_splitInvariant`; the round trips `pivot_unpivotDrop`
   and `unpivotDrop_pivot`; the totality upgrade `pivot_total_of_exhaustive`.
 - `exhaustive` propagation: `map_exhaustive` (non-dropping maps),

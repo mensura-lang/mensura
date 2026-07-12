@@ -34,7 +34,11 @@ checker rejects a pipeline that would violate one of them:
 - **Cardinality** (table-scoped qualifier): how many nested rows share a key,
   **singletons** (`card <= 1`) or **bag** (`card 0..*`).  Operations
   transform it predictably, and some operations *demand* a particular
-  cardinality (`pivot` wants `singletons`, at most one row per key).
+  cardinality (`pivot` wants `singletons`, at most one row per key).  The
+  evidence behind the scalar is a set of **gradings**, column sets over
+  which the table is known **functional** (at most one row per combination
+  of values); `singletons` is derived as "some grading fits inside the
+  current key" (ADR 0024), which is what makes the key moves invertible.
 - **Totality** (column-scoped qualifier): whether each non-index value is
   known or may be missing (`Cell = Option`).  A value is total unless its
   type is marked `?` (ADR 0010); `left_join` makes its right columns
@@ -152,16 +156,28 @@ data |> extend_key machine      // move the `machine` column into the key
 data |> shrink_key course       // move `course` out of the key
 ```
 
+Cardinality at the key moves is **key-graded** (ADR 0024): the gradings are
+facts about the flat table, indifferent to which columns currently form the
+key, so a key move changes the index, leaves the gradings untouched, and
+re-derives the scalar from the subset check.  That is what makes the pair
+truly inverse: `extend_key c |> shrink_key c` and `shrink_key c |>
+extend_key c` both restore the source cardinality (`project_ungroup`,
+`ungroup_project`).  The content-identity stages (`assume`,
+`completeness_check`) carry the gradings; every other operation resets them
+to match its own output cardinality until its transport rule is mechanized.
+
 **`extend_key cols`** promotes non-index column(s) into the key.  Content: the
-named columns join the index.  Cardinality: an entity's rows are redistributed
-across the finer key; per-key cardinality does not grow.  Completeness:
-preserved.  Tier A (`ungroup_splitSafe`).
+named columns join the index.  Cardinality: derived from the gradings; a
+`singletons` input stays `singletons` (`ungroup_functional`), and a `bag`
+whose grading fits inside the grown index promotes to `singletons`.
+Completeness: preserved.  Tier A (`ungroup_splitSafe`).
 
 **`shrink_key cols`** drops index component(s) into the non-index part.
-Content: the named key columns become ordinary columns.  Cardinality: rows that
-differed only in the dropped component now share a key, so per-key cardinality
-**grows** (the result is `bag` over the coarser key unless a following
-`group_map` reduces it).  Completeness: **propagated**, not demanded
+Content: the named key columns become ordinary columns.  Cardinality: derived
+from the gradings; on a genuine coarsening no grading fits the retained key,
+so per-key cardinality **grows** (the result is `bag` over the coarser key
+unless a following `group_map` reduces it), while an exact round trip
+re-derives `singletons`.  Completeness: **propagated**, not demanded
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a table
 complete against a reference at the fine key stays complete against the
 coarsened reference at the retained key (`project_completeWrt`), and a
@@ -367,6 +383,18 @@ the reducing `group_map` **consumes** it and brings the table back to
 discharged.  Remove the check (and `@complete_over`, and `assume`) and the
 `group_map` is rejected; the `shrink_key` alone would still be admitted
 (ADR 0023).
+
+**Reindex round trip (key-graded cardinality).**
+
+```
+readings |> extend_key ts |> shrink_key ts
+readings |> shrink_key channel |> extend_key channel
+```
+
+The gradings survive both moves, so either order restores the source
+cardinality (ADR 0024): a `singletons` source comes back `singletons`
+(no spurious bag, no vacuous completeness demand downstream) and a `bag`
+store comes back a `bag`.  It type-checks against the source's own shape.
 
 **Train/test split and re-merge (cardinality under `bind`).**
 
