@@ -31,7 +31,7 @@ rule-combinator DSL) and the two qualifiers with no rules yet written,
 (cardinality, totality, completeness, lineage), not an open, user-extensible
 row.  The boundary between `Qs` and the content `C` is structure versus
 propagated fact, and a qualifier's **scope** (table or column) is a field of the
-qualifier, not what selects its group
+qualifier, not a partition of `Qs`
 (`docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`).  When the
 meta-calculus arrives, this closed set may be opened to user-defined qualifiers
 and the row made extensible again.
@@ -49,7 +49,7 @@ notation, what the per-concept documents decided, choosing the settled subset.
 Authority is layered:
 
 - The **Lean formalization** (`formal/Mensura/`) is ground truth for the
-  algebra.  Every split-safety, disjointness, and reindexing claim here is
+  algebra.  Every split-safety, disjointness, and rekeying claim here is
   backed by a named theorem, cited inline and indexed in section 11.
 - The **per-concept documents** (`00`, `06`, `07`, `08`, and the ADRs) remain
   authoritative for rationale, examples, and any prose this reference
@@ -75,30 +75,30 @@ concrete and closed.
 Table<Qs, C>
 
 C   structure (what the data is)
-      index columns
-      non-index columns
+      key columns
+      non-key columns
       column domains
 
 Qs  qualifiers (propagated facts; concrete and closed in this freeze)
       cardinality   (table):   singletons (card <= 1)  |  bag (card 0..many)
-      totality      (column):  total | optional, per non-index column
+      totality      (column):  total | optional, per non-key column
       completeness  (table):   whether each key's bag holds all its rows
       lineage       (table):   a hierarchy of tags, the carrier for disjointness
 ```
 
-- `C` is the **content**: the index (key) columns, the non-index columns, and
+- `C` is the **content**: the key columns, the non-key columns, and
   their domains.  It carries nothing propagated.  Reindexing moves columns
   between the key and the non-key part.
 - `Qs` is the **qualifier row**.  Each qualifier declares a **scope** that fixes
   which structural node it rides: **table** (one value for the whole table,
   possibly a universal over keys) or **column** (one value per column, spanning
-  index and non-index columns).  In this freeze `Qs` is the closed set
+  key and non-key columns).  In this freeze `Qs` is the closed set
   cardinality (section 3.2), totality (section 3.3), completeness (section 3.4),
   and lineage (section 3.5); the extensible qualifier framework, sampling, and
   dependency are deferred (section 13).
 - There is **no per-key scope**.  A fact "about keys" is either a universal over
   all keys (table scope: cardinality, completeness, the disjointness invariant)
-  or a fact on an index column (column scope on a key column).  A value that
+  or a fact on a key column (column scope on a key column).  A value that
   varies per runtime key-tuple is not type-level trackable (ADR 0013).
 
 The older `Table<S, D, L, C>` quadruple from early drafts of the overview is
@@ -113,7 +113,7 @@ Two judgment forms run through this reference.  Both use ASCII only.
 has type `tau`".  A context `Gamma` is a site-supplied pair (section 5.1): the
 named values in scope, and the result type the site requires.  The type `tau` of
 a column read reflects both content axes: a read at a single row is one value
-(whose totality may be optional), and a read at a group is a bag (the key's
+(whose totality may be optional), and a read at a key's whole bag is a bag (the key's
 cardinality made visible).
 
 **Operations.**  A pipeline primitive is a pure function over tables, written
@@ -125,7 +125,7 @@ op : Table<Qs, C>  ->  Table<Qs', C'>     [side conditions]   (Tier X)
 with the effect on each property named explicitly, the Tier (A or B, section 7),
 and the backing Lean theorem.  `Qs'` differs from `Qs` only where the operation
 changes completeness or lineage (for example, `split` adds lineage branches,
-`shrink_key` drops the lineage fact).  An operation that *demands* a fact lists
+`demote` drops the lineage fact).  An operation that *demands* a fact lists
 it under side conditions; an operation that *establishes* one says so.
 
 ## 3.  The four tracked properties
@@ -133,16 +133,16 @@ it under side conditions; an operation that *establishes* one says so.
 A table carries more than its rows.  Four facts are made first-class and
 threaded by every operation; the type checker rejects a pipeline that would
 violate one.  All four are qualifiers in `Qs`, distinguished by **scope** (table
-or column), not by which group they live in; `C` carries only the structure they
+or column), not by separate families; `C` carries only the structure they
 qualify (ADR 0013).
 
 ### 3.1  Content schema (`C`)
 
-The index columns and the non-index columns with their domains: the pure
+The key columns and the non-key columns with their domains: the pure
 structure of the data, the ordinary record-of-columns part of the type.
 Cardinality and totality are not part of `C`; they are qualifiers in `Qs`
-(sections 3.2, 3.3).  Reindexing moves columns between the index and the
-non-index part.
+(sections 3.2, 3.3).  Reindexing moves columns between the key and the
+non-key part.
 
 ### 3.2  Cardinality (table-scoped qualifier)
 
@@ -169,14 +169,14 @@ a corollary of two properties, so the lattice needs only two points.
 
 ### 3.3  Totality (column-scoped qualifier)
 
-Whether a non-index value is known or may be missing.  A cell is
+Whether a non-key value is known or may be missing.  A cell is
 `Cell = Option` (`formal/Mensura/Core/Defs.lean`): known or missing, always
 0 or 1.
 Totality is a **per-column** fact: a value is **total** (always known) by
 default, and an **optional** value carries a `?` on its type (ADR 0010).  It is
 orthogonal to cardinality: cardinality counts rows at a key, totality asks
-whether one value is present.  Totality is column-scoped over both index and
-non-index columns; the index requires total values, so an `extend_key` that
+whether one value is present.  Totality is column-scoped over both key and
+non-key columns; the key requires total values, so an `promote` that
 promotes a column into the key demands it be total first, a constraint of the
 totality qualifier rather than a structural axiom (ADR 0013).
 
@@ -193,14 +193,14 @@ Completeness here is a fact about the **current** key, relative to a
 reference population (the mechanized `CompleteWrt`,
 `formal/Mensura/Completeness/CompleteOver.lean`): the table has a row
 wherever the reference does.  The reference coarsens with the table, so
-`shrink_key` transforms the fact rather than consuming it
-(`project_completeWrt`); the operation that *demands* it is the reducing
-`group_map`, whose fold is silently wrong on a partial bag (section 8,
+`demote` transforms the fact rather than consuming it
+(`demote_completeWrt`); the operation that *demands* it is the reducing
+`map_bags`, whose fold is silently wrong on a partial bag (section 8,
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
 
 A second, **domain-relative** grade is tracked
 (`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`): for an
-enum-domained index column `A`, **`exhaustive(A)`** says every residual key
+enum-domained key column `A`, **`exhaustive(A)`** says every residual key
 present in the table carries its `(k, v)` row for every variant `v`.  Its
 reference is `A`'s finite type domain, not the population, so it is
 extensional and decidable per fiber; neither fact implies the other (a
@@ -307,15 +307,15 @@ way: `in` tests membership, `count`/`any`/`all` summarize, and the aggregates
 `sum(x) / to_real(count(x))`; ADR 0014).  An aggregate requires a total bag;
 `count` yields `int`, `sum` preserves a numeric domain, `min`/`max` preserve an
 orderable domain, and `any`/`all` take a bag of `bool`.  Each returns a single
-value.  The `g` of a group lambda `|k, g| ...` sees the whole bag at a key (so
-`g.credits` is the bag of `credits`), and a scalar comparison on a bag is a type
-error until a combinator collapses it (`max g.readings > 30.0`).
+value.  The `b` of a bag lambda `|k, b| ...` sees the whole bag at a key (so
+`b.credits` is the bag of `credits`), and a scalar comparison on a bag is a type
+error until a combinator collapses it (`max b.readings > 30.0`).
 
 ### 5.5  `is known` narrows
 
 `is missing` / `is known` apply to values only and test the optional axis.  On a
 total value `is known` is always true.  `is known` **narrows**: inside a branch
-guarded by `r.x is known`, and on every row a `map` keeps with
+guarded by `r.x is known`, and on every row a `flat_map` keeps with
 `if r.x is known then r else ()`, the optional `x` is treated as total, so a
 scalar operator may then use it.
 This is one of the three ways to make an optional value known, alongside a
@@ -336,7 +336,7 @@ is a compile error (`06`, "Enumerated values").
 two branches type to the same `Ty`, which is the result; if either branch is
 optional the result is optional.  A non-`bool` condition or mismatched branches
 is a type error.  The conditional is an ordinary value, valid in a field value
-(`.flag = if r.hot then 1 else 0`) and as a `map` body branch
+(`.flag = if r.hot then 1 else 0`) and as a `flat_map` body branch
 (`if c then r else ()`); it is the introduction site for the deferred `is
 known` narrowing.
 
@@ -345,49 +345,49 @@ known` narrowing.
 Consolidates `07-pipelines.md`.  A pipeline is an ordinary expression of table
 type built from the one sublanguage: stages compose with `|>`, intermediates
 are named with `let`, and several tables are tupled for a merge
-(`(train, test) |> bind`).  There is no separate pipeline grammar.  This round
+(`(train, test) |> union`).  There is no separate pipeline grammar.  This round
 specifies the **primitives**; the named sugar (`filter`/`mutate`/`select`/
 `aggregate`/windows/`tagged_*`) is deferred (section 13).
 
 Pipeline lambdas are **key-first** (ADR 0015): `|k, r|` binds the key `k` (the
-index columns as single values) and the value row `r` (the non-index columns as
-single values); `|k, g|` binds `k` and the group `g` (the non-index columns as
+key columns as single values) and the value row `r` (the non-key columns as
+single values); `|k, b|` binds `k` and the bag `b` (the non-key columns as
 bags); `split`'s `|k|` binds the key alone.  `|_, r|` ignores the key.  Read the
 key with `k.id` and a value with `r.x`.  Each entry states the effect on
 cardinality, totality, completeness, and lineage.
 
-### 6.1  `map` (row multiset) -- Tier A
+### 6.1  `flat_map` (row multiset) -- Tier A
 
 ```
-data |> map |k, r| (.bmi = r.mass / r.height ^ 2.0)   // transform
-data |> map |_, r| if r.degraded then r else ()       // filter
-data |> map |k, r| r                                  // keep (identity)
+data |> flat_map |k, r| (.bmi = r.mass / r.height ^ 2.0)   // transform
+data |> flat_map |_, r| if r.degraded then r else ()       // filter
+data |> flat_map |k, r| r                                  // keep (identity)
 ```
 
 The key-first lambda receives the key `k` and value row `r` and returns a
 **collection of value rows** (the formal `Multiset`, ADR 0015): `()` drops the
 row, a bare row or record keeps one, `(a, b, ...)` expands to several (all
 sharing one schema), and `if c then ... else ...` branches between collections
-(a `()` branch adopts the other's schema).  Content: the non-index columns are
-the collection's row schema; the **index is preserved**, so an output record may
-not name an index column.  Cardinality: the **maximum collection size** -- `<=
+(a `()` branch adopts the other's schema).  Content: the non-key columns are
+the collection's row schema; the **key is preserved**, so an output record may
+not name a key column.  Cardinality: the **maximum collection size** -- `<=
 1` preserves the input bound (so filtering keeps `singletons`), `>= 2` yields
 `bag`.  Totality: as returned (optional if any contributing row's field is).
-Completeness: preserved.  Lineage: preserved.  Tier A (`map_splitSafe`,
-`map_bindHom`, `map_preservesDisjoint`).
+Completeness: preserved.  Lineage: preserved.  Tier A (`flatMap_splitSafe`,
+`flatMap_unionHom`, `map_preservesDisjoint`).
 
 Because the body is the formal multiset, **filtering and row-expansion are the
 same primitive**: there is no `filter` primitive (`filterRows_splitSafe` is
 derived), and a named `filter` may later be sugar for `if c then r else ()`.
 
-### 6.2  `group_map` (per-key whole-group transform) -- Tier A
+### 6.2  `map_bags` (per-key whole-bag transform) -- Tier A
 
 ```
-data |> group_map |k, g| (.total = sum g.credits)
+data |> map_bags |k, b| (.total = sum b.credits)
 ```
 
 The key-first lambda receives the key `k` (a single value, constant within the
-group) and the group `g` (the non-index columns as bags).  Content: the output
+bag) and the bag `b` (the non-key columns as bags).  Content: the output
 columns are the return's.  Cardinality:
 **inferred from the return** -- a single record yields `singletons` (one row per
 key, the aggregate shape, which later lets `pivot` meet its precondition); a bag
@@ -404,70 +404,70 @@ The window shape demands nothing.  Lineage: preserved.  Tier A
 (`rank`, `cumsum`) additionally need an ordering, a dependency-qualifier
 concern (deferred); split-safety holds regardless.
 
-### 6.3  `extend_key` / `shrink_key` (reindexing)
+### 6.3  `promote` / `demote` (rekeying)
 
 Reindexing is one idea in two directions; the direction fixes the Tier.
 
 Cardinality at the key moves is **key-graded** (ADR 0024): the qualifiers
-carry *gradings*, column sets over the flat table (index or not) over which
+carry *gradings*, column sets over the flat table (key or not) over which
 the table is known functional (`Mensura.Functional`), and the scalar
-cardinality is derived as "some grading is a subset of the current index".
+cardinality is derived as "some grading is a subset of the current key".
 A grading is a fact about the flat table, indifferent to which columns
-currently form the key, so the key moves change the index, leave the
+currently form the key, so the key moves change the key, leave the
 gradings untouched, and re-run the subset check; the content-identity
 stages (`assume`, `completeness_check`) carry the gradings; every other
 operation resets them to match its own output cardinality until its
-transport row is mechanized.  A `singletons` source seeds its index as a
+transport row is mechanized.  A `singletons` source seeds its key as a
 grading, which is what makes the pair truly inverse: either round-trip
-order restores `singletons` (`project_ungroup`, `ungroup_project`), and a
-`bag` whose grading fits the grown index promotes back to `singletons`.
+order restores `singletons` (`demote_promote`, `promote_demote`), and a
+`bag` whose grading fits the grown key promotes back to `singletons`.
 
-**`extend_key cols`** promotes non-index columns into the key.  Content: the
-named columns join the index.  Each promoted column must be **key-eligible**
+**`promote cols`** promotes non-key columns into the key.  Content: the
+named columns join the key.  Each promoted column must be **key-eligible**
 (equatable) and total, since it becomes part of the identity (and totality
-is the `project_ungroup` inverse-domain side condition); a continuous
+is the `demote_promote` inverse-domain side condition); a continuous
 `real` measurement is rejected (ADR 0014).  Cardinality: derived from the
-gradings; a `singletons` input stays `singletons` (`ungroup_functional`),
-and a `bag` carrying a grading inside the new index becomes `singletons`.
-Completeness: preserved.  Lineage: preserved.  Tier A (`ungroup_splitSafe`,
-`ungroup_preservesDisjoint`).
+gradings; a `singletons` input stays `singletons` (`promote_functional`),
+and a `bag` carrying a grading inside the new key becomes `singletons`.
+Completeness: preserved.  Lineage: preserved.  Tier A (`promote_splitSafe`,
+`promote_preservesDisjoint`).
 
-**`shrink_key cols`** drops index components into the non-index part.  Content:
+**`demote cols`** drops key components into the non-key part.  Content:
 the named key columns become ordinary columns.  Cardinality: derived from
 the gradings; on a genuine coarsening no grading fits the retained key and
-the bound rises to **`bag`** (unless a following `group_map` reduces it),
+the bound rises to **`bag`** (unless a following `map_bags` reduces it),
 while an exact round trip re-derives `singletons`.  Completeness: **propagated**
 from the fine key to the coarse key (ADR 0023): a table complete against a
 reference at `(a, b)` is complete against the coarsened reference at `a`
-(`project_completeWrt`), so the fact is transformed, not consumed, and a
-`shrink_key` with no downstream reducer is admitted with no discharge.
+(`demote_completeWrt`), so the fact is transformed, not consumed, and a
+`demote` with no downstream reducer is admitted with no discharge.
 Lineage: **dropped** -- the branch structure over the old key no longer
 applies, so the disjointness fact falls out of scope and must be
 re-established (`assert`) or assumed (section 9); this lineage break is what
-makes the operation Tier B (`project_not_preservesDisjoint`).
+makes the operation Tier B (`demote_not_preservesDisjoint`).
 
-### 6.4  `left_join` / `inner_join` (join a fixed table) -- Tier A
+### 6.4  `lookup` / `lookup_total` (join a fixed table) -- Tier A
 
 ```
-readings |> left_join machines (|k, l| l.machine)
+readings |> lookup machines (|k, r| r.machine)
 ```
 
 Joins against a fixed right table; the key-first lambda maps a left row (key `k`,
-value `l`) to the right table's key.  Content: the right table's columns are
+value `r`) to the right table's key.  Content: the right table's columns are
 added.  Cardinality: preserved when the right table is functional (`singletons`);
 a non-functional right table multiplies rows in, raising the bound to `bag`.
 Totality:
-`left_join` makes the added right columns **optional** (an unmatched left row is
-kept with them missing); `inner_join` drops unmatched rows and adds no
+`lookup` makes the added right columns **optional** (an unmatched left row is
+kept with them missing); `lookup_total` drops unmatched rows and adds no
 optionality.  Completeness: preserved on the left.  Lineage: preserved.  Tier A
-(`leftJoin_splitSafe`, `innerJoin_splitSafe`, `leftJoin_preservesDisjoint`,
-`innerJoin_preservesDisjoint`).
+(`lookup_splitSafe`, `lookupTotal_splitSafe`, `lookup_preservesDisjoint`,
+`lookupTotal_preservesDisjoint`).
 
-### 6.5  `split` / `bind` (partition and merge) -- Tier A
+### 6.5  `split` / `union` (partition and merge) -- Tier A
 
 ```
 let (train, test) = data |> split |k| hash k < threshold
-let full          = (train, test) |> bind
+let full          = (train, test) |> union
 ```
 
 **`split |k| pred`** routes each entity (each key) wholly to one side of a pair
@@ -475,16 +475,16 @@ by a predicate over the key, never cutting a key's rows apart.  Content,
 cardinality, completeness: unchanged on both sides.  Lineage: **adds two sibling
 branch tags** under the current node, one per side; the halves are disjoint by
 construction because they sit in exclusive branches (section 9).  Tier A
-(`split_disjoint`; `bind_split` shows `bind` undoes it).
+(`split_disjoint`; `union_split` shows `union` undoes it).
 
-**`(a, b) |> bind`** is the multiset union of two tables of the same schema at
+**`(a, b) |> union`** is the multiset union of two tables of the same schema at
 each key.  It is **total**: no precondition, always split-safe, associative and
 commutative (`bind_comm`, `bind_assoc`).  Content: unchanged.  Cardinality:
 binding inputs whose lineage is **disjoint** preserves `singletons`; binding
 **overlapping** inputs may push a key above one row, raising the bound to `bag`.
 Completeness: the union is complete over a key iff both inputs are.  Lineage:
 **unions** the two tag-sets, so the result is disjoint from a third table iff
-both inputs were (`bind_disjoint_iff`).  Tier A.
+both inputs were (`union_disjoint_iff`).  Tier A.
 
 ### 6.6  `unpivot` / `pivot` (reshape long and wide)
 
@@ -495,7 +495,7 @@ projection), a missing cell yields no row, and `pivot` keeps one form.
 
 **`unpivot name value`** folds **all** attribute columns, which must share
 one domain, into rows, spreading the column *name* into the key.  Content:
-the names move into a new `enum` index column `name`, the values into a
+the names move into a new `enum` key column `name`, the values into a
 single column `value`.  **A missing cell yields no row** (drop semantics),
 so `value` is total by construction.  Cardinality: preserved.
 Completeness: establishes `exhaustive(name)` exactly when every folded
@@ -503,8 +503,8 @@ column is total (section 3.4).  Lineage: preserved.  Tier A
 (`unpivotDrop_splitSafe`).
 
 **`pivot name value`** is the inverse and has one form: `name` must be an
-enum-domained **index** column (`name` in attribute position is rejected,
-with a hint to `extend_key` first).  Admissible exactly when the input is
+enum-domained **key** column (`name` in attribute position is rejected,
+with a hint to `promote` first).  Admissible exactly when the input is
 **`singletons`** and its attributes are exactly `value` (drop or aggregate
 others first).  It consumes **no completeness fact**: an absent
 (key, variant) row becomes a missing cell.  The spread columns are total
@@ -545,13 +545,13 @@ Both halves of the definition are now tracked: `SplitInvariant` is the Tier
 boundary, and `PreservesDisjoint` is what lets the lineage hierarchy carry a
 disjointness fact through a Tier A pipeline intact (section 9).
 
-- **Tier A** (split-safe): `map`, `group_map`, `extend_key`, `left_join`,
-  `inner_join`, `split`, `bind`, `unpivot`.  They compose freely and carry
+- **Tier A** (split-safe): `flat_map`, `map_bags`, `promote`, `lookup`,
+  `lookup_total`, `split`, `union`, `unpivot`.  They compose freely and carry
   cardinality, completeness, and lineage facts end to end.
-- **Tier B** (split-breaking): `shrink_key` and `pivot`.  Each drops the
-  lineage fact, and that is the whole content of the Tier: `shrink_key`
+- **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
+  lineage fact, and that is the whole content of the Tier: `demote`
   propagates completeness rather than demanding it (the demand sits at the
-  reducing `group_map`, section 8, ADR 0023), and `pivot` demands nothing
+  reducing `map_bags`, section 8, ADR 0023), and `pivot` demands nothing
   (an absent row becomes a missing cell) and instead upgrades its spread
   columns' totality under `exhaustive` (section 6.6, ADR 0020).
 
@@ -560,7 +560,7 @@ disjointness fact through a Tier A pipeline intact (section 9).
 Completeness (each key's bag holds all its rows, section 3.4) is established in
 one of three ways (`07`, "Completeness: establish, propagate, consume"):
 
-- **mechanism**: a `collect` source is complete by construction (overview
+- **mechanism**: a `registry` source is complete by construction (overview
   pillar 7), so a reducer over it needs no further discharge;
 - **check**: `completeness_check { assert ... }`, a pipe stage that establishes
   the fact locally; each `assert` is a boolean expression, and together they
@@ -569,9 +569,9 @@ one of three ways (`07`, "Completeness: establish, propagate, consume"):
 - **annotation**: `@complete_over(col)` on a source store, establishing the fact
   globally (grammar deferred to the annotation family, section 13).
 
-Tier A operations **preserve** completeness; `shrink_key` **propagates** it
+Tier A operations **preserve** completeness; `demote` **propagates** it
 from the fine key to the coarsened reference at the retained key
-(`project_completeWrt`); a **reducing `group_map`** **consumes** it, because
+(`demote_completeWrt`); a **reducing `map_bags`** **consumes** it, because
 a fold over a partial bag is silently wrong (ADR 0023, amending ADR 0017's
 consumer placement).  Over a `singletons` input the reducer's obligation
 discharges trivially (`fiberCompleteWrt_of_functional`), so only a reduction
@@ -583,12 +583,12 @@ it into the `exhaustive` totality upgrade of section 6.6.)
 ```
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }   // establish
-|> shrink_key course                                             // propagate; bag over student
-|> group_map |k, g| (.total_credits = sum g.credits)            // consume; back to singletons
+|> demote course                                             // propagate; bag over student
+|> map_bags |k, b| (.total_credits = sum b.credits)            // consume; back to singletons
 ```
 
 Remove the check (and `@complete_over`, and `assume`) and the reducing
-`group_map` is rejected; the `shrink_key` alone would still be admitted.
+`map_bags` is rejected; the `demote` alone would still be admitted.
 
 ## 9.  Lineage and disjointness (the tag hierarchy)
 
@@ -615,13 +615,13 @@ test, it is decidable with no solver.  What each primitive does to the tags:
 
 | operation | lineage effect | disjointness | theorem |
 | --- | --- | --- | --- |
-| `map` / `group_map` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
-| `extend_key` | tags carried | preserved | `ungroup_preservesDisjoint` |
-| `left_join` / `inner_join` | tags carried | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
+| `flat_map` / `map_bags` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
+| `promote` | tags carried | preserved | `promote_preservesDisjoint` |
+| `lookup` / `lookup_total` | tags carried | preserved | `lookup_preservesDisjoint`, `lookupTotal_preservesDisjoint` |
 | `unpivot` | tags carried | preserved | `unpivotDrop_preservesDisjoint` |
 | `split` | adds two sibling branch tags | establishes | `split_disjoint` |
-| `bind` | unions the tag-sets | disjoint from `c` iff both were | `bind_disjoint_iff` |
-| `shrink_key` / `pivot` | tags dropped (key change) | re-establish or assume | `project_not_preservesDisjoint`, `pivot_not_splitInvariant` |
+| `union` | unions the tag-sets | disjoint from `c` iff both were | `union_disjoint_iff` |
+| `demote` / `pivot` | tags dropped (key change) | re-establish or assume | `demote_not_preservesDisjoint`, `pivot_not_splitInvariant` |
 
 Anything the hierarchy cannot decide is delegated:
 
@@ -650,22 +650,22 @@ One row per primitive (pres. = preserved).  "card" gives the cardinality bound
 after the operation; at the key moves it is derived from the gradings
 (ADR 0024, section 6.3).  "lineage" is the effect on the tag hierarchy.
 Theorems are the primary split-safety / disjointness backing; section 11 has
-the full index.
+the full key.
 
 | op | content | card | total | complete | lineage | Tier | theorem |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `map_splitSafe` |
-| `group_map` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
-| `extend_key` | cols join index | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `ungroup_splitSafe`, `ungroup_functional` |
-| `shrink_key` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | **propagated** (reference coarsens) | **dropped** | B | `project_not_preservesDisjoint`, `project_completeWrt`, `project_ungroup` |
-| `left_join` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `leftJoin_splitSafe` |
-| `inner_join` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `innerJoin_splitSafe` |
+| `flat_map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `flatMap_splitSafe` |
+| `map_bags` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
+| `promote` | cols join key | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `promote_splitSafe`, `promote_functional` |
+| `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | **propagated** (reference coarsens) | **dropped** | B | `demote_not_preservesDisjoint`, `demote_completeWrt`, `demote_promote` |
+| `lookup` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `lookup_splitSafe` |
+| `lookup_total` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `lookupTotal_splitSafe` |
 | `split` | unchanged | unchanged | unchanged | unchanged | adds branches | A | `split_disjoint` |
-| `bind` | unchanged | `singletons` if disjoint, else `bag` | pres. | iff both | unions tags | A | `bind_split` |
+| `union` | unchanged | `singletons` if disjoint, else `bag` | pres. | iff both | unions tags | A | `union_split` |
 | `unpivot` | all attrs -> (name, value); missing cells drop | pres. | `value` total | establishes `exhaustive` | carried | A | `unpivotDrop_splitSafe` |
 | `pivot` | name leaves key, variants spread | demands `singletons` | per `exhaustive` | not consumed | dropped | B | `pivot_not_splitInvariant`, `pivot_total_of_exhaustive` |
 
-## 11.  Lean theorem index
+## 11.  Lean theorem catalogue
 
 Each rule above is backed by a theorem in the Lean formalization.  Names are
 verbatim; the development lives in themed modules under `formal/Mensura/`
@@ -678,39 +678,39 @@ lineage tags:
 
 - composition: `SplitSafe.comp`, `SplitSafe.id`; definitions `SplitSafe`,
   `SplitInvariant`, `PreservesDisjoint`, `Disjoint`.
-- `map`: `map_splitSafe`, `map_preservesDisjoint`, `map_splitInvariant`.
-- `extend_key` (`ungroup`): `ungroup_splitSafe`, `ungroup_preservesDisjoint`,
-  `ungroup_splitInvariant`; the grading transport `ungroup_functional`
+- `flat_map`: `flatMap_splitSafe`, `map_preservesDisjoint`, `map_splitInvariant`.
+- `promote` (`promote`): `promote_splitSafe`, `promote_preservesDisjoint`,
+  `promote_splitInvariant`; the grading transport `promote_functional`
   (over the `Functional` definition of `Reshape.lean`, ADR 0024).
-- joins: `leftJoin_splitSafe`, `leftJoin_preservesDisjoint`,
-  `innerJoin_splitSafe`, `innerJoin_preservesDisjoint`.
+- joins: `lookup_splitSafe`, `lookup_preservesDisjoint`,
+  `lookupTotal_splitSafe`, `lookupTotal_preservesDisjoint`.
 - `unpivot` (the drop variant, `unpivotDrop`): `unpivotDrop_splitSafe`,
-  `unpivotDrop_bindHom`, `unpivotDrop_preservesDisjoint`,
+  `unpivotDrop_unionHom`, `unpivotDrop_preservesDisjoint`,
   `unpivotDrop_minimal`, `unpivotDrop_exhaustive`.  (The reify variant's
   `unpivot_splitSafe` / `pivot_unpivot` remain for comparison.)
-- `split` / `bind`: `split_disjoint`, `bind_split`, `bind_comm`, `bind_assoc`,
-  `bind_disjoint_iff`.
+- `split` / `union`: `split_disjoint`, `union_split`, `bind_comm`, `bind_assoc`,
+  `union_disjoint_iff`.
 - lineage tags: `addTag`, `dropTag`, `taggedBind`, `taggedSplit`,
   `taggedSplit_taggedBind_left`, `taggedSplit_taggedBind_right`.
-- `shrink_key` (`project`): `project_not_preservesDisjoint`; the key-move
-  round trips `project_ungroup` and `ungroup_project` (ADR 0024).
+- `demote` (`project`): `demote_not_preservesDisjoint`; the key-move
+  round trips `demote_promote` and `promote_demote` (ADR 0024).
 - `pivot`: `pivot_not_splitInvariant`; the round trips `pivot_unpivotDrop`
   and `unpivotDrop_pivot`; the totality upgrade `pivot_total_of_exhaustive`.
 - `exhaustive` propagation: `map_exhaustive` (non-dropping maps),
-  `leftJoin_exhaustive`, `aggregate_exhaustive`, `bind_exhaustive`,
+  `lookup_exhaustive`, `aggregate_exhaustive`, `bind_exhaustive`,
   `exhaustive_of_subsingleton` (a single-variant axis is exhaustive
   trivially); `split_not_exhaustive` witnesses the destroyed row.
 
-**Completeness layer** (`Completeness/`) -- reindexing layer, group/fiber
+**Completeness layer** (`Completeness/`) -- rekeying layer, fiber
 operations, and population-relative completeness:
 
-- `group_map` (`fiberMap`): `fiberMap_splitSafe`,
+- `map_bags` (`fiberMap`): `fiberMap_splitSafe`,
   `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`,
   `fiberMap_exhaustive` (a presence-preserving fiber action carries the
-  rectangle: both `group_map` shapes).
+  rectangle: both `map_bags` shapes).
 - population-relative completeness (`CompleteOver.lean`, ADR 0023):
   `CompleteWrt` (a row wherever the reference has one) with
-  `project_completeWrt` (`shrink_key` coarsens the reference rather than
+  `demote_completeWrt` (`demote` coarsens the reference rather than
   consuming the fact), and `FiberCompleteWrt` with
   `fiberCompleteWrt_of_functional` (at `card <= 1` a present key carries its
   whole fiber, the reducer's trivial discharge).
@@ -730,19 +730,19 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 
 **Must accept:**
 
-- Summarize by an attribute (`07`): `extend_key machine |> group_map |k, g| ...`,
+- Summarize by an attribute (`07`): `promote machine |> map_bags |k, b| ...`,
   all Tier A, result `singletons` per key.
-- Filter with `map` (ADR 0015): `map |_, r| if r.degraded then r else ()` keeps
-  or drops a row and stays `singletons`; `map |k, r| (r, r)` expands to `bag`.
+- Filter with `flat_map` (ADR 0015): `map |_, r| if r.degraded then r else ()` keeps
+  or drops a row and stays `singletons`; `flat_map |k, r| (r, r)` expands to `bag`.
 - Coarsen with the fact established first (`07`): `completeness_check { ... }
-  |> shrink_key course |> group_map ...` (the check establishes, `shrink_key`
+  |> demote course |> map_bags ...` (the check establishes, `demote`
   propagates, the reducer consumes; ADR 0023).
-- Reindex only: `shrink_key` with no downstream reducer and no establish
-  step (a possibly partial bag is an honest reindex; ADR 0023).
-- Reduce a plain store: `group_map |k, g| (.m = max g.x)` straight over a
+- Reindex only: `demote` with no downstream reducer and no establish
+  step (a possibly partial bag is an honest rekey; ADR 0023).
+- Reduce a plain store: `map_bags |k, b| (.m = max b.x)` straight over a
   `singletons` source, with no establish step (the trivial discharge).
-- Split and re-merge (`07`): `split |k| ...` then `(train, test) |> bind`
-  reconstructs the input (`bind_split`); the disjoint halves keep `singletons`.
+- Split and re-merge (`07`): `split |k| ...` then `(train, test) |> union`
+  reconstructs the input (`union_split`); the disjoint halves keep `singletons`.
 - Split then demand: `split` establishes structural disjointness that a later
   disjointness-demanding site consumes without a check (the learning-operation
   syntax itself is deferred, section 13).
@@ -752,19 +752,19 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 
 **Must reject:**
 
-- A reducing `group_map` over a `bag` with no completeness fact (no check,
-  no `@complete_over`, no `assume`); e.g. `shrink_key` then an aggregate
+- A reducing `map_bags` over a `bag` with no completeness fact (no check,
+  no `@complete_over`, no `assume`); e.g. `demote` then an aggregate
   with no establish step (ADR 0023).
 - A disjointness-demanding site fed two tables that are not structurally
   disjoint and were neither asserted nor assumed.
 - A scalar operator applied to a bag, or to an optional value without narrowing
   (`r.x > 30` where `x` is optional or read at a `bag`).
 - Comparison chaining (`a < b < c`); a mixed positional/labeled `( )`.
-- A `map` body that names an index column in its output record, or one that
-  always drops (`map |k, r| ()`, no schema to infer); an `if` with a non-`bool`
+- A `flat_map` body that names a key column in its output record, or one that
+  always drops (`flat_map |k, r| ()`, no schema to infer); an `if` with a non-`bool`
   condition or branches of different type (ADR 0015).
 - `pivot` of a `bag` input (a (key, name) cell may hold more than one
-  value); `pivot` naming a non-index column (`extend_key` it first); and
+  value); `pivot` naming a non-key column (`promote` it first); and
   `unpivot` over attributes of differing domains (project first).
 
 ## 13.  Open points (the deferred ledger)
@@ -792,14 +792,14 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   derived `exhaustive`) are written in a `Type` is the content/types document's
   job (`07`, "Forward references").  The total/optional `?` axis is settled
   (ADR 0010).
-- **Named sugar.**  `mutate`, `select`, `aggregate`, `group`/`ungroup`/`project`,
-  window functions (`rank`, `cumsum`), and `tagged_bind`/`tagged_split` are sugar
+- **Named sugar.**  `mutate`, `select`, `reduce`,
+  window functions (`rank`, `cumsum`), and `tagged_union`/`tagged_split` are sugar
   over the primitives (their Tier-A proofs exist, section 11) and get their own
-  round.  `filter` is now derivable as `map |k, r| if c then r else ()` (ADR
+  round.  `filter` is now derivable as `flat_map |k, r| if c then r else ()` (ADR
   0015), so it too is sugar, not a primitive.
 - **Expression features the fuller surfaces need.**  Row-dropping and
-  row-expanding `map` now land (the `( )` collection and `if`/`then`/`else`, ADR
-  0015); bag-returning `group_map` (windows) still needs an ordering.  The
+  row-expanding `flat_map` now land (the `( )` collection and `if`/`then`/`else`, ADR
+  0015); bag-returning `map_bags` (windows) still needs an ordering.  The
   `const`/`var` record-field marker that ADR 0015 reserved is dropped by ADR
   0019, which drops the `const`/`var` concept altogether.
 - **Annotation grammar.**  `@audited`, `@versioned`, `@auto`, `@complete_over`,

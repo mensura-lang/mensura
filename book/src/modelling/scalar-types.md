@@ -1,6 +1,6 @@
 # Scalar types
 
-Every attribute and index field has a **scalar type**, the domain of values it
+Every attribute and key field has a **scalar type**, the domain of values it
 may hold.  Mensura keeps this set small on purpose: a few well-understood
 domains, each with clearly defined behaviour, rather than a sprawling type
 zoo.  More will arrive (physical units and precision on `real`, for instance),
@@ -51,7 +51,7 @@ operations a value of that type admits.
 
 ## Keys
 
-An index field (a unit's identity, [Units and indices](units.md)) must be
+A key field (a unit's identity, [Units and keys](units.md)) must be
 **key-eligible**, which is exactly *equatable*: identity is decided by equality,
 so a key must support it.  That admits `string`, `int`, `bool`, `date`, and
 `enum`, and excludes `real`.  A continuous measurement is not an identity; if

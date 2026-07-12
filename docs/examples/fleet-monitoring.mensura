@@ -1,6 +1,6 @@
 // Fleet monitoring: the machine registry for a streaming
 // predictive-maintenance example.  This file grows as the language does; today
-// it holds only what the current implementation compiles (scalar-index units,
+// it holds only what the current implementation compiles (scalar-key units,
 // named enums, shapes, basic stores, and a simple view).
 //
 // Still to come, milestone by milestone:
@@ -44,12 +44,12 @@ store machines : Commissioned {
 }
 
 // A view derives a table from stores by a pipeline (docs/language/10-views.md).
-// This one keeps only the machines needing attention: the key-first `map` body
+// This one keeps only the machines needing attention: the key-first `flat_map` body
 // returns the value row when degraded and the empty collection `( )` otherwise,
 // so it filters without a `filter` primitive (ADR 0015).  Richer windowed
 // feature views arrive with streaming (M5).
 view attention_needed : Tabular[Machine] {
-  machines |> map |_, r| if r.status == "degraded" then r else ()
+  machines |> flat_map |_, r| if r.status == "degraded" then r else ()
 }
 
 // Recurring observations are an entity-keyed bag store (ADR 0022): the
@@ -66,10 +66,10 @@ store readings {
 }
 
 // Reducing a bag folds each machine's readings, which is silently wrong on a
-// partial bag, so the reducing `group_map` demands completeness (ADR 0023).
+// partial bag, so the reducing `map_bags` demands completeness (ADR 0023).
 // Until ingestion (M4) establishes the fact at the source by mechanism, the
 // view assumes it, locally and visibly.
 view machine_temperature : Tabular[Machine] {
   readings |> assume { complete }
-           |> group_map |k, g| (.max_kelvin = max g.kelvin)
+           |> map_bags |k, b| (.max_kelvin = max b.kelvin)
 }

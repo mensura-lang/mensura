@@ -14,13 +14,13 @@ prove the characterization
     f is split-invariant and key-local  ↔  f = fiberMap Φ for a strict Φ
     (`splitInvariant_keyLocal_iff_fiberMap`)
 
-so `fiberMap` is the *universal* safe key-preserving operation, and `map`
-(the per-row, `BindHom` case) and `aggregate` (the whole-bag fold case) are
+so `fiberMap` is the *universal* safe key-preserving operation, and `flatMap`
+(the per-row, `UnionHom` case) and `aggregate` (the whole-bag fold case) are
 its two principal generators.  We also prove both hypotheses are necessary
 (`fiberMap_nonstrict_not_splitInvariant`, `keySwap_not_keyLocal`), pinning
 the boundary exactly.  Together with the separations in
-`Mensura.SplitSafety` (`aggregate_not_bindHom`,
-`project_not_preservesDisjoint`) and `Mensura.Reshape`
+`Mensura.SplitSafety` (`aggregate_not_unionHom`,
+`demote_not_preservesDisjoint`) and `Mensura.Reshape`
 (`pivot_not_splitInvariant`), these form an independence matrix in which no
 condition is redundant.
 
@@ -43,10 +43,10 @@ variable {K' N : Type _}
 
 /-! ## The universal fiberwise operation -/
 
-/-- A *fiber map*: the output bag at each key is a function of the input bag at
+/-- A *fiber flatMap*: the output bag at each key is a function of the input bag at
 the *same* key, and nothing else.  This is the universal shape of a
 key-preserving split-invariant operation (`splitInvariant_keyLocal_iff_fiberMap`):
-`map` and `aggregate` are both `fiberMap`s. -/
+`flatMap` and `aggregate` are both `fiberMap`s. -/
 def fiberMap (Φ : K → Multiset (Row H σ) → Multiset (Row H' σ')) (T : Table K H σ) :
     Table K H' σ' :=
   ⟨fun k => Φ k (T.rows k)⟩
@@ -65,15 +65,15 @@ those out, leaving exactly the fiber maps. -/
 def KeyLocal (f : Table K H σ → Table K H' σ') : Prop :=
   ∀ (T T' : Table K H σ) (k : K), T.rows k = T'.rows k → (f T).rows k = (f T').rows k
 
-/-- `map` is a fiber map: per-row `Multiset.bind` of the input bag. -/
-theorem map_eq_fiberMap (φ : K → Row H σ → Multiset (Row H' σ')) :
-    map φ = fiberMap (fun k m => m.bind (φ k)) := rfl
+/-- `flatMap` is a fiber flatMap: per-row `Multiset.bind` of the input bag. -/
+theorem flatMap_eq_fiberMap (φ : K → Row H σ → Multiset (Row H' σ')) :
+    flatMap φ = fiberMap (fun k m => m.bind (φ k)) := rfl
 
-/-- `aggregate` is a fiber map: the whole-bag fold of the input bag. -/
+/-- `aggregate` is a fiber flatMap: the whole-bag fold of the input bag. -/
 theorem aggregate_eq_fiberMap (f : K → Multiset (Row H σ) → Row H σ) :
     aggregate f = fiberMap (fun k m => if m.card = 0 then 0 else {f k m}) := rfl
 
-/-! ### A strict fiber map is split-safe -/
+/-! ### A strict fiber flatMap is split-safe -/
 
 /-- A strict `fiberMap` is split-invariant: under disjointness one summand is
 empty at each key, and strictness makes folding the union the same as folding the
@@ -84,7 +84,7 @@ theorem fiberMap_splitInvariant {Φ : K → Multiset (Row H σ) → Multiset (Ro
   apply Table.ext_rows
   intro k
   have hk := hΦ k
-  simp only [fiberMap, bind]
+  simp only [fiberMap, union]
   rcases hdisj k with h | h
   · rw [h]; simp [hk]
   · rw [h]; simp [hk]
@@ -113,7 +113,7 @@ theorem fiberMap_keyLocal (Φ : K → Multiset (Row H σ) → Multiset (Row H' �
 /-- A presence-preserving fiber action preserves the rectangle fact
 (ADR 0020 section 2): strictness keeps absent fibers absent, and the
 no-emptying hypothesis keeps present fibers present, so full fibers stay
-full.  Both `group_map` shapes satisfy it: the aggregate shape folds a
+full.  Both `map_bags` shapes satisfy it: the aggregate shape folds a
 present fiber to one row (`aggregate_exhaustive` is the special case), and
 the window shape emits one output row per input row. -/
 theorem fiberMap_exhaustive {Φ : (K × N) → Multiset (Row H σ) → Multiset (Row H' σ')}
@@ -131,7 +131,7 @@ theorem fiberMap_exhaustive {Φ : (K × N) → Multiset (Row H σ) → Multiset 
   rw [hiff]
   exact hE k ⟨n₀, (hiff (k, n₀)).mp h₀⟩ n
 
-/-! ### Converse: every key-local split-invariant operation is a strict fiber map -/
+/-! ### Converse: every key-local split-invariant operation is a strict fiber flatMap -/
 
 /-- The table that holds `m` at key `k` and is empty elsewhere. -/
 def pointTable [DecidableEq K] (k : K) (m : Multiset (Row H σ)) : Table K H σ :=
@@ -146,7 +146,7 @@ def fiberOf [DecidableEq K] (f : Table K H σ → Table K H' σ')
     (k : K) (m : Multiset (Row H σ)) : Multiset (Row H' σ') :=
   (f (pointTable k m)).rows k
 
-/-- Representation: a key-local `f` *is* the fiber map of its witnessed action.
+/-- Representation: a key-local `f` *is* the fiber flatMap of its witnessed action.
 This direction needs only key-locality -- split-invariance is not used. -/
 theorem keyLocal_eq_fiberMap [DecidableEq K] {f : Table K H σ → Table K H' σ'}
     (hf : KeyLocal f) : f = fiberMap (fiberOf f) := by
@@ -170,12 +170,12 @@ possibly different output key type, so it serves both the key-preserving
 theorem splitInvariant_empty {f : Table K H σ → Table K' H' σ'} (hf : SplitInvariant f)
     (k : K') : (f ⟨fun _ => 0⟩).rows k = 0 := by
   have hdis : Disjoint (⟨fun _ => 0⟩ : Table K H σ) ⟨fun _ => 0⟩ := fun _ => Or.inl rfl
-  have hb : bind (⟨fun _ => 0⟩ : Table K H σ) ⟨fun _ => 0⟩ = ⟨fun _ => 0⟩ := by
-    apply Table.ext_rows; intro k; simp [bind]
+  have hb : union (⟨fun _ => 0⟩ : Table K H σ) ⟨fun _ => 0⟩ = ⟨fun _ => 0⟩ := by
+    apply Table.ext_rows; intro k; simp [union]
   have h := hf ⟨fun _ => 0⟩ ⟨fun _ => 0⟩ hdis
   rw [hb] at h
   have hrow := congrArg (fun U => Table.rows U k) h
-  simp only [bind] at hrow
+  simp only [union] at hrow
   exact multiset_self_add hrow
 
 /-- Hence the witnessed action of a split-invariant operation is strict. -/
@@ -191,8 +191,8 @@ theorem fiberOf_strict [DecidableEq K] {f : Table K H σ → Table K H' σ'}
 /-- **Safe completeness (key-preserving fragment).**  A key-preserving operation
 is split-invariant and key-local *iff* it is a strict `fiberMap`.  So the
 split-invariant, key-local transformations are *exactly* the strict fiber maps:
-`fiberMap` is their universal form, and `map`/`aggregate` are the two principal
-generators (`map_eq_fiberMap`, `aggregate_eq_fiberMap`).  Nothing safe is missing
+`fiberMap` is their universal form, and `flatMap`/`aggregate` are the two principal
+generators (`flatMap_eq_fiberMap`, `aggregate_eq_fiberMap`).  Nothing safe is missing
 and nothing unsafe sneaks in. -/
 theorem splitInvariant_keyLocal_iff_fiberMap [DecidableEq K]
     {f : Table K H σ → Table K H' σ'} :
@@ -215,18 +215,18 @@ theorem fiberMap_nonstrict_not_splitInvariant :
   intro h
   have hT := h ⟨fun _ => 0⟩ ⟨fun _ => 0⟩ (fun _ => Or.inl rfl)
   apply_fun (fun U => (U.rows ()).card) at hT
-  simp [fiberMap, bind] at hT
+  simp [fiberMap, union] at hT
 
 /-- Swap the two keys of a `Bool`-indexed table. -/
 def keySwap (T : Table Bool H σ) : Table Bool H σ := ⟨fun b => T.rows (!b)⟩
 
-/-- `keySwap` *is* split-invariant (it is even a bind-homomorphism): it just
+/-- `keySwap` *is* split-invariant (it is even a union-homomorphism): it just
 relabels keys, and union is computed key-by-key either way. -/
 theorem keySwap_splitInvariant : SplitInvariant (keySwap (H := H) (σ := σ)) := by
   intro T₀ T₁ _
   apply Table.ext_rows
   intro b
-  simp [keySwap, bind]
+  simp [keySwap, union]
 
 /-- Key-locality is necessary: `keySwap` is split-invariant yet not key-local --
 its output at a key reads the *other* key -- so it is not a `fiberMap`.  This is

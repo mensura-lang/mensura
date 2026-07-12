@@ -1,5 +1,5 @@
 // Accept: the promote-first round trip on a singletons store (ADR 0024,
-// `project_ungroup`): the source grading survives both moves and fits the
+// `demote_promote`): the source grading survives both moves and fits the
 // retained key again.  Store and view claim the same all-`attr` shape, so
 // the conformance check certifies the restoration: content back, and
 // singletons back (a shape with no `attr*` requires singletons, ADR 0022).
@@ -12,5 +12,5 @@ shape PerReading {
 }
 store readings : PerReading { unit { Reading } attr { machine: string } }
 view promoted_and_back : PerReading {
-  readings |> extend_key machine |> shrink_key machine
+  readings |> promote machine |> demote machine
 }

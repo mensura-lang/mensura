@@ -19,7 +19,7 @@ a table.
 - **No runtime obligations.**  Views host Tier A pipelines plus `pivot`
   in this round.  `pivot` is Tier B only for its lineage effect (ADR 0020:
   it demands nothing and upgrades totality under `exhaustive`, all
-  compile-time facts), so batch evaluation is unaffected.  `shrink_key`,
+  compile-time facts), so batch evaluation is unaffected.  `demote`,
   whose completeness propagation and the reducer's discharge (ADR 0023) are
   also compile-time facts, stays non-executable in this slice; when it
   lands, the runtime trusts the checker.
@@ -27,11 +27,11 @@ a table.
   current state every `mensura run`.  Until ingestion lands (M4) a store
   changes only between runs, so recompute-at-run is a complete semantics,
   not an approximation of a missing incremental one.
-- **`map` first.**  The first operation implemented end to end is `map`,
+- **`flat_map` first.**  The first operation implemented end to end is `flat_map`,
   which subsumes filtering (ADR 0015) and is what the committed
   `attention_needed` view in `docs/examples/fleet-monitoring.mensura`
-  needs.  The remaining operations (`extend_key`, `group_map`,
-  `split`/`bind`, the joins, `unpivot`, `pivot`) follow the same lowering
+  needs.  The remaining operations (`promote`, `map_bags`,
+  `split`/`union`, the joins, `unpivot`, `pivot`) follow the same lowering
   and land incrementally within M2.
 
 ## Engine choice: batch recompute now, DBSP at M5
@@ -73,12 +73,12 @@ pub enum Value {
 pub type Row = Vec<Value>;  // ordered per the table's column list
 ```
 
-A `Row` is positional: its values follow the table's column order (index
+A `Row` is positional: its values follow the table's column order (key
 columns first, then attributes; ADR 0019).  `Missing` is the runtime image
 of ADR 0010's optional values and round-trips with SQL `NULL`; the checker
 guarantees a total column never holds it.
 
-The empty collection `()` that a `map` body may return is **not** a
+The empty collection `()` that a `flat_map` body may return is **not** a
 `Value`.  It is a control outcome of body evaluation (drop this row), never
 a cell.
 
@@ -122,7 +122,7 @@ trailing expression is the result.
 
 - A **source name** evaluates to a scan of its store: the current rows,
   decoded to `Row`s.
-- **`map |k, r| body`** evaluates its body once per input row with the
+- **`flat_map |k, r| body`** evaluates its body once per input row with the
   key and value parameters bound.  A record result contributes one output
   row; `()` contributes none.  This is the row-multiset semantics of ADR
   0015 restricted to collection size at most 1, which is all the current
@@ -144,8 +144,8 @@ A view materializes into a table by the same mapping stores use
 (`00-storage-backend.md`), with two differences:
 
 - **The primary key follows cardinality.**  A `singletons` view gets the
-  composite primary key over its index columns, as a store does.  A `bag`
-  view is admitted (`10-views.md`) and gets **no** primary key; its index
+  composite primary key over its key columns, as a store does.  A `bag`
+  view is admitted (`10-views.md`) and gets **no** primary key; its key
   columns are still `NOT NULL`, but several rows may share a key.
 - **Contents are replaced, not accumulated.**  Each `mensura run`
   recomputes the view inside one transaction: ensure the table exists,

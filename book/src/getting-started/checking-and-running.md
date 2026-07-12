@@ -31,7 +31,7 @@ others behind it.
 ## `mensura run`
 
 `run` first checks the program, then creates each store in a database.  A store
-becomes a table whose primary key is its unit's index fields.
+becomes a table whose primary key is its unit's key fields.
 
 ```console
 $ mensura run machines.mensura --db machines.db
@@ -50,4 +50,4 @@ to use: a program that would not pass `check` creates nothing.
 
 With a program written, checked, and run, the rest of the book looks more
 closely at the pieces you have been using.  We start with [units and
-indices](../modelling/units.md).
+keys](../modelling/units.md).

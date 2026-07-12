@@ -1512,11 +1512,11 @@ mod tests {
     fn op_spans_capture_pipeline_operation_heads() {
         // Each `|>` right-hand side is a curried application; its leftmost
         // identifier is the operation, recorded for highlighting.
-        let src = "view v { readings |> extend_key machine |> group_map |k, g| (.m = count g.x) }";
+        let src = "view v { readings |> promote machine |> map_bags |k, b| (.m = count b.x) }";
         let tokens = tokenize(src).expect("should lex");
         let parsed = parse_with_meta(&tokens).expect("should parse");
         let ops: Vec<&str> = parsed.op_spans.iter().map(|s| s.slice(src)).collect();
-        assert_eq!(ops, ["extend_key", "group_map"]);
+        assert_eq!(ops, ["promote", "map_bags"]);
     }
 
     // --- expression sublanguage ---------------------------------------------
@@ -1701,12 +1701,15 @@ mod tests {
 
     #[test]
     fn lambda_body_extends_maximally_and_excludes_pipe() {
-        // `map |r| r.x` applies `map` to the lambda; the body grabs `r.x`.
-        assert_eq!(sexpr(&expr("map |r| r.x")), "(app map (lam [r] (. r x)))");
+        // `flat_map |r| r.x` applies `flat_map` to the lambda; the body grabs `r.x`.
+        assert_eq!(
+            sexpr(&expr("flat_map |r| r.x")),
+            "(app flat_map (lam [r] (. r x)))"
+        );
         // A top-level `|>` ends the lambda body rather than entering it.
         assert_eq!(
-            sexpr(&expr("data |> map |r| r.x |> g")),
-            "(|> (|> data (app map (lam [r] (. r x)))) g)"
+            sexpr(&expr("data |> flat_map |r| r.x |> g")),
+            "(|> (|> data (app flat_map (lam [r] (. r x)))) g)"
         );
     }
 

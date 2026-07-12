@@ -3,7 +3,7 @@
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } attr { credits: int } }
 view rollup {
-  readings |> extend_key machine
+  readings |> promote machine
            |> completeness_check { assert k.ts > 0 }
-           |> shrink_key machine
+           |> demote machine
 }

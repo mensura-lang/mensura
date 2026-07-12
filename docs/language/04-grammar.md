@@ -144,7 +144,7 @@ named_type    = ident ;
   the parser peeks one token and takes a single `?` if present, so the
   optional marker preserves LL(1).  The `?` is a punctuation token the
   lexer emits, and `parse_type` carries it on the `TypeExpr`; the resolver
-  rejects `?` on an index field (whether a row exists is cardinality, a
+  rejects `?` on a key field (whether a row exists is cardinality, a
   separate axis) and threads totality onto each resolved column.
 
 No production is left-recursive, and no nullable production creates a
@@ -212,11 +212,11 @@ deferred):
 
 `int` and `real` are distinct domains with no implicit widening between
 them; only the key-eligible types (`string`, `int`, `bool`, `date`, `enum`)
-may be index fields (ADR 0014).
+may be key fields (ADR 0014).
 
 A trailing `?` (e.g. `date?`) makes any of these **optional**: the value may
 be missing in an observed row (ADR 0010).  Without it the value is total
-(known).  `?` is not allowed on an index field.
+(known).  `?` is not allowed on a key field.
 
 Physical-unit types (dimensional quantities, precision) are a separate,
 larger feature with their own design doc and are not in this subset.
@@ -342,7 +342,7 @@ appear in this subset.
 
 `paren` covers grouping, the homogeneous collection, and records: `(e)` is
 grouping, `()` the empty collection, `(a, b, ...)` a collection of like values
-(the form a `map` body uses to drop or expand rows, ADR 0015), and
+(the form a `flat_map` body uses to drop or expand rows, ADR 0015), and
 `(.a = x, .b = y)` a labeled record.  A `( )` is *either* a positional
 collection *or* all-labeled, never mixed.  A heterogeneous sequence
 `([ ... ])` is reserved.  `conditional` is the prefix
@@ -401,8 +401,8 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   ascription, then the body, an `or_expr`.  The `:` after the closing `|`
   decides whether a return type is present; the `type` grammar never starts
   with `(` or `{`, so it cannot swallow the body.  The body deliberately
-  excludes a top-level `|>`, so `data |> map |k, r| r.x |> next g` composes as
-  `(data |> map (|k, r| r.x)) |> next g`; a pipe *inside* a lambda body must be
+  excludes a top-level `|>`, so `data |> flat_map |k, r| r.x |> next g` composes as
+  `(data |> flat_map (|k, r| r.x)) |> next g`; a pipe *inside* a lambda body must be
   parenthesized.  A lambda that is not the last argument of an application
   must also be parenthesized, since its body extends maximally.
 
@@ -470,8 +470,8 @@ identifiers, as the keyword-free lexer intends.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Physical-unit and precision types, including the `NxE` measured literal and
   the physical-unit grammar.
-- The pipeline operations (`map`, `group_map`, `extend_key`/`shrink_key`,
-  joins, `split`/`bind`, `unpivot`/`pivot`, `completeness_check`) are
+- The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
+  joins, `split`/`union`, `unpivot`/`pivot`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.

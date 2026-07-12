@@ -11,7 +11,7 @@ use mensura_syntax::{Block, Span};
 use crate::table::Cardinality;
 
 /// A resolved store: its name, the unit it tabulates, its columns in
-/// storage order (index fields, then attributes in declaration order), and
+/// storage order (key fields, then attributes in declaration order), and
 /// its declared cardinality.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Schema {
@@ -33,17 +33,17 @@ pub struct Column {
     pub role: ColumnRole,
     /// Value totality (ADR 0010): `false` is total (every value known, the
     /// default), `true` is optional (the value may be missing, written with a
-    /// trailing `?`).  Orthogonal to cardinality; index columns are never
+    /// trailing `?`).  Orthogonal to cardinality; key columns are never
     /// optional.
     pub optional: bool,
     pub span: Span,
 }
 
-/// Where a column comes from, which fixes its storage semantics: index
+/// Where a column comes from, which fixes its storage semantics: key
 /// columns form the primary key, attribute columns carry data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColumnRole {
-    Index,
+    Key,
     Attr,
 }
 
@@ -84,13 +84,13 @@ impl ColumnType {
         matches!(self, ColumnType::Int | ColumnType::Real)
     }
 
-    /// Listable values, so it can be spread across column names (index `pivot`,
+    /// Listable values, so it can be spread across column names (key `pivot`,
     /// `unpivot`): `enum` only.
     pub fn is_enumerable(&self) -> bool {
         matches!(self, ColumnType::Enum { .. })
     }
 
-    /// May form an index/key.  A key is identified by equality, so
+    /// May form a key.  A key is identified by equality, so
     /// key-eligibility is exactly equatability (ADR 0014); `real` is excluded.
     pub fn is_key_eligible(&self) -> bool {
         self.is_equatable()
@@ -113,11 +113,11 @@ pub struct ResolvedProgram {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewPlan {
     pub name: String,
-    /// Output columns in storage order: the index columns, then the computed
+    /// Output columns in storage order: the key columns, then the computed
     /// attribute columns in the order the checker produced them.
     pub columns: Vec<Column>,
     /// The computed cardinality.  `Singletons` gets the composite primary
-    /// key over the index columns; a `Bag` view gets none.
+    /// key over the key columns; a `Bag` view gets none.
     pub cardinality: Cardinality,
     /// The checked view body (`10-views.md`: `let` bindings, then a trailing
     /// table expression).
@@ -133,10 +133,10 @@ pub struct ViewPlan {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableShape {
     pub name: String,
-    /// Columns in storage order (index first, then attributes).
+    /// Columns in storage order (key first, then attributes).
     pub columns: Vec<Column>,
-    /// Whether rows are 0-or-1 per index tuple: `true` maps to a composite
-    /// primary key over the index columns, `false` (a `bag` view) to none.
+    /// Whether rows are 0-or-1 per key tuple: `true` maps to a composite
+    /// primary key over the key columns, `false` (a `bag` view) to none.
     pub keyed: bool,
 }
 
@@ -144,7 +144,7 @@ impl Schema {
     /// This store's storage shape.  A `singletons` store is a 0-or-1 unit
     /// tabulation (ADR 0001), so it is keyed; a `bag` store (ADR 0022) holds
     /// many rows per key, so it maps to an unkeyed table (the backend adds a
-    /// non-unique covering index over the index columns instead).
+    /// non-unique covering index over the key columns instead).
     pub fn shape(&self) -> TableShape {
         TableShape {
             name: self.store.clone(),

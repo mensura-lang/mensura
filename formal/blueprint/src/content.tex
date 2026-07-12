@@ -18,7 +18,7 @@
 % Data Science Project: An Inductive Learning Approach, Leanpub,
 % doi:10.5281/zenodo.14498010.  Decision records: docs/decisions/.
 
-\chapter{The indexed table and split/bind}
+\chapter{The indexed table and split/union}
 
 \begin{definition}[Indexed table]
   \label{def:table}\lean{Mensura.Table}\leanok
@@ -38,10 +38,10 @@
 \end{definition}
 
 \begin{definition}[Bind]
-  \label{def:bind}\lean{Mensura.bind}\uses{def:table}\leanok
+  \label{def:union}\lean{Mensura.union}\uses{def:table}\leanok
   The multiset union of two tables' bags at each key: the book's cell
   concatenation made order-free, commutative, associative, total, and
-  bias-free (def:bind).
+  bias-free (def:union).
 \end{definition}
 
 \begin{definition}[Disjoint tables]
@@ -60,8 +60,8 @@
 \end{proof}
 
 \begin{theorem}[Bind undoes split]
-  \label{thm:bind-split}\lean{Mensura.bind_split}\leanok
-  \uses{def:split, def:bind}
+  \label{thm:union-split}\lean{Mensura.union_split}\leanok
+  \uses{def:split, def:union}
   For every indicator $s$ and table $T$, binding the two halves of
   $\mathrm{split}\,s\,T$ recovers $T$.
 \end{theorem}
@@ -70,26 +70,26 @@
 \end{proof}
 
 \begin{theorem}[Bind is commutative]
-  \label{thm:bind-comm}\lean{Mensura.bind_comm}\uses{def:bind}\leanok
-  $\mathrm{bind}\,T_0\,T_1 = \mathrm{bind}\,T_1\,T_0$, unconditionally.
+  \label{thm:union-comm}\lean{Mensura.union_comm}\uses{def:union}\leanok
+  $\mathrm{union}\,T_0\,T_1 = \mathrm{union}\,T_1\,T_0$, unconditionally.
 \end{theorem}
 \begin{proof}\leanok
   Multiset union is commutative.
 \end{proof}
 
 \begin{theorem}[Bind is associative]
-  \label{thm:bind-assoc}\lean{Mensura.bind_assoc}\uses{def:bind}\leanok
-  $\mathrm{bind}$ is associative.
+  \label{thm:union-assoc}\lean{Mensura.union_assoc}\uses{def:union}\leanok
+  $\mathrm{union}$ is associative.
 \end{theorem}
 \begin{proof}\leanok
   Multiset union is associative.
 \end{proof}
 
 \begin{theorem}[Bind weakens disjointness]
-  \label{thm:bind-disjoint-iff}\lean{Mensura.bind_disjoint_iff}\leanok
-  \uses{def:bind, def:disjoint}
-  $\mathrm{bind}\,T_0\,T_1$ is disjoint from $T_2$ iff both $T_0$ and
-  $T_1$ are.  This backs the \texttt{bind} propagation rule of the
+  \label{thm:union-disjoint-iff}\lean{Mensura.union_disjoint_iff}\leanok
+  \uses{def:union, def:disjoint}
+  $\mathrm{union}\,T_0\,T_1$ is disjoint from $T_2$ iff both $T_0$ and
+  $T_1$ are.  This backs the \texttt{union} propagation rule of the
   lineage system (\texttt{docs/language/08-lineage.md}).
 \end{theorem}
 \begin{proof}\leanok
@@ -98,9 +98,9 @@
 
 \begin{definition}[Split-invariance]
   \label{def:split-invariant}\lean{Mensura.SplitInvariant}\leanok
-  \uses{def:bind, def:disjoint}
+  \uses{def:union, def:disjoint}
   An operation $f$ is \emph{split-invariant} when it distributes over
-  the bind of disjoint tables (def:split-invariance).  This is the
+  the union of disjoint tables (def:split-invariance).  This is the
   property Mensura tracks and enforces; disjointness is exactly what a
   split produces.
 \end{definition}
@@ -118,7 +118,7 @@
   \uses{def:split-invariant, def:preserves-disjoint}
   An operation is \emph{split-safe} when it is split-invariant and
   preserves disjointness: the class of operations safe to put in a
-  pipeline between a split and a bind.
+  pipeline between a split and a union.
 \end{definition}
 
 \begin{theorem}[Split-safe operations compose]
@@ -140,8 +140,8 @@
 
 \chapter{The operations}
 
-\begin{definition}[Row-wise map]
-  \label{def:map}\lean{Mensura.map}\uses{def:table}\leanok
+\begin{definition}[Row-wise flatMap]
+  \label{def:flatMap}\lean{Mensura.flatMap}\uses{def:table}\leanok
   The single row-wise primitive: $\varphi\,k\,f$ sends a nested row to a
   bag of output rows (empty drops it, a singleton keeps or transforms
   it, several expand it).  It subsumes the book's def:selection,
@@ -150,53 +150,53 @@
 \end{definition}
 
 \begin{definition}[Left join]
-  \label{def:leftjoin}\lean{Mensura.leftJoin}\uses{def:map}\leanok
+  \label{def:leftjoin}\lean{Mensura.lookup}\uses{def:flatMap}\leanok
   def:left-join against a fixed right table on shared index columns:
   each present left row combines with every matching right row, or is
-  kept once with missing right columns when there is no match.  A map.
+  kept once with missing right columns when there is no match.  A flatMap.
 \end{definition}
 
 \begin{definition}[Inner join]
-  \label{def:innerjoin}\lean{Mensura.innerJoin}\uses{def:map}\leanok
+  \label{def:innerjoin}\lean{Mensura.lookupTotal}\uses{def:flatMap}\leanok
   Like the left join, but an unmatched left row is dropped (def:join,
-  fixed-right form).  A map.
+  fixed-right form).  A flatMap.
 \end{definition}
 
 \begin{definition}[Aggregate]
   \label{def:aggregate}\lean{Mensura.aggregate}\uses{def:table}\leanok
   def:aggregating: collapse each key's whole bag to a single row (empty
-  stays empty).  The folder sees the entire bag, so this is not a map.
+  stays empty).  The folder sees the entire bag, so this is not a flatMap.
 \end{definition}
 
 \begin{definition}[Ungroup]
-  \label{def:ungroup}\lean{Mensura.ungroup}\uses{def:table}\leanok
+  \label{def:promote}\lean{Mensura.promote}\uses{def:table}\leanok
   def:grouping: turn a distinguished total column into part of the key,
   refining $K$ to $K \times \beta$.
 \end{definition}
 
 \begin{definition}[Project]
-  \label{def:project}\lean{Mensura.project}\uses{def:table}\leanok
+  \label{def:demote}\lean{Mensura.demote}\uses{def:table}\leanok
   def:projection: drop a finite index component $D$ from the key,
   merging the bags of all dropped keys into one output key, each row
   tagged with its $d$.  This changes the observational unit.
 \end{definition}
 
-\begin{definition}[Tagged bind]
-  \label{def:tagged-bind}\lean{Mensura.taggedBind}\leanok
-  \uses{def:bind, def:map}
-  def:tagged-bind: bind two tables while recording each row's source in
+\begin{definition}[Tagged union]
+  \label{def:tagged-union}\lean{Mensura.taggedBind}\leanok
+  \uses{def:union, def:flatMap}
+  def:tagged-union: union two tables while recording each row's source in
   a fresh column.
 \end{definition}
 
 \begin{definition}[Tagged split]
-  \label{def:tagged-split}\lean{Mensura.taggedSplit}\uses{def:map}\leanok
+  \label{def:tagged-split}\lean{Mensura.taggedSplit}\uses{def:flatMap}\leanok
   def:tagged-split: recover the rows of one source, dropping the tag
-  column.  A map.
+  column.  A flatMap.
 \end{definition}
 
-\begin{theorem}[Tagged split inverts tagged bind]
+\begin{theorem}[Tagged split inverts tagged union]
   \label{thm:tagged-inverse}\lean{Mensura.taggedSplit_taggedBind_left}\leanok
-  \uses{def:tagged-bind, def:tagged-split}
+  \uses{def:tagged-union, def:tagged-split}
   With distinct tags, recovering source $s_0$ from
   $\mathrm{taggedBind}\,s_0\,s_1\,T_0\,T_1$ gives back $T_0$ (and
   symmetrically for $s_1$).
@@ -209,43 +209,43 @@
 \chapter{Split-safety}
 
 \begin{theorem}[Map is split-safe]
-  \label{thm:map-splitsafe}\lean{Mensura.map_splitSafe}\leanok
-  \uses{def:map, def:splitsafe}
-  Every map is split-safe.
+  \label{thm:flatMap-splitsafe}\lean{Mensura.flatMap_splitSafe}\leanok
+  \uses{def:flatMap, def:splitsafe}
+  Every flatMap is split-safe.
 \end{theorem}
 \begin{proof}\leanok
-  A map distributes over every bind (multiset bind distributes over
+  A flatMap distributes over every union (multiset union distributes over
   multiset union), and it sends empty bags to empty bags, preserving
   disjointness.
 \end{proof}
 
 \begin{theorem}[Left join is split-safe]
-  \label{thm:leftjoin-splitsafe}\lean{Mensura.leftJoin_splitSafe}\leanok
+  \label{thm:leftjoin-splitsafe}\lean{Mensura.lookup_splitSafe}\leanok
   \uses{def:leftjoin, def:splitsafe}
   The fixed-right left join is split-safe.
 \end{theorem}
 \begin{proof}\leanok
-  It is a map.
+  It is a flatMap.
 \end{proof}
 
 \begin{theorem}[Inner join is split-safe]
-  \label{thm:innerjoin-splitsafe}\lean{Mensura.innerJoin_splitSafe}\leanok
+  \label{thm:innerjoin-splitsafe}\lean{Mensura.lookupTotal_splitSafe}\leanok
   \uses{def:innerjoin, def:splitsafe}
   The fixed-right inner join is split-safe.  The book leaves the binary
   join open (see the open problems chapter); in the unary form the only
-  effect is dropping unmatched left rows, a map.
+  effect is dropping unmatched left rows, a flatMap.
 \end{theorem}
 \begin{proof}\leanok
-  It is a map.
+  It is a flatMap.
 \end{proof}
 
 \begin{theorem}[Ungroup is split-safe]
-  \label{thm:ungroup-splitsafe}\lean{Mensura.ungroup_splitSafe}\leanok
-  \uses{def:ungroup, def:splitsafe}
+  \label{thm:promote-splitsafe}\lean{Mensura.promote_splitSafe}\leanok
+  \uses{def:promote, def:splitsafe}
   Ungrouping is split-safe.
 \end{theorem}
 \begin{proof}\leanok
-  Each output key reads a single input key through a multiset bind.
+  Each output key reads a single input key through a multiset union.
 \end{proof}
 
 \begin{theorem}[Aggregate is split-safe]
@@ -261,12 +261,12 @@
 \end{proof}
 
 \begin{theorem}[Project does not preserve disjointness]
-  \label{thm:project-not-preservesdisjoint}
-  \lean{Mensura.project_not_preservesDisjoint}\leanok
-  \uses{def:project, def:preserves-disjoint}
+  \label{thm:demote-not-preservesdisjoint}
+  \lean{Mensura.demote_not_preservesDisjoint}\leanok
+  \uses{def:demote, def:preserves-disjoint}
   Two rows a split separates by the dropped index land on the same
   output key, so projection is \emph{not} split-safe: pipelines through
-  it (such as aggregate after project, the averaging case) can disagree
+  it (such as aggregate after demote, the averaging case) can disagree
   with the full-table result.
 \end{theorem}
 \begin{proof}\leanok
@@ -298,8 +298,8 @@
   \label{thm:pivot-not-splitinvariant}\lean{Mensura.pivot_not_splitInvariant}\leanok
   \uses{def:pivot, def:split-invariant}
   A split that separates the names of one key yields two complementary
-  partial rows that bind keeps apart.  This refines the book, whose
-  pivot invariance relies on a cell-wise-merge bind this total-row model
+  partial rows that union keeps apart.  This refines the book, whose
+  pivot invariance relies on a cell-wise-merge union this total-row model
   deliberately does not have.
 \end{theorem}
 \begin{proof}\leanok
@@ -317,10 +317,10 @@
   \label{thm:unpivotdrop-splitsafe}\lean{Mensura.unpivotDrop_splitSafe}\leanok
   \uses{def:unpivot-drop, def:splitsafe}
   Dropping a missing cell is a per-row decision, so the drop variant
-  distributes over every bind, hence is split-safe.
+  distributes over every union, hence is split-safe.
 \end{theorem}
 \begin{proof}\leanok
-  Multiset bind distributes over union.
+  Multiset union distributes over union.
 \end{proof}
 
 \begin{theorem}[Pivot inverts the drop variant]
@@ -349,31 +349,31 @@
   variant sends back to an absent row.
 \end{proof}
 
-\begin{theorem}[Project inverts ungroup]
-  \label{thm:project-ungroup}\lean{Mensura.project_ungroup}\leanok
-  \uses{def:ungroup, def:project}
+\begin{theorem}[Project inverts promote]
+  \label{thm:demote-promote}\lean{Mensura.demote_promote}\leanok
+  \uses{def:promote, def:demote}
   ADR 0024: when the promoted column is total (exactly the checker's
   \texttt{extend\_key} gate, which would otherwise drop rows at
-  \texttt{ungroup}), demoting the component again restores the table
+  \texttt{promote}), demoting the component again restores the table
   exactly.  The \texttt{extend\_key}/\texttt{shrink\_key} round trip is
   the identity, hence preserves every tracked property at once.
 \end{theorem}
 \begin{proof}\leanok
-  Push the tagging map into the fiber bind, exchange the finite sum with
-  the bind, and each row collapses to the singleton of itself: the tag
+  Push the tagging flatMap into the fiber union, exchange the finite sum with
+  the union, and each row collapses to the singleton of itself: the tag
   it receives is the key component it was filed under.
 \end{proof}
 
-\begin{theorem}[Ungroup inverts project]
-  \label{thm:ungroup-project}\lean{Mensura.ungroup_project}\leanok
-  \uses{def:ungroup, def:project}
-  ADR 0024, with no side condition: \texttt{project} tags every demoted
+\begin{theorem}[Ungroup inverts demote]
+  \label{thm:promote-demote}\lean{Mensura.promote_demote}\leanok
+  \uses{def:promote, def:demote}
+  ADR 0024, with no side condition: \texttt{demote} tags every demoted
   row with its own key component, so the demoted column is total by
   construction and re-promoting it files every row back under exactly
   the key it came from.
 \end{theorem}
 \begin{proof}\leanok
-  Distribute the bind over the fiber sum; at each fine key the tag
+  Distribute the union over the fiber sum; at each fine key the tag
   matches exactly its own component, selecting the original fiber.
 \end{proof}
 
@@ -436,11 +436,11 @@
   The unique name equals any name by subsingleton elimination.
 \end{proof}
 
-\begin{theorem}[A non-dropping map preserves the rectangle]
-  \label{thm:map-exhaustive}\lean{Mensura.map_exhaustive}\leanok
-  \uses{def:map, def:exhaustive}
-  A map whose body emits at least one output row per input row preserves
-  exhaustiveness.  A dropping map (a filter) is excluded, and rightly
+\begin{theorem}[A non-dropping flatMap preserves the rectangle]
+  \label{thm:flatMap-exhaustive}\lean{Mensura.flatMap_exhaustive}\leanok
+  \uses{def:flatMap, def:exhaustive}
+  A flatMap whose body emits at least one output row per input row preserves
+  exhaustiveness.  A dropping flatMap (a filter) is excluded, and rightly
   so: it can empty one name of a fiber.
 \end{theorem}
 \begin{proof}\leanok
@@ -448,13 +448,13 @@
 \end{proof}
 
 \begin{theorem}[Left join preserves the rectangle]
-  \label{thm:leftjoin-exhaustive}\lean{Mensura.leftJoin_exhaustive}\leanok
-  \uses{def:leftjoin, def:exhaustive, thm:map-exhaustive}
+  \label{thm:leftjoin-exhaustive}\lean{Mensura.lookup_exhaustive}\leanok
+  \uses{def:leftjoin, def:exhaustive, thm:flatMap-exhaustive}
   The left join's body emits the unmatched row with missing right
-  columns rather than dropping it, so it is a non-dropping map.
+  columns rather than dropping it, so it is a non-dropping flatMap.
 \end{theorem}
 \begin{proof}\leanok
-  Instance of the non-dropping map lemma.
+  Instance of the non-dropping flatMap lemma.
 \end{proof}
 
 \begin{theorem}[Aggregate preserves the rectangle]
@@ -468,9 +468,9 @@
 \end{proof}
 
 \begin{theorem}[Bind preserves the rectangle]
-  \label{thm:bind-exhaustive}\lean{Mensura.bind_exhaustive}\leanok
-  \uses{def:bind, def:exhaustive}
-  The bind of two exhaustive tables is exhaustive: a fiber present in
+  \label{thm:union-exhaustive}\lean{Mensura.union_exhaustive}\leanok
+  \uses{def:union, def:exhaustive}
+  The union of two exhaustive tables is exhaustive: a fiber present in
   the union is present on one side, whose fullness fills the union.
 \end{theorem}
 \begin{proof}\leanok
@@ -490,10 +490,10 @@
 
 \chapter{Safe completeness}
 
-\begin{definition}[Fiber map]
+\begin{definition}[Fiber flatMap]
   \label{def:fibermap}\lean{Mensura.fiberMap}\uses{def:table}\leanok
   The output bag at each key is a function of the input bag at the
-  \emph{same} key and nothing else.  \texttt{map} and \texttt{aggregate}
+  \emph{same} key and nothing else.  \texttt{flatMap} and \texttt{aggregate}
   are both fiber maps.
 \end{definition}
 
@@ -509,10 +509,10 @@
   only on the input at that same key.
 \end{definition}
 
-\begin{theorem}[A strict fiber map is split-safe]
+\begin{theorem}[A strict fiber flatMap is split-safe]
   \label{thm:fibermap-splitsafe}\lean{Mensura.fiberMap_splitSafe}\leanok
   \uses{def:fibermap, def:strict, def:splitsafe}
-  Every strict fiber map is split-safe.
+  Every strict fiber flatMap is split-safe.
 \end{theorem}
 \begin{proof}\leanok
   Under disjointness one summand is empty at each key, and strictness
@@ -523,36 +523,36 @@
   \label{thm:fibermap-iff}\lean{Mensura.splitInvariant_keyLocal_iff_fiberMap}\leanok
   \uses{def:fibermap, def:strict, def:keylocal, thm:fibermap-splitsafe}
   A key-preserving operation is split-invariant and key-local \emph{iff}
-  it is a strict fiber map.  The split-invariant, key-local
+  it is a strict fiber flatMap.  The split-invariant, key-local
   transformations are exactly the strict fiber maps: nothing safe is
   missing and nothing unsafe sneaks in.
 \end{theorem}
 \begin{proof}\leanok
   Forward: run the operation on point tables to witness its fiber
   action; key-locality makes the representation exact and
-  split-invariance makes it strict.  Backward: the strict fiber map
+  split-invariance makes it strict.  Backward: the strict fiber flatMap
   results.
 \end{proof}
 
-\begin{theorem}[A presence-preserving fiber map preserves the rectangle]
+\begin{theorem}[A presence-preserving fiber flatMap preserves the rectangle]
   \label{thm:fibermap-exhaustive}\lean{Mensura.fiberMap_exhaustive}\leanok
   \uses{def:fibermap, def:strict, def:exhaustive, thm:aggregate-exhaustive}
   A strict fiber action that never empties a present fiber preserves
   exhaustiveness: strictness keeps absent fibers absent and the
   no-emptying hypothesis keeps present fibers present, so full fibers
   stay full.  This is the universal form of which
-  \ref{thm:aggregate-exhaustive} and \ref{thm:map-exhaustive} are the two
+  \ref{thm:aggregate-exhaustive} and \ref{thm:flatMap-exhaustive} are the two
   principal cases.
 \end{theorem}
 \begin{proof}\leanok
   Presence is preserved in both directions.
 \end{proof}
 
-\begin{definition}[Reindexing fiber map]
+\begin{definition}[Reindexing fiber flatMap]
   \label{def:reindexmap}\lean{Mensura.reindexMap}\uses{def:fibermap}\leanok
   Along $r : K' \to K$, the output bag at key $k'$ is a function of the
-  input bag at the single key $r\,k'$.  The fiber map is the $r = id$
-  case; \texttt{ungroup} and \texttt{unpivot} are $r = \pi_1$ cases.
+  input bag at the single key $r\,k'$.  The fiber flatMap is the $r = id$
+  case; \texttt{promote} and \texttt{unpivot} are $r = \pi_1$ cases.
 \end{definition}
 
 \begin{definition}[Locality along a reindexing]
@@ -566,7 +566,7 @@
   \lean{Mensura.splitInvariant_reindexLocal_iff_reindexMap}\leanok
   \uses{def:reindexmap, def:reindexlocal, def:strict}
   Along any $r : K' \to K$, an operation is split-invariant and
-  $r$-local \emph{iff} it is a strict reindexing fiber map over $r$: the
+  $r$-local \emph{iff} it is a strict reindexing fiber flatMap over $r$: the
   full generalization of the key-preserving characterization.
 \end{theorem}
 \begin{proof}\leanok
@@ -590,7 +590,7 @@
   it is an index.
 \end{theorem}
 \begin{proof}\leanok
-  It is a strict fiber map.
+  It is a strict fiber flatMap.
 \end{proof}
 
 \chapter{Open problems}

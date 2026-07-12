@@ -10,7 +10,7 @@
 
 # Modelling data
 
-- [Units and indices](modelling/units.md)
+- [Units and keys](modelling/units.md)
 - [Scalar types](modelling/scalar-types.md)
 - [Stores and attributes](modelling/stores.md)
 - [Shapes](modelling/shapes.md)

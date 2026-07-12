@@ -4,7 +4,7 @@
 //! This layer sits above [`crate::expr_check`]: it types a table-valued
 //! expression against a set of named [`Sources`], dispatching each `|>` stage to
 //! an operation handler that transforms the input [`TableType`]. Each operation's
-//! key-first lambda body (`|k|` / `|k, r|` / `|k, g|`, ADR 0015) is typed by
+//! key-first lambda body (`|k|` / `|k, r|` / `|k, b|`, ADR 0015) is typed by
 //! `expr_check` against a key/row/group context derived from the input table.
 //! Like `resolve` and `expr_check`, it collects all diagnostics rather than
 //! failing fast.
@@ -25,7 +25,7 @@ use crate::table::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum PipeTy {
     Table(TableType),
-    /// A pair of tables: produced by `split`, consumed by `bind` (section 6.5).
+    /// A pair of tables: produced by `split`, consumed by `union` (section 6.5).
     Pair(TableType, TableType),
 }
 
@@ -159,28 +159,32 @@ fn dispatch_op(
     span: Span,
 ) -> Result<PipeTy, Vec<TypeError>> {
     let result = match op {
-        "extend_key" => op_extend_key(input, args, span),
-        "shrink_key" => op_shrink_key(input, args, span),
-        "map" => op_map(input, args, span),
-        "group_map" => op_group_map(input, args, span),
+        "promote" => op_promote(input, args, span),
+        "demote" => op_demote(input, args, span),
+        "flat_map" => op_flat_map(input, args, span),
+        "map_bags" => op_map_bags(input, args, span),
         "split" => op_split(input, args, span),
-        "bind" => op_bind(input, args, span),
-        "left_join" => op_join(sources, input, args, span, JoinKind::Left),
-        "inner_join" => op_join(sources, input, args, span, JoinKind::Inner),
+        "union" => op_union(input, args, span),
+        "lookup" => op_join(sources, input, args, span, JoinKind::Left),
+        "lookup_total" => op_join(sources, input, args, span, JoinKind::Inner),
         "unpivot" => op_unpivot(input, args, span),
         "pivot" => op_pivot(input, args, span),
         "assume" => op_assume(input, args, span),
         "completeness_check" => op_completeness_check(input, args, span),
         other => {
+            // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
+            // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
+            // row, `map_bags` receives the bag") instead of the generic
+            // edit-distance suggestion below.
             const OPS: [&str; 12] = [
-                "extend_key",
-                "shrink_key",
-                "map",
-                "group_map",
+                "promote",
+                "demote",
+                "flat_map",
+                "map_bags",
                 "split",
-                "bind",
-                "left_join",
-                "inner_join",
+                "union",
+                "lookup",
+                "lookup_total",
                 "unpivot",
                 "pivot",
                 "assume",
@@ -199,7 +203,7 @@ fn dispatch_op(
     // them to match its own output cardinality, the conservative rule
     // until the per-op transport table is mechanized.
     Ok(match op {
-        "extend_key" | "shrink_key" | "assume" | "completeness_check" => result,
+        "promote" | "demote" | "assume" | "completeness_check" => result,
         _ => sync_functional(result),
     })
 }
@@ -210,13 +214,13 @@ enum JoinKind {
     Inner,
 }
 
-/// `left_join` / `inner_join right (|k, l| key)` (section 6.4, Tier A): join a fixed
-/// right table by a key over the left row. Adds the right table's non-index
-/// columns; `left_join` makes them optional, `inner_join` keeps their totality.
+/// `lookup` / `lookup_total right (|k, r| key)` (section 6.4, Tier A): join a fixed
+/// right table by a key over the left row. Adds the right table's non-key
+/// columns; `lookup` makes them optional, `lookup_total` keeps their totality.
 /// The right table is a store (`Singletons`, functional), so cardinality is
-/// preserved; completeness on the left and lineage are preserved. `left_join`
-/// never drops a row, so it carries `exhaustive` (`leftJoin_exhaustive`);
-/// `inner_join` can drop unmatched rows out of a fiber, destroying it
+/// preserved; completeness on the left and lineage are preserved. `lookup`
+/// never drops a row, so it carries `exhaustive` (`lookup_exhaustive`);
+/// `lookup_total` can drop unmatched rows out of a fiber, destroying it
 /// (ADR 0020 section 2).
 fn op_join(
     sources: &Sources,
@@ -250,9 +254,9 @@ fn op_join(
             ));
         }
     };
-    let [right_key] = right.content.index.as_slice() else {
+    let [right_key] = right.content.key.as_slice() else {
         return Err(error(
-            "a join's right table must have a single index column",
+            "a join's right table must have a single key column",
             right_arg.span,
         ));
     };
@@ -276,7 +280,7 @@ fn op_join(
     let mut errs = Vec::new();
     for rc in &right.content.columns {
         let clash = columns.iter().any(|c| c.name == rc.name)
-            || left.content.index.iter().any(|c| c.name == rc.name);
+            || left.content.key.iter().any(|c| c.name == rc.name);
         if clash {
             errs.push(te(
                 format!("join would duplicate column `{}`", rc.name),
@@ -299,7 +303,7 @@ fn op_join(
 
     Ok(PipeTy::Table(TableType {
         content: Content {
-            index: left.content.index,
+            key: left.content.key,
             columns,
         },
         qualifiers: Qualifiers {
@@ -316,22 +320,22 @@ fn op_join(
     }))
 }
 
-/// `map |k, r| collection` (section 6.1, Tier A, ADR 0015): the formal row
+/// `flat_map |k, r| collection` (section 6.1, Tier A, ADR 0015): the formal row
 /// multiset. The body yields a collection of value rows (`( )` empty drops, a
-/// bare row keeps, `(a, b)` expands, an `if` filters or branches). The non-index
-/// columns are the collection's row schema; the index is preserved; cardinality
+/// bare row keeps, `(a, b)` expands, an `if` filters or branches). The non-key
+/// columns are the collection's row schema; the key is preserved; cardinality
 /// is the maximum collection size (`<= 1` keeps the input bound, `>= 2` is a
 /// `Bag`). A body that can drop (some branch yields fewer rows than it was
 /// given) may leave holes in a fiber, so it forfeits `exhaustive`; a provably
 /// non-dropping body carries it (`map_exhaustive`, ADR 0020 section 2).
-fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_flat_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
-    let (params, body) = lambda_params(args, "map", 2, span)?;
+    let (params, body) = lambda_params(args, "flat_map", 2, span)?;
     let ctx = Context::row(params[0], params[1], &table);
     let (schema, sizes) = row_collection(&ctx, body, &table)?;
     let Some(schema) = schema else {
         return Err(error(
-            "a `map` body that always drops the row cannot infer the output \
+            "a `flat_map` body that always drops the row cannot infer the output \
              columns; keep at least one row in some branch",
             body.span,
         ));
@@ -349,7 +353,7 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
     };
     Ok(PipeTy::Table(TableType {
         content: Content {
-            index: table.content.index,
+            key: table.content.key,
             columns,
         },
         qualifiers: Qualifiers {
@@ -363,7 +367,7 @@ fn op_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeE
     }))
 }
 
-/// The collection-size bounds of a `map` body: how few and how many output
+/// The collection-size bounds of a `flat_map` body: how few and how many output
 /// rows one input row can yield.
 #[derive(Clone, Copy)]
 struct SizeBounds {
@@ -371,17 +375,17 @@ struct SizeBounds {
     max: usize,
 }
 
-/// One column of a `map` output row, before it becomes table content.
+/// One column of a `flat_map` output row, before it becomes table content.
 struct RowColumn {
     name: String,
     domain: ColumnType,
     opt: Optionality,
 }
 
-/// The shared schema of the value rows a `map` body yields.
+/// The shared schema of the value rows a `flat_map` body yields.
 type RowSchema = Vec<RowColumn>;
 
-/// Type a `map` body as a collection of value rows (ADR 0015), returning the
+/// Type a `flat_map` body as a collection of value rows (ADR 0015), returning the
 /// shared row schema (or `None` if the body always drops) and the collection's
 /// size bounds. `( )` is empty (0), `(a, b, ...)` expands (n), an `if`
 /// branches (the bounds join), and any other body is a single row (1).
@@ -472,7 +476,7 @@ fn row_collection(
     }
 }
 
-/// Type one value row of a `map` body: a record literal `(.a = ...)` or a value
+/// Type one value row of a `flat_map` body: a record literal `(.a = ...)` or a value
 /// row (e.g. the parameter `r`). Anything else is not a row.
 fn single_row_schema(
     ctx: &Context,
@@ -485,9 +489,9 @@ fn single_row_schema(
             let mut errs = Vec::new();
             for field in fields {
                 let name = &field.name.name;
-                if input.content.index.iter().any(|c| &c.name == name) {
+                if input.content.key.iter().any(|c| &c.name == name) {
                     errs.push(te(
-                        format!("a `map` row may not set the index column `{name}`"),
+                        format!("a `flat_map` row may not set the key column `{name}`"),
                         field.name.span,
                     ));
                     continue;
@@ -521,7 +525,7 @@ fn single_row_schema(
                 })
                 .collect()),
             _ => Err(error(
-                "a `map` body must yield rows: a record `(.a = ...)`, the value \
+                "a `flat_map` body must yield rows: a record `(.a = ...)`, the value \
                  row `r`, `( )` to drop, or `(a, b)` to expand",
                 expr.span,
             )),
@@ -535,7 +539,7 @@ fn single_row_schema(
 fn unify_row_schema(a: &RowSchema, b: &RowSchema, span: Span) -> Result<RowSchema, Vec<TypeError>> {
     if a.len() != b.len() {
         return Err(error(
-            "a `map` collection's rows must share one schema (column count differs)",
+            "a `flat_map` collection's rows must share one schema (column count differs)",
             span,
         ));
     }
@@ -543,7 +547,7 @@ fn unify_row_schema(a: &RowSchema, b: &RowSchema, span: Span) -> Result<RowSchem
     for (ca, cb) in a.iter().zip(b) {
         if ca.name != cb.name || ca.domain != cb.domain {
             return Err(error(
-                "a `map` collection's rows must share one schema (a column differs)",
+                "a `flat_map` collection's rows must share one schema (a column differs)",
                 span,
             ));
         }
@@ -591,7 +595,7 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
     }
 }
 
-/// `group_map |k, g| record` (section 6.2, Tier A): transform each group. The
+/// `map_bags |k, b| record` (section 6.2, Tier A): transform each group. The
 /// result cardinality is **inferred from the return**: all single-valued fields
 /// are the aggregate shape (one row per key, `Singletons`); bag-valued fields are
 /// the window shape (one output row per input row, `Bag`). A **reducing** body
@@ -599,22 +603,22 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// partial bag, so it demands completeness over the current key (ADR 0023);
 /// at a `Singletons` input the obligation discharges trivially, since a
 /// present key's single row is the identity's whole fiber
-/// (`fiberCompleteWrt_of_functional`). The index, completeness, and lineage
+/// (`fiberCompleteWrt_of_functional`). The key, completeness, and lineage
 /// are preserved; `exhaustive` is carried (one output row per present key in
 /// the aggregate shape, one per input row in the window shape, so no fiber
 /// loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive` the
 /// aggregate-shape special case).
-fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_map_bags(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
-    let (params, body) = lambda_params(args, "group_map", 2, span)?;
-    let ctx = Context::group(params[0], params[1], &table);
-    let (columns, totality, cardinality) = group_record_content(&ctx, body)?;
+    let (params, body) = lambda_params(args, "map_bags", 2, span)?;
+    let ctx = Context::bag(params[0], params[1], &table);
+    let (columns, totality, cardinality) = bag_record_content(&ctx, body)?;
     if cardinality == Cardinality::Singletons
         && table.qualifiers.cardinality == Cardinality::Bag
         && table.qualifiers.completeness != Completeness::Complete
     {
         return Err(error(
-            "a reducing `group_map` needs completeness over the current key (a \
+            "a reducing `map_bags` needs completeness over the current key (a \
              fold over a partial bag is silently wrong); establish it with \
              `completeness_check { ... }` or `assume { complete }` first",
             span,
@@ -622,7 +626,7 @@ fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec
     }
     Ok(PipeTy::Table(TableType {
         content: Content {
-            index: table.content.index,
+            key: table.content.key,
             columns,
         },
         qualifiers: Qualifiers {
@@ -636,22 +640,19 @@ fn op_group_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec
     }))
 }
 
-/// Type a `group_map` record body into columns, totality, and the result
+/// Type a `map_bags` record body into columns, totality, and the result
 /// cardinality (section 6.2). Single-valued fields are aggregates (`Singletons`);
 /// bag-valued fields are window values (`Bag`); a mix of the two is rejected.
-fn group_record_content(
+fn bag_record_content(
     ctx: &Context,
     body: &Expr,
 ) -> Result<(Vec<Column>, Totality, Cardinality), Vec<TypeError>> {
     let ExprKind::Record(fields) = &body.kind else {
-        return Err(error(
-            "`group_map`'s lambda must return a record",
-            body.span,
-        ));
+        return Err(error("`map_bags`'s lambda must return a record", body.span));
     };
     if fields.is_empty() {
         return Err(error(
-            "`group_map`'s record needs at least one field",
+            "`map_bags`'s record needs at least one field",
             body.span,
         ));
     }
@@ -693,7 +694,7 @@ fn group_record_content(
     }
     if saw_aggregate && saw_window {
         errs.push(te(
-            "a `group_map` record must be all aggregates (one row per key) or all \
+            "a `map_bags` record must be all aggregates (one row per key) or all \
              window values (a bag), not a mix",
             body.span,
         ));
@@ -730,22 +731,22 @@ fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
     ))
 }
 
-/// `bind` (section 6.5, Tier A): the union of a pair of tables of the same
+/// `union` (section 6.5, Tier A): the union of a pair of tables of the same
 /// schema. Cardinality is `Singletons` iff both inputs are and their lineages
 /// are disjoint, else `Bag`; completeness holds iff both inputs are complete;
 /// `exhaustive` holds where both inputs carry it (a union of full fibers is
 /// full, `bind_exhaustive`); the lineage tag-sets union.
-fn op_bind(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_union(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     if !args.is_empty() {
-        return Err(error("`bind` takes no arguments", span));
+        return Err(error("`union` takes no arguments", span));
     }
     let (a, b) = match input {
         PipeTy::Pair(a, b) => (a, b),
-        PipeTy::Table(_) => return Err(error("`bind` expects a pair of tables", span)),
+        PipeTy::Table(_) => return Err(error("`union` expects a pair of tables", span)),
     };
     if a.content != b.content {
         return Err(error(
-            "`bind` requires both tables to have the same schema",
+            "`union` requires both tables to have the same schema",
             span,
         ));
     }
@@ -801,8 +802,8 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
 }
 
 /// Extract a key-first lambda's parameter names and body, requiring exactly
-/// `arity` parameters (ADR 0015): 1 for `split` (`|k|`), 2 for `map` /
-/// `group_map` / the join key (`|k, r|`). A `_` parameter is kept verbatim and
+/// `arity` parameters (ADR 0015): 1 for `split` (`|k|`), 2 for `flat_map` /
+/// `map_bags` / the join key (`|k, r|`). A `_` parameter is kept verbatim and
 /// binds nothing in the context (the ignored key).
 fn lambda_params<'a>(
     args: &[&'a Expr],
@@ -839,32 +840,32 @@ fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     }
 }
 
-/// `extend_key cols` (section 6.3, Tier A): promote each named column into the
-/// index. A column must be total to enter the key (ADR 0013, and the
-/// `project_ungroup` inverse-domain side condition, ADR 0024); completeness
+/// `promote cols` (section 6.3, Tier A): promote each named column into the
+/// key. A column must be total to enter the key (ADR 0013, and the
+/// `demote_promote` inverse-domain side condition, ADR 0024); completeness
 /// and lineage are preserved. `exhaustive` is **forfeited**,
 /// against ADR 0020 section 2's "preserved" sketch: the promoted column
 /// refines the residual key, which can cut a fiber (rows
 /// `(s, math, score=5)` and `(s, port, score=7)` are exhaustive in the
 /// subject axis at residual key `s`, but not at `(s, 5)` after
-/// `extend_key score`), so the carry is unsound as stated.
+/// `promote score`), so the carry is unsound as stated.
 ///
 /// Cardinality is **derived from the gradings** (ADR 0024): the gradings are
 /// facts about the flat table, so the move leaves them untouched and re-runs
-/// the subset check against the grown index. A `singletons` input stays
-/// `singletons` (`ungroup_functional`), and a `bag` whose grading fits the
-/// new index becomes `singletons`, the consumption being definitional (the
-/// grading *is* `Functional (ungroup T)` for the promoted columns).
-fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+/// the subset check against the grown key. A `singletons` input stays
+/// `singletons` (`promote_functional`), and a `bag` whose grading fits the
+/// new key becomes `singletons`, the consumption being definitional (the
+/// grading *is* `Functional (promote T)` for the promoted columns).
+fn op_promote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
-        return Err(error("`extend_key` needs at least one column", span));
+        return Err(error("`promote` needs at least one column", span));
     }
     let mut errs = Vec::new();
     let mut cols: Vec<(&str, Span)> = Vec::new();
     for arg in args {
         let ExprKind::Name(col) = &arg.kind else {
-            errs.push(te("`extend_key` expects column names", arg.span));
+            errs.push(te("`promote` expects column names", arg.span));
             continue;
         };
         cols.push((col, arg.span));
@@ -873,7 +874,7 @@ fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
         return Err(errs);
     }
     for (col, span) in &cols {
-        if let Err(e) = promote_to_index(&mut table, col, *span) {
+        if let Err(e) = promote_to_key(&mut table, col, *span) {
             errs.push(e);
         }
     }
@@ -885,9 +886,9 @@ fn op_extend_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     Ok(PipeTy::Table(table))
 }
 
-fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), TypeError> {
-    if table.content.index.iter().any(|c| c.name == col) {
-        return Err(te(format!("`{col}` is already in the index"), span));
+fn promote_to_key(table: &mut TableType, col: &str, span: Span) -> Result<(), TypeError> {
+    if table.content.key.iter().any(|c| c.name == col) {
+        return Err(te(format!("`{col}` is already in the key"), span));
     }
     let Some(pos) = table.content.columns.iter().position(|c| c.name == col) else {
         return Err(te(format!("unknown column `{col}`"), span));
@@ -895,7 +896,7 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     if !table.content.columns[pos].domain.is_key_eligible() {
         return Err(te(
             format!(
-                "`extend_key` cannot promote `{col}`: its type is not key-eligible \
+                "`promote` cannot promote `{col}`: its type is not key-eligible \
                  (a continuous `real` measurement is not an identity)"
             ),
             span,
@@ -903,47 +904,47 @@ fn promote_to_index(table: &mut TableType, col: &str, span: Span) -> Result<(), 
     }
     if table.qualifiers.totality.is_optional(col) {
         return Err(te(
-            format!("`extend_key` requires `{col}` to be total; narrow it first"),
+            format!("`promote` requires `{col}` to be total; narrow it first"),
             span,
         ));
     }
     let column = table.content.columns.remove(pos);
-    table.content.index.push(column);
+    table.content.key.push(column);
     Ok(())
 }
 
-/// `shrink_key cols` (section 6.3, Tier B, ADR 0017 as amended by ADR 0023):
-/// drop index components into the non-index part. Content: the named key
+/// `demote cols` (section 6.3, Tier B, ADR 0017 as amended by ADR 0023):
+/// drop key components into the non-key part. Content: the named key
 /// columns become ordinary columns. Cardinality: **derived from the
 /// gradings** (ADR 0024): the move leaves the gradings untouched and re-runs
-/// the subset check against the shrunken index, so a genuine coarsening
+/// the subset check against the shrunken key, so a genuine coarsening
 /// rises to `bag` (no grading fits the retained key) while the round trip
-/// `extend_key c |> shrink_key c` re-derives `singletons` from the source
-/// grading (`project_ungroup`). Completeness:
+/// `promote c |> demote c` re-derives `singletons` from the source
+/// grading (`demote_promote`). Completeness:
 /// **propagated**, not demanded: a table complete against a reference at the
 /// fine key stays complete against the coarsened reference at the retained key
-/// (`project_completeWrt`); the consumer is the reducing `group_map`
-/// downstream. Lineage: **dropped** (`project_not_preservesDisjoint`), the
-/// lineage break that keeps `shrink_key` Tier B on its own.
-fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+/// (`demote_completeWrt`); the consumer is the reducing `map_bags`
+/// downstream. Lineage: **dropped** (`demote_not_preservesDisjoint`), the
+/// lineage break that keeps `demote` Tier B on its own.
+fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
-        return Err(error("`shrink_key` needs at least one column", span));
+        return Err(error("`demote` needs at least one column", span));
     }
     let mut errs = Vec::new();
     let mut to_drop: Vec<String> = Vec::new();
     for arg in args {
         let ExprKind::Name(col) = &arg.kind else {
-            errs.push(te("`shrink_key` expects column names", arg.span));
+            errs.push(te("`demote` expects column names", arg.span));
             continue;
         };
-        if !table.content.index.iter().any(|c| &c.name == col) {
-            errs.push(te(format!("not an index column `{col}`"), arg.span));
+        if !table.content.key.iter().any(|c| &c.name == col) {
+            errs.push(te(format!("not an key column `{col}`"), arg.span));
             continue;
         }
         if to_drop.contains(col) {
             errs.push(te(
-                format!("`shrink_key` names `{col}` more than once"),
+                format!("`demote` names `{col}` more than once"),
                 arg.span,
             ));
             continue;
@@ -953,26 +954,23 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
     if !errs.is_empty() {
         return Err(errs);
     }
-    // `to_drop` is now distinct, so this counts distinct dropped index columns.
-    if to_drop.len() == table.content.index.len() {
-        return Err(error(
-            "`shrink_key` must leave at least one index column",
-            span,
-        ));
+    // `to_drop` is now distinct, so this counts distinct dropped key columns.
+    if to_drop.len() == table.content.key.len() {
+        return Err(error("`demote` must leave at least one key column", span));
     }
-    // Move each dropped key column into the non-index part.
+    // Move each dropped key column into the non-key part.
     let (dropped, kept): (Vec<Column>, Vec<Column>) = table
         .content
-        .index
+        .key
         .drain(..)
         .partition(|c| to_drop.contains(&c.name));
-    table.content.index = kept;
+    table.content.key = kept;
     table.content.columns.extend(dropped);
     table.derive_cardinality();
     table.qualifiers.lineage = Lineage::dropped();
     // Completeness carries over unchanged: whatever fact held at the fine key
     // holds against the coarsened reference at the retained key
-    // (`project_completeWrt`, ADR 0023).
+    // (`demote_completeWrt`, ADR 0023).
     // `exhaustive` is forfeited: ADR 0020 section 2 sketches the retained-axis
     // carry (a union of full fibers is full), but the key-changing propagation
     // rows are the ADR's open formal work item, so the checker stays
@@ -983,7 +981,7 @@ fn op_shrink_key(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Ve
 
 /// `unpivot name value` (section 6.6, Tier A, ADR 0020): fold **all**
 /// attribute columns, which must share one domain, into one `value` column,
-/// spreading their *names* into a new `enum` index column `name`. A missing
+/// spreading their *names* into a new `enum` key column `name`. A missing
 /// cell yields no row (drop semantics), so `value` is total by construction
 /// (`unpivotDrop_minimal`). Cardinality and lineage are preserved
 /// (`unpivotDrop_splitSafe`, `unpivotDrop_preservesDisjoint`). Establishes
@@ -1041,10 +1039,10 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
         }
     }
 
-    // The new name and value columns must not collide with an index column
+    // The new name and value columns must not collide with an key column
     // (every attribute is folded, so only the key survives the fold).
     for (arg, new_col) in [(name_arg, name_col), (value_arg, value_col)] {
-        if table.content.index.iter().any(|c| &c.name == new_col) {
+        if table.content.key.iter().any(|c| &c.name == new_col) {
             errs.push(te(
                 format!("`unpivot` would duplicate column `{new_col}`"),
                 arg.span,
@@ -1073,7 +1071,7 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
         name: value_col.clone(),
         domain,
     });
-    table.content.index.push(Column {
+    table.content.key.push(Column {
         name: name_col.clone(),
         domain: ColumnType::Enum {
             name: name_col.clone(),
@@ -1096,8 +1094,8 @@ fn op_unpivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
 }
 
 /// `pivot name value` (section 6.6, Tier B, ADR 0020): the inverse of
-/// `unpivot`, in one form. `name` must be an enum-domained **index** column
-/// (`extend_key` promotes an attribute first); the input must be
+/// `unpivot`, in one form. `name` must be an enum-domained **key** column
+/// (`promote` promotes an attribute first); the input must be
 /// `singletons` with `value` as its only attribute (the key discipline is
 /// what makes each spread cell well-defined). It consumes **no completeness
 /// fact**: an absent (key, variant) row becomes a missing cell, and the
@@ -1132,29 +1130,29 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         ));
     }
 
-    // `name` spreads an index column; an attribute is rejected with the
-    // composition hint (ADR 0020: the bag long form is `extend_key` away).
-    let Some(idx_pos) = table.content.index.iter().position(|c| &c.name == name_col) else {
+    // `name` spreads an key column; an attribute is rejected with the
+    // composition hint (ADR 0020: the bag long form is `promote` away).
+    let Some(idx_pos) = table.content.key.iter().position(|c| &c.name == name_col) else {
         if table.content.columns.iter().any(|c| &c.name == name_col) {
             return Err(error(
                 format!(
-                    "`pivot` spreads an index column; promote `{name_col}` with \
-                     `extend_key {name_col}` first"
+                    "`pivot` spreads an key column; promote `{name_col}` with \
+                     `promote {name_col}` first"
                 ),
                 name_arg.span,
             ));
         }
         return Err(error(format!("unknown column `{name_col}`"), name_arg.span));
     };
-    let ColumnType::Enum { variants, .. } = table.content.index[idx_pos].domain.clone() else {
+    let ColumnType::Enum { variants, .. } = table.content.key[idx_pos].domain.clone() else {
         return Err(error(
             format!("`pivot` requires `{name_col}` to be a finite-enumerable enum"),
             name_arg.span,
         ));
     };
-    if table.content.index.len() == 1 {
+    if table.content.key.len() == 1 {
         return Err(error(
-            "`pivot` must leave at least one index column",
+            "`pivot` must leave at least one key column",
             name_arg.span,
         ));
     }
@@ -1186,13 +1184,13 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         ));
     }
     let value_domain = table.content.columns[value_pos].domain.clone();
-    // A spread variant must not collide with a retained index column (the
+    // A spread variant must not collide with a retained key column (the
     // name key and value column are about to be removed).
     let mut errs = Vec::new();
     for variant in &variants {
         if table
             .content
-            .index
+            .key
             .iter()
             .any(|c| &c.name == variant && &c.name != name_col)
         {
@@ -1206,7 +1204,7 @@ fn op_pivot(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         return Err(errs);
     }
 
-    table.content.index.remove(idx_pos);
+    table.content.key.remove(idx_pos);
     table.content.columns.clear();
     // The totality upgrade (ADR 0020): the rectangle supplies the row at
     // every (key, variant) and the total value column supplies the value in
@@ -1431,7 +1429,7 @@ mod tests {
             "readings",
             "Reading",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
                 scol("machine", ColumnType::String, ColumnRole::Attr, false),
                 scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
                 scol("peak", ColumnType::Real, ColumnRole::Attr, true),
@@ -1443,7 +1441,7 @@ mod tests {
             "machines",
             "Machine",
             vec![
-                scol("machine", ColumnType::String, ColumnRole::Index, false),
+                scol("machine", ColumnType::String, ColumnRole::Key, false),
                 scol("vendor", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
@@ -1471,7 +1469,7 @@ mod tests {
         let PipeTy::Table(t) = pipe_ty(&s, "readings").expect("a table") else {
             panic!("readings should be a table");
         };
-        assert_eq!(t.content.index[0].name, "ts");
+        assert_eq!(t.content.key[0].name, "ts");
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
@@ -1508,39 +1506,39 @@ mod tests {
     #[test]
     fn unknown_operation_suggests_a_close_name() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> shrink_ky machine").expect_err("typo");
-        assert!(errs[0].message.contains("did you mean `shrink_key`?"));
+        let errs = pipe_ty(&s, "readings |> demot machine").expect_err("typo");
+        assert!(errs[0].message.contains("did you mean `demote`?"));
     }
 
     #[test]
-    fn extend_key_promotes_a_total_column() {
+    fn promote_promotes_a_total_column() {
         let s = sample_sources();
-        let t = table_of(pipe_ty(&s, "readings |> extend_key machine").expect("ok"));
-        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        let t = table_of(pipe_ty(&s, "readings |> promote machine").expect("ok"));
+        assert!(t.content.key.iter().any(|c| c.name == "machine"));
         assert!(!t.content.columns.iter().any(|c| c.name == "machine"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]
-    fn extend_key_rejects_optional_column() {
+    fn promote_rejects_optional_column() {
         let s = sample_sources();
         // `note` is key-eligible (string) but optional.
-        let errs = pipe_ty(&s, "readings |> extend_key note").expect_err("optional");
+        let errs = pipe_ty(&s, "readings |> promote note").expect_err("optional");
         assert!(errs[0].message.contains("to be total"));
     }
 
     #[test]
-    fn extend_key_rejects_real_column() {
+    fn promote_rejects_real_column() {
         let s = sample_sources();
         // `temperature` is a real measurement: not key-eligible (ADR 0014).
-        let errs = pipe_ty(&s, "readings |> extend_key temperature").expect_err("real");
+        let errs = pipe_ty(&s, "readings |> promote temperature").expect_err("real");
         assert!(errs[0].message.contains("key-eligible"));
     }
 
     #[test]
-    fn extend_key_unknown_column_errors() {
+    fn promote_unknown_column_errors() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> extend_key bogus").expect_err("unknown column");
+        let errs = pipe_ty(&s, "readings |> promote bogus").expect_err("unknown column");
         assert!(errs[0].message.contains("unknown column `bogus`"));
     }
 
@@ -1548,9 +1546,13 @@ mod tests {
     fn map_derives_columns_preserving_cardinality() {
         let s = sample_sources();
         let t = table_of(
-            pipe_ty(&s, "readings |> map |k, r| (.hot = r.temperature > 30.0)").expect("ok"),
+            pipe_ty(
+                &s,
+                "readings |> flat_map |k, r| (.hot = r.temperature > 30.0)",
+            )
+            .expect("ok"),
         );
-        assert!(t.content.index.iter().any(|c| c.name == "ts"));
+        assert!(t.content.key.iter().any(|c| c.name == "ts"));
         assert_eq!(t.content.columns.len(), 1);
         assert_eq!(t.content.columns[0].name, "hot");
         assert_eq!(t.content.columns[0].domain, ColumnType::Bool);
@@ -1561,17 +1563,18 @@ mod tests {
     fn map_propagates_field_errors() {
         let s = sample_sources();
         // `peak` is optional, so a scalar on it is rejected by expr_check.
-        let errs = pipe_ty(&s, "readings |> map |k, r| (.x = r.peak + 1)").expect_err("optional");
+        let errs =
+            pipe_ty(&s, "readings |> flat_map |k, r| (.x = r.peak + 1)").expect_err("optional");
         assert!(errs[0].message.contains("known value"));
     }
 
     #[test]
     fn map_keeps_the_value_row() {
         let s = sample_sources();
-        // `|k, r| r` is the identity: the value columns are preserved, the index
+        // `|k, r| r` is the identity: the value columns are preserved, the key
         // and cardinality unchanged (ADR 0015).
-        let t = table_of(pipe_ty(&s, "readings |> map |k, r| r").expect("ok"));
-        assert!(t.content.index.iter().any(|c| c.name == "ts"));
+        let t = table_of(pipe_ty(&s, "readings |> flat_map |k, r| r").expect("ok"));
+        assert!(t.content.key.iter().any(|c| c.name == "ts"));
         for name in ["machine", "temperature", "peak", "flag", "note"] {
             assert!(t.content.columns.iter().any(|c| c.name == name), "{name}");
         }
@@ -1583,8 +1586,9 @@ mod tests {
         let s = sample_sources();
         // `if r.flag then r else ()` keeps or drops a row: a filter, still
         // `Singletons` (max collection size is 1).
-        let t =
-            table_of(pipe_ty(&s, "readings |> map |_, r| if r.flag then r else ()").expect("ok"));
+        let t = table_of(
+            pipe_ty(&s, "readings |> flat_map |_, r| if r.flag then r else ()").expect("ok"),
+        );
         assert!(t.content.columns.iter().any(|c| c.name == "temperature"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
@@ -1593,57 +1597,57 @@ mod tests {
     fn map_expands_to_a_bag() {
         let s = sample_sources();
         // A two-row collection expands each input row: cardinality becomes `Bag`.
-        let t = table_of(pipe_ty(&s, "readings |> map |k, r| (r, r)").expect("ok"));
+        let t = table_of(pipe_ty(&s, "readings |> flat_map |k, r| (r, r)").expect("ok"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
     }
 
     #[test]
     fn map_that_always_drops_cannot_infer_schema() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> map |k, r| ()").expect_err("no schema");
+        let errs = pipe_ty(&s, "readings |> flat_map |k, r| ()").expect_err("no schema");
         assert!(errs[0].message.contains("infer the output"));
     }
 
     #[test]
     fn map_row_may_not_set_the_index() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> map |k, r| (.ts = 1)").expect_err("index column");
-        assert!(errs[0].message.contains("index column `ts`"));
+        let errs = pipe_ty(&s, "readings |> flat_map |k, r| (.ts = 1)").expect_err("key column");
+        assert!(errs[0].message.contains("key column `ts`"));
     }
 
     #[test]
-    fn group_map_summarizes_to_singletons() {
+    fn map_bags_summarizes_to_singletons() {
         let s = sample_sources();
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine \
-                 |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
+                "readings |> promote machine \
+                 |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
             )
             .expect("ok"),
         );
-        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.key.iter().any(|c| c.name == "machine"));
         assert!(t.content.columns.iter().any(|c| c.name == "temp_mean"));
         assert!(t.content.columns.iter().any(|c| c.name == "temp_max"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]
-    fn group_map_rejects_non_numeric_aggregate() {
+    fn map_bags_rejects_non_numeric_aggregate() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> group_map |k, g| (.m = sum g.machine)")
+        let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.m = sum b.machine)")
             .expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
     }
 
     #[test]
-    fn group_map_with_a_bag_field_stays_a_bag() {
+    fn map_bags_with_a_bag_field_stays_a_bag() {
         let s = sample_sources();
         // A bag-valued field is the window shape: one output row per input row.
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> group_map |k, g| (.temps = g.temperature)",
+                "readings |> promote machine |> map_bags |k, b| (.temps = b.temperature)",
             )
             .expect("ok"),
         );
@@ -1652,11 +1656,11 @@ mod tests {
     }
 
     #[test]
-    fn group_map_rejects_mixed_aggregate_and_window() {
+    fn map_bags_rejects_mixed_aggregate_and_window() {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> group_map |k, g| (.m = sum g.temperature, .t = g.temperature)",
+            "readings |> map_bags |k, b| (.m = sum b.temperature, .t = b.temperature)",
         )
         .expect_err("mixed");
         assert!(errs.iter().any(|e| e.message.contains("not a mix")));
@@ -1684,7 +1688,7 @@ mod tests {
     #[test]
     fn split_predicate_sees_only_index() {
         let s = sample_sources();
-        // `machine` is a column, not in the index, so it is unknown in the key.
+        // `machine` is a column, not in the key, so it is unknown in the key.
         let errs = pipe_ty(&s, "readings |> split |k| k.machine == \"m1\"").expect_err("unknown");
         assert!(errs[0].message.contains("unknown column `machine`"));
     }
@@ -1692,39 +1696,39 @@ mod tests {
     #[test]
     fn bind_reconstructs_disjoint_split() {
         let s = sample_sources();
-        let t = table_of(pipe_ty(&s, "readings |> split |k| k.ts > 100 |> bind").expect("ok"));
+        let t = table_of(pipe_ty(&s, "readings |> split |k| k.ts > 100 |> union").expect("ok"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]
     fn bind_of_overlapping_inputs_is_a_bag() {
         let s = sample_sources();
-        let t = table_of(pipe_ty(&s, "(readings, readings) |> bind").expect("ok"));
+        let t = table_of(pipe_ty(&s, "(readings, readings) |> union").expect("ok"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
     }
 
     #[test]
     fn bind_requires_a_pair() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> bind").expect_err("not a pair");
+        let errs = pipe_ty(&s, "readings |> union").expect_err("not a pair");
         assert!(errs[0].message.contains("expects a pair"));
     }
 
     #[test]
-    fn left_join_adds_optional_columns() {
+    fn lookup_adds_optional_columns() {
         let s = sample_sources();
         let t =
-            table_of(pipe_ty(&s, "readings |> left_join machines (|_, l| l.machine)").expect("ok"));
+            table_of(pipe_ty(&s, "readings |> lookup machines (|_, r| r.machine)").expect("ok"));
         assert!(t.content.columns.iter().any(|c| c.name == "vendor"));
         assert!(t.qualifiers.totality.is_optional("vendor"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]
-    fn inner_join_keeps_totality() {
+    fn lookup_total_keeps_totality() {
         let s = sample_sources();
         let t = table_of(
-            pipe_ty(&s, "readings |> inner_join machines (|_, l| l.machine)").expect("ok"),
+            pipe_ty(&s, "readings |> lookup_total machines (|_, r| r.machine)").expect("ok"),
         );
         assert!(t.qualifiers.totality.is_total("vendor"));
     }
@@ -1733,7 +1737,7 @@ mod tests {
     fn join_key_domain_must_match() {
         let s = sample_sources();
         // `ts` is a number, but `machines` is keyed by a string.
-        let errs = pipe_ty(&s, "readings |> left_join machines (|k, l| k.ts)").expect_err("domain");
+        let errs = pipe_ty(&s, "readings |> lookup machines (|k, r| k.ts)").expect_err("domain");
         assert!(errs[0].message.contains("key domain"));
     }
 
@@ -1744,7 +1748,7 @@ mod tests {
             "wide",
             "Slot",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
                 scol("lo", ColumnType::Real, ColumnRole::Attr, false),
                 scol("hi", ColumnType::Real, ColumnRole::Attr, sparse),
             ],
@@ -1758,7 +1762,7 @@ mod tests {
         let t = table_of(pipe_ty(&s, "wide |> unpivot metric reading").expect("ok"));
         let metric = t
             .content
-            .index
+            .key
             .iter()
             .find(|c| c.name == "metric")
             .expect("metric in the key");
@@ -1796,7 +1800,7 @@ mod tests {
         let bare = from_cols(
             "bare",
             "Slot",
-            vec![scol("ts", ColumnType::Int, ColumnRole::Index, false)],
+            vec![scol("ts", ColumnType::Int, ColumnRole::Key, false)],
         );
         let s = Sources::new().with("bare", bare);
         let errs = pipe_ty(&s, "bare |> unpivot metric reading").expect_err("no attributes");
@@ -1811,14 +1815,14 @@ mod tests {
         assert!(errs[0].message.contains("folds all attribute columns"));
     }
 
-    /// A source with a non-index `enum` column: `pivot` rejects it with the
-    /// `extend_key` hint (the bag long form is composition, ADR 0020).
+    /// A source with a non-key `enum` column: `pivot` rejects it with the
+    /// `promote` hint (the bag long form is composition, ADR 0020).
     fn enum_source() -> Sources {
         let obs = from_cols(
             "obs",
             "Obs",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
                 scol(
                     "metric",
                     ColumnType::Enum {
@@ -1871,19 +1875,19 @@ mod tests {
     fn pivot_rejects_an_attribute_name_column() {
         let s = enum_source();
         // `metric` sits in attribute position: the bag long form is reachable
-        // by composition, so the rejection points at `extend_key`.
+        // by composition, so the rejection points at `promote`.
         let errs = pipe_ty(&s, "obs |> pivot metric reading").expect_err("attribute position");
-        assert!(errs[0].message.contains("extend_key"));
+        assert!(errs[0].message.contains("promote"));
     }
 
     #[test]
-    fn pivot_after_extend_key_spreads_a_promoted_enum() {
+    fn pivot_after_promote_spreads_a_promoted_enum() {
         let s = enum_source();
         let t = table_of(
             pipe_ty(
                 &s,
-                "obs |> map |_, r| (.metric = r.metric, .reading = r.reading) \
-                 |> extend_key metric |> pivot metric reading",
+                "obs |> flat_map |_, r| (.metric = r.metric, .reading = r.reading) \
+                 |> promote metric |> pivot metric reading",
             )
             .expect("ok"),
         );
@@ -1901,7 +1905,7 @@ mod tests {
         // A bag input (expanded by map) cannot pivot: cells are not card <= 1.
         let errs = pipe_ty(
             &s,
-            "wide |> unpivot metric reading |> map |k, r| (r, r) |> pivot metric reading",
+            "wide |> unpivot metric reading |> flat_map |k, r| (r, r) |> pivot metric reading",
         )
         .expect_err("bag");
         assert!(errs[0].message.contains("singletons"));
@@ -1910,8 +1914,8 @@ mod tests {
     #[test]
     fn pivot_name_column_must_be_enum() {
         let s = sample_sources();
-        // `ts` is an index column, but `int` is not finite-enumerable.
-        let errs = pipe_ty(&s, "readings |> extend_key machine |> pivot ts machine")
+        // `ts` is an key column, but `int` is not finite-enumerable.
+        let errs = pipe_ty(&s, "readings |> promote machine |> pivot ts machine")
             .expect_err("not enumerable");
         assert!(errs[0].message.contains("finite-enumerable"));
     }
@@ -1923,7 +1927,7 @@ mod tests {
         let errs = pipe_ty(
             &s,
             "wide |> unpivot metric reading \
-             |> map |_, r| (.reading = r.reading, .extra = 1) \
+             |> flat_map |_, r| (.reading = r.reading, .extra = 1) \
              |> pivot metric reading",
         )
         .expect_err("extra attribute");
@@ -1943,7 +1947,7 @@ mod tests {
                         name: "Metric".to_string(),
                         variants: vec!["lo".to_string(), "hi".to_string()],
                     },
-                    ColumnRole::Index,
+                    ColumnRole::Key,
                     false,
                 ),
                 scol("reading", ColumnType::Real, ColumnRole::Attr, false),
@@ -1951,25 +1955,25 @@ mod tests {
         );
         let s = Sources::new().with("long", long);
         let errs = pipe_ty(&s, "long |> pivot metric reading").expect_err("empty key");
-        assert!(errs[0].message.contains("at least one index"));
+        assert!(errs[0].message.contains("at least one key"));
     }
 
     #[test]
-    fn shrink_key_propagates_completeness_to_the_coarser_key() {
+    fn demote_propagates_completeness_to_the_coarser_key() {
         let s = sample_sources();
         // Promote `machine`, establish completeness, then genuinely coarsen
         // by dropping `ts`: result is a bag (no grading fits the retained
         // key), still complete (against the coarsened reference,
-        // `project_completeWrt`), with lineage dropped.
+        // `demote_completeWrt`), with lineage dropped.
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> assume { complete } \
-                 |> shrink_key ts",
+                "readings |> promote machine |> assume { complete } \
+                 |> demote ts",
             )
             .expect("ok"),
         );
-        assert!(!t.content.index.iter().any(|c| c.name == "ts"));
+        assert!(!t.content.key.iter().any(|c| c.name == "ts"));
         assert!(t.content.columns.iter().any(|c| c.name == "ts"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
         assert_eq!(t.qualifiers.completeness, Completeness::Complete);
@@ -1977,16 +1981,15 @@ mod tests {
     }
 
     #[test]
-    fn shrink_key_alone_needs_no_completeness() {
+    fn demote_alone_needs_no_completeness() {
         let s = sample_sources();
-        // ADR 0023: a reindex with no downstream reducer is admitted on its
+        // ADR 0023: a rekey with no downstream reducer is admitted on its
         // own; a possibly partial bag is an honest representation of the rows
         // present, and the obligation belongs to the reducer.  Shrinking a
-        // column other than the promoted one keeps this a genuine reindex
+        // column other than the promoted one keeps this a genuine rekey
         // rather than an ADR 0024 round trip.
-        let t =
-            table_of(pipe_ty(&s, "readings |> extend_key machine |> shrink_key ts").expect("ok"));
-        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        let t = table_of(pipe_ty(&s, "readings |> promote machine |> demote ts").expect("ok"));
+        assert!(t.content.key.iter().any(|c| c.name == "machine"));
         assert!(t.content.columns.iter().any(|c| c.name == "ts"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
         assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
@@ -1994,27 +1997,27 @@ mod tests {
     }
 
     #[test]
-    fn reducing_group_map_over_a_bag_demands_completeness() {
+    fn reducing_map_bags_over_a_bag_demands_completeness() {
         let s = sample_sources();
         // The fold lands where the unsoundness is (ADR 0023): a reducing
-        // `group_map` over a possibly partial bag is rejected without an
-        // establish step.  The reindex must not be an exact ADR 0024 round
+        // `map_bags` over a possibly partial bag is rejected without an
+        // establish step.  The rekey must not be an exact ADR 0024 round
         // trip, or the singletons input would discharge trivially.
         let errs = pipe_ty(
             &s,
-            "readings |> extend_key machine |> shrink_key ts \
-             |> group_map |k, g| (.n = count g.temperature)",
+            "readings |> promote machine |> demote ts \
+             |> map_bags |k, b| (.n = count b.temperature)",
         )
         .expect_err("incomplete bag");
-        assert!(errs[0].message.contains("reducing `group_map`"), "{errs:?}");
+        assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
     }
 
     /// Equality up to attribute order (ADR 0024): a round trip restores the
-    /// index (order included), the attribute *set*, and every qualifier;
+    /// key (order included), the attribute *set*, and every qualifier;
     /// demoted columns re-enter at the end of the attribute list, so the
     /// attribute order itself is not part of the restoration.
     fn assert_restores(t: &TableType, base: &TableType) {
-        assert_eq!(t.content.index, base.content.index);
+        assert_eq!(t.content.key, base.content.key);
         let names = |cols: &[Column]| -> BTreeMap<String, ColumnType> {
             cols.iter()
                 .map(|c| (c.name.clone(), c.domain.clone()))
@@ -2028,34 +2031,30 @@ mod tests {
     fn round_trip_restores_the_source_type() {
         let s = sample_sources();
         // ADR 0024: the promote/demote round trip re-derives the source's
-        // type from the surviving grading (`project_ungroup` at the type
+        // type from the surviving grading (`demote_promote` at the type
         // level): `singletons` again, every qualifier restored.
         let base = table_of(pipe_ty(&s, "readings").expect("ok"));
-        let t = table_of(
-            pipe_ty(&s, "readings |> extend_key machine |> shrink_key machine").expect("ok"),
-        );
+        let t = table_of(pipe_ty(&s, "readings |> promote machine |> demote machine").expect("ok"));
         assert_restores(&t, &base);
     }
 
     #[test]
     fn round_trip_restores_in_the_demote_first_order() {
-        // The opposite composition (`ungroup_project`, ADR 0024) restores
+        // The opposite composition (`promote_demote`, ADR 0024) restores
         // unconditionally: the demoted column is total by construction, and
-        // the source grading fits the re-grown index.
+        // the source grading fits the re-grown key.
         let events = from_cols(
             "events",
             "Event",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
-                scol("machine", ColumnType::String, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
+                scol("machine", ColumnType::String, ColumnRole::Key, false),
                 scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
         let s = Sources::new().with("events", events);
         let base = table_of(pipe_ty(&s, "events").expect("ok"));
-        let t = table_of(
-            pipe_ty(&s, "events |> shrink_key machine |> extend_key machine").expect("ok"),
-        );
+        let t = table_of(pipe_ty(&s, "events |> demote machine |> promote machine").expect("ok"));
         assert_restores(&t, &base);
     }
 
@@ -2064,13 +2063,13 @@ mod tests {
         let s = sample_sources();
         // Chained promotions need no stack (ADR 0024): the single source
         // grading survives every move untouched, and each demotion re-runs
-        // the subset check against the shrunken index.
+        // the subset check against the shrunken key.
         let base = table_of(pipe_ty(&s, "readings").expect("ok"));
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> extend_key flag \
-                 |> shrink_key flag |> shrink_key machine",
+                "readings |> promote machine |> promote flag \
+                 |> demote flag |> demote machine",
             )
             .expect("ok"),
         );
@@ -2087,8 +2086,8 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> assume { complete } \
-                 |> shrink_key machine",
+                "readings |> promote machine |> assume { complete } \
+                 |> demote machine",
             )
             .expect("ok"),
         );
@@ -2102,16 +2101,11 @@ mod tests {
         // The cross-view shape in one pipeline (ADR 0024): the bag over
         // `machine` still carries the `{ts}` grading, so promoting `ts`
         // back is `singletons` again; consumption is definitional (the
-        // grading *is* `Functional (ungroup T)`).
-        let bag =
-            table_of(pipe_ty(&s, "readings |> extend_key machine |> shrink_key ts").expect("ok"));
+        // grading *is* `Functional (promote T)`).
+        let bag = table_of(pipe_ty(&s, "readings |> promote machine |> demote ts").expect("ok"));
         assert_eq!(bag.qualifiers.cardinality, Cardinality::Bag);
         let t = table_of(
-            pipe_ty(
-                &s,
-                "readings |> extend_key machine |> shrink_key ts |> extend_key ts",
-            )
-            .expect("ok"),
+            pipe_ty(&s, "readings |> promote machine |> demote ts |> promote ts").expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
@@ -2119,15 +2113,15 @@ mod tests {
     #[test]
     fn an_intervening_map_resets_the_gradings() {
         let s = sample_sources();
-        // The conservative rule (ADR 0024): `map` has no transport witness,
+        // The conservative rule (ADR 0024): `flat_map` has no transport witness,
         // so it resets the gradings to its own output cardinality and the
         // later demotion is a genuine coarsening, not a round trip.
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine \
-                 |> map |k, r| (.temperature = r.temperature) \
-                 |> shrink_key machine",
+                "readings |> promote machine \
+                 |> flat_map |k, r| (.temperature = r.temperature) \
+                 |> demote machine",
             )
             .expect("ok"),
         );
@@ -2135,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn reducing_group_map_after_an_exact_round_trip_is_admitted() {
+    fn reducing_map_bags_after_an_exact_round_trip_is_admitted() {
         let s = sample_sources();
         // ADR 0024 composed with ADR 0023: the round trip restores the
         // `singletons` cardinality, so the reducer's obligation discharges
@@ -2143,8 +2137,8 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> shrink_key machine \
-                 |> group_map |k, g| (.n = count g.temperature)",
+                "readings |> promote machine |> demote machine \
+                 |> map_bags |k, b| (.n = count b.temperature)",
             )
             .expect("ok"),
         );
@@ -2152,15 +2146,15 @@ mod tests {
     }
 
     #[test]
-    fn completeness_propagates_through_shrink_key_to_the_reducer() {
+    fn completeness_propagates_through_demote_to_the_reducer() {
         let s = sample_sources();
-        // The establish step may sit before or after `shrink_key`; either way
+        // The establish step may sit before or after `demote`; either way
         // the reducer's demand is met (ADR 0023).
         for src in [
-            "readings |> extend_key machine |> assume { complete } |> shrink_key machine \
-             |> group_map |k, g| (.n = count g.temperature)",
-            "readings |> extend_key machine |> shrink_key machine |> assume { complete } \
-             |> group_map |k, g| (.n = count g.temperature)",
+            "readings |> promote machine |> assume { complete } |> demote machine \
+             |> map_bags |k, b| (.n = count b.temperature)",
+            "readings |> promote machine |> demote machine |> assume { complete } \
+             |> map_bags |k, b| (.n = count b.temperature)",
         ] {
             let t = table_of(pipe_ty(&s, src).expect("ok"));
             assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
@@ -2168,15 +2162,15 @@ mod tests {
     }
 
     #[test]
-    fn window_group_map_over_a_bag_needs_no_completeness() {
+    fn window_map_bags_over_a_bag_needs_no_completeness() {
         let s = sample_sources();
         // Only the reducing shape consumes the fact; a window body (a bag
         // return) is one output row per input row, faithful on a partial bag.
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine |> shrink_key machine \
-                 |> group_map |k, g| (.temps = g.temperature)",
+                "readings |> promote machine |> demote machine \
+                 |> map_bags |k, b| (.temps = b.temperature)",
             )
             .expect("ok"),
         );
@@ -2184,29 +2178,29 @@ mod tests {
     }
 
     #[test]
-    fn reducing_group_map_over_singletons_discharges_trivially() {
+    fn reducing_map_bags_over_singletons_discharges_trivially() {
         let s = sample_sources();
         // At `card <= 1` a present key's single row is its whole fiber
         // (`fiberCompleteWrt_of_functional`), so the ordinary aggregation over
         // a plain store is ceremony-free (ADR 0023).
         let t = table_of(
-            pipe_ty(&s, "readings |> group_map |k, g| (.m = max g.temperature)").expect("ok"),
+            pipe_ty(&s, "readings |> map_bags |k, b| (.m = max b.temperature)").expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
     #[test]
-    fn shrink_key_cannot_empty_the_index() {
+    fn demote_cannot_empty_the_index() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> shrink_key ts").expect_err("empty index");
-        assert!(errs[0].message.contains("at least one index"));
+        let errs = pipe_ty(&s, "readings |> demote ts").expect_err("empty key");
+        assert!(errs[0].message.contains("at least one key"));
     }
 
     #[test]
-    fn shrink_key_unknown_column_errors() {
+    fn demote_unknown_column_errors() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> shrink_key bogus").expect_err("unknown");
-        assert!(errs[0].message.contains("not an index column `bogus`"));
+        let errs = pipe_ty(&s, "readings |> demote bogus").expect_err("unknown");
+        assert!(errs[0].message.contains("not an key column `bogus`"));
     }
 
     #[test]
@@ -2250,7 +2244,7 @@ mod tests {
     #[test]
     fn unpivot_rejects_duplicate_output_column() {
         let s = wide_source(false);
-        // The new name column collides with the `ts` index column.
+        // The new name column collides with the `ts` key column.
         let errs = pipe_ty(&s, "wide |> unpivot ts reading").expect_err("duplicate");
         assert!(errs[0].message.contains("would duplicate column `ts`"));
     }
@@ -2271,20 +2265,20 @@ mod tests {
 
     #[test]
     fn pivot_rejects_variant_colliding_with_a_column() {
-        // A retained index column `lo` collides with the spread variant `lo`.
+        // A retained key column `lo` collides with the spread variant `lo`.
         let long = from_cols(
             "long",
             "Slot",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
-                scol("lo", ColumnType::Int, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
+                scol("lo", ColumnType::Int, ColumnRole::Key, false),
                 scol(
                     "metric",
                     ColumnType::Enum {
                         name: "Metric".to_string(),
                         variants: vec!["lo".to_string(), "hi".to_string()],
                     },
-                    ColumnRole::Index,
+                    ColumnRole::Key,
                     false,
                 ),
                 scol("reading", ColumnType::Real, ColumnRole::Attr, false),
@@ -2307,7 +2301,7 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "wide |> unpivot metric reading |> map |_, r| (.r2 = r.reading)",
+                "wide |> unpivot metric reading |> flat_map |_, r| (.r2 = r.reading)",
             )
             .expect("ok"),
         );
@@ -2323,7 +2317,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "wide |> unpivot metric reading \
-                 |> map |_, r| if r.reading > 0.0 then r else ()",
+                 |> flat_map |_, r| if r.reading > 0.0 then r else ()",
             )
             .expect("ok"),
         );
@@ -2331,15 +2325,15 @@ mod tests {
     }
 
     #[test]
-    fn exhaustive_survives_group_map_and_bind_of_carriers() {
+    fn exhaustive_survives_map_bags_and_bind_of_carriers() {
         let s = wide_source(false);
-        // `fiberMap_exhaustive` (both `group_map` shapes) and
+        // `fiberMap_exhaustive` (both `map_bags` shapes) and
         // `bind_exhaustive` (a union of full fibers is full).
         let t = table_of(
             pipe_ty(
                 &s,
                 "wide |> unpivot metric reading \
-                 |> group_map |_, g| (.reading = max g.reading)",
+                 |> map_bags |_, b| (.reading = max b.reading)",
             )
             .expect("ok"),
         );
@@ -2347,7 +2341,7 @@ mod tests {
         let bound = table_of(
             pipe_ty(
                 &s,
-                "(wide |> unpivot metric reading, wide |> unpivot metric reading) |> bind",
+                "(wide |> unpivot metric reading, wide |> unpivot metric reading) |> union",
             )
             .expect("ok"),
         );
@@ -2363,7 +2357,7 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "wide |> unpivot metric reading |> split |k| k.ts > 100 |> bind",
+                "wide |> unpivot metric reading |> split |k| k.ts > 100 |> union",
             )
             .expect("ok"),
         );
@@ -2371,33 +2365,32 @@ mod tests {
     }
 
     #[test]
-    fn extend_key_forfeits_exhaustive() {
+    fn promote_forfeits_exhaustive() {
         // The promoted column refines the residual key, which can cut a
         // fiber: the ADR 0020 section 2 sketch does not hold for this row,
-        // so the checker forfeits the fact (see `op_extend_key`).
+        // so the checker forfeits the fact (see `op_promote`).
         let wide = from_cols(
             "wide",
             "Slot",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
                 scol("lo", ColumnType::String, ColumnRole::Attr, false),
                 scol("hi", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
         let s = Sources::new().with("wide", wide);
-        let t = table_of(
-            pipe_ty(&s, "wide |> unpivot metric reading |> extend_key reading").expect("ok"),
-        );
+        let t =
+            table_of(pipe_ty(&s, "wide |> unpivot metric reading |> promote reading").expect("ok"));
         assert!(t.qualifiers.exhaustive.is_empty());
     }
 
     #[test]
-    fn inner_join_forfeits_exhaustive() {
+    fn lookup_total_forfeits_exhaustive() {
         let wide = from_cols(
             "wide",
             "Slot",
             vec![
-                scol("ts", ColumnType::Int, ColumnRole::Index, false),
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
                 scol("lo", ColumnType::String, ColumnRole::Attr, false),
                 scol("hi", ColumnType::String, ColumnRole::Attr, false),
             ],
@@ -2406,17 +2399,17 @@ mod tests {
             "machines",
             "Machine",
             vec![
-                scol("machine", ColumnType::String, ColumnRole::Index, false),
+                scol("machine", ColumnType::String, ColumnRole::Key, false),
                 scol("vendor", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
         let s = Sources::new().with("wide", wide).with("machines", machines);
-        // An unmatched row drops out of its fiber; `left_join` keeps it
-        // (`leftJoin_exhaustive`), `inner_join` does not.
+        // An unmatched row drops out of its fiber; `lookup` keeps it
+        // (`lookup_exhaustive`), `lookup_total` does not.
         let kept = table_of(
             pipe_ty(
                 &s,
-                "wide |> unpivot metric reading |> left_join machines (|_, l| l.reading)",
+                "wide |> unpivot metric reading |> lookup machines (|_, r| r.reading)",
             )
             .expect("ok"),
         );
@@ -2424,7 +2417,7 @@ mod tests {
         let dropped = table_of(
             pipe_ty(
                 &s,
-                "wide |> unpivot metric reading |> inner_join machines (|_, l| l.reading)",
+                "wide |> unpivot metric reading |> lookup_total machines (|_, r| r.reading)",
             )
             .expect("ok"),
         );
@@ -2432,13 +2425,10 @@ mod tests {
     }
 
     #[test]
-    fn shrink_key_rejects_repeated_column() {
+    fn demote_rejects_repeated_column() {
         let s = sample_sources();
-        let errs = pipe_ty(
-            &s,
-            "readings |> extend_key machine |> shrink_key machine machine",
-        )
-        .expect_err("repeated");
+        let errs = pipe_ty(&s, "readings |> promote machine |> demote machine machine")
+            .expect_err("repeated");
         assert!(errs[0].message.contains("more than once"));
     }
 
@@ -2450,13 +2440,13 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> extend_key machine \
-                 |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)",
+                "readings |> promote machine \
+                 |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
             )
             .expect("machine_temperature types"),
         );
-        assert!(t.content.index.iter().any(|c| c.name == "ts"));
-        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.key.iter().any(|c| c.name == "ts"));
+        assert!(t.content.key.iter().any(|c| c.name == "machine"));
         assert_eq!(t.content.columns.len(), 2);
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
@@ -2466,10 +2456,10 @@ mod tests {
         let s = sample_sources();
         let whole = table_of(pipe_ty(&s, "readings").expect("source"));
         let rebound = table_of(
-            pipe_ty(&s, "readings |> split |k| k.ts > 100 |> bind").expect("full_dataset"),
+            pipe_ty(&s, "readings |> split |k| k.ts > 100 |> union").expect("full_dataset"),
         );
         // Binding the disjoint split halves reconstructs the schema and keeps
-        // `singletons` (bind_split, 09 §11).
+        // `singletons` (union_split, 09 §11).
         assert_eq!(rebound.content, whole.content);
         assert_eq!(rebound.qualifiers.cardinality, Cardinality::Singletons);
     }
@@ -2487,11 +2477,11 @@ mod tests {
     fn view_body_typechecks_machine_temperature() {
         let s = sample_sources();
         let body = view_body(
-            "view machine_temperature { readings |> extend_key machine \
-             |> group_map |k, g| (.temp_max = max g.temperature) }",
+            "view machine_temperature { readings |> promote machine \
+             |> map_bags |k, b| (.temp_max = max b.temperature) }",
         );
         let t = type_view(&s, &body).expect("ok");
-        assert!(t.content.index.iter().any(|c| c.name == "machine"));
+        assert!(t.content.key.iter().any(|c| c.name == "machine"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
 
@@ -2501,8 +2491,8 @@ mod tests {
         // type_view -> type_pipeline): a view body written `op args data`, equal
         // to its `data |> op args` pipe mirror (ADR 0018).
         let s = sample_sources();
-        let bare = view_body("view v { extend_key machine readings }");
-        let piped = view_body("view v { readings |> extend_key machine }");
+        let bare = view_body("view v { promote machine readings }");
+        let piped = view_body("view v { readings |> promote machine }");
         assert_eq!(type_view(&s, &bare), type_view(&s, &piped));
     }
 
@@ -2510,7 +2500,7 @@ mod tests {
     fn view_body_threads_let_bindings() {
         let s = sample_sources();
         let body = view_body(
-            "view full_dataset { let parts = readings |> split |k| k.ts > 100; parts |> bind }",
+            "view full_dataset { let parts = readings |> split |k| k.ts > 100; parts |> union }",
         );
         let t = type_view(&s, &body).expect("ok");
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
@@ -2537,11 +2527,11 @@ mod tests {
     // produce an equal `PipeTy` (`docs/toolkit/01-application-checking.md`).
 
     #[test]
-    fn application_equals_pipe_for_extend_key() {
+    fn application_equals_pipe_for_promote() {
         let s = sample_sources();
         assert_eq!(
-            pipe_ty(&s, "extend_key machine readings"),
-            pipe_ty(&s, "readings |> extend_key machine"),
+            pipe_ty(&s, "promote machine readings"),
+            pipe_ty(&s, "readings |> promote machine"),
         );
     }
 
@@ -2551,8 +2541,8 @@ mod tests {
         // The lambda is parenthesized in the bare form so the trailing `readings`
         // is the operation's input, not part of the lambda body.
         assert_eq!(
-            pipe_ty(&s, "map (|k, r| r) readings"),
-            pipe_ty(&s, "readings |> map |k, r| r"),
+            pipe_ty(&s, "flat_map (|k, r| r) readings"),
+            pipe_ty(&s, "readings |> flat_map |k, r| r"),
         );
     }
 
@@ -2560,8 +2550,8 @@ mod tests {
     fn application_equals_pipe_for_join() {
         let s = sample_sources();
         assert_eq!(
-            pipe_ty(&s, "left_join machines (|_, l| l.machine) readings"),
-            pipe_ty(&s, "readings |> left_join machines (|_, l| l.machine)"),
+            pipe_ty(&s, "lookup machines (|_, r| r.machine) readings"),
+            pipe_ty(&s, "readings |> lookup machines (|_, r| r.machine)"),
         );
     }
 
@@ -2570,8 +2560,8 @@ mod tests {
         let s = sample_sources();
         // The pair is the input in both spellings (a tuple is one argument).
         assert_eq!(
-            pipe_ty(&s, "bind (readings, readings)"),
-            pipe_ty(&s, "(readings, readings) |> bind"),
+            pipe_ty(&s, "union (readings, readings)"),
+            pipe_ty(&s, "(readings, readings) |> union"),
         );
     }
 
@@ -2589,8 +2579,8 @@ mod tests {
     #[test]
     fn application_and_pipe_share_the_arity_diagnostic() {
         let s = sample_sources();
-        let bare = pipe_ty(&s, "map readings").expect_err("missing lambda");
-        let piped = pipe_ty(&s, "readings |> map").expect_err("missing lambda");
+        let bare = pipe_ty(&s, "flat_map readings").expect_err("missing lambda");
+        let piped = pipe_ty(&s, "readings |> flat_map").expect_err("missing lambda");
         assert_eq!(bare[0].message, piped[0].message);
         assert!(bare[0].message.contains("lambda"));
     }
@@ -2599,10 +2589,10 @@ mod tests {
     fn bare_partial_application_is_not_supported() {
         let s = sample_sources();
         // There is no partial application (ADR 0018 open question 2): the trailing
-        // argument is always the input, so `extend_key machine` reads `machine` as
+        // argument is always the input, so `promote machine` reads `machine` as
         // the input table (an unknown source) rather than a partially applied
         // stage. It is rejected, not invented.
-        let errs = pipe_ty(&s, "extend_key machine").expect_err("no input");
+        let errs = pipe_ty(&s, "promote machine").expect_err("no input");
         assert!(errs[0].message.contains("unknown source `machine`"));
     }
 }

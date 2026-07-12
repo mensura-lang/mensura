@@ -8,11 +8,11 @@ a store declares the attributes carried for each observation.
 ```
 
 The `unit { Machine }` clause says which unit these rows are about.  The store's
-key is that unit's index, so each `Machine` has at most one row in `machines`.
+key is that unit's key, so each `Machine` has at most one row in `machines`.
 
 ## Attributes
 
-The `attr` block lists the non-index attributes, each a `name: type` pair.  A
+The `attr` block lists the non-key attributes, each a `name: type` pair.  A
 store may write several `attr` blocks; they merge into one attribute list.
 How attributes may change over time (auditing, versioning, per-attribute
 mutability) is change-control policy that later milestones attach to stores;

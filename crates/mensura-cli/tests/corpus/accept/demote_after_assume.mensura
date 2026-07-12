@@ -1,13 +1,13 @@
 // Accept: assume { complete } establishes the fact at the fine key,
-// shrink_key propagates it to the coarser key (`project_completeWrt`), and
-// the reducing group_map consumes it (ADR 0017 as amended by ADR 0023),
+// demote propagates it to the coarser key (`demote_completeWrt`), and
+// the reducing map_bags consumes it (ADR 0017 as amended by ADR 0023),
 // bringing the bag back to singletons.  Dropping `ts` (not the promoted
 // column) keeps this a genuine coarsening, not an ADR 0024 round trip.
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } attr { credits: int } }
 view rollup {
-  readings |> extend_key machine
+  readings |> promote machine
            |> assume { complete }
-           |> shrink_key ts
-           |> group_map |k, g| (.total = sum g.credits)
+           |> demote ts
+           |> map_bags |k, b| (.total = sum b.credits)
 }
