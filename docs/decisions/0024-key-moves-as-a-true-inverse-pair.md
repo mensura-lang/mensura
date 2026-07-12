@@ -2,18 +2,21 @@
 
 ## Status
 
-Proposed.  Realized alongside the ADR 0022/0023 implementation (PR #40).
-Extends the `extend_key`/`shrink_key` rules of
+Accepted.  Extends the `extend_key`/`shrink_key` rules of
 `docs/language/09-typing-reference.md` section 6.3 as amended by
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md`, and mirrors
 the inverse-pair contract of
 `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.  The formal
 backing lives in `formal/Mensura/Laws.lean` (`project_ungroup`,
-`ungroup_project`, `ungroup_functional`); the checker realization in
-`mensura-types` (key-graded cardinality).  An earlier draft of this same
-ADR realized the contract with a key-move *frame* (a snapshot of the
-pre-move table type); that mechanism is superseded here and recorded under
-Alternatives considered.
+`ungroup_project`, `ungroup_functional`); the checker realization is
+key-graded cardinality in `mensura-types` (`table.rs` gradings,
+`pipe_check.rs` derivation), stated in `09` section 6.3 and exercised by
+the corpus round-trip quartet
+(`roundtrip_{promote,demote}_first[_bag].mensura`: both orders, on a
+`singletons` and on a `bag` store, each certified by a shared store/view
+shape claim).  An earlier draft of this same ADR realized the contract
+with a key-move *frame* (a snapshot of the pre-move table type); that
+mechanism is superseded here and recorded under Alternatives considered.
 
 ## Context
 
@@ -157,7 +160,13 @@ promotion from an already-`singletons` table.
   columns, and totality.  A `singletons` source round-trips to
   `singletons`, so a downstream reducing `group_map` is admitted by the
   ADR 0023 trivial discharge instead of demanding a vacuous
-  `assume { complete }`.
+  `assume { complete }`; on a `bag` source (no grading) both orders come
+  back a `bag` with the content restored, the honest conservative
+  reading.  The restoration is *observable* today through a shape claim
+  (ADR 0022): the store and the round-tripped view claim the same shape,
+  and the conformance check certifies it, all-`attr` requiring
+  `singletons` back and `attr*` requiring the bag to stay a bag; this is
+  how the corpus quartet pins the contract.
 - The restoration composes through content-identity stages: an
   `assume { complete }` or `completeness_check` *between* the moves does
   not forfeit it (a frame-style mechanism would have).
