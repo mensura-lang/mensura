@@ -151,17 +151,31 @@ than contradicting it (0013 predates the dimension-as-type surface):
 
 - A **dimension expression** is built from the seven base names with `*`, `/`,
   and `^<int>` under ordinary operator precedence, no whitespace significance
-  (as reserved in `06-expressions.md:341-346`).  A `[backing]` bracket applies
-  to the *whole* dimension expression: `(length / time^2)[real]`, not per-atom.
-  Bare `real` is the dimensionless quantity.
-- A dimensioned **literal** attaches a concrete unit to an ordinary numeric
-  literal by **juxtaposition** (`9.8 m/s^2`), with **no `SI(...)` constructor**.
-  The `NxE` literal is *not* used here; it is deferred with precision (Decision
-  6).
-- **Conversion is automatic within a single dimension**: a value written in one
-  unit of a dimension normalizes to that dimension's base unit.  **Mixing
-  different dimensions is a compile error by construction** (`length + time`
-  does not type).
+  (as reserved in `06-expressions.md:341-346`).
+- **In a type annotation the `[backing]` bracket is mandatory**, applied to the
+  *whole* dimension expression: `temperature[real]`, `(length / time^2)[real]`,
+  not per-atom.  There is no bare dimension-name type, so a type never leaves its
+  numeric representation implicit (pillar 6).  `real` (unbracketed) is the
+  dimensionless quantity and needs no bracket.
+- **A unit attached to a value infers its backing** from the value's type, so
+  value-position units carry no bracket.  The unit attaches by **juxtaposition**
+  (`9.8 m/s^2`), with **no `SI(...)` constructor**: `1.0 m/s` has type
+  `(length / time)[real]` because `1.0 : real`, and in general `a m/s` has type
+  `(length / time)[T]` when `a : T`.  The `NxE` literal is *not* used here; it is
+  deferred with precision (Decision 6).
+- **Units are linear.**  Each dimension has a single base unit; a unit is a
+  positive scale factor relative to that base, and **conversion within a
+  dimension is automatic** (a value normalizes to the base by multiplying by the
+  ratio).  **Mixing different dimensions is a compile error by construction**
+  (`length + time` does not type).
+- **Affine (offset) units are not dimensional units.**  Celsius and Fahrenheit
+  differ from the temperature base (Kelvin) by an offset, not just a scale, and
+  once an offset is present multiplying or dividing quantities is ill-defined
+  (an absolute temperature versus a temperature difference).  The dimension
+  system therefore stays linear: an offset unit is handled by an explicit
+  value-level conversion at ingestion that yields an absolute base-unit (Kelvin)
+  quantity, and it is not a first-class unit inside dimensional arithmetic.
+  This matches the IIoT intent (Celsius in, Kelvin base; `iiot.md:37-38`).
 
 ### 6.  Precision leaves the core
 
@@ -216,6 +230,11 @@ Neutral:
 
 - `int` and plain `real` are unaffected: `real` is dimensionless, `int` is never
   dimensioned.  Existing programs keep typing.
+- A type annotation always writes its backing (`temperature[real]`), so the
+  numeric representation is never implicit; value-position units infer it, so
+  measured literals stay terse (`9.8 m/s^2`).  Affine units (Celsius,
+  Fahrenheit) live outside the dimension system as ingestion-time conversions,
+  so dimensional arithmetic never sees an offset.
 - The formal module is independent of the table algebra; it neither changes nor
   depends on the existing `formal/` development.
 
@@ -250,16 +269,6 @@ Neutral:
 
 ## Open questions
 
-- **Affine conversions.**  Temperature units are affine, not linear: Celsius to
-  Kelvin adds an offset, and once an offset is present, multiplying or dividing
-  affine-unit quantities is ill-defined (an absolute temperature versus a
-  temperature difference).  How conversion handles affine units, and whether
-  affine units are barred from derived-dimension arithmetic, is settled in the
-  language design doc, not here.
-- **Default backing.**  Whether bare `temperature` sugars to `temperature[real]`
-  (terse, keeps the fleet example readable) or the bracket is mandatory (pillar
-  6, "no defaults that hide assumptions").  Recommended: default to `real` while
-  it is the only backing; revisit when a second backing exists.
 - **Named derived units and prefixes.**  Whether `newton`, `joule`, `pascal`
   and SI prefixes (`kilo`, `milli`) are surface sugar over base-dimension
   expressions, and how they are declared, is deferred to the language doc.
