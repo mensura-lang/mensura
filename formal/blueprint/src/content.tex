@@ -593,6 +593,49 @@
   It is a strict fiber flatMap.
 \end{proof}
 
+\chapter{Physical dimensions}
+
+This chapter is standalone: it backs ADR 0026's dimensional-unit model and
+neither depends on nor changes the table algebra above.
+
+\begin{definition}[Base dimension]
+  \label{def:base-dimension}\lean{Mensura.Units.Base}\leanok
+  The seven SI base dimensions (time, length, mass, current, temperature,
+  amount of substance, and luminous intensity), a finite type with decidable
+  equality.
+\end{definition}
+
+\begin{definition}[Dimension]
+  \label{def:dimension}\lean{Mensura.Units.Dimension}\uses{def:base-dimension}\leanok
+  A physical dimension is an element of the free abelian group over the seven
+  base dimensions: an integer exponent vector, written multiplicatively so
+  that dimensions multiply while their exponents add, with the dimensionless
+  quantity as the identity.  The group is commutative (so dimension
+  multiplication, division, and integer powers are well defined) and its
+  equality is decidable (so a unit mismatch is a decision procedure).  These
+  are the two facts the expression checker relies on (ADR 0026).
+\end{definition}
+
+\begin{definition}[Exponent vector]
+  \label{def:dimension-exponents}\lean{Mensura.Units.Dimension.exponents}\leanok
+  \uses{def:dimension}
+  The canonical form of a dimension: its integer exponent on each base
+  dimension.  A base dimension has exponent one on itself and zero elsewhere;
+  a product adds exponents, an inverse negates them, a quotient subtracts.
+\end{definition}
+
+\begin{theorem}[The seven axes are independent]
+  \label{thm:dimension-base-injective}
+  \lean{Mensura.Units.Dimension.base_injective}\leanok
+  \uses{def:base-dimension, def:dimension-exponents}
+  The seven base dimensions are pairwise distinct, so the group is genuinely
+  of rank seven and no two axes collapse.
+\end{theorem}
+\begin{proof}\leanok
+  Distinct base dimensions differ in their exponent vectors: each is one on
+  its own axis and zero on the others.
+\end{proof}
+
 \chapter{Open problems}
 
 The white nodes below are planned, not yet formalized; the Lean names
