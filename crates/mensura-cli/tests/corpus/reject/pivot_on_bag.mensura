@@ -1,7 +1,7 @@
-// Reject (resolve): `pivot` demands singletons; the map expands each row to
+// Reject (resolve): `pivot` demands singletons; the flat_map expands each row to
 // a bag, so a (key, name) cell is no longer card <= 1.
 unit Reading { ts: int }
 store readings { unit { Reading } attr { temperature: real } attr { humidity: real } }
 view bad {
-  readings |> unpivot metric reading |> map |k, r| (r, r) |> pivot metric reading
+  readings |> unpivot metric reading |> flat_map |k, r| (r, r) |> pivot metric reading
 }

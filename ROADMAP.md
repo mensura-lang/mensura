@@ -35,7 +35,7 @@ milestones below.
   - `mensura repl`: interactive REPL.
   - `mensura lsp`: language server (LSP over stdio).
   - `mensura serve <file>`: run a program as a web service (store and
-    `collect` endpoints).
+    `registry` endpoints).
   - `mensura migrate <from> <to>`: generate a migration plan between two schema
     revisions.
 - **Specs first.**  Every language- or tooling-level feature lands as a design
@@ -77,7 +77,7 @@ mensura/
   (ADR 0004).
 - **Calculus.**  The data-handling algebra is mechanized in Lean 4 under
   `formal/`: split-safety and its composition, completeness, the split-safe
-  `pivotAttr` with its reversibility, and the `bind` disjointness lemma.
+  `pivotAttr` with its reversibility, and the `union` disjointness lemma.
 - **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
   -> SQLite` is built for the "basic" subset: scalar-index units, stores with
   primitive and `enum` attributes, shapes, and named enums.  The expression
@@ -89,7 +89,7 @@ mensura/
   types are M3.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): physical units and precision; measure semantics (additivity);
-  devices and `collect`; ingestion endpoints; streaming windows and refresh; ML
+  devices and `registry`; ingestion endpoints; streaming windows and refresh; ML
   signatures and validation; the serving/transport integration; and the
   toolkit docs for the CLI, diagnostics, and LSP.
 
@@ -117,8 +117,8 @@ follow-up.  The companion LL(1) grammar proof remains the open M0 item.
   productions.  The freeze is contingent on this proof.
 - The `Table<Qs, C>` type and the qualifier framework (ADR 0004): the
   propagation combinators and the constraint-hook interface.
-- Typing rules for the pipeline primitives (`map`, `group_map`,
-  `extend_key`/`shrink_key`, `left_join`/`inner_join`, `split`/`bind`,
+- Typing rules for the pipeline primitives (`flat_map`, `map_bag`,
+  `promote`/`demote`, `lookup`/`lookup_total`, `split`/`union`,
   `unpivot`/`pivot`), with their cardinality and completeness effects.
 - The disjointness constraint hook over the lineage qualifier
   (`docs/language/08-lineage.md`).
@@ -156,8 +156,8 @@ Output: `mensura run` materializes a Tier A view from stores, end to end
 
 - `mensura-runtime`: the DBSP-style processing layer over the SQLite storage
   backend (`docs/toolkit/00-storage-backend.md`).
-- Implement the Tier A primitives at runtime (`map`/`filter`/`group_map`/
-  `left_join`/...), reading from and writing to stores.
+- Implement the Tier A primitives at runtime (`flat_map`/`filter`/`map_bag`/
+  `lookup`/...), reading from and writing to stores.
 - Disjointness and completeness proven at compile time, then trusted at
   runtime.
 
@@ -180,9 +180,9 @@ error.
 
 Output: device readings land in stores under a typed ingestion path.
 
-- Design docs first: devices and `collect`; ingestion (the `insert`/`update`/
+- Design docs first: devices and `registry`; ingestion (the `insert`/`update`/
   `set`/`where`/`case` forms).
-- `device` and `collect` declarations; `collect` is complete by mechanism
+- `device` and `registry` declarations; `registry` is complete by mechanism
   (overview pillar 7).
 - Store ingestion via the CLI or as a library; the over-the-wire transport is
   wired in M7.
@@ -231,7 +231,7 @@ unified `auth {}`, RBAC plus bounded ABAC) and
 wire-agnostic; deploy config owns transport selection).  Naming and wire
 translation are in `docs/language/05-naming-and-casing.md`.
 
-- Auto-generated REST and MQTT endpoints for stores, `collect`, and views.
+- Auto-generated REST and MQTT endpoints for stores, `registry`, and views.
 - Device identity, RBAC, and compile-time permission-flow analysis.
 - Change-control annotations (`@audited`, `@versioned`, `@auto`,
   `@allowcreate`).
@@ -291,5 +291,5 @@ them correctly, and every `docs/examples/` file compiles.
    other `std` qualifiers stay inside a decidable fragment is open (ADR 0004).
 
 The earlier open question on split-invariance for binary operations is closed
-by the Lean formalization: `bind` is total and split-safe, and the Tier A / Tier
+by the Lean formalization: `union` is total and split-safe, and the Tier A / Tier
 B boundary is proved.

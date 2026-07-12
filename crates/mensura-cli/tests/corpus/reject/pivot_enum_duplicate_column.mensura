@@ -8,5 +8,5 @@ enum Metric { "ts" "hi" }
 unit Obs { ts: int }
 store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }
 view bad {
-  obs |> extend_key metric |> pivot metric reading
+  obs |> promote metric |> pivot metric reading
 }

@@ -56,7 +56,10 @@ mod tests {
 
     #[test]
     fn suffix_formats_a_hint() {
-        let cands = ["bind".to_string(), "split".to_string()];
-        assert_eq!(suffix("bnid", cands), "; did you mean `bind`?".to_string());
+        let cands = ["union".to_string(), "split".to_string()];
+        assert_eq!(
+            suffix("unoin", cands),
+            "; did you mean `union`?".to_string()
+        );
     }
 }

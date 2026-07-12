@@ -25,7 +25,7 @@ mathematically and, more to the point, about the mistakes they make
 > `docs/language/07-pipelines.md` and `docs/language/08-lineage.md`, each backed
 > by a machine-checked proof in `formal/`.
 
-The operations used below (`map`, `group_map`, `shrink_key`, `split`, `bind`,
+The operations used below (`flat_map`, `map_bag`, `demote`, `split`, `union`,
 `pivot`, and the rest) are introduced one line each in
 [The kernel operations](the-kernel.md); this chapter assumes you have met them
 there.
@@ -51,8 +51,8 @@ card(k) = many   a bag of rows
 Carried per column, the distinction that matters is **`card <= 1`** (at most one
 value per key) versus **many** (a bag of values).  It is part of the content
 type, and every operation transforms it predictably: coarsening a key with
-`shrink_key` makes rows that differed only in the dropped component share a key,
-so cardinality *grows*; an aggregating `group_map` reduces a group back to a
+`demote` makes rows that differed only in the dropped component share a key,
+so cardinality *grows*; an aggregating `map_bag` reduces a bag back to a
 single record, so cardinality drops to `1`.
 
 Cardinality is what makes scalar reasoning legal.  A scalar operator (`a - b`, a
@@ -63,7 +63,7 @@ cell it spreads holds at most one value:
 
 ```mensura,ignore
 grades                                             // keyed by (student, subject)
-|> group_map |k, g| (.score = max g.score)         // card -> 1 per (student, subject)
+|> map_bag |k, b| (.score = max b.score)         // card -> 1 per (student, subject)
 |> pivot subject score                             // legal: each cell is card <= 1
 ```
 
@@ -79,28 +79,28 @@ The duplicate that would have exploded at runtime cannot reach runtime.
 ## Completeness: is the partition whole
 
 **Completeness** is a unary fact about one table: writing `complete_over(k)`,
-every group over the key `k` has *all* of its rows present.  It is not about the
+every key's bag has *all* of its rows present.  It is not about the
 schema and not about any single value; it is about whether a partition is fully
 materialized.
 
 Completeness is what licenses *coarsening* a key.  When you drop an index
-component (`shrink_key`), you are summing or folding across the rows that the
+component (`demote`), you are summing or folding across the rows that the
 dropped component used to separate, and that rollup means what you intend only
 if none of those rows are missing.  (`pivot` also coarsens the key but needs no
 such license: an absent row simply becomes a missing cell, and a related fact,
 `exhaustive`, decides whether the spread columns come out total.)  Formally
-`shrink_key` breaks split-invariance and is sound only over a partition that is
+`demote` breaks split-invariance and is sound only over a partition that is
 complete over the key it retains.  So completeness is *established* before it
 and *consumed* by it:
 
 ```mensura,ignore
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }  // establish
-|> shrink_key course                                            // consume
-|> group_map |k, g| (.total_credits = sum g.credits)
+|> demote course                                            // consume
+|> map_bag |k, b| (.total_credits = sum b.credits)
 ```
 
-A table earns the fact in one of three ways: by **mechanism** (a `collect`
+A table earns the fact in one of three ways: by **mechanism** (a `registry`
 source is complete by construction), by a **check** (the `completeness_check`
 stage above), or by an **annotation** (`@complete_over(col)` on a source store).
 When none of these apply, `assume { ... }` admits the operation by fiat, locally
@@ -151,10 +151,10 @@ this demand that their two tables be disjoint.
 
 The fact survives a whole pipeline because every split-invariant (Tier A)
 operation preserves it, and such operations compose: a disjointness fact
-established by `split` is carried, intact, through `map`, `filter`, the joins,
-and `group_map` to the point where `evaluate` consumes it.  Two operations lose
-it on purpose: `bind` unions two regions (so a merged table is disjoint from a
-third only if *both* halves were), and the key-changing operations `shrink_key`
+established by `split` is carried, intact, through `flat_map`, `filter`, the joins,
+and `map_bag` to the point where `evaluate` consumes it.  Two operations lose
+it on purpose: `union` unions two regions (so a merged table is disjoint from a
+third only if *both* halves were), and the key-changing operations `demote`
 and `pivot` drop it, because a region described over the old key no longer
 denotes the same entities.  Past such a point the fact must be re-established
 with a check or relaxed with `assume`.
@@ -173,7 +173,7 @@ before the model is ever fit.
 ## The common thread
 
 None of these three is an annotation you remember to add.  Each is **derived
-from how data enters** (a `store` or `collect` mechanism fixes it), **transformed
+from how data enters** (a `store` or `registry` mechanism fixes it), **transformed
 by every operation** (each primitive states how it moves the fact), and
 **demanded exactly where unsoundness would otherwise hide** (a reshape, a
 rollup, an evaluation).  Where the fact cannot be proved, you do not lose it

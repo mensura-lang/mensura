@@ -91,16 +91,17 @@ record of non-index column values at that key.  When cardinality is at most 1
 but they are conceptually separate: an entity may be unobserved (cardinality
 0, no rows at its key) or observed once (cardinality 1, exactly one row).
 Inside a pipeline, transient states with cardinality greater than 1 are
-permitted; there, one entity can have multiple rows simultaneously.  This
-is the Mensura representation of a group.
+permitted; there, one entity can have multiple rows simultaneously: its
+bag (see below) holds more than one row.
 
 ### Row, observation
 
 A **row** is a record of values, one per column (index and non-index), stored
-in a table.  Within a key's group, there may be zero, one, or many rows.
+in a table.  The rows at a key form that key's bag (see below); there may be
+zero, one, or many.
 
 An **observation** is a row viewed from the unit perspective: one recorded
-instance of a unit.  At a `singletons` boundary (a plain store or collect
+instance of a unit.  At a `singletons` boundary (a plain store or registry
 declaration), the 0-or-1 rule applies: each entity is either unobserved (no
 row at its key) or observed exactly once (one row).  A `bag` store
 (ADR 0022) instead holds many observations per entity: the key says what
@@ -112,6 +113,33 @@ the statistical or unit-theoretic character of the data.
 pandas/Polars to mean a positionally indexed record.  Mensura does not give
 rows positional identities; the key is the only address a row has.  That
 means that rows have no implicit order.
+
+### Bag
+
+A **bag** is the multiset of rows at one key.  Every key of every table has a
+bag, possibly empty; `singletons` cardinality is the statement that every bag
+has at most one row, and `bag` cardinality allows any number.  This is the
+primary meaning of the word throughout Mensura: the `bag` cardinality state,
+the `map_bag` operation, and completeness are all statements about the rows
+in a key's bag.
+
+The word appears once more, at the expression level, for a multiset one step
+removed.  When a `map_bag` lambda receives a key's whole bag (the `|k, b|`
+form), reading a column off it, `b.credits`, yields the multiset of that
+column's values across the rows in the bag.  That value multiset is itself a
+bag, of scalars rather than rows; the type system writes its type `bag<T>`,
+and the aggregate combinators (`count`, `sum`, `min`, `max`, `any`, `all`)
+collapse it to one value.  The two uses are the same idea (a multiset with no
+order) at two levels: the bag of rows is primary, and reading a column
+projects it to a bag of that column's values.
+
+"Bag" is the surface word for what the formal model calls a **fiber**, the
+multiset `T k` a table assigns to key `k`.  They name the same object;
+documentation says "bag", `formal/` lemma statements say "fiber".
+
+The word **group** is not Mensura vocabulary for this.  The rows at a key are
+not the product of any grouping operation (the bag exists by virtue of the key
+alone), and "group" imports GROUP BY intuitions that mislead here.
 
 ### Column, attribute
 
@@ -135,12 +163,12 @@ It is a table-level qualifier with two states:
 
 - **Singletons** (written `card ≤ 1`): each key has at most one row.  A key
   with no row is simply unobserved.  Singletons is the default at unit
-  boundaries and the state after operations that reduce each group to one
+  boundaries and the state after operations that reduce each bag to one
   representative or restore a key the table is known functional over
   (ADR 0024).
 - **Bag** (written `card 0..*`): a key may hold any number of rows, including
-  zero.  Bag cardinality arises transiently from `shrink_key` and from any
-  `group_map` that returns more than one row per group, and as a *declared*
+  zero.  Bag cardinality arises transiently from `demote` and from any
+  `map_bag` that returns more than one row per key, and as a *declared*
   state on a store of recurring observations (an `attr*` store keyed by the
   entity, ADR 0022).
 
@@ -152,7 +180,7 @@ which the table is known to be **functional**, holding at most one row per
 combination of values.  A table is `singletons` exactly when some grading
 fits inside the current key.  Because a grading is a fact about the columns
 themselves, not about which of them currently form the key, moving a column
-out of the key and back (`shrink_key` then `extend_key`, or the reverse)
+out of the key and back (`demote` then `promote`, or the reverse)
 restores `singletons` instead of leaving a spurious bag.
 
 The term "cardinality" has two other common meanings: in set theory, the size
@@ -181,23 +209,23 @@ type, not a database implementation detail.
 ### Completeness
 
 **Completeness** is a table-level qualifier that says: for every key that
-appears in the table, the table holds *all* the rows that belong to that key
-under the current grouping.  It is not the same as totality (which is about
+appears in the table, the table holds *all* the rows that belong to that key,
+that is, the key's whole bag.  It is not the same as totality (which is about
 individual cell values) and not the same as cardinality (which counts rows).
 
 Completeness is demanded where its absence would silently corrupt a
-result: at a **reducing `group_map`**, whose group-wise aggregate over an
-incomplete group would silently ignore the missing rows
+result: at a **reducing `map_bag`**, whose aggregate over a partial bag
+would silently ignore the missing rows
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
-`shrink_key` propagates the fact from the fine key to the coarser one on
+`demote` propagates the fact from the fine key to the coarser one on
 the way there, and on a `singletons` input the reducer's demand discharges
-trivially (a present key's single row is its whole group), so the ordinary
+trivially (a present key's single row is its whole bag), so the ordinary
 aggregation over a plain store needs no ceremony.  (`pivot` needs no such
 fact either: an absent row simply becomes a missing cell; the related,
 domain-relative fact `exhaustive` decides whether its spread columns come
 out total.  See `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.)
 
-Completeness is established by mechanism (a `collect` source guarantees it),
+Completeness is established by mechanism (a `registry` source guarantees it),
 by explicit check (`completeness_check { ... }`), by annotation
 (`@complete_over(col)`), or by fiat (`assume { complete }`).
 
@@ -226,7 +254,7 @@ each key is a multiset of such rows.  This differs from the chapter's
 column-major aligned tuples in three ways: row order is not asserted (a
 multiset is explicitly unordered); cross-column associations are structural
 rather than positional (a row is one function, so its fields cannot desync);
-and `bind` becomes a genuine commutative monoid (multiset union), which makes
+and `union` becomes a genuine commutative monoid (multiset union), which makes
 split-invariance proofs unconditional rather than contingent on alignment
 invariants.  The surface language and the typing rules follow the chapter's
 presentation; the formal model is the proof-level encoding.
@@ -236,29 +264,26 @@ a DataFrame with a positional row index.  Mensura's table differs from both:
 rows have no positional address, duplicates (same key, same values) are
 possible under bag cardinality, and the key is always explicit.
 
-### Cell, bag (in the expression model)
+### Cell
 
 A **cell** is a single optional value: either known (`some v`) or missing
 (`none`).  It is the elementary unit of data at one `(row, column)`
-intersection.
+intersection.  A cell is always one value: scalar operators apply to it
+directly, unlike a bag (see above), which must be collapsed by an aggregate
+combinator first.
 
-Inside pipeline lambdas, when the lambda receives a *group* (the `|k, g|`
-form), each column of `g` is a **bag**: the multiset of all values of that
-column across the rows at key `k`.  A bag is not a single value; scalar
-operators cannot be applied to it.  Bag combinators (`count`, `sum`, `min`,
-`max`, `any`, `all`) collapse a bag to a single value.
-
-### Store, collect
+### Store, registry
 
 A **store** is a Mensura declaration that creates a persistent, updatable
 tabulation of observations of a unit.  It declares the unit being tabulated,
 its attributes, domain resolution (for compound units), and change-control
 policy.  A store is the primary source of raw data in Mensura.
 
-A **collect** is a process-style counterpart to a store, where data arrives
+A **registry** is a process-style counterpart to a store, where data arrives
 through a streaming or ingestion mechanism rather than through CRUD
-operations.  A collect carries a type-level completeness guarantee that stores
-do not.
+operations.  Because that mechanism is the sole intake for its observations,
+a registry carries a type-level completeness guarantee that stores do not.
+(Earlier drafts called this declaration `collect`.)
 
 ### Shape
 
@@ -301,21 +326,21 @@ Disjointness can also be established by explicit check, by annotation, or by
 An operation is **split-invariant** if the result of running it on a whole
 table equals the result of running it independently on each side of a split
 and then re-binding the outputs.  Formally, for an operation `f` and a split
-`(L, R)` of table `T`: `f(T) = bind(f(L), f(R))`.
+`(L, R)` of table `T`: `f(T) = union(f(L), f(R))`.
 
 An operation is **split-safe** if it is split-invariant *and* it preserves
 the disjointness facts in the lineage qualifier.
 
-**Tier A** operations are split-safe: `map`, `group_map`, `extend_key`,
-`left_join`, `inner_join`, `split`, `bind`, and `unpivot`.  They compose
+**Tier A** operations are split-safe: `flat_map`, `map_bag`, `promote`,
+`lookup`, `lookup_total`, `split`, `union`, and `unpivot`.  They compose
 freely and require no extra ceremony around splits.
 
-**Tier B** operations are not split-invariant: `shrink_key` and `pivot`.
+**Tier B** operations are not split-invariant: `demote` and `pivot`.
 Both drop the lineage qualifier on their output, and that is the whole
-content of the Tier: neither demands completeness (`shrink_key` propagates
+content of the Tier: neither demands completeness (`demote` propagates
 it to the coarser key, ADR 0023; for `pivot` an absent row becomes a
 missing cell, ADR 0020).  The completeness demand sits downstream, at the
-reducing `group_map`.
+reducing `map_bag`.
 
 The central guarantee of Mensura is that a pipeline composed entirely of
 Tier A operations cannot introduce data leakage between disjoint partitions.
@@ -443,12 +468,12 @@ warnings.
    for how each qualifier propagates and how the content changes.
 
 3. **Split-invariance is the default.** Chapter 5's Tier A operations
-   (`bind`, `split`, `unpivot`, `map`, `group_map`, `extend_key`, and
-   `left_join`/`inner_join` against a fixed table) are split-invariant by
+   (`union`, `split`, `unpivot`, `flat_map`, `map_bag`, `promote`, and
+   `lookup`/`lookup_total` against a fixed table) are split-invariant by
    construction and require no extra ceremony.  The Tier B operations break
-   split-invariance and drop the lineage qualifier: `shrink_key`, which
+   split-invariance and drop the lineage qualifier: `demote`, which
    drops a key component, and `pivot`, which spreads a key axis.  Neither
-   demands completeness; the demand sits at the reducing `group_map`, which
+   demands completeness; the demand sits at the reducing `map_bag`, which
    over a bag requires an explicit `completeness_check { … }` stage, a
    `@complete_over` annotation on its source, or an `assume`
    (ADR 0020, ADR 0023).  See `docs/language/07-pipelines.md`.
@@ -471,7 +496,7 @@ warnings.
    check, they write `assume`, locally and visibly.
 
 7. **Properties are derived from mechanism, not declared.** When data
-   enters Mensura through a `store` or `collect` declaration, the sampling,
+   enters Mensura through a `store` or `registry` declaration, the sampling,
    dependency, and (initial) lineage of the resulting table are fixed by
    the declaration's mechanism, not chosen by the programmer.
 
@@ -499,7 +524,7 @@ warnings.
   the work to ML-validation correctness; breadth is a non-goal.
 - Storage engines, query planning beyond what Polars provides, distributed
   execution.
-- The web-service surface (`store`/`collect` endpoints, OAuth, REST,
+- The web-service surface (`store`/`registry` endpoints, OAuth, REST,
   auditing/versioning at the HTTP layer) is **deferred** to M4 and may be
   spun off as a companion `mensura-server` project. The core language is
   usable without it. Its design is settled in

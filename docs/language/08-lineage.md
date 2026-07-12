@@ -27,11 +27,11 @@ mechanism or a check or an annotation, and a downstream operation *demands*
 it.  Completeness is the template (`07-pipelines.md`, "What a pipeline
 tracks" and "Completeness: establish, propagate, consume"):
 
-- established by mechanism (`collect` is complete by construction), by a check
+- established by mechanism (`registry` is complete by construction), by a check
   (`completeness_check { assert ... }`), or by a source annotation
   (`@complete_over(col)`);
 - preserved by Tier A operations, propagated fine key to coarse key by
-  `shrink_key`, and *demanded* (consumed) by a reducing `group_map`
+  `demote`, and *demanded* (consumed) by a reducing `map_bag`
   (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`; `pivot`'s
   former demand is dissolved by
   `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`);
@@ -40,7 +40,7 @@ tracks" and "Completeness: establish, propagate, consume"):
 This document gives **disjointness** the same surface.  Disjointness is the
 precondition for not leaking across a split, and it is the fact that licenses
 leak-free validation, which is the correctness goal of the whole language.
-`07-pipelines.md` (the `split` / `bind` entry) already places it in the
+`07-pipelines.md` (the `split` / `union` entry) already places it in the
 lineage qualifier rather than in the algebra; what follows is the operational
 account of how that fact is established, propagated, demanded, and assumed.
 
@@ -81,7 +81,7 @@ side of a pair by a predicate over the key.  The two halves carry the regions
 `R and pred` and `R and not pred`, which are disjoint because the predicates
 are mutually exclusive.  This is disjointness *by construction*: the
 formalization proves it as `split_disjoint` (`Core/Defs.lean`), the
-companion of `bind_split` (bind undoes split).  `split` is to disjointness what `collect`
+companion of `union_split` (union undoes split).  `split` is to disjointness what `registry`
 is to completeness, the mechanism that needs no further discharge.
 
 ```
@@ -96,7 +96,7 @@ let (train, test) = data |> split |k| hash k < threshold
 ```
 (cohort_a, cohort_b)
 |> disjointness_check { assert disjoint_on patient_id }
-|> bind
+|> union
 ```
 
 Each `assert` is a boolean expression over the two regions; together they
@@ -137,44 +137,44 @@ Tier A pipeline carries a disjointness fact end to end.  Per primitive:
 
 | operation | effect on the region | disjointness | theorem |
 | --- | --- | --- | --- |
-| `map` | key-preserving, support can only shrink | preserved | `map_preservesDisjoint` |
-| `map` as filter (ADR 0015) | region narrows to `R and q` | preserved (strengthened) | `map_preservesDisjoint` |
-| `group_map` | one output key per input key | preserved | `fiberMap_splitSafe` |
-| `extend_key` | key refines, support splits | preserved | `ungroup_preservesDisjoint` |
-| `left_join` / `inner_join` | fixed-right, key-preserving | preserved | `leftJoin_preservesDisjoint`, `innerJoin_preservesDisjoint` |
+| `flat_map` | key-preserving, support can only shrink | preserved | `map_preservesDisjoint` |
+| `flat_map` as filter (ADR 0015) | region narrows to `R and q` | preserved (strengthened) | `map_preservesDisjoint` |
+| `map_bag` | one output key per input key | preserved | `fiberMap_splitSafe` |
+| `promote` | key refines, support splits | preserved | `promote_preservesDisjoint` |
+| `lookup` / `lookup_total` | fixed-right, key-preserving | preserved | `lookup_preservesDisjoint`, `lookupTotal_preservesDisjoint` |
 | `unpivot` | names move into the key | preserved | `unpivotDrop_preservesDisjoint` |
 | `split` | region splits by `pred` / `not pred` | established | `split_disjoint` |
-| `bind` | regions union | weakened (see below) | `bind_disjoint_iff` |
-| `shrink_key` | key coarsens, rows merge | **not preserved** | `project_not_preservesDisjoint` |
+| `union` | regions union | weakened (see below) | `union_disjoint_iff` |
+| `demote` | key coarsens, rows merge | **not preserved** | `demote_not_preservesDisjoint` |
 | `pivot` | names leave the key | not preserved | `pivot_not_splitInvariant` |
 
 **`split` refines.**  As above, `split` is the establishing mechanism; in
 region terms it cuts `R` into two exclusive sub-regions.
 
-**`bind` unions, hence weakens.**  `(a, b) |> bind` has region `R_a or R_b`.
+**`union` unions, hence weakens.**  `(a, b) |> union` has region `R_a or R_b`.
 For the result to stay disjoint from a third table `c`, *both* `a` and `b`
 must have been disjoint from `c`:
 
 ```
-Disjoint (bind a b) c   iff   Disjoint a c  and  Disjoint b c
+Disjoint (union a b) c   iff   Disjoint a c  and  Disjoint b c
 ```
 
-(proved as `bind_disjoint_iff` in `Core/Defs.lean`, a direct consequence of the
-`bind` and `Disjoint` definitions).  So merging can only *grow* a
+(proved as `union_disjoint_iff` in `Core/Defs.lean`, a direct consequence of the
+`union` and `Disjoint` definitions).  So merging can only *grow* a
 region and therefore only *lose* disjointness facts: binding in a table that
 overlaps `c` destroys `Disjoint _ c`.  This is the precise content of "the
-property is changed by merge".  Note that `bind` itself is total and always
-split-safe (`07-pipelines.md`, the `split` / `bind` entry); disjointness is
-not a precondition for `bind` to be defined, it is a fact `bind` consumes
+property is changed by merge".  Note that `union` itself is total and always
+split-safe (`07-pipelines.md`, the `split` / `union` entry); disjointness is
+not a precondition for `union` to be defined, it is a fact `union` consumes
 when two halves are recombined and a guarantee (`card <= 1`) that disjoint
 inputs buy.
 
-**`shrink_key` and `pivot` break it.**  These are the key-changing
-operations, and they are exactly where disjointness is lost.  `shrink_key`
+**`demote` and `pivot` break it.**  These are the key-changing
+operations, and they are exactly where disjointness is lost.  `demote`
 drops an index component, merging rows that a split had separated by that
 component; the formalization proves the underlying `project` does not preserve
-disjointness (`project_not_preservesDisjoint`), which is why the reindexing
-entry of `07-pipelines.md` already cites that theorem for `shrink_key`.
+disjointness (`demote_not_preservesDisjoint`), which is why the reindexing
+entry of `07-pipelines.md` already cites that theorem for `demote`.
 `pivot` is not even split-invariant (`pivot_not_splitInvariant`).
 Past one of these, an upstream disjointness fact no longer holds over the new
 key and must be re-established (by a check) or assumed.
@@ -182,7 +182,7 @@ key and must be re-established (by a check) or assumed.
 ## Demanding disjointness
 
 A disjointness fact is *consumed* by an operation that is only leak-free over
-disjoint inputs, the way a reducing `group_map` consumes a completeness fact
+disjoint inputs, the way a reducing `map_bag` consumes a completeness fact
 (ADR 0023).  Two sites consume it:
 
 - The learning and validation operations (model `fit` on one table,
@@ -191,9 +191,9 @@ disjoint inputs, the way a reducing `group_map` consumes a completeness fact
   training table.  These operations are not yet specified in the algebra
   documents; when they are, the disjointness demand is their defining
   precondition, the direct analogue of the reducer's completeness demand.
-- `bind` consumes a disjointness fact to *preserve* a cardinality guarantee:
+- `union` consumes a disjointness fact to *preserve* a cardinality guarantee:
   binding disjoint inputs keeps `singletons`, binding overlapping inputs
-  raises the bound to `bag` (`07-pipelines.md`, the `split` / `bind` entry).
+  raises the bound to `bag` (`07-pipelines.md`, the `split` / `union` entry).
 
 An operation that demands disjointness type-checks only when the fact is in
 scope, established by one of the four mechanisms above and propagated, intact,
@@ -209,7 +209,7 @@ disjointness has a decidable fragment ... and falls back to `assume`").
 `split` predicates and `@disjoint_partition` blocks sit inside the decidable
 fragment by construction.
 
-The hard case is the key-change cliff: after `shrink_key`, a join that changes
+The hard case is the key-change cliff: after `demote`, a join that changes
 the unit, or a `pivot`, a region expressed over the old key no longer
 denotes the same entities, so the solver cannot transport the fact.  Modeling
 disjointness as a *check* (rather than a monolithic solver over full lineage
@@ -241,15 +241,15 @@ mechanism discharged it.
 
 ```
 let folds = data |> split |k| hash k < 0.5      // (a, b), disjoint
-let all   = (folds.0, folds.1) |> bind          // region a or b; Disjoint _ c
+let all   = (folds.0, folds.1) |> union          // region a or b; Disjoint _ c
                                                 // now requires both a,b vs c
-let coarse = all |> shrink_key region           // key changes: fact dropped
+let coarse = all |> demote region           // key changes: fact dropped
 let safe   = (coarse, holdout)
              |> disjointness_check { assert disjoint_on student_id }
              |> evaluate model                  // re-established before use
 ```
 
-`bind` unions the regions, `shrink_key` drops the fact at the key change, and
+`union` unions the regions, `demote` drops the fact at the key change, and
 a `disjointness_check` re-establishes it over the new key before `evaluate`
 consumes it.
 
@@ -258,12 +258,12 @@ consumes it.
 ```
 @disjoint_partition(cohort, block = "site_a")  store site_a ...
 @disjoint_partition(cohort, block = "site_b")  store site_b ...
-let combined = (site_a, site_b) |> bind         // disjoint by declaration
+let combined = (site_a, site_b) |> union         // disjoint by declaration
 
 store vendor_extract ...                         // opaque provenance
 let merged = (combined, vendor_extract)
              |> assume { disjoint_on subject_id } // no proof available
-             |> bind
+             |> union
 ```
 
 Two declared blocks of one partition are disjoint without a check; an opaque
@@ -278,7 +278,7 @@ the ADR 0004 framework, and disjointness is its constraint hook:
 - **State space**: the lineage region, a key predicate (ADR 0004's structural
   value).
 - **Propagation rules**: `preserve` for the key-preserving Tier A operations,
-  `accumulate`/union for `bind`, a refining rule for `split`, and *drop* at the
+  `accumulate`/union for `union`, a refining rule for `split`, and *drop* at the
   key-changing operations, each backed by a `PreservesDisjoint` theorem (or its
   refutation) in `formal/Mensura/`.
 - **Constraint hook**: predicate disjointness at the consuming operations, with
@@ -293,9 +293,9 @@ the one hook the ADR singles out.
 
 ## Open questions and proof obligations
 
-- **`bind` weakening lemma** (discharged).  `Disjoint (bind a b) c  iff
-  Disjoint a c and Disjoint b c` is proved as `bind_disjoint_iff` in
-  `formal/Mensura/Core/Defs.lean`, backing the propagation rule for `bind`.
+- **`union` weakening lemma** (discharged).  `Disjoint (union a b) c  iff
+  Disjoint a c and Disjoint b c` is proved as `union_disjoint_iff` in
+  `formal/Mensura/Core/Defs.lean`, backing the propagation rule for `union`.
 - **Region re-expression across key changes.**  Whether any key change admits a
   sound automatic transport of the region (rather than always dropping the
   fact) is open; the safe default specified here is to drop and re-establish.

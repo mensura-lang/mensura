@@ -66,8 +66,8 @@ tabulation of observations of `U` has cardinality 0 or 1 at `k`: the
 entity is either observed (cardinality 1) or not (cardinality 0).  This
 is Wickham's rule that each row is one observation, restated as a
 property of the unit, and it is the default at every unit boundary.
-Equivalently, the tabulation is **functional** over its index: grouping
-by the index yields at most one row.  Functionality over a column set is
+Equivalently, the tabulation is **functional** over its index: there is
+at most one row per key.  Functionality over a column set is
 the fact the checker actually carries (a *grading*, ADR 0024), with
 `singletons` as its reading at the current key; because the fact names
 columns rather than the key, reindexing can move a column out of the key
@@ -78,16 +78,16 @@ Learning Approach, F. A. N. Verri, 2026, doi: 10.5281/zenodo.14498010)
 allows row cardinality greater than 1.  Mensura models this as a key
 carrying many rows (a *bag*), following the row-multiset model
 (ADR 0015).  A bag arises in two ways.  Inside the algebra it is a
-*transient state*: an operation like `shrink_key` can produce a result
-in which one key carries multiple rows, and a later `group_map` may
-reduce each group back to a single row.  At the store boundary it is a
+*transient state*: an operation like `demote` can produce a result
+in which one key carries multiple rows, and a later `map_bag` may
+reduce each bag back to a single row.  At the store boundary it is a
 *declared state*
 (`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`):
 a store of recurring observations may opt into `bag` cardinality with
 `attr*` blocks (`02-stores.md`), keeping the entity as its key.  In
 either case the cardinality is a property of the *tabulation*; the unit
 itself stays pure identity, and an undeclared duplicate at a
-`singletons` boundary (a plain `store`, a `collect`, a function
+`singletons` boundary (a plain `store`, a `registry`, a function
 signature that promises a 0-or-1 tabulation) remains ill-formed.
 
 The practical consequence: if your data has cardinality greater than 1
@@ -215,10 +215,10 @@ stores.
 
 - **Attribute identity** (when are two columns in two stores referring
   to "the same thing") is not yet settled.  It is important for the
-  semantics of `bind` and `join` and will get its own document.
+  semantics of `union` and `join` and will get its own document.
   A new `attribute` declaration may be needed to give a univocal name
   to an attribute and avoid accidental collisions of equivocal names.
-- **Schema reconciliation under `bind`/`join`** depends on attribute
+- **Schema reconciliation under `union`/`join`** depends on attribute
   identity and is deferred to the algebra document.
 - **How operations transform units** is treated in the algebra
   document.

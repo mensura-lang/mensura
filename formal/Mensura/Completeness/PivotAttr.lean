@@ -9,14 +9,14 @@ reshape becomes split-safe once the spread column `name` is a non-index
 `(value, name)` pairs carried in the bag at each key (here `value = Sum.inl ()`,
 `name = Sum.inr ()`).  Then pivoting reads only one key's bag, so it is a strict
 `fiberMap`, hence `SplitSafe`.  This is the formal counterpart of the book's
-relaxed pivot: safe when `name` is an attribute, unsafe (a `project`) when `name`
+relaxed pivot: safe when `name` is an attribute, unsafe (a `demote`) when `name`
 is an index.
 
 Reversibility is stated, not reproved here: recovering the long table from a
 wide one re-introduces `name` into the index via the existing `unpivot`, and a
-`project` (which is *not* split-safe, `project_not_preservesDisjoint`) brings it
-back to attribute form, i.e. `T = project (unpivot (pivotAttr T))` on tables that
-hold exactly one row per name.  The lone non-split-safe step is that `project`.
+`demote` (which is *not* split-safe, `demote_not_preservesDisjoint`) brings it
+back to attribute form, i.e. `T = demote (unpivot (pivotAttr T))` on tables that
+hold exactly one row per name.  The lone non-split-safe step is that `demote`.
 -/
 
 import Mensura.Core.Ops
@@ -72,9 +72,9 @@ theorem pivotAttr_splitSafe :
 /-! ### Reversibility of the relaxed pivot
 
 `pivotAttr` is inverted by re-introducing `name` into the index with the existing
-`unpivot` and taking it back out with `project`: `project (unpivot (pivotAttr T)) = T`
-on tables that hold exactly one row per name.  Of the three steps only `project`
-is not split safe (`project_not_preservesDisjoint`), so it is the lone unsafe
+`unpivot` and taking it back out with `demote`: `demote (unpivot (pivotAttr T)) = T`
+on tables that hold exactly one row per name.  Of the three steps only `demote`
+is not split safe (`demote_not_preservesDisjoint`), so it is the lone unsafe
 step of the round trip. -/
 
 /-- A long row carrying value `v` (column `Sum.inl ()`) and name `n` (`Sum.inr ()`). -/
@@ -95,14 +95,14 @@ theorem valuesAt_image [Fintype N] [DecidableEq N] (n : N) (g : N → Cell V) :
     Multiset.count_eq_one_of_mem Finset.univ.nodup (Finset.mem_univ n),
     Multiset.replicate_one, Multiset.map_singleton]
 
-/-- Sum of singletons over any multiset is the map of that multiset. -/
+/-- Sum of singletons over any multiset is the flatMap of that multiset. -/
 private theorem msum_map_singleton {α β : Type _} (s : Multiset α) (x : α → β) :
     (s.map (fun a => ({x a} : Multiset β))).sum = s.map x := by
   induction s using Multiset.induction with
   | empty => simp
   | cons a s ih => simp [ih]
 
-/-- Hence a sum of singletons over a fintype is the map of its universe multiset. -/
+/-- Hence a sum of singletons over a fintype is the flatMap of its universe multiset. -/
 theorem sum_univ_singleton [Fintype N] {β : Type _} (x : N → β) :
     (∑ n : N, ({x n} : Multiset β)) = (Finset.univ.val : Multiset N).map x := by
   rw [Finset.sum]
@@ -115,17 +115,17 @@ def NameTotal [Fintype N]
   ∀ k, T.rows k = 0 ∨ ∃ g : N → Cell V,
     T.rows k = (Finset.univ.val : Multiset N).map (fun m => longRow (g m) m)
 
-/-- Reversibility: on name-total tables, `project ∘ unpivot ∘ pivotAttr` is the
-identity.  Only the final `project` is not split safe, so it is the one unsafe
+/-- Reversibility: on name-total tables, `demote ∘ unpivot ∘ pivotAttr` is the
+identity.  Only the final `demote` is not split safe, so it is the one unsafe
 step of the round trip. -/
 theorem pivotAttr_reversible [Fintype N] [DecidableEq N] [Nonempty N]
     {T : Table K (Unit ⊕ Unit) (Sum.elim (fun _ => V) (fun _ => N))}
     (hT : NameTotal T) :
-    project (unpivot (pivotAttr T)) = T := by
+    demote (unpivot (pivotAttr T)) = T := by
   apply Table.ext_rows
   intro k
   rcases hT k with h0 | ⟨g, hk⟩
-  · simp [project, unpivot, pivotAttr, h0]
+  · simp [demote, unpivot, pivotAttr, h0]
   · have hcard : ¬ (T.rows k).card = 0 := by
       rw [hk, Multiset.card_map]
       change ¬ Finset.univ.card = 0
@@ -136,9 +136,9 @@ theorem pivotAttr_reversible [Fintype N] [DecidableEq N] [Nonempty N]
       rw [Multiset.singleton_inj]
       funext n
       rw [hk, valuesAt_image, cellOf_singleton]
-    show (project (unpivot (pivotAttr T))).rows k = T.rows k
+    show (demote (unpivot (pivotAttr T))).rows k = T.rows k
     rw [hk]
-    simp only [project, unpivot, hpiv, Multiset.map_singleton, longRow]
+    simp only [demote, unpivot, hpiv, Multiset.map_singleton, longRow]
     rw [sum_univ_singleton (fun n => Row.elim (fun _ => g n) (fun (_ : Unit) => some n))]
 
 end Mensura

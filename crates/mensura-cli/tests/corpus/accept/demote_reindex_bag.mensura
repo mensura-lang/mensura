@@ -1,10 +1,10 @@
-// Accept: shrink_key with no downstream reducer needs no completeness
+// Accept: demote with no downstream reducer needs no completeness
 // discharge (ADR 0023).  A possibly partial bag is an honest reindex; the
-// obligation belongs to the reducing group_map, and there is none here.
+// obligation belongs to the reducing map_bag, and there is none here.
 // Shrinking a column other than the promoted one keeps this a genuine
 // reindex rather than an ADR 0024 round trip.
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } }
 view per_machine {
-  readings |> extend_key machine |> shrink_key ts
+  readings |> promote machine |> demote ts
 }

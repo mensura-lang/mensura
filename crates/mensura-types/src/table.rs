@@ -18,7 +18,7 @@ pub enum Cardinality {
 
 impl Cardinality {
     /// Least upper bound on the chain. Any `Bag` input yields `Bag`. Used
-    /// wherever an operation may raise the bound (a non-functional `left_join`,
+    /// wherever an operation may raise the bound (a non-functional `lookup`,
     /// binding overlapping inputs).
     pub fn join(self, other: Cardinality) -> Cardinality {
         match (self, other) {
@@ -50,8 +50,8 @@ pub struct Branch {
 pub type Tag = Vec<Branch>;
 
 /// Table-scoped lineage qualifier (`09` sections 3.5, 9): the set of tags a
-/// table carries. `bind` unions tag-sets; `split` adds a sibling pair;
-/// `shrink_key` / index `pivot` drop them.
+/// table carries. `union` unions tag-sets; `split` adds a sibling pair;
+/// `demote` / index `pivot` drop them.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Lineage {
     pub tags: BTreeSet<Tag>,
@@ -66,7 +66,7 @@ impl Lineage {
     }
 
     /// The lineage after a key change drops the branch structure
-    /// (`shrink_key`, index `pivot`). Same value as `root`, named for the
+    /// (`demote`, index `pivot`). Same value as `root`, named for the
     /// call site.
     pub fn dropped() -> Lineage {
         Lineage::root()
@@ -97,7 +97,7 @@ impl Lineage {
         Lineage { tags }
     }
 
-    /// `bind` (`09` section 6.5): union the tag-sets.
+    /// `union` (`09` section 6.5): union the tag-sets.
     pub fn union(&self, other: &Lineage) -> Lineage {
         Lineage {
             tags: self.tags.union(&other.tags).cloned().collect(),
@@ -164,7 +164,7 @@ impl Totality {
         !self.is_optional(column)
     }
 
-    /// Make a column optional (e.g. a `left_join` added it as possibly missing).
+    /// Make a column optional (e.g. a `lookup` added it as possibly missing).
     pub fn mark_optional(&mut self, column: impl Into<String>) {
         self.optional.insert(column.into());
     }
@@ -354,7 +354,7 @@ mod tests {
         let merged = train.union(&test);
         // The whole is not disjoint from either half.
         assert!(!merged.disjoint(&train));
-        // bind reconstructs both tags.
+        // union reconstructs both tags.
         assert_eq!(merged.tags.len(), 2);
     }
 

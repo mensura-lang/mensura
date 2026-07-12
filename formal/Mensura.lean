@@ -9,11 +9,11 @@ Science Project: An Inductive Learning Approach".  Each definition box in
 that chapter maps to a definition here, with the `\label` recorded in a doc
 comment.
 
-Module map (each file imports only what it builds on):
+Module flatMap (each file imports only what it builds on):
 
-  Core/Defs          tables, rows, split/bind, the safety properties,
+  Core/Defs          tables, rows, split/union, the safety properties,
                      minimality
-  Core/Ops           map, joins, aggregate, ungroup, project, tagged pair
+  Core/Ops           flatMap, joins, aggregate, promote, demote, tagged pair
   SplitSafety        per-operation safety and the composition payoff
   Laws               equational laws: the rewrite-rule seeds (ADR 0008)
   Reshape            unpivot / pivot / unpivotDrop and the inverse pair
@@ -22,11 +22,11 @@ Module map (each file imports only what it builds on):
                      (ADR 0020)
   Completeness/
     FiberMap         the key-preserving safe-completeness characterization
-    Reindex          its key-changing generalization; gatherMap and project
+    Reindex          its key-changing generalization; gatherMap and demote
     Verbs            the derived verb catalogue (expressive completeness)
     PivotAttr        the split-safe attribute pivot and its reversibility
     CompleteOver     population-relative completeness, its propagation
-                     through project/shrink_key, and the fiber-level
+                     through demote/demote, and the fiber-level
                      trivial discharge at card <= 1 (ADR 0023)
 
 The statement inventory and its dependency graph live in the blueprint

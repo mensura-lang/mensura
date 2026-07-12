@@ -107,12 +107,12 @@ impl Context {
         }
     }
 
-    /// Bind a group lambda's key-first parameters `|k, g|` (ADR 0015): `kname` to
-    /// the key (index columns as total values, constant within a group), `gname`
+    /// Bind a group lambda's key-first parameters `|k, b|` (ADR 0015): `kname` to
+    /// the key (index columns as total values, constant within a group), `bname`
     /// to the value columns as bags (section 5.4).
-    pub fn group(kname: &str, gname: &str, table: &TableType) -> Context {
+    pub fn bag(kname: &str, bname: &str, table: &TableType) -> Context {
         Context {
-            names: bind2(kname, key_record(table), gname, group_value_record(table)),
+            names: bind2(kname, key_record(table), bname, bag_value_record(table)),
             aggregates: builtin_aggregates(),
         }
     }
@@ -185,7 +185,7 @@ fn value_record(table: &TableType) -> Ty {
 
 /// The group value `g` of a table (ADR 0015): the non-index columns as bags
 /// carrying their totality (section 5.4). The key columns live in `k`.
-fn group_value_record(table: &TableType) -> Ty {
+fn bag_value_record(table: &TableType) -> Ty {
     let mut fields = BTreeMap::new();
     for col in &table.content.columns {
         fields.insert(
@@ -860,8 +860,8 @@ mod tests {
         Context::row("k", "r", &sample_table())
     }
 
-    fn group_ctx() -> Context {
-        Context::group("k", "g", &sample_table())
+    fn bag_ctx() -> Context {
+        Context::bag("k", "b", &sample_table())
     }
 
     #[test]
@@ -975,39 +975,39 @@ mod tests {
 
     #[test]
     fn aggregates_have_per_domain_signatures() {
-        let ctx = group_ctx();
-        assert_eq!(ty_of(&ctx, "count g.size"), Ok(total(ColumnType::Int)));
-        assert_eq!(ty_of(&ctx, "sum g.size"), Ok(total(ColumnType::Int)));
+        let ctx = bag_ctx();
+        assert_eq!(ty_of(&ctx, "count b.size"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "sum b.size"), Ok(total(ColumnType::Int)));
         assert_eq!(
-            ty_of(&ctx, "sum g.temperature"),
+            ty_of(&ctx, "sum b.temperature"),
             Ok(total(ColumnType::Real))
         );
-        assert_eq!(ty_of(&ctx, "min g.at"), Ok(total(ColumnType::Date))); // date is orderable
+        assert_eq!(ty_of(&ctx, "min b.at"), Ok(total(ColumnType::Date))); // date is orderable
         assert_eq!(
-            ty_of(&ctx, "max g.temperature"),
+            ty_of(&ctx, "max b.temperature"),
             Ok(total(ColumnType::Real))
         );
-        assert_eq!(ty_of(&ctx, "any g.flag"), Ok(total(ColumnType::Bool)));
+        assert_eq!(ty_of(&ctx, "any b.flag"), Ok(total(ColumnType::Bool)));
         // sum on a non-numeric bag, min on a non-orderable bag.
-        assert!(ty_of(&ctx, "sum g.note").is_err());
-        assert!(ty_of(&ctx, "min g.note").is_err());
+        assert!(ty_of(&ctx, "sum b.note").is_err());
+        assert!(ty_of(&ctx, "min b.note").is_err());
     }
 
     #[test]
     fn mean_is_not_a_primitive() {
-        let ctx = group_ctx();
+        let ctx = bag_ctx();
         // `mean` is gone; it is recovered from sum/count/to_real.
-        assert!(ty_of(&ctx, "mean g.temperature").is_err());
+        assert!(ty_of(&ctx, "mean b.temperature").is_err());
         assert_eq!(
-            ty_of(&ctx, "sum g.temperature / to_real (count g.temperature)"),
+            ty_of(&ctx, "sum b.temperature / to_real (count b.temperature)"),
             Ok(total(ColumnType::Real))
         );
     }
 
     #[test]
     fn aggregates_require_a_total_bag() {
-        let ctx = group_ctx();
-        let errs = ty_of(&ctx, "sum g.peak").expect_err("optional bag");
+        let ctx = bag_ctx();
+        let errs = ty_of(&ctx, "sum b.peak").expect_err("optional bag");
         assert!(errs[0].message.contains("total bag"));
     }
 
@@ -1015,9 +1015,9 @@ mod tests {
     fn to_real_converts_int_value_and_bag() {
         let row = row_ctx();
         assert_eq!(ty_of(&row, "to_real r.size"), Ok(total(ColumnType::Real)));
-        let group = group_ctx();
+        let bag = bag_ctx();
         assert_eq!(
-            ty_of(&group, "to_real g.size"),
+            ty_of(&bag, "to_real b.size"),
             Ok(Ty::Bag {
                 domain: ColumnType::Real,
                 opt: Optionality::Total
@@ -1041,10 +1041,10 @@ mod tests {
 
     #[test]
     fn application_equals_pipe_for_aggregate() {
-        let ctx = group_ctx();
+        let ctx = bag_ctx();
         assert_eq!(
-            ty_of(&ctx, "sum g.temperature"),
-            ty_of(&ctx, "g.temperature |> sum"),
+            ty_of(&ctx, "sum b.temperature"),
+            ty_of(&ctx, "b.temperature |> sum"),
         );
     }
 
@@ -1062,8 +1062,8 @@ mod tests {
         // The value layer does not (yet) admit general application; piping into a
         // non-builtin is an error, mirroring the bare form (ADR 0018 open
         // question 2).
-        let ctx = group_ctx();
-        assert!(ty_of(&ctx, "g.temperature |> bogus").is_err());
-        assert!(ty_of(&ctx, "bogus g.temperature").is_err());
+        let ctx = bag_ctx();
+        assert!(ty_of(&ctx, "b.temperature |> bogus").is_err());
+        assert!(ty_of(&ctx, "bogus b.temperature").is_err());
     }
 }

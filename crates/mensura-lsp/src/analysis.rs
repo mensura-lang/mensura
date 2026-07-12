@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn pipeline_operation_is_a_builtin_function_token() {
         let analysis = analyze(
-            "view v { readings |> extend_key machine }",
+            "view v { readings |> promote machine }",
             PositionEncoding::Utf8,
         );
         let func = analysis

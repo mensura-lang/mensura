@@ -7,7 +7,7 @@ to them.
 
 This document defines what a store is and how it is declared.  The
 unit being tabulated is defined separately (`01-units.md`).  The
-process variant of a store, `collect`, is treated in its own document.
+process variant of a store, `registry`, is treated in its own document.
 The API surface a store may expose (REST endpoints, authentication,
 permissions) is part of the web-service work and is out of scope
 here.  The audit, version, and auto-fill policy syntax (`@audited`,
@@ -359,9 +359,9 @@ nothing.  Acyclic, well-formed.
 
 ## Forward references and open questions
 
-- **`collect`.**  A process-style variant of `store`, where data
+- **`registry`.**  A process-style variant of `store`, where data
   enters through an ingestion mechanism rather than CRUD.  Treated in
-  its own document.  Briefly: collect declarations carry a
+  its own document.  Briefly: registry declarations carry a
   completeness guarantee at the type level that ordinary stores do
   not.
 - **Change control.**  The syntax and semantics of `@audited`,
@@ -377,7 +377,7 @@ nothing.  Acyclic, well-formed.
   (transport projection).
 - **Attribute identity.**  When are two attributes (in two stores, or
   in two intermediate tables) "the same thing"?  Unsettled, important
-  for `bind` and `join`, has its own document pending.
+  for `union` and `join`, has its own document pending.
 - **Initialization semantics.**  How a store starts (empty, loaded
   from a file, replayed from a log) is a runtime concern this
   document does not address.

@@ -13,5 +13,5 @@ store readings : SensorLog {
 }
 view max_kelvin {
   readings |> assume { complete }
-           |> group_map |k, g| (.max_kelvin = max g.kelvin)
+           |> map_bag |k, b| (.max_kelvin = max b.kelvin)
 }

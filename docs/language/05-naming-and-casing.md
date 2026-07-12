@@ -18,7 +18,7 @@ Declared names split into two classes by what they denote.
   appear in type position: `unit` and `shape`.  Examples: `Machine`,
   `TemperatureSensor`, `FeatureWindow`.
 - **Terms** use **snake_case**.  These are named resources, instances, and
-  fields: `store` and `collect` names, attribute (column) names, and
+  fields: `store` and `registry` names, attribute (column) names, and
   `string`-valued shape parameters.  Examples: `temperature_readings`,
   `foundation_day`, `date_field`.
 
@@ -28,7 +28,7 @@ or `FeatureWindow[U]`), so it is PascalCase.  A `string` parameter names a
 value (like `date_field` in `Ageable[date_field: string]`), so it is
 snake_case.
 
-A `view` is a materialized, queried resource, like a `store` or `collect`: it
+A `view` is a materialized, queried resource, like a `store` or `registry`: it
 is defined by a pipeline and exposed over a wire
 (`docs/decisions/0012-view-hosting.md`, `10-views.md`), not a type that
 classifies rows.  It therefore takes the term convention, **snake_case**
@@ -51,7 +51,7 @@ convention".
 
 ### Why two classes
 
-A `store` or `collect` is a resource you query, mutate, and expose over a
+A `store` or `registry` is a resource you query, mutate, and expose over a
 wire, not a type; it reads like a value, so it takes the value convention.  A
 `unit` or `shape` classifies rows, so it takes the type convention.  This is
 the familiar types-PascalCase, values-snake_case split, and it keeps a
@@ -96,7 +96,7 @@ The convention is a **hard compile-time error**, not a warning.  The resolver
 (`crates/mensura-types/src/resolve.rs`) rejects a name in the wrong class and
 collects the diagnostic alongside the others rather than failing fast, so a
 single run reports every violation.  A `unit` or `shape` whose name is not
-PascalCase, or a `store`, `collect`, `view`, attribute, or parameter whose name
+PascalCase, or a `store`, `registry`, `view`, attribute, or parameter whose name
 is not snake_case, is a resolution error.
 
 Enforcing rather than warning is what lets wire-name translation be
@@ -117,7 +117,7 @@ it with that transport's idiom; the projection is deterministic.
 | MQTT | (topics only) | kebab-case topic segment |
 | Permission scope | (n/a) | kebab-case resource |
 
-Worked example, for a `collect temperature_readings` with a `machine` field:
+Worked example, for a `registry temperature_readings` with a `machine` field:
 
 - REST: `POST /temperature-readings`, resource `machine`.
 - GraphQL: query field `temperatureReadings`, field `machine`.
@@ -132,7 +132,7 @@ compiler can generate every wire name, and round-tripping is unambiguous.
 Permission scopes are a wire form too, not a special case: a scope appears in
 IdP-issued tokens and OAuth scope strings, so its resource half uses the same
 kebab-case as a REST path.  Mensura maps a scope back to its `store` or
-`collect` by the inverse (`-` to `_`); the mapping is bijective because a
+`registry` by the inverse (`-` to `_`); the mapping is bijective because a
 snake_case name uses `_` only as a separator and identifiers never contain
 `-`.  See `docs/decisions/0005-identity-and-authorization.md` for how scopes
 are auto-derived from resources.

@@ -7,7 +7,7 @@ The rectangle fact of ADR 0020
 `unpivotDrop` establishes the rectangle from a `Total` wide table
 (`unpivotDrop_exhaustive`) and its output is `Minimal` unconditionally
 (`unpivotDrop_minimal`).  The rectangle propagates through a non-dropping
-`map`, `leftJoin`, `aggregate`, and the `bind` of two carriers, and `split`
+`flatMap`, `lookup`, `aggregate`, and the `union` of two carriers, and `split`
 destroys it (`split_not_exhaustive`) -- ADR 0020's "destroyed by `split`"
 row, the honest price of keeping the name in the key.
 -/
@@ -108,20 +108,20 @@ theorem exhaustive_of_subsingleton [Subsingleton N] (T : Table (K × N) H σ) :
 /-! ### Propagation of the rectangle fact
 
 The key-preserving rows of ADR 0020 section 2's conservative table: a
-non-dropping `map` preserves `Exhaustive` (hence so does `leftJoin`, whose
+non-dropping `flatMap` preserves `Exhaustive` (hence so does `lookup`, whose
 body never drops), `aggregate` preserves it (one output row per present
-key), and the `bind` of two carriers preserves it.  `split` destroys it
+key), and the `union` of two carriers preserves it.  `split` destroys it
 (`split_not_exhaustive`): a predicate can read the name axis and cut a
 fiber, which is the honest price of keeping the name in the key --
 contrast `pivotAttr_splitSafe`, where the whole bag rides with its
 residual key. -/
 
-/-- A non-dropping `map` (every row yields at least one output row)
+/-- A non-dropping `flatMap` (every row yields at least one output row)
 preserves row presence in both directions. -/
-theorem map_present_iff {φ : K → Row H σ → Multiset (Row H' σ')}
+theorem flatMap_present_iff {φ : K → Row H σ → Multiset (Row H' σ')}
     (hφ : ∀ k f, φ k f ≠ 0) (T : Table K H σ) (k : K) :
-    (map φ T).Present k ↔ T.Present k := by
-  simp only [Table.Present, map]
+    (flatMap φ T).Present k ↔ T.Present k := by
+  simp only [Table.Present, flatMap]
   constructor
   · intro h hrows
     exact h (by simp [hrows])
@@ -132,23 +132,23 @@ theorem map_present_iff {φ : K → Row H σ → Multiset (Row H' σ')}
     rw [h0] at hmem
     exact Multiset.notMem_zero _ hmem
 
-/-- A non-dropping `map` preserves the rectangle: presence is preserved in
-both directions, so full fibers stay full.  A `map` that can drop (a
+/-- A non-dropping `flatMap` preserves the rectangle: presence is preserved in
+both directions, so full fibers stay full.  A `flatMap` that can drop (a
 filter) is excluded, and rightly so: it can empty one name of a fiber. -/
-theorem map_exhaustive {φ : (K × N) → Row H σ → Multiset (Row H' σ')}
+theorem flatMap_exhaustive {φ : (K × N) → Row H σ → Multiset (Row H' σ')}
     (hφ : ∀ p f, φ p f ≠ 0) {T : Table (K × N) H σ} (hE : Exhaustive T) :
-    Exhaustive (map φ T) := by
+    Exhaustive (flatMap φ T) := by
   rintro k ⟨n₀, h₀⟩ n
-  rw [map_present_iff hφ]
-  exact hE k ⟨n₀, (map_present_iff hφ T (k, n₀)).mp h₀⟩ n
+  rw [flatMap_present_iff hφ]
+  exact hE k ⟨n₀, (flatMap_present_iff hφ T (k, n₀)).mp h₀⟩ n
 
-/-- `leftJoin` preserves the rectangle: its body emits the unmatched row
+/-- `lookup` preserves the rectangle: its body emits the unmatched row
 with missing right columns rather than dropping it, so it is a
-non-dropping `map`. -/
-theorem leftJoin_exhaustive (key : (K × N) → U) (right : Table U G τ)
+non-dropping `flatMap`. -/
+theorem lookup_exhaustive (key : (K × N) → U) (right : Table U G τ)
     {T : Table (K × N) H σ} (hE : Exhaustive T) :
-    Exhaustive (leftJoin key right T) := by
-  refine map_exhaustive (fun p f => ?_) hE
+    Exhaustive (lookup key right T) := by
+  refine flatMap_exhaustive (fun p f => ?_) hE
   by_cases hR : (right.rows (key p)).card = 0
   · simp only [if_pos hR]
     intro h0
@@ -176,13 +176,13 @@ theorem aggregate_exhaustive (f : (K × N) → Multiset (Row H σ) → Row H σ)
   rw [hiff]
   exact hE k ⟨n₀, (hiff (k, n₀)).mp h₀⟩ n
 
-/-- The `bind` of two carriers of the rectangle carries it: a fiber present
+/-- The `union` of two carriers of the rectangle carries it: a fiber present
 in the union is present on one side, whose fullness fills the union. -/
-theorem bind_exhaustive {T₀ T₁ : Table (K × N) H σ}
-    (h₀ : Exhaustive T₀) (h₁ : Exhaustive T₁) : Exhaustive (bind T₀ T₁) := by
-  have hiff : ∀ p, (bind T₀ T₁).Present p ↔ T₀.Present p ∨ T₁.Present p := by
+theorem union_exhaustive {T₀ T₁ : Table (K × N) H σ}
+    (h₀ : Exhaustive T₀) (h₁ : Exhaustive T₁) : Exhaustive (union T₀ T₁) := by
+  have hiff : ∀ p, (union T₀ T₁).Present p ↔ T₀.Present p ∨ T₁.Present p := by
     intro p
-    simp only [Table.Present, bind]
+    simp only [Table.Present, union]
     have hadd : T₀.rows p + T₁.rows p = 0 ↔ T₀.rows p = 0 ∧ T₁.rows p = 0 := by
       constructor
       · intro hst

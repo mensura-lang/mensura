@@ -1261,7 +1261,7 @@ mod tests {
           }
         }
         view attention_needed {
-          machines |> map |_, r| if r.status == "degraded" then r else ()
+          machines |> flat_map |_, r| if r.status == "degraded" then r else ()
         }
     "#;
 
@@ -1276,7 +1276,7 @@ mod tests {
 
         // Output columns in storage order: the index, then the computed
         // attributes in the order the checker produced them (a whole-row
-        // `map` body yields them alphabetically).
+        // `flat_map` body yields them alphabetically).
         let cols: Vec<(&str, ColumnRole, bool)> = plan
             .columns
             .iter()
@@ -1304,7 +1304,7 @@ mod tests {
               attr { commissioned: date }
             }
             view machines {
-              machines |> map |_, r| r
+              machines |> flat_map |_, r| r
             }
         "#;
         let errs = errors(src);
@@ -1324,10 +1324,10 @@ mod tests {
               attr { commissioned: date }
             }
             view v {
-              machines |> map |_, r| r
+              machines |> flat_map |_, r| r
             }
             view v {
-              machines |> map |_, r| r
+              machines |> flat_map |_, r| r
             }
         "#;
         let errs = errors(src);
@@ -2028,14 +2028,14 @@ mod tests {
         let ok = r#"
             unit Machine { id: string }
             store readings { unit { Machine } attr { temperature: real } }
-            view machine_summary { readings |> group_map |k, g| (.temp_max = max g.temperature) }
+            view machine_summary { readings |> map_bag |k, b| (.temp_max = max b.temperature) }
         "#;
         resolve_str(ok).expect("a valid view resolves");
 
         let bad = r#"
             unit Machine { id: string }
             store readings { unit { Machine } attr { temperature: real } }
-            view bad { readings |> group_map |k, g| (.x = g.temperature + 1.0) }
+            view bad { readings |> map_bag |k, b| (.x = b.temperature + 1.0) }
         "#;
         let errs = errors(bad);
         assert!(errs.iter().any(|e| e.message.contains("bag")));
@@ -2051,12 +2051,12 @@ mod tests {
     #[test]
     fn view_conforms_to_unit_fixing_shape() {
         // A unit-fixing shape checks the output's index structurally: the view
-        // ends in `group_map`, so its index is `Machine`'s `id`.
+        // ends in `map_bag`, so its index is `Machine`'s `id`.
         let src = format!(
             "{SUMMARY_VIEW}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view machine_summary : Tabular[Machine] {{
-              readings |> group_map |k, g| (.temp_max = max g.temperature)
+              readings |> map_bag |k, b| (.temp_max = max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying Machine's index conforms");
@@ -2071,7 +2071,7 @@ mod tests {
             unit Site {{ code: string }}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view v : Tabular[Site] {{
-              readings |> group_map |k, g| (.temp_max = max g.temperature)
+              readings |> map_bag |k, b| (.temp_max = max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2090,7 +2090,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: real }} }}
             view machine_summary : HasMax {{
-              readings |> group_map |k, g| (.temp_max = max g.temperature)
+              readings |> map_bag |k, b| (.temp_max = max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying temp_max conforms");
@@ -2102,7 +2102,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMin {{ attr {{ temp_min: real }} }}
             view v : HasMin {{
-              readings |> group_map |k, g| (.temp_max = max g.temperature)
+              readings |> map_bag |k, b| (.temp_max = max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2118,7 +2118,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: string }} }}
             view v : HasMax {{
-              readings |> group_map |k, g| (.temp_max = max g.temperature)
+              readings |> map_bag |k, b| (.temp_max = max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2193,12 +2193,12 @@ mod tests {
         // fact) discharges it.
         let bad = format!(
             "{BAG_READINGS}
-            view stats {{ readings |> group_map |k, g| (.max_kelvin = max g.kelvin) }}"
+            view stats {{ readings |> map_bag |k, b| (.max_kelvin = max b.kelvin) }}"
         );
         let errs = errors(&bad);
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("reducing `group_map`")),
+                .any(|e| e.message.contains("reducing `map_bag`")),
             "expected the reducer completeness demand, got: {errs:?}"
         );
 
@@ -2206,7 +2206,7 @@ mod tests {
             "{BAG_READINGS}
             view stats {{
               readings |> assume {{ complete }}
-                       |> group_map |k, g| (.max_kelvin = max g.kelvin)
+                       |> map_bag |k, b| (.max_kelvin = max b.kelvin)
             }}"
         );
         let program = resolve_program(&ok).expect("assume discharges the reducer");
@@ -2225,7 +2225,7 @@ mod tests {
             "{BAG_READINGS}
             view roundtrip {{
               let parts = readings |> split |k| k.id == \"m1\";
-              parts |> bind
+              parts |> union
             }}"
         );
         let program = resolve_program(&src).expect("should resolve");
@@ -2304,14 +2304,14 @@ mod tests {
         let ok = format!(
             "{BAG_READINGS}
             shape SensorLog {{ attr* {{ kelvin: real }} }}
-            view log : SensorLog {{ readings |> map |k, r| r }}"
+            view log : SensorLog {{ readings |> flat_map |k, r| r }}"
         );
         resolve_program(&ok).expect("a bag view satisfies an attr* shape");
 
         let bad = format!(
             "{BAG_READINGS}
             shape Calibrated {{ attr {{ kelvin: real }} }}
-            view log : Calibrated {{ readings |> map |k, r| r }}"
+            view log : Calibrated {{ readings |> flat_map |k, r| r }}"
         );
         let errs = errors(&bad);
         assert!(errs.iter().any(|e| {

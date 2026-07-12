@@ -454,4 +454,4 @@ without modification.
   (`shape Any {}`) is now expressible and any store conforms to it;
   whether that is the right spelling for "works on any table" is open.
 - **Attribute identity** (cross-shape, cross-store).  Still open;
-  important for `bind` and `join`.
+  important for `union` and `join`.

@@ -1,5 +1,5 @@
 // Accept: the demote-first round trip on a singletons store (ADR 0024,
-// `ungroup_project`, no side condition): shrinking ts makes a bag over
+// `promote_demote`, no side condition): shrinking ts makes a bag over
 // machine that still carries the {machine, ts} grading, so promoting ts
 // back is singletons again with nothing assumed and nothing discharged.
 // Store and view claim the same all-`attr` shape, so the conformance
@@ -15,5 +15,5 @@ shape Timestamped {
 }
 store readings : Timestamped { unit { Reading } attr { temperature: real } }
 view back_to_readings : Timestamped {
-  readings |> shrink_key ts |> extend_key ts
+  readings |> demote ts |> promote ts
 }

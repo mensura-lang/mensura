@@ -36,7 +36,7 @@ pipeline":
 - **It is a resource, not a type.**  A view is materialized and queried over a
   wire, exactly as a store is (`docs/decisions/0006-transport-agnostic-surface.md`),
   so its name follows the term convention, **snake_case**, like `store` and
-  `collect` (`05-naming-and-casing.md`).
+  `registry` (`05-naming-and-casing.md`).
 
 ## Surface form
 
@@ -45,8 +45,8 @@ conformance clause, and a **block** that hosts the pipeline:
 
 ```mensura
 view feature_window : Tabular[Machine] {
-  let base = readings |> extend_key machine;
-  base |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)
+  let base = readings |> promote machine;
+  base |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
 }
 ```
 
@@ -55,7 +55,7 @@ view feature_window : Tabular[Machine] {
   intermediate tables) and `assert` statements, followed by a trailing
   expression of table type.  That trailing expression is the materialized
   result.  Forking a pipeline is binding a table with `let` and using it twice;
-  joining several tables is tupling them for a `bind`.  No pipeline-specific
+  joining several tables is tupling them for a `union`.  No pipeline-specific
   grammar is introduced: a view body is exactly a block (`04-grammar.md`).
 - **Sources resolve by name.**  A bare name in the pipeline (`readings`) refers
   to a store (later, another view) in scope, presented to the pipeline as a
@@ -77,10 +77,10 @@ through it and surface on the view:
   their domains.  This is the pure structure; the qualifiers below describe it.
 - **Cardinality** (table-scoped qualifier): `singletons` or `bag`, as the
   pipeline leaves it.  A summarizing view that ends in a single-record
-  `group_map` is `singletons`; a view that ends in a `bag`-shaped stage is
+  `map_bag` is `singletons`; a view that ends in a `bag`-shaped stage is
   `bag`.
 - **Totality** (column-scoped qualifier): a value is total unless an operation
-  made it optional (a `left_join` leaves its added columns optional until a
+  made it optional (a `lookup` leaves its added columns optional until a
   default or an `is known` narrowing restores them; ADR 0010).
 - **Completeness** and **lineage** (table-scoped qualifiers): carried as the
   Tier A operations carry them (`09-typing-reference.md`, sections 8 and 9).
@@ -95,7 +95,7 @@ computes; a shape claim, however, now constrains it (next section,
 `docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`
 amending `docs/decisions/0012-view-hosting.md`).
 
-A `store` and a `collect` default to strictly 0-or-1 at their boundary
+A `store` and a `registry` default to strictly 0-or-1 at their boundary
 (ADR 0001): they promise a tabulation of a unit, so the unit's identity
 discipline binds them.  A store of genuinely recurring observations may
 instead declare `bag` cardinality with `attr*` blocks, keyed by the entity
@@ -135,42 +135,42 @@ pipeline's result.
 ```mensura
 view machine_temperature : Tabular[Machine] {
   readings
-  |> extend_key machine
-  |> group_map |k, g| (.temp_mean = sum g.temperature / to_real (count g.temperature), .temp_max = max g.temperature)
+  |> promote machine
+  |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
 }
 ```
 
-`extend_key` adds `machine` to the key (content: index grows; cardinality and
-completeness preserved); `group_map` reduces each group to one record, so the
+`promote` adds `machine` to the key (content: index grows; cardinality and
+completeness preserved); `map_bag` reduces each bag to one record, so the
 result is `singletons` per `(..., machine)` key (a fact the pipeline produces,
 not one the view imposes).  All Tier A, so it composes safely.  The view claims
 `Tabular[Machine]`, so the conformance check confirms the output's index is
 `Machine`'s and, since the shape has no `attr*` block, that the output is
-`singletons` (ADR 0022), which the `group_map` supplies.
+`singletons` (ADR 0022), which the `map_bag` supplies.
 
 **Split and re-merge, with a `let` fork.**
 
 ```mensura
 view full_dataset {
   let parts = data |> split |k| hash k < threshold;
-  parts |> bind
+  parts |> union
 }
 ```
 
 `split` yields a disjoint pair, each side carrying a sibling lineage tag; binding
-the disjoint pair preserves `singletons` and reconstructs `data` (`bind_split`,
+the disjoint pair preserves `singletons` and reconstructs `data` (`union_split`,
 `09-typing-reference.md`, section 11).  The view claims no shape, so it is a free
 table; its lineage and cardinality are whatever the pipeline computes.
 
-**Keep only the rows that matter (filter via `map`).**
+**Keep only the rows that matter (filter via `flat_map`).**
 
 ```mensura
 view attention_needed {
-  machines |> map |_, r| if r.status == "degraded" then r else ()
+  machines |> flat_map |_, r| if r.status == "degraded" then r else ()
 }
 ```
 
-The key-first `map` body returns the value row `r` when the machine is degraded
+The key-first `flat_map` body returns the value row `r` when the machine is degraded
 and the empty collection `()` otherwise, so it drops the other rows.  The maximum
 collection size is 1, so the result stays `singletons`; there is no `filter`
 primitive (`09-typing-reference.md`, section 6.1, ADR 0015).
@@ -187,10 +187,10 @@ and are noted here only so the scope is unambiguous:
   constrains cardinality through its `attr` / `attr*` blocks (ADR 0022,
   amending ADR 0012), so claiming any all-`attr` shape requires a
   `singletons` output.
-- **Tier B inside a view.**  Hosting `shrink_key` and `pivot` in a view
-  body, and discharging the reducing `group_map`'s completeness obligation
-  (`completeness_check`, `@complete_over`, a `collect` source, or `assume`)
-  at the hosting site (`09-typing-reference.md`, section 8; `shrink_key`
+- **Tier B inside a view.**  Hosting `demote` and `pivot` in a view
+  body, and discharging the reducing `map_bag`'s completeness obligation
+  (`completeness_check`, `@complete_over`, a `registry` source, or `assume`)
+  at the hosting site (`09-typing-reference.md`, section 8; `demote`
   propagates the fact rather than demanding it, ADR 0023, and `pivot`
   carries no obligation, ADR 0020).
 - **Lineage-demanding sites.**  The learning operations (`fit`/`evaluate`) that
@@ -213,6 +213,6 @@ and are noted here only so the scope is unambiguous:
   `09-typing-reference.md`.
 - The grammar production for `view` is in `04-grammar.md`; the decision and its
   alternatives are in `docs/decisions/0012-view-hosting.md`.
-- `collect` (the process variant of a store) and `device` are sibling
+- `registry` (the process variant of a store) and `device` are sibling
   declaration sites that also host or feed pipelines; they get their own
   documents.

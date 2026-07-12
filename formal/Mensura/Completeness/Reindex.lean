@@ -2,11 +2,11 @@
 Safe completeness, key-changing fragment: the characterization of
 `Mensura.Completeness.FiberMap` lifted along a reindexing function.
 
-A `fiberMap` keeps the key.  The safe *key-changing* operations (`ungroup`,
+A `fiberMap` keeps the key.  The safe *key-changing* operations (`promote`,
 `unpivot`) still read each output key from a *single* input key, related by a
 function `r : K' → K` from output keys to input keys.  We capture that as
 `reindexMap` and lift the whole characterization to it; `fiberMap` is the
-`r = id` case.  `project` is different in kind -- one output key reads a whole
+`r = id` case.  `demote` is different in kind -- one output key reads a whole
 *fiber* of input keys -- so it gets the dual `gatherMap` form, which is
 split-invariant when its combiner is additive but is exactly the form that
 fails to preserve disjointness.  Together these place every operation of the
@@ -26,11 +26,11 @@ variable {N : Type _} {V : Type}
 
 /-! ### Pullback form: `reindexMap` (safe key-changing operations) -/
 
-/-- A *reindexing fiber map* along `r : K' → K`: the output bag at key `k'` is a
+/-- A *reindexing fiber flatMap* along `r : K' → K`: the output bag at key `k'` is a
 strict-ready function of the input bag at the single key `r k'`.  This is the
 universal shape of a split-invariant operation that reads each output key from
 one input key.  `fiberMap` is the `r = id` case (`fiberMap_eq_reindexMap`);
-`ungroup` and `unpivot` are the `r = Prod.fst` cases. -/
+`promote` and `unpivot` are the `r = Prod.fst` cases. -/
 def reindexMap (r : K' → K) (Φ : K' → Multiset (Row H σ) → Multiset (Row H' σ'))
     (T : Table K H σ) : Table K' H' σ' :=
   ⟨fun k' => Φ k' (T.rows (r k'))⟩
@@ -49,7 +49,7 @@ theorem reindexMap_splitInvariant (r : K' → K)
   apply Table.ext_rows
   intro k'
   have hk := hΦ k'
-  simp only [reindexMap, bind]
+  simp only [reindexMap, union]
   rcases hdisj (r k') with h | h
   · rw [h]; simp [hk]
   · rw [h]; simp [hk]
@@ -109,8 +109,8 @@ theorem reindexFiberOf_strict [DecidableEq K] (r : K' → K)
 operation is split-invariant and `r`-local *iff* it is a strict `reindexMap` over
 `r`.  This is the full generalization of `splitInvariant_keyLocal_iff_fiberMap`
 (its `r = id` instance): the split-invariant, single-source operations are
-exactly the strict reindex maps, with `ungroup` and `unpivot` as instances
-(`ungroup_eq_reindexMap`, `unpivot_eq_reindexMap`). -/
+exactly the strict reindex maps, with `promote` and `unpivot` as instances
+(`promote_eq_reindexMap`, `unpivot_eq_reindexMap`). -/
 theorem splitInvariant_reindexLocal_iff_reindexMap [DecidableEq K] (r : K' → K)
     {f : Table K H σ → Table K' H' σ'} :
     (SplitInvariant f ∧ ReindexLocal r f) ↔ ∃ Φ, Strict Φ ∧ f = reindexMap r Φ := by
@@ -123,7 +123,7 @@ theorem splitInvariant_reindexLocal_iff_reindexMap [DecidableEq K] (r : K' → K
     simp only [reindexMap]
     rw [hk]
 
-/-! ### `ungroup` and `unpivot` are reindex maps
+/-! ### `promote` and `unpivot` are reindex maps
 
 Both read each output key `(k, ·)` from the single input key `k`, so each is a
 `reindexMap` along `Prod.fst`.  This gives a second, uniform proof of their
@@ -137,8 +137,8 @@ example : SplitSafe (unpivot (K := K) (N := N) (V := V)) := by
   rw [unpivot_eq_reindexMap]
   exact reindexMap_splitSafe Prod.fst (by intro _; simp)
 
-theorem ungroup_eq_reindexMap {β : Type} [DecidableEq β] :
-    ungroup (K := K) (H := H) (σ := σ) (β := β)
+theorem promote_eq_reindexMap {β : Type} [DecidableEq β] :
+    promote (K := K) (H := H) (σ := σ) (β := β)
       = reindexMap Prod.fst (fun (p : K × β) m => m.bind (fun f =>
           let v : Cell β := f (Sum.inr ())
           match v with
@@ -146,21 +146,21 @@ theorem ungroup_eq_reindexMap {β : Type} [DecidableEq β] :
           | none => 0)) := rfl
 
 example {β : Type} [DecidableEq β] :
-    SplitSafe (ungroup (K := K) (H := H) (σ := σ) (β := β)) := by
-  rw [ungroup_eq_reindexMap]
+    SplitSafe (promote (K := K) (H := H) (σ := σ) (β := β)) := by
+  rw [promote_eq_reindexMap]
   exact reindexMap_splitSafe Prod.fst (by intro _; simp)
 
-/-! ### Merge form: `gatherMap` (the key-merging boundary, `project`)
+/-! ### Merge form: `gatherMap` (the key-merging boundary, `demote`)
 
-`project` does not fit `reindexMap`: one output key `k` reads the whole fiber
+`demote` does not fit `reindexMap`: one output key `k` reads the whole fiber
 `{(k, d) : d}` of input keys.  We capture that as `gatherMap`.  When its combiner
-is additive in the fiber it is a `BindHom` (hence split-invariant), which is why
-`project` is split-invariant -- but it is precisely this many-to-one shape that
+is additive in the fiber it is a `UnionHom` (hence split-invariant), which is why
+`demote` is split-invariant -- but it is precisely this many-to-one shape that
 fails to preserve disjointness (two rows a split separates by `d` collapse onto
 the same output key), so `gatherMap` is *not* `SplitSafe`.  This is the formal
 boundary between the safe key-changing operations (`reindexMap`) and the unsafe
-key-merging one (`project`), the latter already witnessed by
-`project_not_preservesDisjoint`. -/
+key-merging one (`demote`), the latter already witnessed by
+`demote_not_preservesDisjoint`. -/
 
 /-- An output key `k` reads and combines the whole fiber `{T.rows (k, d) : d}`. -/
 def gatherMap [Fintype D] (Ψ : K → (D → Multiset (Row H σ)) → Multiset (Row H' σ'))
@@ -173,25 +173,25 @@ def AdditiveGather [Fintype D]
   ∀ (k : K) (fam fam' : D → Multiset (Row H σ)),
     Ψ k (fun d => fam d + fam' d) = Ψ k fam + Ψ k fam'
 
-/-- An additive `gatherMap` is a bind-homomorphism, hence split-invariant. -/
-theorem gatherMap_bindHom [Fintype D]
+/-- An additive `gatherMap` is a union-homomorphism, hence split-invariant. -/
+theorem gatherMap_unionHom [Fintype D]
     {Ψ : K → (D → Multiset (Row H σ)) → Multiset (Row H' σ')} (hΨ : AdditiveGather Ψ) :
-    BindHom (gatherMap Ψ) := by
+    UnionHom (gatherMap Ψ) := by
   intro T₀ T₁
   apply Table.ext_rows
   intro k
-  simp only [gatherMap, bind]
+  simp only [gatherMap, union]
   exact hΨ k _ _
 
-/-- `project` is a `gatherMap`: it sums each fiber's mapped rows. -/
-theorem project_eq_gatherMap [Fintype D] :
-    project (K := K) (H := H) (σ := σ) (D := D)
+/-- `demote` is a `gatherMap`: it sums each fiber's mapped rows. -/
+theorem demote_eq_gatherMap [Fintype D] :
+    demote (K := K) (H := H) (σ := σ) (D := D)
       = gatherMap (fun (_k : K) (fam : D → Multiset (Row H σ)) =>
           ∑ d : D, (fam d).map (fun f => Row.elim f (fun _ => some d))) := rfl
 
-/-- And its combiner is additive -- so `project` is a `BindHom` by the uniform
-`gatherMap` route (compare `project_bindHom`). -/
-theorem project_additiveGather [Fintype D] :
+/-- And its combiner is additive -- so `demote` is a `UnionHom` by the uniform
+`gatherMap` route (compare `demote_unionHom`). -/
+theorem demote_additiveGather [Fintype D] :
     AdditiveGather (fun (_k : K) (fam : D → Multiset (Row H σ)) =>
       ∑ d : D, (fam d).map (fun f => Row.elim f (fun (_ : Unit) => some d))) := by
   intro k fam fam'

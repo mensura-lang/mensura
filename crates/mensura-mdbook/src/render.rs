@@ -169,9 +169,9 @@ mod tests {
     #[test]
     fn pipeline_operations_render_as_functions() {
         // `ignore` skips the resolve gate; we only check the op classification.
-        let md = "```mensura,ignore\nview v { readings |> extend_key machine }\n```";
+        let md = "```mensura,ignore\nview v { readings |> promote machine }\n```";
         let out = rewrite_markdown(md).unwrap();
-        assert!(out.contains("<span class=\"mn-function\">extend_key</span>"));
+        assert!(out.contains("<span class=\"mn-function\">promote</span>"));
     }
 
     #[test]
