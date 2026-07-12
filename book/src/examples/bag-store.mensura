@@ -1,0 +1,11 @@
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    kelvin: real
+    rpm: int
+  }
+}

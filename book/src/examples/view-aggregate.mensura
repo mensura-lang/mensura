@@ -8,7 +8,7 @@ store readings {
 }
 view hottest {
   readings
-  |> assume { complete }
   |> shrink_key ts
+  |> assume { complete }
   |> group_map |k, g| (.max_kelvin = max g.kelvin)
 }

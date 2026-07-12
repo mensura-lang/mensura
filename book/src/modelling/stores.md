@@ -32,6 +32,27 @@ A machine that has never been serviced has no `last_service` date: the value is
 missing, but the row still exists.  `operating_hours`, with no `?`, is always
 present.
 
+## Recurring observations
+
+By default a store holds **at most one row per key**: a `Machine` is observed
+once or not at all, and an accidental duplicate is rejected.  Some
+observations of an entity genuinely recur, though: sensor readings from a
+machine, transactions of an account.  Writing the attribute block as `attr*`
+(the `*` is "many") declares a **bag store**, which holds many rows per key:
+
+```mensura
+{{#include ../examples/bag-store.mensura}}
+```
+
+The key still says what a row is *about* (the machine), no longer that a row
+is unique.  A store is one or the other, never mixed: all of its attribute
+blocks are `attr`, or all are `attr*`.  Keeping the entity as the key, rather
+than working a timestamp into the index, is what later lets a split route
+whole machines to one side, so a training set and a test set cannot share a
+machine.  A per-entity constant (a machine's commissioning date) does not
+belong in the bag; it lives in a companion default store of the same unit,
+like `machines` above.
+
 ## Enumerations
 
 A named `enum` is a fixed set of string values, referenced by name as an

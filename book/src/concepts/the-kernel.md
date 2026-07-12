@@ -53,8 +53,9 @@ Each is a pure function from a table to a table.
 A few relationships are worth seeing now, because the next chapter turns on
 them:
 
-- `extend_key` and `shrink_key` are inverses in direction: one makes the key
-  finer, the other coarser.
+- `extend_key` and `shrink_key` are true inverses: one makes the key finer,
+  the other coarser, and promoting a column then demoting it (in either
+  order) is the identity.
 - `split` and `bind` are partner operations: `split` cuts a table into two
   halves that share no key, and `bind` is what puts two tables back together.
 - `unpivot` and `pivot` are inverses: long form and wide form of the same data.

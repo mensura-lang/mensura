@@ -53,7 +53,11 @@ card(k) = many   a bag of rows
 
 Carried per column, the distinction that matters is **`card <= 1`** (at most one
 value per key) versus **many** (a bag of values).  It is part of the content
-type, and every operation transforms it predictably: coarsening a key with
+type, and it enters at the source: a plain store holds at most one row per key
+(a duplicate is rejected as a sign the identity criterion is wrong), while a
+store declared with `attr*` is a *bag store*, holding many observations per
+entity (see [Recurring observations](../modelling/stores.md#recurring-observations)).
+From there every operation transforms it predictably: coarsening a key with
 `shrink_key` makes rows that differed only in the dropped component share a key,
 so cardinality *grows*; an aggregating `group_map` reduces a group back to a
 single record, so cardinality drops to `1`.
@@ -84,22 +88,28 @@ every group over the key `k` has *all* of its rows present.  It is not about the
 schema and not about any single value; it is about whether a partition is fully
 materialized.
 
-Completeness is what licenses *coarsening* a key.  When you drop an index
-component (`shrink_key`), you are summing or folding across the rows that the
-dropped component used to separate, and that rollup means what you intend only
-if none of those rows are missing.  (`pivot` also coarsens the key but needs no
-such license: an absent row simply becomes a missing cell, and a related fact,
-`exhaustive`, decides whether the spread columns come out total.)  Formally
-`shrink_key` breaks split-invariance and is sound only over a partition that is
-complete over the key it retains.  So completeness is *established* before it
-and *consumed* by it:
+Completeness is what licenses *reducing* a group.  A fold (`sum`, `max`,
+`count`) over a group equals the true value only if none of the group's rows
+are missing, so it is the reducing `group_map` that *consumes* the fact.
+Coarsening the key with `shrink_key` demands nothing by itself: a bag of the
+rows present is an honest table, and the operation *propagates* the fact from
+the finer key to the coarser one.  (`pivot` also coarsens the key and needs no
+license either: an absent row simply becomes a missing cell, and a related
+fact, `exhaustive`, decides whether the spread columns come out total.)  So
+completeness is *established* upstream, *propagated* by the reindex, and
+*consumed* by the reduction:
 
 ```mensura,ignore
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }  // establish
-|> shrink_key course                                            // consume
-|> group_map |k, g| (.total_credits = sum g.credits)
+|> shrink_key course                                 // propagate to the coarser key
+|> group_map |k, g| (.total_credits = sum g.credits) // consume
 ```
+
+One case discharges for free: a reduction over a default store's own key
+needs no fact at all, because at most one row per key means a present group
+is already whole; only a coarsened key, or a bag store, can hold a partial
+group for a fold to be silently wrong on.
 
 A table earns the fact in one of three ways: by **mechanism** (a `collect`
 source is complete by construction), by a **check** (the `completeness_check`

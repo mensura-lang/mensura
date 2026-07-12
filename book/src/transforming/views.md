@@ -43,17 +43,22 @@ the key, not refining it.
 {{#include ../examples/view-aggregate.mensura}}
 ```
 
-Coarsening a key is sound only when the groups it folds are whole, so
-`shrink_key` *consumes* a [completeness](../concepts/what-the-types-track.md)
-fact, and that fact has to be established on the pipeline *before* the stage
-that needs it, never after.  A raw `store` does not carry it: unlike a
-`collect`, which is a complete census by construction, a store accumulates
-observations that can have gaps (a machine offline for a stretch leaves holes
-in its readings), so completeness over `machine` is a claim you make, not a
-given.  `assume { complete }` makes that claim by fiat, locally and visibly,
-and is read as completeness over the retained key; a `completeness_check { ... }`
-stage would prove it instead.  This view type-checks today; executing a
-key-coarsening stage is the part of the runtime still being built
+`shrink_key` itself only reindexes: its result is an honest bag of whatever
+rows are present, so it demands nothing.  The stage with an obligation is the
+reducing `group_map`: a fold like `max` over a group with rows missing is
+silently wrong, so the reducer *consumes* a
+[completeness](../concepts/what-the-types-track.md) fact, "every group is
+whole," which must be established upstream.  A raw `store` does not carry it:
+unlike a `collect`, which is a complete census by construction, a store
+accumulates observations that can have gaps (a machine offline for a stretch
+leaves holes in its readings), so completeness over `machine` is a claim you
+make, not a given.  `assume { complete }` makes that claim by fiat, locally
+and visibly; a `completeness_check { ... }` stage would prove it instead.
+Either may equally sit before the `shrink_key`, which propagates the fact to
+the coarser key.  (A `group_map` straight over a default store's own key needs
+no such discharge: with at most one row per key, a present group is already
+whole.)  This view type-checks today; executing a key-coarsening stage is the
+part of the runtime still being built
 (`docs/toolkit/04-processing-layer.md`).
 
 ## What a view tracks
@@ -65,8 +70,8 @@ pipeline, not declared:
 - **Content**: the index and non-index columns the pipeline yields.
 - **Cardinality**: `singletons` (at most one row per key) or `bag`.  A view that
   ends in a summarizing `group_map` is `singletons`; one that ends in a
-  bag-shaped stage is `bag`.  A view is *not* held to the 0-or-1 discipline a
-  store is: a derived table may genuinely be a bag.
+  bag-shaped stage is `bag`.  A view declares no cardinality the way a store
+  does: the pipeline decides, and a derived table may genuinely be a bag.
 - **Totality**: whether each value is known or may be missing.
 - **Completeness** and **lineage**: carried as the pipeline carries them.
 
@@ -82,8 +87,11 @@ check run against the computed schema rather than a declared one.
 
 This is the `celsius` view from the top of the page with a `: Celsius` shape
 claim added.  Its `map` stage yields a record with a `celsius` column, so the
-output carries exactly what the shape requires.  A shape claim checks structure,
-not cardinality: it does not force a view to `singletons`.
+output carries exactly what the shape requires.  A shape claim constrains
+cardinality too: `Celsius` writes a plain `attr` block, so it requires the
+view to be `singletons`, which the row-for-row `map` preserves.  A shape for
+bag-valued columns writes `attr*` instead (see
+[Recurring observations](../modelling/stores.md#recurring-observations)).
 
 ## Creating a view
 
