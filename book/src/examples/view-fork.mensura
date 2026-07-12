@@ -1,12 +1,11 @@
-unit Reading {
-  machine: string
-  ts: int
+unit Machine {
+  id: string
 }
 store readings {
-  unit { Reading }
-  attr { kelvin: real }
+  unit { Machine }
+  attr* { kelvin: real }
 }
 view roundtrip {
-  let parts = readings |> split |k| k.ts < 100;
+  let parts = readings |> split |k| k.id == "m-01";
   parts |> bind
 }

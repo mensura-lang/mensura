@@ -1,0 +1,14 @@
+unit Reading {
+  machine: string
+  ts: int
+}
+store history {
+  unit { Reading }
+  attr { kelvin: real }
+}
+view hottest {
+  history
+  |> shrink_key ts
+  |> assume { complete }
+  |> group_map |k, g| (.max_kelvin = max g.kelvin)
+}

@@ -19,9 +19,9 @@ mathematically and, more to the point, about the mistakes they make
 
 > The pipeline algebra of this chapter type-checks and runs today: `map`,
 > `group_map`, `extend_key`/`shrink_key`, the joins, `split`/`bind`, and
-> `pivot`/`unpivot` all compile with `mensura check` and materialize with
-> `mensura run` (see the [Transforming data](../transforming/views.md)
-> chapters).  Two things remain design previews and are marked as such below:
+> `pivot`/`unpivot` all compile with `mensura check`, and all but
+> `shrink_key` (not yet executable) materialize with `mensura run` (see the
+> [Transforming data](../transforming/views.md) chapters).  Two things remain design previews and are marked as such below:
 > the learning operations `fit`/`evaluate` that *consume* disjointness, and the
 > richer completeness witnesses.  The [What's next](../whats-next.md) page tracks
 > the frontier.  The full specifications live in

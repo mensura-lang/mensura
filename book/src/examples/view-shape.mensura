@@ -1,14 +1,13 @@
-unit Reading {
-  machine: string
-  ts: int
+unit Machine {
+  id: string
 }
 shape Celsius {
-  unit { Reading }
-  attr { celsius: real }
+  unit { Machine }
+  attr* { celsius: real }
 }
 store readings {
-  unit { Reading }
-  attr { kelvin: real }
+  unit { Machine }
+  attr* { kelvin: real }
 }
 view celsius : Celsius {
   readings |> map |k, r| (.celsius = r.kelvin - 273.15)
