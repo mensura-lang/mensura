@@ -1,0 +1,9 @@
+// Reject (resolve): shapes constrain cardinality (ADR 0022, amending
+// ADR 0012).  An `attr*` shape requires bag-valued columns, but this store
+// is a plain singletons tabulation.
+unit Machine { id: string }
+shape SensorLog { attr* { kelvin: real } }
+store calibration : SensorLog {
+  unit { Machine }
+  attr { kelvin: real }
+}

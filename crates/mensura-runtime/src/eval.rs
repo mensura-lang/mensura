@@ -1415,10 +1415,12 @@ mod tests {
     #[test]
     fn group_map_aggregates_one_row_per_key() {
         // `map` expands each row to two, then `group_map` folds each group
-        // back to one aggregate row.
+        // back to one aggregate row.  The expansion is complete by
+        // construction, a fact the checker cannot yet derive, so the reducer's
+        // ADR 0023 obligation is discharged with `assume`.
         let rows = eval(
             r#"view stats {
-                 let doubled = machines |> map |_, r| (r, r);
+                 let doubled = machines |> map |_, r| (r, r) |> assume { complete };
                  doubled |> group_map |_, g| (.total = sum g.hours, .n = count g.hours, .worst = max g.hours)
                }"#,
             vec![

@@ -25,13 +25,15 @@ core, `assert` / `assume` cover anything the hierarchy cannot decide.
 operation states how it transforms the fact, the fact is *established* by a
 mechanism or a check or an annotation, and a downstream operation *demands*
 it.  Completeness is the template (`07-pipelines.md`, "What a pipeline
-tracks" and "Tier B and completeness"):
+tracks" and "Completeness: establish, propagate, consume"):
 
 - established by mechanism (`collect` is complete by construction), by a check
   (`completeness_check { assert ... }`), or by a source annotation
   (`@complete_over(col)`);
-- preserved by Tier A operations, *demanded* (consumed) by `shrink_key`
-  (`pivot`'s former demand is dissolved by
+- preserved by Tier A operations, propagated fine key to coarse key by
+  `shrink_key`, and *demanded* (consumed) by a reducing `group_map`
+  (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`; `pivot`'s
+  former demand is dissolved by
   `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`);
 - relaxable by `assume { ... }` when the obligation cannot be discharged.
 
@@ -55,8 +57,8 @@ Disjoint T0 T1  :=  forall k, T0.rows k = 0  or  T1.rows k = 0
 
 at every key at least one side is empty.  A relation seems unlike a unary
 property, but completeness already backs a *relational* guarantee (a partition
-over a key) from a *unary* fact consumed by a Tier B operation.  Disjointness
-works the same way once it is given a unary carrier:
+over a key) from a *unary* fact consumed by a downstream operation.
+Disjointness works the same way once it is given a unary carrier:
 
 > each table carries a **lineage region**, the set of keys at which it is
 > present (its support), tracked symbolically as a predicate over the key.
@@ -180,15 +182,15 @@ key and must be re-established (by a check) or assumed.
 ## Demanding disjointness
 
 A disjointness fact is *consumed* by an operation that is only leak-free over
-disjoint inputs, the way `shrink_key` consumes a completeness fact.  Two sites
-consume it:
+disjoint inputs, the way a reducing `group_map` consumes a completeness fact
+(ADR 0023).  Two sites consume it:
 
 - The learning and validation operations (model `fit` on one table,
   `evaluate`/`predict` on another) demand that the two tables are disjoint, so
   that a metric computed on the evaluation table is not contaminated by the
   training table.  These operations are not yet specified in the algebra
   documents; when they are, the disjointness demand is their defining
-  precondition, the direct analogue of a Tier B completeness demand.
+  precondition, the direct analogue of the reducer's completeness demand.
 - `bind` consumes a disjointness fact to *preserve* a cardinality guarantee:
   binding disjoint inputs keeps `singletons`, binding overlapping inputs
   raises the bound to `bag` (`07-pipelines.md`, the `split` / `bind` entry).

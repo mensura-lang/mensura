@@ -1,0 +1,19 @@
+// Accept: the demote-first round trip on a singletons store (ADR 0024,
+// `ungroup_project`, no side condition): shrinking ts makes a bag over
+// machine that still carries the {machine, ts} grading, so promoting ts
+// back is singletons again with nothing assumed and nothing discharged.
+// Store and view claim the same all-`attr` shape, so the conformance
+// check certifies the restoration: content back, and singletons back
+// (a shape with no `attr*` requires singletons, ADR 0022).
+unit Reading {
+  machine: string
+  ts: int
+}
+shape Timestamped {
+  unit { Reading }
+  attr { temperature: real }
+}
+store readings : Timestamped { unit { Reading } attr { temperature: real } }
+view back_to_readings : Timestamped {
+  readings |> shrink_key ts |> extend_key ts
+}

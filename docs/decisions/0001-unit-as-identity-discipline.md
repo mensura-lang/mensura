@@ -7,6 +7,13 @@ and is the foundation the store and shape designs build on
 (`docs/decisions/0002-stores-tabulate-units`,
 `docs/decisions/0003-shapes-as-structural-contracts`).
 
+Scoped by
+`docs/decisions/0022-observations-as-bags-declared-store-cardinality`: the
+`card <= 1` boundary rule reads "at a `singletons` store"; a store may
+declare `bag` cardinality for recurring observations.  The unit itself
+stays pure identity, so this ADR's core decision is unchanged (the knob
+0022 adds is per-store, not the per-unit knob alternative 3 below rejects).
+
 ## Context
 
 Mensura is built on Wickham's tidy data, whose third rule is that *each type

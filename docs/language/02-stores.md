@@ -139,6 +139,65 @@ store programs {
 Here `programs.coordinator` is an attribute of type `Person`, resolved
 into `persons`.
 
+## Store cardinality: `attr` versus `attr*`
+
+A store declares how many observations it holds per identity, and the
+attribute block is where it says so
+(`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`).
+
+A store whose attributes are in plain `attr` blocks is a **`singletons`**
+tabulation, the default and the historical rule
+(`docs/decisions/0001-unit-as-identity-discipline.md`): for any tuple of
+index values there is **at most one** observation, and an accidental
+duplicate is rejected.  This is right for entities: a `Person` or a
+`Course` is observed once or not at all.
+
+A store whose attributes are in **`attr*`** blocks (the `*` is "many") is a
+**`bag`**: it holds many observations per key, and its key is the *entity*
+the observations are about.  This is the form for recurring observations,
+sensor readings from a machine, transactions of an account, events in a
+session:
+
+```
+store readings {
+  unit { Machine }
+  attr* {
+    kelvin: real
+  }
+}
+```
+
+Keying the bag by the entity is what aligns the tracked guarantees with the
+science: a `split` over `readings` routes whole machines, so disjointness is
+tracked at the leakage boundary, and "complete over the key" (all of a
+machine's readings) is a contentful fact establishable at the source.  The
+identity criterion still says what a row is *about*; it no longer says a row
+is *unique*.  Cardinality is a store concern, not a unit concern: the unit
+stays pure identity, and the tabulation declares how many observations it
+holds, alongside the attribute and change-control concerns already placed
+here.
+
+A `bag` store's non-key columns are the columns of the same rows, so they
+co-vary and share one length per key by construction.  A store therefore
+does **not mix** the two block forms: an `attr` (singleton) column inside a
+`bag` store is deferred until an expression-level syntax exists for aligning
+one value to many rows, and mixing is rejected as not yet supported.
+Per-entity constant facts (a machine's `location`) live in a companion
+`singletons` store keyed by the same unit and joined via `domain`, keeping
+normalization explicit.
+
+Two consequences to know about:
+
+- **Ordering.**  A `bag` store carries no row order.  When an operation
+  needs one (a window such as a running sum, a rank, a lag), the order is
+  named at the operator by a `by` clause, not carried by the store; that
+  surface lands with the expression and streaming documents.
+- **Storage.**  A `bag` store cannot use its index columns as a primary
+  key; it maps to a table with a surrogate row identifier and a non-unique
+  covering index over the index columns
+  (`docs/toolkit/00-storage-backend.md`).  Per-row addressability is lost,
+  by definition.
+
 ### Mutability is deferred
 
 Earlier drafts distinguished immutable facts (`const`) from evolving
@@ -215,11 +274,13 @@ A store declaration cannot contain:
 - **Pipeline operations.**  Mapping, joining, reindexing, reshaping
   belong to views and transforms (treated in the algebra document),
   not to store declarations.
-- **Row-cardinality declarations.**  The 0-or-1 rule for rows is
-  universal at unit boundaries (`01-units.md`), and a store is a unit
-  boundary, so a store never declares how many rows a key has.  Whether a
-  *value* may be missing is a separate axis, declared per attribute with
-  `?` (see Attributes above).
+- **A per-row cardinality knob.**  A store's cardinality is declared once,
+  by the uniform `attr` / `attr*` block form (see Store cardinality above):
+  `singletons` (the 0-or-1 rule of `01-units.md`, the default) or `bag`.
+  There is no finer-grained control: no per-attribute mix (deferred,
+  ADR 0022), no bounded counts, no per-key exceptions.  Whether a *value*
+  may be missing is a separate axis, declared per attribute with `?` (see
+  Attributes above).
 
 ## Worked example
 

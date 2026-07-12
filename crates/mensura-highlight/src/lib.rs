@@ -168,8 +168,8 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                         }
                     }
                 }
-                for field in store.attrs.iter() {
-                    highlight_field(builder, field);
+                for attr in store.attrs.iter() {
+                    highlight_field(builder, &attr.field);
                 }
                 for entry in &store.domain {
                     builder.push(entry.field.span, HighlightKind::Property);
@@ -185,8 +185,8 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                 if let Some(unit) = &shape.unit {
                     builder.push(unit.span, HighlightKind::Type);
                 }
-                for field in shape.attrs.iter() {
-                    highlight_field(builder, field);
+                for attr in shape.attrs.iter() {
+                    highlight_field(builder, &attr.field);
                 }
             }
             Item::Enum(decl) => {

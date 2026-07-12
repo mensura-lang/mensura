@@ -192,6 +192,21 @@ pub enum Completeness {
 /// column is total; consumed by `pivot`'s totality upgrade.
 pub type Exhaustive = BTreeSet<String>;
 
+/// The key-graded cardinality facts (ADR 0024,
+/// `docs/decisions/0024-key-moves-as-a-true-inverse-pair.md`): column sets
+/// over the flat table, index and non-index columns alike, over which the
+/// table is known **functional** (grouping by the set yields at most one
+/// row, `Mensura.Functional` in `formal/`). The scalar [`Cardinality`] is
+/// the derived, `S = index` instance: a table is `Singletons` exactly when
+/// some grading is a subset of the current index (functionality is monotone
+/// upward, so a finer key stays functional). A grading is a fact about the
+/// flat table, indifferent to which of its columns currently form the key:
+/// the key moves re-derive cardinality and never touch the gradings, the
+/// content-identity stages carry them, and every other operation resets
+/// them to match its own output cardinality (the conservative rule until
+/// the per-op transport table is mechanized).
+pub type Functional = BTreeSet<BTreeSet<String>>;
+
 /// A type-level structural column: a name and its domain. This is `C`-side
 /// structure only; totality lives in the column-scoped [`Totality`] qualifier,
 /// not here.
@@ -218,6 +233,8 @@ pub struct Qualifiers {
     /// The second grade of the completeness entry (ADR 0020); see
     /// [`Exhaustive`].
     pub exhaustive: Exhaustive,
+    /// The key-graded cardinality facts (ADR 0024); see [`Functional`].
+    pub functional: Functional,
     pub lineage: Lineage,
 }
 
@@ -230,8 +247,10 @@ pub struct TableType {
 
 impl TableType {
     /// Present a resolved store schema to the pipeline as a table value
-    /// (`docs/language/10-views.md`, "Sources resolve by name"). A store is a
-    /// unit tabulation (ADR 0001): `Singletons`, index columns total, non-index
+    /// (`docs/language/10-views.md`, "Sources resolve by name"). Cardinality
+    /// is the store's declared one (ADR 0022): `Singletons` for a plain
+    /// `attr` store (the ADR 0001 discipline), `Bag` for an `attr*` store
+    /// (many observations per entity). Index columns are total; non-index
     /// columns optional per their declared `?`. A bare store is `Incomplete`
     /// (only a `collect` is complete by mechanism, `09` section 8) and untagged.
     pub fn from_store(schema: &Schema) -> TableType {
@@ -253,16 +272,62 @@ impl TableType {
                 }
             }
         }
-        TableType {
+        let mut table = TableType {
             content: Content { index, columns },
             qualifiers: Qualifiers {
-                cardinality: Cardinality::Singletons,
+                cardinality: schema.cardinality,
                 totality,
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
+                functional: Functional::new(),
                 lineage: Lineage::root(),
             },
-        }
+        };
+        // A `singletons` store seeds its index as a grading (ADR 0024): the
+        // flat table is functional over the declared key by the ADR 0001
+        // discipline. A `bag` store starts with no grading.
+        table.sync_functional();
+        table
+    }
+
+    /// The current index as a name set, the right-hand side of the grading
+    /// subset check (ADR 0024).
+    fn index_names(&self) -> BTreeSet<String> {
+        self.content.index.iter().map(|c| c.name.clone()).collect()
+    }
+
+    /// Re-derive the scalar cardinality from the gradings (ADR 0024):
+    /// `Singletons` exactly when some grading is a subset of the current
+    /// index. Called by the key moves, which change the index and never the
+    /// gradings.
+    pub fn derive_cardinality(&mut self) {
+        let index = self.index_names();
+        self.qualifiers.cardinality = if self
+            .qualifiers
+            .functional
+            .iter()
+            .any(|grading| grading.is_subset(&index))
+        {
+            Cardinality::Singletons
+        } else {
+            Cardinality::Bag
+        };
+    }
+
+    /// Reset the gradings to match the scalar cardinality (ADR 0024): the
+    /// index itself if `Singletons`, nothing if `Bag`. The conservative rule
+    /// for every operation without a mechanized transport witness; the key
+    /// moves derive instead of reset, and the content-identity stages
+    /// (`assume`, `completeness_check`) carry the input's gradings.
+    pub fn sync_functional(&mut self) {
+        self.qualifiers.functional = match self.qualifiers.cardinality {
+            Cardinality::Singletons => {
+                let mut gradings = Functional::new();
+                gradings.insert(self.index_names());
+                gradings
+            }
+            Cardinality::Bag => Functional::new(),
+        };
     }
 }
 
@@ -333,6 +398,7 @@ mod tests {
                 totality: Totality::all_total(),
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
+                functional: Functional::new(),
                 lineage: Lineage::root(),
             },
         };
@@ -364,6 +430,7 @@ mod tests {
                 col("temperature", ColumnType::Real, ColumnRole::Attr, false),
                 col("note", ColumnType::String, ColumnRole::Attr, true),
             ],
+            cardinality: Cardinality::Singletons,
             span: Span::new(0, 0),
         };
 
@@ -383,5 +450,26 @@ mod tests {
         assert!(t.qualifiers.totality.is_optional("note"));
         assert!(t.qualifiers.totality.is_total("temperature"));
         assert!(t.qualifiers.totality.is_total("machine"));
+    }
+
+    #[test]
+    fn from_store_lifts_the_declared_bag_cardinality() {
+        // An `attr*` store enters the pipeline as a `Bag` (ADR 0022); it is
+        // still `Incomplete` (establishment is an annotation or a `collect`).
+        let schema = Schema {
+            store: "readings".to_string(),
+            unit: "Machine".to_string(),
+            columns: vec![
+                col("machine", ColumnType::String, ColumnRole::Index, false),
+                col("kelvin", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+            cardinality: Cardinality::Bag,
+            span: Span::new(0, 0),
+        };
+        let t = TableType::from_store(&schema);
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        // The storage shape follows: a bag store is unkeyed.
+        assert!(!schema.shape().keyed);
     }
 }

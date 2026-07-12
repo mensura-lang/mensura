@@ -1,0 +1,26 @@
+// Accept: the promote-first round trip on a bag store (ADR 0024): a bag
+// carries no grading, so promoting `ts` refines the key without upgrading
+// the cardinality, and demoting it restores the bag over the entity.
+// Store and view claim the same `attr*` shape, so the conformance check
+// certifies the round trip: content back, and still a bag (an `attr*`
+// shape requires bag columns, ADR 0022).
+unit Machine {
+  id: string
+}
+shape SensorLog {
+  unit { Machine }
+  attr* {
+    ts: int
+    kelvin: real
+  }
+}
+store readings : SensorLog {
+  unit { Machine }
+  attr* {
+    ts: int
+    kelvin: real
+  }
+}
+view promoted_and_back : SensorLog {
+  readings |> extend_key ts |> shrink_key ts
+}

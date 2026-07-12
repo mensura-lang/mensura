@@ -77,7 +77,7 @@ args          = "[" arg { "," arg } "]" ;
 arg           = ident | string ;
 unit_clause   = "unit" "{" ident "}" ;
 store_block   = attr_block | domain_block ;
-attr_block    = "attr" "{" { store_attr } "}" ;
+attr_block    = "attr" [ "*" ] "{" { store_attr } "}" ;
 store_attr    = ident ":" type ;
 domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
@@ -86,7 +86,7 @@ shape_decl    = "shape" ident [ params ] "{" [ unit_clause ] { shape_block } "}"
 params        = "[" param { "," param } "]" ;
 param         = ident ":" ident ;
 shape_block   = shape_attr_block ;
-shape_attr_block = "attr" "{" { shape_attr } "}" ;
+shape_attr_block = "attr" [ "*" ] "{" { shape_attr } "}" ;
 shape_attr    = attr_name ":" type ;
 attr_name     = ident | template ;
 
@@ -126,6 +126,11 @@ named_type    = ident ;
 - **`store_block` loop**: at each turn the next token is either `}` (end the
   store body) or one of the introducers `attr` / `domain`, distinct words.
   One token decides.
+- **`attr_block` cardinality marker**: after the `attr` word the next token
+  is either `*` (an `attr*` block, whose attributes are bag-valued,
+  ADR 0022) or `{` (a plain block).  One token decides.  The `*` is the
+  ordinary `Star` operator token, so the keyword-free lexer is untouched;
+  the block is conventionally written glued, `attr* { ... }`.
 - **`shape_block` loop**: as `store_block`, minus `domain`; a shape body has
   only `attr` blocks, and a `domain` word in a shape body is a parse error
   (shapes carry no foreign-key resolution).
@@ -158,6 +163,13 @@ subset.
 - **Clause order.**  A `store` body must begin with its `unit { U }` clause,
   followed by zero or more `attr` and `domain` blocks in any order.  Repeated
   `attr` blocks are allowed and merged by the resolver.
+- **`attr` versus `attr*` declares cardinality (ADR 0022).**  A store (or
+  shape) whose attributes are all in plain `attr` blocks is a `singletons`
+  tabulation (the ADR 0001 discipline, `card <= 1` over the key); one whose
+  attributes are all in `attr*` blocks is a `bag` (many observations per
+  key, the entity-keyed form for recurring observations).  The parser
+  accepts any mix; the resolver rejects a declaration that mixes the two as
+  "not yet supported" (the ADR's deferred refinement).
 - **A shape's unit clause is optional.**  When present it comes first, as in
   a store; when absent the shape is unit-agnostic.  A shape claimed with
   arguments (`Tabular[Person]`, `Ageable["birthdate"]`) binds its parameters
