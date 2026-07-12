@@ -51,8 +51,17 @@ impl SqliteBackend {
 impl StorageBackend for SqliteBackend {
     fn ensure_store(&mut self, schema: &Schema) -> Result<EnsureOutcome, StorageError> {
         let existed = self.table_exists(&schema.store)?;
-        self.conn
-            .execute_batch(&create_table_sql(&schema.shape()))?;
+        let shape = schema.shape();
+        self.conn.execute_batch(&create_table_sql(&shape))?;
+        // A `bag` store has no primary key (per-row addressability is lost by
+        // definition, ADR 0022); its key columns get an ordinary non-unique
+        // covering index instead, and SQLite's implicit rowid is the
+        // surrogate row identifier.
+        if !shape.keyed
+            && let Some(sql) = create_key_index_sql(&shape)
+        {
+            self.conn.execute_batch(&sql)?;
+        }
         Ok(if existed {
             EnsureOutcome::AlreadyExists
         } else {
@@ -62,12 +71,18 @@ impl StorageBackend for SqliteBackend {
 
     fn scan(&self, table: &TableShape) -> Result<Vec<Row>, StorageError> {
         let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
-        let index: Vec<String> = table
+        let mut index: Vec<String> = table
             .columns
             .iter()
             .filter(|c| c.role == ColumnRole::Index)
             .map(|c| quote_ident(&c.name))
             .collect();
+        // An unkeyed table (a `bag` store or view, ADR 0022) can hold several
+        // rows per key; the surrogate rowid breaks the tie so a scan stays
+        // deterministic even though a bag carries no row order.
+        if !table.keyed {
+            index.push("_rowid_".to_string());
+        }
         let order = if index.is_empty() {
             String::new()
         } else {
@@ -156,9 +171,9 @@ fn encode(value: &Value) -> rusqlite::types::Value {
 }
 
 /// Build the `CREATE TABLE IF NOT EXISTS` statement for a table shape.  A
-/// keyed shape (a store, or a `singletons` view) gets the composite primary
-/// key over its index columns; a `bag` view gets none
-/// (`docs/toolkit/04-processing-layer.md`).
+/// keyed shape (a `singletons` store or view) gets the composite primary
+/// key over its index columns; an unkeyed one (a `bag` store or view,
+/// ADR 0022, `docs/toolkit/04-processing-layer.md`) gets none.
 pub fn create_table_sql(shape: &TableShape) -> String {
     let mut lines: Vec<String> = shape
         .columns
@@ -192,6 +207,27 @@ pub fn create_table_sql(shape: &TableShape) -> String {
         quote_ident(&shape.name),
         lines.join(",\n")
     )
+}
+
+/// Build the non-unique covering index over an unkeyed store's index columns
+/// (ADR 0022): a `bag` store keeps its key lookup fast without a PRIMARY KEY.
+/// `None` when the shape has no index columns to cover.
+pub fn create_key_index_sql(shape: &TableShape) -> Option<String> {
+    let index: Vec<String> = shape
+        .columns
+        .iter()
+        .filter(|c| c.role == ColumnRole::Index)
+        .map(|c| quote_ident(&c.name))
+        .collect();
+    if index.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "CREATE INDEX IF NOT EXISTS {} ON {} ({});",
+        quote_ident(&format!("{}_key", shape.name)),
+        quote_ident(&shape.name),
+        index.join(", ")
+    ))
 }
 
 fn column_type_sql(ty: &ColumnType, col: &str) -> String {
@@ -283,6 +319,69 @@ mod tests {
         let sql = create_table_sql(&shape);
         assert!(!sql.contains("PRIMARY KEY"));
         assert!(sql.contains("\"id\" TEXT NOT NULL"));
+    }
+
+    const BAG_READINGS: &str = r#"
+        unit Machine { id: string }
+        store readings {
+          unit { Machine }
+          attr* { kelvin: real }
+        }
+    "#;
+
+    #[test]
+    fn bag_store_has_no_primary_key_and_a_covering_index() {
+        // ADR 0022: a `bag` store maps to a rowid table (no PRIMARY KEY, the
+        // implicit rowid is the surrogate row identifier) plus a non-unique
+        // covering index over the index columns.
+        let s = schema(BAG_READINGS, "readings");
+        let sql = create_table_sql(&s.shape());
+        assert!(!sql.contains("PRIMARY KEY"), "{sql}");
+        assert!(sql.contains("\"id\" TEXT NOT NULL"));
+        assert_eq!(
+            create_key_index_sql(&s.shape()).as_deref(),
+            Some("CREATE INDEX IF NOT EXISTS \"readings_key\" ON \"readings\" (\"id\");")
+        );
+
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        assert_eq!(db.ensure_store(&s).unwrap(), EnsureOutcome::Created);
+        // Duplicate keys insert cleanly: the store holds many rows per entity.
+        db.execute_sql(
+            "INSERT INTO \"readings\" VALUES ('m1', 300.0), ('m1', 301.5), ('m2', 299.0);",
+        )
+        .expect("duplicate keys are admitted in a bag store");
+        // The covering index exists.
+        let indexed: i64 = db
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'readings_key')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1);
+    }
+
+    #[test]
+    fn bag_store_scan_is_deterministic_within_a_key() {
+        // Rows come back key-ordered with the rowid tiebreak, so a scan of a
+        // bag store is stable across runs.
+        let s = schema(BAG_READINGS, "readings");
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        db.ensure_store(&s).unwrap();
+        db.execute_sql(
+            "INSERT INTO \"readings\" VALUES ('m2', 299.0), ('m1', 300.0), ('m1', 301.5);",
+        )
+        .unwrap();
+        let rows = db.scan(&s.shape()).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                vec![Value::String("m1".into()), Value::Real(300.0)],
+                vec![Value::String("m1".into()), Value::Real(301.5)],
+                vec![Value::String("m2".into()), Value::Real(299.0)],
+            ]
+        );
     }
 
     #[test]

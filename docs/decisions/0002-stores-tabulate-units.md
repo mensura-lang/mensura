@@ -7,6 +7,12 @@ Accepted.  The `store` declaration is specified in
 split established in
 `docs/decisions/0001-unit-as-identity-discipline`.
 
+Extended by
+`docs/decisions/0022-observations-as-bags-declared-store-cardinality`: a
+store also declares its cardinality through the `attr` / `attr*` block
+form, placing that tabulation concern here alongside attributes and
+change control.
+
 ## Context
 
 `0001` decided that a `unit` carries identity and nothing else.  Something

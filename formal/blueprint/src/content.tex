@@ -349,6 +349,34 @@
   variant sends back to an absent row.
 \end{proof}
 
+\begin{theorem}[Project inverts ungroup]
+  \label{thm:project-ungroup}\lean{Mensura.project_ungroup}\leanok
+  \uses{def:ungroup, def:project}
+  ADR 0024: when the promoted column is total (exactly the checker's
+  \texttt{extend\_key} gate, which would otherwise drop rows at
+  \texttt{ungroup}), demoting the component again restores the table
+  exactly.  The \texttt{extend\_key}/\texttt{shrink\_key} round trip is
+  the identity, hence preserves every tracked property at once.
+\end{theorem}
+\begin{proof}\leanok
+  Push the tagging map into the fiber bind, exchange the finite sum with
+  the bind, and each row collapses to the singleton of itself: the tag
+  it receives is the key component it was filed under.
+\end{proof}
+
+\begin{theorem}[Ungroup inverts project]
+  \label{thm:ungroup-project}\lean{Mensura.ungroup_project}\leanok
+  \uses{def:ungroup, def:project}
+  ADR 0024, with no side condition: \texttt{project} tags every demoted
+  row with its own key component, so the demoted column is total by
+  construction and re-promoting it files every row back under exactly
+  the key it came from.
+\end{theorem}
+\begin{proof}\leanok
+  Distribute the bind over the fiber sum; at each fine key the tag
+  matches exactly its own component, selecting the original fiber.
+\end{proof}
+
 \chapter{The rectangle fact}
 
 \begin{definition}[Total table]

@@ -34,7 +34,11 @@ checker rejects a pipeline that would violate one of them:
 - **Cardinality** (table-scoped qualifier): how many nested rows share a key,
   **singletons** (`card <= 1`) or **bag** (`card 0..*`).  Operations
   transform it predictably, and some operations *demand* a particular
-  cardinality (`pivot` wants `singletons`, at most one row per key).
+  cardinality (`pivot` wants `singletons`, at most one row per key).  The
+  evidence behind the scalar is a set of **gradings**, column sets over
+  which the table is known **functional** (at most one row per combination
+  of values); `singletons` is derived as "some grading fits inside the
+  current key" (ADR 0024), which is what makes the key moves invertible.
 - **Totality** (column-scoped qualifier): whether each non-index value is
   known or may be missing (`Cell = Option`).  A value is total unless its
   type is marked `?` (ADR 0010); `left_join` makes its right columns
@@ -42,9 +46,10 @@ checker rejects a pipeline that would violate one of them:
   column total again.
 - **Completeness** (table-scoped qualifier): whether a partition is fully
   present, that is, whether every group over some key has all of its rows.
-  Completeness is what makes a key-shrinking operation sound.  It is
-  established (by a check, a source annotation, or a `collect` mechanism)
-  and consumed (by a Tier B operation).
+  Completeness is what makes a group-wise fold faithful.  It is established
+  (by a check, a source annotation, or a `collect` mechanism), propagated
+  fine key to coarse key by `shrink_key`, and consumed (by a reducing
+  `group_map`; ADR 0023).
 - **Lineage** (table-scoped qualifier): the split ancestry that carries
   disjointness, specified in `08-lineage.md`.  Sampling and dependency, the
   two `std` qualifiers of ADR 0004 with no rules yet written, are deferred;
@@ -78,8 +83,8 @@ operations are closed under composition (`SplitSafe.comp`, `Core/Defs.lean`).  S
 pipeline built only from Tier A operations commutes with a split: running it on
 the whole table and running it on each side of a split and re-binding give the
 same result.  That is the formal content of "no leakage between train and
-test."  A Tier B operation breaks this and must discharge a completeness
-obligation to be admitted.
+test."  A Tier B operation breaks this: it drops the lineage fact, which must
+then be re-established or assumed downstream.
 
 ## The primitives
 
@@ -125,8 +130,16 @@ skipped, so the lambda always sees a non-empty group.  Content: the output colum
 the return.  Cardinality: **inferred from the return** - returning a single
 record yields `singletons` (one row per key, the `aggregate` shape, and it is
 what later lets `pivot` satisfy its `singletons` precondition); returning a
-bag yields `bag` (the window shape: one output row per input row).  Completeness:
-preserved.  Tier A (`fiberMap_splitSafe`).
+bag yields `bag` (the window shape: one output row per input row).
+Completeness: preserved, and **demanded by the reducing shape**
+(`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a body that
+folds each key's bag to a single record is silently wrong on a partial bag,
+so it consumes the completeness fact.  Over a `singletons` input the
+obligation discharges trivially, since a present key's single row is the
+identity's whole fiber (`fiberCompleteWrt_of_functional`); the demand bites
+only where a present group can be partial, that is, on a `bag` input.  The
+window shape demands nothing (one output row per input row is faithful on a
+partial bag).  Tier A (`fiberMap_splitSafe`).
 
 Window-style returns (a bag, one row per input row, such as a running total or
 a rank) additionally require an **ordering** within the group, which is a
@@ -143,18 +156,34 @@ data |> extend_key machine      // move the `machine` column into the key
 data |> shrink_key course       // move `course` out of the key
 ```
 
+Cardinality at the key moves is **key-graded** (ADR 0024): the gradings are
+facts about the flat table, indifferent to which columns currently form the
+key, so a key move changes the index, leaves the gradings untouched, and
+re-derives the scalar from the subset check.  That is what makes the pair
+truly inverse: `extend_key c |> shrink_key c` and `shrink_key c |>
+extend_key c` both restore the source cardinality (`project_ungroup`,
+`ungroup_project`).  The content-identity stages (`assume`,
+`completeness_check`) carry the gradings; every other operation resets them
+to match its own output cardinality until its transport rule is mechanized.
+
 **`extend_key cols`** promotes non-index column(s) into the key.  Content: the
-named columns join the index.  Cardinality: an entity's rows are redistributed
-across the finer key; per-key cardinality does not grow.  Completeness:
-preserved.  Tier A (`ungroup_splitSafe`).
+named columns join the index.  Cardinality: derived from the gradings; a
+`singletons` input stays `singletons` (`ungroup_functional`), and a `bag`
+whose grading fits inside the grown index promotes to `singletons`.
+Completeness: preserved.  Tier A (`ungroup_splitSafe`).
 
 **`shrink_key cols`** drops index component(s) into the non-index part.
-Content: the named key columns become ordinary columns.  Cardinality: rows that
-differed only in the dropped component now share a key, so per-key cardinality
-**grows** (the result is `bag` over the coarser key unless a following
-`group_map` reduces it).  Completeness: **demanded** - shrinking is split-safe
-only over a partition that is complete over the retained key, so `shrink_key`
-*consumes* a completeness fact.  Tier B (`project_not_preservesDisjoint`).
+Content: the named key columns become ordinary columns.  Cardinality: derived
+from the gradings; on a genuine coarsening no grading fits the retained key,
+so per-key cardinality **grows** (the result is `bag` over the coarser key
+unless a following `group_map` reduces it), while an exact round trip
+re-derives `singletons`.  Completeness: **propagated**, not demanded
+(`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a table
+complete against a reference at the fine key stays complete against the
+coarsened reference at the retained key (`project_completeWrt`), and a
+`shrink_key` with no downstream reducer is admitted on its own (a possibly
+partial bag is an honest reindex).  Tier B on the lineage break alone
+(`project_not_preservesDisjoint`).
 
 ### `left_join` / `inner_join` - join a fixed table
 
@@ -242,19 +271,26 @@ So `pivot` is where cardinality tracking pays off directly: it type-checks
 only when each cell it spreads is known to hold at most one value, which
 the long form's key discipline provides.
 
-## Tier B and completeness
+## Completeness: establish, propagate, consume
 
 Two operations are Tier B: **`shrink_key`** and **`pivot`**.  Both change
-the key and drop the lineage fact.  Only `shrink_key` *consumes* a
-completeness fact: it is sound only over a complete partition.  (`pivot`'s
-former obligation is dissolved by ADR 0020: an absent row becomes a missing
-cell, and `exhaustive` decides the spread columns' totality instead.)  The
-M1 surface for establishing and consuming the fact is ratified in
-`docs/decisions/0017-completeness-establish-consume.md`: M1 ships the
-`completeness_check` and `assume { complete }` stages (with key-context
-asserts), and defers `collect`-by-mechanism completeness and the
-`@complete_over` annotation.  Completeness is established in one of three
-ways:
+the key and drop the lineage fact, and that lineage break is all their Tier
+means.  Neither demands completeness: `pivot`'s former obligation is
+dissolved by ADR 0020 (an absent row becomes a missing cell, and
+`exhaustive` decides the spread columns' totality instead), and
+`shrink_key`'s is moved by
+`docs/decisions/0023-completeness-consumed-by-the-reducer.md` to the
+operation whose result is silently wrong without it: a **reducing
+`group_map`** (the aggregate shape) consumes the fact, while `shrink_key`
+propagates it from the fine key to the coarse key (`project_completeWrt`).
+Over a `singletons` input the reducer's obligation discharges trivially, so
+the ordinary aggregation over a plain store stays ceremony-free.  The M1
+surface for establishing and consuming the fact is ratified in
+`docs/decisions/0017-completeness-establish-consume.md` (as amended by
+ADR 0023): M1 ships the `completeness_check` and `assume { complete }`
+stages (with key-context asserts), and defers `collect`-by-mechanism
+completeness and the `@complete_over` annotation.  Completeness is
+established in one of three ways:
 
 - **`completeness_check { assert ... }`**, a pipe stage that *establishes* the
   fact locally.  It is an ordinary stage (`completeness_check` applied to a
@@ -262,8 +298,9 @@ ways:
   guarantees completeness, and a later round may let a combination of asserting
   operations stand in for it.  Each `assert` is a boolean expression; together
   they witness that the partition is complete over the relevant key.  The fact
-  must hold where the Tier B operation runs, so the check is placed on the
-  pipeline ahead of it.
+  must hold where the reducer runs, so the check is placed on the pipeline
+  ahead of it (before or after an intervening `shrink_key`, which propagates
+  the fact either way).
 
   ```
   enrollments
@@ -277,10 +314,10 @@ ways:
   the annotation family (`@audited`, `@versioned`, ...), so this document names
   it but does not fix its grammar.
 - **mechanism**: a `collect` source is complete by construction (overview
-  pillar 7), so a Tier B operation over it needs no further discharge.
+  pillar 7), so a reducer over it needs no further discharge.
 
-`assume { ... }` remains the escape hatch: it admits a Tier B operation by
-fiat, locally and visibly, when the obligation cannot be discharged.
+`assume { ... }` remains the escape hatch: it admits the reducer by fiat,
+locally and visibly, when the obligation cannot be discharged.
 
 ## Cardinality, totality, and the type
 
@@ -330,7 +367,7 @@ completeness preserved); `group_map` reduces each group to one record, so the
 result is **singletons** per `(…, machine)` key.  All Tier A, so it composes
 safely; it type-checks.
 
-**Coarsen the key (Tier B, with the completeness fact established first).**
+**Coarsen the key, then reduce (the fact established, propagated, consumed).**
 
 ```
 enrollments
@@ -339,11 +376,25 @@ enrollments
 |> group_map |k, g| (.total_credits = sum g.credits)
 ```
 
-The check **establishes** "complete over student"; `shrink_key course`
-**consumes** it (dropping `course` makes the table `bag` over `student`);
-`group_map` brings it back to **singletons** per student.  It type-checks
-because the obligation was discharged.  Remove the check (and `@complete_over`, and
-`assume`) and `shrink_key` is rejected.
+The check **establishes** the fact; `shrink_key course` **propagates** it to
+the coarser key (dropping `course` makes the table `bag` over `student`);
+the reducing `group_map` **consumes** it and brings the table back to
+**singletons** per student.  It type-checks because the obligation was
+discharged.  Remove the check (and `@complete_over`, and `assume`) and the
+`group_map` is rejected; the `shrink_key` alone would still be admitted
+(ADR 0023).
+
+**Reindex round trip (key-graded cardinality).**
+
+```
+readings |> extend_key ts |> shrink_key ts
+readings |> shrink_key channel |> extend_key channel
+```
+
+The gradings survive both moves, so either order restores the source
+cardinality (ADR 0024): a `singletons` source comes back `singletons`
+(no spurious bag, no vacuous completeness demand downstream) and a `bag`
+store comes back a `bag`.  It type-checks against the source's own shape.
 
 **Train/test split and re-merge (cardinality under `bind`).**
 

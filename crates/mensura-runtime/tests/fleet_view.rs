@@ -16,9 +16,10 @@ fn fleet_program() -> ResolvedProgram {
     mensura_types::resolve(&program).expect("should resolve")
 }
 
-#[test]
-fn attention_needed_materializes_the_degraded_machines() {
-    let program = fleet_program();
+/// Create the example's stores and seed both: the `machines` singletons
+/// store and the `readings` bag store (duplicate keys are the point of the
+/// latter, ADR 0022).
+fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
     let mut db = SqliteBackend::open_in_memory().unwrap();
     for schema in &program.schemas {
         db.ensure_store(schema).unwrap();
@@ -27,12 +28,29 @@ fn attention_needed_materializes_the_degraded_machines() {
         r#"INSERT INTO "machines" VALUES
              ('m1', '2020-01-01', 'operational', NULL),
              ('m2', '2021-06-15', 'degraded', '2025-12-01'),
-             ('m3', '2022-03-10', 'failure', NULL);"#,
+             ('m3', '2022-03-10', 'failure', NULL);
+           INSERT INTO "readings" VALUES
+             ('m1', 300.0),
+             ('m1', 302.5),
+             ('m2', 299.0);"#,
     )
     .unwrap();
+    db
+}
+
+#[test]
+fn attention_needed_materializes_the_degraded_machines() {
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
 
     let materialized = materialize_views(&mut db, &program).unwrap();
-    assert_eq!(materialized, vec![("attention_needed".to_string(), 1)]);
+    assert_eq!(
+        materialized,
+        vec![
+            ("attention_needed".to_string(), 1),
+            ("machine_temperature".to_string(), 2),
+        ]
+    );
 
     let view = program
         .views
@@ -54,6 +72,30 @@ fn attention_needed_materializes_the_degraded_machines() {
 
     // A re-run over unchanged stores replaces the contents, not appends.
     let again = materialize_views(&mut db, &program).unwrap();
-    assert_eq!(again, vec![("attention_needed".to_string(), 1)]);
+    assert_eq!(again.len(), 2);
     assert_eq!(db.scan(&view.shape()).unwrap().len(), 1);
+}
+
+#[test]
+fn machine_temperature_reduces_the_bag_store() {
+    // The end-to-end bag-store path (ADR 0022 + ADR 0023): the `readings`
+    // bag holds several rows per machine, the view assumes completeness and
+    // the reducing `group_map` folds each machine's bag to its maximum.
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
+    materialize_views(&mut db, &program).unwrap();
+
+    let view = program
+        .views
+        .iter()
+        .find(|v| v.name == "machine_temperature")
+        .expect("the example declares machine_temperature");
+    let rows = db.scan(&view.shape()).unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            vec![Value::String("m1".into()), Value::Real(302.5)],
+            vec![Value::String("m2".into()), Value::Real(299.0)],
+        ]
+    );
 }

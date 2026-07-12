@@ -20,9 +20,9 @@ a table.
   in this round.  `pivot` is Tier B only for its lineage effect (ADR 0020:
   it demands nothing and upgrades totality under `exhaustive`, all
   compile-time facts), so batch evaluation is unaffected.  `shrink_key`,
-  whose completeness discharge is also a compile-time fact, stays
-  non-executable in this slice; when it lands, the runtime trusts the
-  discharge.
+  whose completeness propagation and the reducer's discharge (ADR 0023) are
+  also compile-time facts, stays non-executable in this slice; when it
+  lands, the runtime trusts the checker.
 - **One-shot batch recompute.**  A view is recomputed from its sources'
   current state every `mensura run`.  Until ingestion lands (M4) a store
   changes only between runs, so recompute-at-run is a complete semantics,

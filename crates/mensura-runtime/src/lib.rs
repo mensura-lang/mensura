@@ -13,5 +13,5 @@ pub mod value;
 
 pub use backend::{EnsureOutcome, StorageBackend, StorageError};
 pub use eval::{EvalError, RunError, SourceTable, eval_view, materialize_views};
-pub use sqlite::{SqliteBackend, create_table_sql};
+pub use sqlite::{SqliteBackend, create_key_index_sql, create_table_sql};
 pub use value::{Row, Value};

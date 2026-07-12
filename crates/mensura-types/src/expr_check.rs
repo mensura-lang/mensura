@@ -844,6 +844,7 @@ mod tests {
                 ),
                 scol("flag", ColumnType::Bool, ColumnRole::Attr, false),
             ],
+            cardinality: crate::table::Cardinality::Singletons,
             span: Span::new(0, 0),
         };
         TableType::from_store(&schema)

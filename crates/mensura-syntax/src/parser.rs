@@ -6,8 +6,8 @@
 //! on the `Ident` text in the position where they are expected.
 
 use crate::ast::{
-    DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl,
-    ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
+    Attr, DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg,
+    ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
 };
 use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
@@ -435,13 +435,26 @@ impl<'a> Parser<'a> {
         Ok(unit)
     }
 
-    /// Parse an `attr { ... }` block, appending its fields.  Shared by
-    /// stores and shapes; repeated blocks merge into one attribute list.
-    fn parse_attr_block(&mut self, out: &mut Vec<Field>) -> Result<(), ParseError> {
+    /// Parse an `attr { ... }` or `attr* { ... }` block, appending its
+    /// attributes.  Shared by stores and shapes; repeated blocks merge into
+    /// one attribute list.  The optional `*` (the `attr` identifier followed
+    /// by the `Star` operator, ADR 0022) marks every attribute in the block
+    /// bag-valued; one token after `attr` decides, so the form stays LL(1).
+    fn parse_attr_block(&mut self, out: &mut Vec<Attr>) -> Result<(), ParseError> {
         self.bump_keyword(); // `attr`
+        let many = if self.check(&TokenKind::Star) {
+            let span = self.cur_span();
+            self.pos += 1;
+            Some(span)
+        } else {
+            None
+        };
         self.expect(&TokenKind::LBrace, "`{` to open the block")?;
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
-            out.push(self.parse_field()?);
+            out.push(Attr {
+                field: self.parse_field()?,
+                many,
+            });
         }
         self.expect(&TokenKind::RBrace, "`}` to close the block")?;
         Ok(())
@@ -1095,8 +1108,8 @@ mod tests {
         assert_eq!(persons.unit.name, "Person");
         // Repeated `attr` blocks merge into one attribute list.
         assert_eq!(persons.attrs.len(), 2);
-        assert_eq!(persons.attrs[0].name.as_literal(), Some("birthdate"));
-        assert_eq!(persons.attrs[1].name.as_literal(), Some("last_name"));
+        assert_eq!(persons.attrs[0].field.name.as_literal(), Some("birthdate"));
+        assert_eq!(persons.attrs[1].field.name.as_literal(), Some("last_name"));
     }
 
     #[test]
@@ -1155,8 +1168,8 @@ mod tests {
         let Item::Store(s) = &program.items[1] else {
             panic!("expected a store");
         };
-        assert_eq!(s.attrs[0].ty.name.name, "Status");
-        assert!(!s.attrs[0].ty.is_optional());
+        assert_eq!(s.attrs[0].field.ty.name.name, "Status");
+        assert!(!s.attrs[0].field.ty.is_optional());
     }
 
     #[test]
@@ -1173,12 +1186,58 @@ mod tests {
             panic!("expected a store");
         };
         // `date?` is optional and its span covers the `?`.
-        let opt = &s.attrs[0].ty;
+        let opt = &s.attrs[0].field.ty;
         assert_eq!(opt.name.name, "date");
         assert!(opt.is_optional());
         assert_eq!(opt.span().slice(src), "date?");
         // A bare type stays total.
-        assert!(!s.attrs[1].ty.is_optional());
+        assert!(!s.attrs[1].field.ty.is_optional());
+    }
+
+    #[test]
+    fn parses_attr_star_block() {
+        // `attr*` is the `attr` identifier followed by the `*` operator
+        // (ADR 0022): every attribute in the block is marked bag-valued.
+        let src = r#"
+            store readings {
+              unit { Machine }
+              attr* {
+                kelvin: real
+                rpm:    int
+              }
+            }
+            shape SensorLog {
+              attr* { kelvin: real }
+            }
+        "#;
+        let program = parse_str(src).unwrap();
+
+        let Item::Store(s) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        assert_eq!(s.attrs.len(), 2);
+        assert!(s.attrs.iter().all(|a| a.many.is_some()));
+        assert_eq!(s.attrs[0].field.name.as_literal(), Some("kelvin"));
+        // The recorded `*` span points at the marker itself.
+        assert_eq!(s.attrs[0].many.unwrap().slice(src), "*");
+
+        let Item::Shape(sh) = &program.items[1] else {
+            panic!("expected a shape");
+        };
+        assert!(sh.attrs[0].many.is_some());
+    }
+
+    #[test]
+    fn attr_and_attr_star_blocks_carry_their_own_markers() {
+        // Mixing blocks parses (the resolver rejects it, ADR 0022's deferred
+        // refinement); each attribute keeps the marker of its own block.
+        let src = "store s { unit { U } attr { a: int } attr* { b: int } }";
+        let program = parse_str(src).unwrap();
+        let Item::Store(s) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        assert!(s.attrs[0].many.is_none());
+        assert!(s.attrs[1].many.is_some());
     }
 
     #[test]
@@ -1222,7 +1281,7 @@ mod tests {
         };
         assert_eq!(shape.name.name, "PersonRecord");
         assert_eq!(shape.unit.as_ref().unwrap().name, "Person");
-        assert_eq!(shape.attrs[0].name.as_literal(), Some("admission"));
+        assert_eq!(shape.attrs[0].field.name.as_literal(), Some("admission"));
 
         let Item::Store(store) = &program.items[1] else {
             panic!("expected a store");
@@ -1279,7 +1338,7 @@ mod tests {
         };
         assert!(shape.params.is_empty());
         assert!(shape.unit.is_none());
-        assert_eq!(shape.attrs[0].name.as_literal(), Some("name"));
+        assert_eq!(shape.attrs[0].field.name.as_literal(), Some("name"));
     }
 
     #[test]
@@ -1313,8 +1372,8 @@ mod tests {
         };
         assert_eq!(shape.params[0].kind.name, "string");
         // The attribute name is a single interpolated parameter.
-        assert_eq!(shape.attrs[0].name.segments.len(), 1);
-        let NameSeg::Param(p) = &shape.attrs[0].name.segments[0] else {
+        assert_eq!(shape.attrs[0].field.name.segments.len(), 1);
+        let NameSeg::Param(p) = &shape.attrs[0].field.name.segments[0] else {
             panic!("expected an interpolated segment");
         };
         assert_eq!(p.name, "date_field");
@@ -1334,7 +1393,7 @@ mod tests {
         let Item::Shape(shape) = &program.items[0] else {
             panic!("expected a shape");
         };
-        let segs = &shape.attrs[0].name.segments;
+        let segs = &shape.attrs[0].field.name.segments;
         assert_eq!(segs.len(), 2);
         assert!(matches!(&segs[0], NameSeg::Param(p) if p.name == "col"));
         assert!(matches!(&segs[1], NameSeg::Lit(s) if s == "_z"));

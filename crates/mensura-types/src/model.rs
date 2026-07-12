@@ -10,13 +10,18 @@ use mensura_syntax::{Block, Span};
 
 use crate::table::Cardinality;
 
-/// A resolved store: its name, the unit it tabulates, and its columns in
-/// storage order (index fields, then attributes in declaration order).
+/// A resolved store: its name, the unit it tabulates, its columns in
+/// storage order (index fields, then attributes in declaration order), and
+/// its declared cardinality.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Schema {
     pub store: String,
     pub unit: String,
     pub columns: Vec<Column>,
+    /// The declared store cardinality (ADR 0022): `Singletons` (`attr`
+    /// blocks, the ADR 0001 default, `card <= 1` over the key) or `Bag`
+    /// (`attr*` blocks, many observations per entity, `card >= 0`).
+    pub cardinality: Cardinality,
     pub span: Span,
 }
 
@@ -136,13 +141,15 @@ pub struct TableShape {
 }
 
 impl Schema {
-    /// This store's storage shape.  A store is a unit tabulation (ADR 0001),
-    /// so it is always keyed.
+    /// This store's storage shape.  A `singletons` store is a 0-or-1 unit
+    /// tabulation (ADR 0001), so it is keyed; a `bag` store (ADR 0022) holds
+    /// many rows per key, so it maps to an unkeyed table (the backend adds a
+    /// non-unique covering index over the index columns instead).
     pub fn shape(&self) -> TableShape {
         TableShape {
             name: self.store.clone(),
             columns: self.columns.clone(),
-            keyed: true,
+            keyed: self.cardinality == Cardinality::Singletons,
         }
     }
 }

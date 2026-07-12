@@ -90,35 +90,37 @@ materialized table: `bag` results are admitted.  This is the deliberate point
 where a view differs from the unit boundary of
 `docs/decisions/0001-unit-as-identity-discipline.md`: that 0-or-1 rule binds
 anything *promising a tabulation of a unit*, and a view promises no such thing.
-A view does **not** enforce the `singletons` discipline, and a shape claim does
-not impose it either (next section); a dedicated syntax for requiring
-`singletons` on a view is deferred to a later round.  See
-`docs/decisions/0012-view-hosting.md`.
+A view with no conformance clause carries whatever cardinality the pipeline
+computes; a shape claim, however, now constrains it (next section,
+`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`
+amending `docs/decisions/0012-view-hosting.md`).
 
-This relaxation is specific to views, which are *derived* tables.  A `store` and
-a `collect` stay strictly 0-or-1 at their boundary (ADR 0001): they promise a
-tabulation of a unit, so the unit's identity discipline binds them.  A
-`bag`-shaped result belongs in a view, not a store; if several rows genuinely
-share a key, the unit is too coarse and wants a finer index, not a relaxed
-store.
+A `store` and a `collect` default to strictly 0-or-1 at their boundary
+(ADR 0001): they promise a tabulation of a unit, so the unit's identity
+discipline binds them.  A store of genuinely recurring observations may
+instead declare `bag` cardinality with `attr*` blocks, keyed by the entity
+the observations are about (ADR 0022, `02-stores.md`); an *accidental*
+duplicate at a plain store remains the sign of a too-coarse unit that wants
+a finer index.
 
 ## Constraining a view with a shape
 
-The optional `: Shape` clause is the one structural constraint a view may carry.
-It constrains the view's output **content** only, never its cardinality.
+The optional `: Shape` clause is the one structural constraint a view may
+carry.  It constrains the view's output **content** and, through the
+shape's `attr` / `attr*` blocks, its **cardinality** (ADR 0022, resolving
+the deferral of ADR 0012).
 
 - **A unit-fixing shape** such as `Tabular[Machine]` requires the view's output
   to carry `Machine`'s index columns as its index (`03-shapes.md`, "The unit
-  clause").  This is a check on the *structure* of the result; it does **not**
-  impose the 0-or-1 cardinality of ADR 0001.  A view that claims it may still be
-  `bag` if the pipeline leaves it so.
+  clause").
 - **A content shape** such as `Named` requires the output to carry the named
   columns, regardless of unit.
+- **Cardinality follows the blocks** (`03-shapes.md`): a shape with no
+  `attr*` requires the output be `singletons` (the strict reading, so a
+  unit-only marker shape such as `Tabular[Machine]` demands it too), and an
+  `attr*` shape requires a `bag` output.
 - **No clause** leaves the view a free table of whatever shape the pipeline
   produces; nothing beyond the algebra constrains it.
-
-Enforcing `singletons` on a view (the 0-or-1 unit discipline) is a separate
-concern that a shape claim does not cover; the syntax for it is deferred.
 
 The check is the existing store conformance check, run against the computed
 output schema rather than a declared one.  This is the sense in which
@@ -143,8 +145,8 @@ completeness preserved); `group_map` reduces each group to one record, so the
 result is `singletons` per `(..., machine)` key (a fact the pipeline produces,
 not one the view imposes).  All Tier A, so it composes safely.  The view claims
 `Tabular[Machine]`, so the conformance check confirms the output's index is
-`Machine`'s; the `singletons` cardinality here comes from the `group_map`, not
-from the shape.
+`Machine`'s and, since the shape has no `attr*` block, that the output is
+`singletons` (ADR 0022), which the `group_map` supplies.
 
 **Split and re-merge, with a `let` fork.**
 
@@ -181,14 +183,16 @@ composes freely and carries the four properties end to end
 rounds, each ahead of the milestone that needs it (`ROADMAP.md`, "specs first"),
 and are noted here only so the scope is unambiguous:
 
-- **Enforcing `singletons`.**  A syntax that requires a view's output to be
-  0-or-1 per key (the unit discipline of ADR 0001).  No clause does this in this
-  round; a shape claim checks content, not cardinality.
+- **Enforcing `singletons`** is no longer deferred: a shape claim now
+  constrains cardinality through its `attr` / `attr*` blocks (ADR 0022,
+  amending ADR 0012), so claiming any all-`attr` shape requires a
+  `singletons` output.
 - **Tier B inside a view.**  Hosting `shrink_key` and `pivot` in a view
-  body, and discharging `shrink_key`'s completeness obligation
+  body, and discharging the reducing `group_map`'s completeness obligation
   (`completeness_check`, `@complete_over`, a `collect` source, or `assume`)
-  at the hosting site (`09-typing-reference.md`, section 8; `pivot` carries
-  no obligation, ADR 0020).
+  at the hosting site (`09-typing-reference.md`, section 8; `shrink_key`
+  propagates the fact rather than demanding it, ADR 0023, and `pivot`
+  carries no obligation, ADR 0020).
 - **Lineage-demanding sites.**  The learning operations (`fit`/`evaluate`) that
   *consume* disjointness when fed two views (`09-typing-reference.md`, section
   9, deferred ledger).
