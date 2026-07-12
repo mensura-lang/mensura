@@ -1,6 +1,6 @@
 // Accept: assume { complete } establishes the fact at the fine key,
 // demote propagates it to the coarser key (`demote_completeWrt`), and
-// the reducing map_bag consumes it (ADR 0017 as amended by ADR 0023),
+// the reducing map_bags consumes it (ADR 0017 as amended by ADR 0023),
 // bringing the bag back to singletons.  Dropping `ts` (not the promoted
 // column) keeps this a genuine coarsening, not an ADR 0024 round trip.
 unit Reading { ts: int }
@@ -9,5 +9,5 @@ view rollup {
   readings |> promote machine
            |> assume { complete }
            |> demote ts
-           |> map_bag |k, b| (.total = sum b.credits)
+           |> map_bags |k, b| (.total = sum b.credits)
 }

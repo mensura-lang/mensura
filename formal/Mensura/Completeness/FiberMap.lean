@@ -113,7 +113,7 @@ theorem fiberMap_keyLocal (Φ : K → Multiset (Row H σ) → Multiset (Row H' �
 /-- A presence-preserving fiber action preserves the rectangle fact
 (ADR 0020 section 2): strictness keeps absent fibers absent, and the
 no-emptying hypothesis keeps present fibers present, so full fibers stay
-full.  Both `map_bag` shapes satisfy it: the aggregate shape folds a
+full.  Both `map_bags` shapes satisfy it: the aggregate shape folds a
 present fiber to one row (`aggregate_exhaustive` is the special case), and
 the window shape emits one output row per input row. -/
 theorem fiberMap_exhaustive {Φ : (K × N) → Multiset (Row H σ) → Multiset (Row H' σ')}

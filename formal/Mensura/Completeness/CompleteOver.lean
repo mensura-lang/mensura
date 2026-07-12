@@ -13,7 +13,7 @@ Two results seed ADR 0023.  First, `demote` (the algebra's `demote`,
 `Mensura.demote`) **propagates** completeness from the fine key `K × D` to
 the coarse key `K`.  It neither demands nor invents the fact; it carries it
 across the coarsening, which is why the ADR moves the *demand* onto the
-reducing `map_bag` downstream and leaves `demote` responsible only for
+reducing `map_bags` downstream and leaves `demote` responsible only for
 its lineage break (`demote_not_preservesDisjoint`).
 
 Second, the **trivial discharge at `card <= 1`**: `CompleteWrt` is key
@@ -24,7 +24,7 @@ identity discipline: at most one observation per identity exists in the
 world) and the table holds only genuine observations, every present key
 carries its whole fiber (`fiberCompleteWrt_of_functional`): a singleton
 group is either absent or whole, never partial.  This is the base case the
-checker uses to accept a reducing `map_bag` over a `singletons` store's
+checker uses to accept a reducing `map_bags` over a `singletons` store's
 full key with no establishment step (ADR 0022 / 0023).
 -/
 
@@ -67,7 +67,7 @@ theorem demote_completeWrt {R T : Table (K × D) H σ}
   exact absurd hT (h (k, d) hR0)
 
 /-- **Fiber-level completeness**: every key present in `T` carries its whole
-population fiber.  This is the fact a reducing `map_bag` needs for the rows
+population fiber.  This is the fact a reducing `map_bags` needs for the rows
 it emits (a fold over a partial group is silently wrong); it is weaker than
 `CompleteWrt` in that it says nothing about keys absent from `T` (an absent
 key manifests as an absent output row, not a wrong value). -/
@@ -80,7 +80,7 @@ the world: an identity is observed once or not at all) and `T` holds only
 genuine observations (`T.rows k ≤ R.rows k`), then every present key of `T`
 carries its whole fiber: at `card <= 1` there is no middle ground between an
 absent group and a whole one.  This backs the checker rule that a reducing
-`map_bag` over a `singletons` store's full key needs no establishment step.
+`map_bags` over a `singletons` store's full key needs no establishment step.
 It does *not* give key coverage (`CompleteWrt R T`): whole keys may still be
 absent from `T`, and coarsening converts exactly that absence into a fiber
 gap, which is where `demote_completeWrt` and the reference take over. -/

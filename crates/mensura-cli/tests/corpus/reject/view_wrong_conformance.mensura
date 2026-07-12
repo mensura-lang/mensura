@@ -16,5 +16,5 @@ store readings {
 }
 
 view machine_summary : HasMin {
-  readings |> map_bag |k, b| (.temp_max = max b.temperature)
+  readings |> map_bags |k, b| (.temp_max = max b.temperature)
 }

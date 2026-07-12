@@ -31,7 +31,7 @@ tracks" and "Completeness: establish, propagate, consume"):
   (`completeness_check { assert ... }`), or by a source annotation
   (`@complete_over(col)`);
 - preserved by Tier A operations, propagated fine key to coarse key by
-  `demote`, and *demanded* (consumed) by a reducing `map_bag`
+  `demote`, and *demanded* (consumed) by a reducing `map_bags`
   (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`; `pivot`'s
   former demand is dissolved by
   `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`);
@@ -139,7 +139,7 @@ Tier A pipeline carries a disjointness fact end to end.  Per primitive:
 | --- | --- | --- | --- |
 | `flat_map` | key-preserving, support can only shrink | preserved | `map_preservesDisjoint` |
 | `flat_map` as filter (ADR 0015) | region narrows to `R and q` | preserved (strengthened) | `map_preservesDisjoint` |
-| `map_bag` | one output key per input key | preserved | `fiberMap_splitSafe` |
+| `map_bags` | one output key per input key | preserved | `fiberMap_splitSafe` |
 | `promote` | key refines, support splits | preserved | `promote_preservesDisjoint` |
 | `lookup` / `lookup_total` | fixed-right, key-preserving | preserved | `lookup_preservesDisjoint`, `lookupTotal_preservesDisjoint` |
 | `unpivot` | names move into the key | preserved | `unpivotDrop_preservesDisjoint` |
@@ -182,7 +182,7 @@ key and must be re-established (by a check) or assumed.
 ## Demanding disjointness
 
 A disjointness fact is *consumed* by an operation that is only leak-free over
-disjoint inputs, the way a reducing `map_bag` consumes a completeness fact
+disjoint inputs, the way a reducing `map_bags` consumes a completeness fact
 (ADR 0023).  Two sites consume it:
 
 - The learning and validation operations (model `fit` on one table,

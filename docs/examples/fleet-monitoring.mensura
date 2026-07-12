@@ -66,10 +66,10 @@ store readings {
 }
 
 // Reducing a bag folds each machine's readings, which is silently wrong on a
-// partial bag, so the reducing `map_bag` demands completeness (ADR 0023).
+// partial bag, so the reducing `map_bags` demands completeness (ADR 0023).
 // Until ingestion (M4) establishes the fact at the source by mechanism, the
 // view assumes it, locally and visibly.
 view machine_temperature : Tabular[Machine] {
   readings |> assume { complete }
-           |> map_bag |k, b| (.max_kelvin = max b.kelvin)
+           |> map_bags |k, b| (.max_kelvin = max b.kelvin)
 }

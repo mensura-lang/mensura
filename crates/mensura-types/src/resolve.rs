@@ -2028,14 +2028,14 @@ mod tests {
         let ok = r#"
             unit Machine { id: string }
             store readings { unit { Machine } attr { temperature: real } }
-            view machine_summary { readings |> map_bag |k, b| (.temp_max = max b.temperature) }
+            view machine_summary { readings |> map_bags |k, b| (.temp_max = max b.temperature) }
         "#;
         resolve_str(ok).expect("a valid view resolves");
 
         let bad = r#"
             unit Machine { id: string }
             store readings { unit { Machine } attr { temperature: real } }
-            view bad { readings |> map_bag |k, b| (.x = b.temperature + 1.0) }
+            view bad { readings |> map_bags |k, b| (.x = b.temperature + 1.0) }
         "#;
         let errs = errors(bad);
         assert!(errs.iter().any(|e| e.message.contains("bag")));
@@ -2051,12 +2051,12 @@ mod tests {
     #[test]
     fn view_conforms_to_unit_fixing_shape() {
         // A unit-fixing shape checks the output's key structurally: the view
-        // ends in `map_bag`, so its key is `Machine`'s `id`.
+        // ends in `map_bags`, so its key is `Machine`'s `id`.
         let src = format!(
             "{SUMMARY_VIEW}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view machine_summary : Tabular[Machine] {{
-              readings |> map_bag |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying Machine's key conforms");
@@ -2071,7 +2071,7 @@ mod tests {
             unit Site {{ code: string }}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view v : Tabular[Site] {{
-              readings |> map_bag |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2090,7 +2090,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: real }} }}
             view machine_summary : HasMax {{
-              readings |> map_bag |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying temp_max conforms");
@@ -2102,7 +2102,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMin {{ attr {{ temp_min: real }} }}
             view v : HasMin {{
-              readings |> map_bag |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2118,7 +2118,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: string }} }}
             view v : HasMax {{
-              readings |> map_bag |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2193,12 +2193,12 @@ mod tests {
         // fact) discharges it.
         let bad = format!(
             "{BAG_READINGS}
-            view stats {{ readings |> map_bag |k, b| (.max_kelvin = max b.kelvin) }}"
+            view stats {{ readings |> map_bags |k, b| (.max_kelvin = max b.kelvin) }}"
         );
         let errs = errors(&bad);
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("reducing `map_bag`")),
+                .any(|e| e.message.contains("reducing `map_bags`")),
             "expected the reducer completeness demand, got: {errs:?}"
         );
 
@@ -2206,7 +2206,7 @@ mod tests {
             "{BAG_READINGS}
             view stats {{
               readings |> assume {{ complete }}
-                       |> map_bag |k, b| (.max_kelvin = max b.kelvin)
+                       |> map_bags |k, b| (.max_kelvin = max b.kelvin)
             }}"
         );
         let program = resolve_program(&ok).expect("assume discharges the reducer");

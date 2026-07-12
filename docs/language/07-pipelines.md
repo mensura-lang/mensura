@@ -49,7 +49,7 @@ checker rejects a pipeline that would violate one of them:
   Completeness is what makes a per-bag fold faithful.  It is established
   (by a check, a source annotation, or a `registry` mechanism), propagated
   fine key to coarse key by `demote`, and consumed (by a reducing
-  `map_bag`; ADR 0023).
+  `map_bags`; ADR 0023).
 - **Lineage** (table-scoped qualifier): the split ancestry that carries
   disjointness, specified in `08-lineage.md`.  Sampling and dependency, the
   two `std` qualifiers of ADR 0004 with no rules yet written, are deferred;
@@ -117,10 +117,10 @@ several rows (an expansion) are the same primitive: a filter is
 literals of `06-expressions.md`.  There is no `filter` primitive; a named
 `filter` may later be sugar for this form (ADR 0015).
 
-### `map_bag` - per-key whole-bag transform
+### `map_bags` - per-key whole-bag transform
 
 ```
-data |> map_bag |k, b| (.total = sum b.credits)
+data |> map_bags |k, b| (.total = sum b.credits)
 ```
 
 The key-first lambda receives the key and the whole bag at it, presented
@@ -176,7 +176,7 @@ Completeness: preserved.  Tier A (`promote_splitSafe`).
 Content: the named key columns become ordinary columns.  Cardinality: derived
 from the gradings; on a genuine coarsening no grading fits the retained key,
 so per-key cardinality **grows** (the result is `bag` over the coarser key
-unless a following `map_bag` reduces it), while an exact round trip
+unless a following `map_bags` reduces it), while an exact round trip
 re-derives `singletons`.  Completeness: **propagated**, not demanded
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a table
 complete against a reference at the fine key stays complete against the
@@ -281,7 +281,7 @@ dissolved by ADR 0020 (an absent row becomes a missing cell, and
 `demote`'s is moved by
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md` to the
 operation whose result is silently wrong without it: a **reducing
-`map_bag`** (the aggregate shape) consumes the fact, while `demote`
+`map_bags`** (the aggregate shape) consumes the fact, while `demote`
 propagates it from the fine key to the coarse key (`demote_completeWrt`).
 Over a `singletons` input the reducer's obligation discharges trivially, so
 the ordinary aggregation over a plain store stays ceremony-free.  The M1
@@ -306,7 +306,7 @@ established in one of three ways:
   enrollments
   |> completeness_check { assert row_count open_offerings == 0 }
   |> demote course
-  |> map_bag |k, b| (.total_credits = sum b.credits)
+  |> map_bags |k, b| (.total_credits = sum b.credits)
   ```
 
 - **`@complete_over(col)`** on a source store, establishing the fact globally so
@@ -343,7 +343,7 @@ for the rest.
 Sampling, dependency, and lineage propagate through every operation by the rule
 combinators of ADR 0004; this document does not re-state those rules per
 operation.  Two qualifier-level preconditions are worth flagging because they
-sit next to operations here: window-shaped `map_bag` returns need an ordering
+sit next to operations here: window-shaped `map_bags` returns need an ordering
 from the dependency qualifier, and leak-free use of `union` is governed by the
 lineage qualifier (disjointness, specified in `08-lineage.md`), not by the
 algebra.
@@ -359,11 +359,11 @@ is.  A pipeline is a description of a table; the hosting site
 ```
 readings
 |> promote machine
-|> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
+|> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
 ```
 
 `promote` adds `machine` to the key (content: key grows; cardinality and
-completeness preserved); `map_bag` reduces each bag to one record, so the
+completeness preserved); `map_bags` reduces each bag to one record, so the
 result is **singletons** per `(…, machine)` key.  All Tier A, so it composes
 safely; it type-checks.
 
@@ -373,15 +373,15 @@ safely; it type-checks.
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }
 |> demote course
-|> map_bag |k, b| (.total_credits = sum b.credits)
+|> map_bags |k, b| (.total_credits = sum b.credits)
 ```
 
 The check **establishes** the fact; `demote course` **propagates** it to
 the coarser key (dropping `course` makes the table `bag` over `student`);
-the reducing `map_bag` **consumes** it and brings the table back to
+the reducing `map_bags` **consumes** it and brings the table back to
 **singletons** per student.  It type-checks because the obligation was
 discharged.  Remove the check (and `@complete_over`, and `assume`) and the
-`map_bag` is rejected; the `demote` alone would still be admitted
+`map_bags` is rejected; the `demote` alone would still be admitted
 (ADR 0023).
 
 **Reindex round trip (key-graded cardinality).**
@@ -421,7 +421,7 @@ cost of dropping disjointness.  It type-checks.
   their own round.
 - **Expression features the fuller surfaces need.**  Row-dropping and
   row-expanding `flat_map` are covered by the conditionals and collection literals
-  of `06-expressions.md` (ADR 0015); bag-returning `map_bag` (windows)
+  of `06-expressions.md` (ADR 0015); bag-returning `map_bags` (windows)
   still needs an ordering from the dependency qualifier.
 - **The cardinality-type notation.**  How `singletons` / `bag` (and the
   derived `exhaustive`) are written in a `Type` is the content/types

@@ -41,7 +41,7 @@ Each is a pure function from a table to a table.
 | operation | what it does |
 | --- | --- |
 | `flat_map` | per-row transform returning a row multiset: rewrite, drop, or expand each row (so filtering is `flat_map` with `if c then r else ()`) |
-| `map_bag` | per-key transform over the whole bag (an aggregate, or a window) |
+| `map_bags` | per-key transform over the whole bag (an aggregate, or a window) |
 | `promote` | move a non-key column *into* the key (refine the key) |
 | `demote` | move a column *out* of the key (coarsen the key) |
 | `lookup` / `lookup_total` | join the table against a fixed lookup table |

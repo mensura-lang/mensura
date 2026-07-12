@@ -10,5 +10,5 @@ store readings {
 }
 
 view machine_summary {
-  readings |> map_bag |k, b| (.temp_max = max b.temperature)
+  readings |> map_bags |k, b| (.temp_max = max b.temperature)
 }

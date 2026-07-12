@@ -1512,11 +1512,11 @@ mod tests {
     fn op_spans_capture_pipeline_operation_heads() {
         // Each `|>` right-hand side is a curried application; its leftmost
         // identifier is the operation, recorded for highlighting.
-        let src = "view v { readings |> promote machine |> map_bag |k, b| (.m = count b.x) }";
+        let src = "view v { readings |> promote machine |> map_bags |k, b| (.m = count b.x) }";
         let tokens = tokenize(src).expect("should lex");
         let parsed = parse_with_meta(&tokens).expect("should parse");
         let ops: Vec<&str> = parsed.op_spans.iter().map(|s| s.slice(src)).collect();
-        assert_eq!(ops, ["promote", "map_bag"]);
+        assert_eq!(ops, ["promote", "map_bags"]);
     }
 
     // --- expression sublanguage ---------------------------------------------

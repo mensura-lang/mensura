@@ -162,7 +162,7 @@ fn dispatch_op(
         "promote" => op_promote(input, args, span),
         "demote" => op_demote(input, args, span),
         "flat_map" => op_flat_map(input, args, span),
-        "map_bag" => op_map_bag(input, args, span),
+        "map_bags" => op_map_bags(input, args, span),
         "split" => op_split(input, args, span),
         "union" => op_union(input, args, span),
         "lookup" => op_join(sources, input, args, span, JoinKind::Left),
@@ -174,13 +174,13 @@ fn dispatch_op(
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
             // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
-            // row, `map_bag` receives the bag") instead of the generic
+            // row, `map_bags` receives the bag") instead of the generic
             // edit-distance suggestion below.
             const OPS: [&str; 12] = [
                 "promote",
                 "demote",
                 "flat_map",
-                "map_bag",
+                "map_bags",
                 "split",
                 "union",
                 "lookup",
@@ -595,7 +595,7 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
     }
 }
 
-/// `map_bag |k, b| record` (section 6.2, Tier A): transform each group. The
+/// `map_bags |k, b| record` (section 6.2, Tier A): transform each group. The
 /// result cardinality is **inferred from the return**: all single-valued fields
 /// are the aggregate shape (one row per key, `Singletons`); bag-valued fields are
 /// the window shape (one output row per input row, `Bag`). A **reducing** body
@@ -608,9 +608,9 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// the aggregate shape, one per input row in the window shape, so no fiber
 /// loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive` the
 /// aggregate-shape special case).
-fn op_map_bag(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_map_bags(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
-    let (params, body) = lambda_params(args, "map_bag", 2, span)?;
+    let (params, body) = lambda_params(args, "map_bags", 2, span)?;
     let ctx = Context::bag(params[0], params[1], &table);
     let (columns, totality, cardinality) = bag_record_content(&ctx, body)?;
     if cardinality == Cardinality::Singletons
@@ -618,7 +618,7 @@ fn op_map_bag(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
         && table.qualifiers.completeness != Completeness::Complete
     {
         return Err(error(
-            "a reducing `map_bag` needs completeness over the current key (a \
+            "a reducing `map_bags` needs completeness over the current key (a \
              fold over a partial bag is silently wrong); establish it with \
              `completeness_check { ... }` or `assume { complete }` first",
             span,
@@ -640,7 +640,7 @@ fn op_map_bag(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
     }))
 }
 
-/// Type a `map_bag` record body into columns, totality, and the result
+/// Type a `map_bags` record body into columns, totality, and the result
 /// cardinality (section 6.2). Single-valued fields are aggregates (`Singletons`);
 /// bag-valued fields are window values (`Bag`); a mix of the two is rejected.
 fn bag_record_content(
@@ -648,11 +648,11 @@ fn bag_record_content(
     body: &Expr,
 ) -> Result<(Vec<Column>, Totality, Cardinality), Vec<TypeError>> {
     let ExprKind::Record(fields) = &body.kind else {
-        return Err(error("`map_bag`'s lambda must return a record", body.span));
+        return Err(error("`map_bags`'s lambda must return a record", body.span));
     };
     if fields.is_empty() {
         return Err(error(
-            "`map_bag`'s record needs at least one field",
+            "`map_bags`'s record needs at least one field",
             body.span,
         ));
     }
@@ -694,7 +694,7 @@ fn bag_record_content(
     }
     if saw_aggregate && saw_window {
         errs.push(te(
-            "a `map_bag` record must be all aggregates (one row per key) or all \
+            "a `map_bags` record must be all aggregates (one row per key) or all \
              window values (a bag), not a mix",
             body.span,
         ));
@@ -803,7 +803,7 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
 
 /// Extract a key-first lambda's parameter names and body, requiring exactly
 /// `arity` parameters (ADR 0015): 1 for `split` (`|k|`), 2 for `flat_map` /
-/// `map_bag` / the join key (`|k, r|`). A `_` parameter is kept verbatim and
+/// `map_bags` / the join key (`|k, r|`). A `_` parameter is kept verbatim and
 /// binds nothing in the context (the ignored key).
 fn lambda_params<'a>(
     args: &[&'a Expr],
@@ -923,7 +923,7 @@ fn promote_to_key(table: &mut TableType, col: &str, span: Span) -> Result<(), Ty
 /// grading (`demote_promote`). Completeness:
 /// **propagated**, not demanded: a table complete against a reference at the
 /// fine key stays complete against the coarsened reference at the retained key
-/// (`demote_completeWrt`); the consumer is the reducing `map_bag`
+/// (`demote_completeWrt`); the consumer is the reducing `map_bags`
 /// downstream. Lineage: **dropped** (`demote_not_preservesDisjoint`), the
 /// lineage break that keeps `demote` Tier B on its own.
 fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
@@ -1616,13 +1616,13 @@ mod tests {
     }
 
     #[test]
-    fn map_bag_summarizes_to_singletons() {
+    fn map_bags_summarizes_to_singletons() {
         let s = sample_sources();
         let t = table_of(
             pipe_ty(
                 &s,
                 "readings |> promote machine \
-                 |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
+                 |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
             )
             .expect("ok"),
         );
@@ -1633,21 +1633,21 @@ mod tests {
     }
 
     #[test]
-    fn map_bag_rejects_non_numeric_aggregate() {
+    fn map_bags_rejects_non_numeric_aggregate() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> map_bag |k, b| (.m = sum b.machine)")
+        let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.m = sum b.machine)")
             .expect_err("non-numeric");
         assert!(errs[0].message.contains("numeric bag"));
     }
 
     #[test]
-    fn map_bag_with_a_bag_field_stays_a_bag() {
+    fn map_bags_with_a_bag_field_stays_a_bag() {
         let s = sample_sources();
         // A bag-valued field is the window shape: one output row per input row.
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> promote machine |> map_bag |k, b| (.temps = b.temperature)",
+                "readings |> promote machine |> map_bags |k, b| (.temps = b.temperature)",
             )
             .expect("ok"),
         );
@@ -1656,11 +1656,11 @@ mod tests {
     }
 
     #[test]
-    fn map_bag_rejects_mixed_aggregate_and_window() {
+    fn map_bags_rejects_mixed_aggregate_and_window() {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> map_bag |k, b| (.m = sum b.temperature, .t = b.temperature)",
+            "readings |> map_bags |k, b| (.m = sum b.temperature, .t = b.temperature)",
         )
         .expect_err("mixed");
         assert!(errs.iter().any(|e| e.message.contains("not a mix")));
@@ -1997,19 +1997,19 @@ mod tests {
     }
 
     #[test]
-    fn reducing_map_bag_over_a_bag_demands_completeness() {
+    fn reducing_map_bags_over_a_bag_demands_completeness() {
         let s = sample_sources();
         // The fold lands where the unsoundness is (ADR 0023): a reducing
-        // `map_bag` over a possibly partial bag is rejected without an
+        // `map_bags` over a possibly partial bag is rejected without an
         // establish step.  The rekey must not be an exact ADR 0024 round
         // trip, or the singletons input would discharge trivially.
         let errs = pipe_ty(
             &s,
             "readings |> promote machine |> demote ts \
-             |> map_bag |k, b| (.n = count b.temperature)",
+             |> map_bags |k, b| (.n = count b.temperature)",
         )
         .expect_err("incomplete bag");
-        assert!(errs[0].message.contains("reducing `map_bag`"), "{errs:?}");
+        assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
     }
 
     /// Equality up to attribute order (ADR 0024): a round trip restores the
@@ -2129,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn reducing_map_bag_after_an_exact_round_trip_is_admitted() {
+    fn reducing_map_bags_after_an_exact_round_trip_is_admitted() {
         let s = sample_sources();
         // ADR 0024 composed with ADR 0023: the round trip restores the
         // `singletons` cardinality, so the reducer's obligation discharges
@@ -2138,7 +2138,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> promote machine |> demote machine \
-                 |> map_bag |k, b| (.n = count b.temperature)",
+                 |> map_bags |k, b| (.n = count b.temperature)",
             )
             .expect("ok"),
         );
@@ -2152,9 +2152,9 @@ mod tests {
         // the reducer's demand is met (ADR 0023).
         for src in [
             "readings |> promote machine |> assume { complete } |> demote machine \
-             |> map_bag |k, b| (.n = count b.temperature)",
+             |> map_bags |k, b| (.n = count b.temperature)",
             "readings |> promote machine |> demote machine |> assume { complete } \
-             |> map_bag |k, b| (.n = count b.temperature)",
+             |> map_bags |k, b| (.n = count b.temperature)",
         ] {
             let t = table_of(pipe_ty(&s, src).expect("ok"));
             assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
@@ -2162,7 +2162,7 @@ mod tests {
     }
 
     #[test]
-    fn window_map_bag_over_a_bag_needs_no_completeness() {
+    fn window_map_bags_over_a_bag_needs_no_completeness() {
         let s = sample_sources();
         // Only the reducing shape consumes the fact; a window body (a bag
         // return) is one output row per input row, faithful on a partial bag.
@@ -2170,7 +2170,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> promote machine |> demote machine \
-                 |> map_bag |k, b| (.temps = b.temperature)",
+                 |> map_bags |k, b| (.temps = b.temperature)",
             )
             .expect("ok"),
         );
@@ -2178,13 +2178,13 @@ mod tests {
     }
 
     #[test]
-    fn reducing_map_bag_over_singletons_discharges_trivially() {
+    fn reducing_map_bags_over_singletons_discharges_trivially() {
         let s = sample_sources();
         // At `card <= 1` a present key's single row is its whole fiber
         // (`fiberCompleteWrt_of_functional`), so the ordinary aggregation over
         // a plain store is ceremony-free (ADR 0023).
         let t = table_of(
-            pipe_ty(&s, "readings |> map_bag |k, b| (.m = max b.temperature)").expect("ok"),
+            pipe_ty(&s, "readings |> map_bags |k, b| (.m = max b.temperature)").expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
@@ -2325,15 +2325,15 @@ mod tests {
     }
 
     #[test]
-    fn exhaustive_survives_map_bag_and_bind_of_carriers() {
+    fn exhaustive_survives_map_bags_and_bind_of_carriers() {
         let s = wide_source(false);
-        // `fiberMap_exhaustive` (both `map_bag` shapes) and
+        // `fiberMap_exhaustive` (both `map_bags` shapes) and
         // `bind_exhaustive` (a union of full fibers is full).
         let t = table_of(
             pipe_ty(
                 &s,
                 "wide |> unpivot metric reading \
-                 |> map_bag |_, b| (.reading = max b.reading)",
+                 |> map_bags |_, b| (.reading = max b.reading)",
             )
             .expect("ok"),
         );
@@ -2441,7 +2441,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> promote machine \
-                 |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
+                 |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
             )
             .expect("machine_temperature types"),
         );
@@ -2478,7 +2478,7 @@ mod tests {
         let s = sample_sources();
         let body = view_body(
             "view machine_temperature { readings |> promote machine \
-             |> map_bag |k, b| (.temp_max = max b.temperature) }",
+             |> map_bags |k, b| (.temp_max = max b.temperature) }",
         );
         let t = type_view(&s, &body).expect("ok");
         assert!(t.content.key.iter().any(|c| c.name == "machine"));

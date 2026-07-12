@@ -195,7 +195,7 @@ reference population (the mechanized `CompleteWrt`,
 wherever the reference does.  The reference coarsens with the table, so
 `demote` transforms the fact rather than consuming it
 (`demote_completeWrt`); the operation that *demands* it is the reducing
-`map_bag`, whose fold is silently wrong on a partial bag (section 8,
+`map_bags`, whose fold is silently wrong on a partial bag (section 8,
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
 
 A second, **domain-relative** grade is tracked
@@ -380,10 +380,10 @@ Because the body is the formal multiset, **filtering and row-expansion are the
 same primitive**: there is no `filter` primitive (`filterRows_splitSafe` is
 derived), and a named `filter` may later be sugar for `if c then r else ()`.
 
-### 6.2  `map_bag` (per-key whole-bag transform) -- Tier A
+### 6.2  `map_bags` (per-key whole-bag transform) -- Tier A
 
 ```
-data |> map_bag |k, b| (.total = sum b.credits)
+data |> map_bags |k, b| (.total = sum b.credits)
 ```
 
 The key-first lambda receives the key `k` (a single value, constant within the
@@ -435,7 +435,7 @@ Completeness: preserved.  Lineage: preserved.  Tier A (`promote_splitSafe`,
 **`demote cols`** drops key components into the non-key part.  Content:
 the named key columns become ordinary columns.  Cardinality: derived from
 the gradings; on a genuine coarsening no grading fits the retained key and
-the bound rises to **`bag`** (unless a following `map_bag` reduces it),
+the bound rises to **`bag`** (unless a following `map_bags` reduces it),
 while an exact round trip re-derives `singletons`.  Completeness: **propagated**
 from the fine key to the coarse key (ADR 0023): a table complete against a
 reference at `(a, b)` is complete against the coarsened reference at `a`
@@ -545,13 +545,13 @@ Both halves of the definition are now tracked: `SplitInvariant` is the Tier
 boundary, and `PreservesDisjoint` is what lets the lineage hierarchy carry a
 disjointness fact through a Tier A pipeline intact (section 9).
 
-- **Tier A** (split-safe): `flat_map`, `map_bag`, `promote`, `lookup`,
+- **Tier A** (split-safe): `flat_map`, `map_bags`, `promote`, `lookup`,
   `lookup_total`, `split`, `union`, `unpivot`.  They compose freely and carry
   cardinality, completeness, and lineage facts end to end.
 - **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
   lineage fact, and that is the whole content of the Tier: `demote`
   propagates completeness rather than demanding it (the demand sits at the
-  reducing `map_bag`, section 8, ADR 0023), and `pivot` demands nothing
+  reducing `map_bags`, section 8, ADR 0023), and `pivot` demands nothing
   (an absent row becomes a missing cell) and instead upgrades its spread
   columns' totality under `exhaustive` (section 6.6, ADR 0020).
 
@@ -571,7 +571,7 @@ one of three ways (`07`, "Completeness: establish, propagate, consume"):
 
 Tier A operations **preserve** completeness; `demote` **propagates** it
 from the fine key to the coarsened reference at the retained key
-(`demote_completeWrt`); a **reducing `map_bag`** **consumes** it, because
+(`demote_completeWrt`); a **reducing `map_bags`** **consumes** it, because
 a fold over a partial bag is silently wrong (ADR 0023, amending ADR 0017's
 consumer placement).  Over a `singletons` input the reducer's obligation
 discharges trivially (`fiberCompleteWrt_of_functional`), so only a reduction
@@ -584,11 +584,11 @@ it into the `exhaustive` totality upgrade of section 6.6.)
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }   // establish
 |> demote course                                             // propagate; bag over student
-|> map_bag |k, b| (.total_credits = sum b.credits)            // consume; back to singletons
+|> map_bags |k, b| (.total_credits = sum b.credits)            // consume; back to singletons
 ```
 
 Remove the check (and `@complete_over`, and `assume`) and the reducing
-`map_bag` is rejected; the `demote` alone would still be admitted.
+`map_bags` is rejected; the `demote` alone would still be admitted.
 
 ## 9.  Lineage and disjointness (the tag hierarchy)
 
@@ -615,7 +615,7 @@ test, it is decidable with no solver.  What each primitive does to the tags:
 
 | operation | lineage effect | disjointness | theorem |
 | --- | --- | --- | --- |
-| `flat_map` / `map_bag` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
+| `flat_map` / `map_bags` | tags carried | preserved | `map_preservesDisjoint`, `fiberMap_preservesDisjoint` |
 | `promote` | tags carried | preserved | `promote_preservesDisjoint` |
 | `lookup` / `lookup_total` | tags carried | preserved | `lookup_preservesDisjoint`, `lookupTotal_preservesDisjoint` |
 | `unpivot` | tags carried | preserved | `unpivotDrop_preservesDisjoint` |
@@ -655,7 +655,7 @@ the full key.
 | op | content | card | total | complete | lineage | Tier | theorem |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `flat_map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `flatMap_splitSafe` |
-| `map_bag` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
+| `map_bags` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
 | `promote` | cols join key | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `promote_splitSafe`, `promote_functional` |
 | `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | **propagated** (reference coarsens) | **dropped** | B | `demote_not_preservesDisjoint`, `demote_completeWrt`, `demote_promote` |
 | `lookup` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `lookup_splitSafe` |
@@ -704,10 +704,10 @@ lineage tags:
 **Completeness layer** (`Completeness/`) -- rekeying layer, fiber
 operations, and population-relative completeness:
 
-- `map_bag` (`fiberMap`): `fiberMap_splitSafe`,
+- `map_bags` (`fiberMap`): `fiberMap_splitSafe`,
   `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`,
   `fiberMap_exhaustive` (a presence-preserving fiber action carries the
-  rectangle: both `map_bag` shapes).
+  rectangle: both `map_bags` shapes).
 - population-relative completeness (`CompleteOver.lean`, ADR 0023):
   `CompleteWrt` (a row wherever the reference has one) with
   `demote_completeWrt` (`demote` coarsens the reference rather than
@@ -730,16 +730,16 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 
 **Must accept:**
 
-- Summarize by an attribute (`07`): `promote machine |> map_bag |k, b| ...`,
+- Summarize by an attribute (`07`): `promote machine |> map_bags |k, b| ...`,
   all Tier A, result `singletons` per key.
 - Filter with `flat_map` (ADR 0015): `map |_, r| if r.degraded then r else ()` keeps
   or drops a row and stays `singletons`; `flat_map |k, r| (r, r)` expands to `bag`.
 - Coarsen with the fact established first (`07`): `completeness_check { ... }
-  |> demote course |> map_bag ...` (the check establishes, `demote`
+  |> demote course |> map_bags ...` (the check establishes, `demote`
   propagates, the reducer consumes; ADR 0023).
 - Reindex only: `demote` with no downstream reducer and no establish
   step (a possibly partial bag is an honest rekey; ADR 0023).
-- Reduce a plain store: `map_bag |k, b| (.m = max b.x)` straight over a
+- Reduce a plain store: `map_bags |k, b| (.m = max b.x)` straight over a
   `singletons` source, with no establish step (the trivial discharge).
 - Split and re-merge (`07`): `split |k| ...` then `(train, test) |> union`
   reconstructs the input (`union_split`); the disjoint halves keep `singletons`.
@@ -752,7 +752,7 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 
 **Must reject:**
 
-- A reducing `map_bag` over a `bag` with no completeness fact (no check,
+- A reducing `map_bags` over a `bag` with no completeness fact (no check,
   no `@complete_over`, no `assume`); e.g. `demote` then an aggregate
   with no establish step (ADR 0023).
 - A disjointness-demanding site fed two tables that are not structurally
@@ -799,7 +799,7 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   0015), so it too is sugar, not a primitive.
 - **Expression features the fuller surfaces need.**  Row-dropping and
   row-expanding `flat_map` now land (the `( )` collection and `if`/`then`/`else`, ADR
-  0015); bag-returning `map_bag` (windows) still needs an ordering.  The
+  0015); bag-returning `map_bags` (windows) still needs an ordering.  The
   `const`/`var` record-field marker that ADR 0015 reserved is dropped by ADR
   0019, which drops the `const`/`var` concept altogether.
 - **Annotation grammar.**  `@audited`, `@versioned`, `@auto`, `@complete_over`,

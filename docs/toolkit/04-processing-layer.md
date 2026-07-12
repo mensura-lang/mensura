@@ -30,7 +30,7 @@ a table.
 - **`flat_map` first.**  The first operation implemented end to end is `flat_map`,
   which subsumes filtering (ADR 0015) and is what the committed
   `attention_needed` view in `docs/examples/fleet-monitoring.mensura`
-  needs.  The remaining operations (`promote`, `map_bag`,
+  needs.  The remaining operations (`promote`, `map_bags`,
   `split`/`union`, the joins, `unpivot`, `pivot`) follow the same lowering
   and land incrementally within M2.
 

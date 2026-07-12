@@ -470,7 +470,7 @@ identifiers, as the keyword-free lexer intends.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Physical-unit and precision types, including the `NxE` measured literal and
   the physical-unit grammar.
-- The pipeline operations (`flat_map`, `map_bag`, `promote`/`demote`,
+- The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
   joins, `split`/`union`, `unpivot`/`pivot`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no

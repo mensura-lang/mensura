@@ -79,7 +79,7 @@ allows row cardinality greater than 1.  Mensura models this as a key
 carrying many rows (a *bag*), following the row-multiset model
 (ADR 0015).  A bag arises in two ways.  Inside the algebra it is a
 *transient state*: an operation like `demote` can produce a result
-in which one key carries multiple rows, and a later `map_bag` may
+in which one key carries multiple rows, and a later `map_bags` may
 reduce each bag back to a single row.  At the store boundary it is a
 *declared state*
 (`docs/decisions/0022-observations-as-bags-declared-store-cardinality.md`):

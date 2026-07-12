@@ -120,11 +120,11 @@ A **bag** is the multiset of rows at one key.  Every key of every table has a
 bag, possibly empty; `singletons` cardinality is the statement that every bag
 has at most one row, and `bag` cardinality allows any number.  This is the
 primary meaning of the word throughout Mensura: the `bag` cardinality state,
-the `map_bag` operation, and completeness are all statements about the rows
+the `map_bags` operation, and completeness are all statements about the rows
 in a key's bag.
 
 The word appears once more, at the expression level, for a multiset one step
-removed.  When a `map_bag` lambda receives a key's whole bag (the `|k, b|`
+removed.  When a `map_bags` lambda receives a key's whole bag (the `|k, b|`
 form), reading a column off it, `b.credits`, yields the multiset of that
 column's values across the rows in the bag.  That value multiset is itself a
 bag, of scalars rather than rows; the type system writes its type `bag<T>`,
@@ -168,7 +168,7 @@ It is a table-level qualifier with two states:
   (ADR 0024).
 - **Bag** (written `card 0..*`): a key may hold any number of rows, including
   zero.  Bag cardinality arises transiently from `demote` and from any
-  `map_bag` that returns more than one row per key, and as a *declared*
+  `map_bags` that returns more than one row per key, and as a *declared*
   state on a store of recurring observations (an `attr*` store keyed by the
   entity, ADR 0022).
 
@@ -214,7 +214,7 @@ that is, the key's whole bag.  It is not the same as totality (which is about
 individual cell values) and not the same as cardinality (which counts rows).
 
 Completeness is demanded where its absence would silently corrupt a
-result: at a **reducing `map_bag`**, whose aggregate over a partial bag
+result: at a **reducing `map_bags`**, whose aggregate over a partial bag
 would silently ignore the missing rows
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
 `demote` propagates the fact from the fine key to the coarser one on
@@ -331,7 +331,7 @@ and then re-binding the outputs.  Formally, for an operation `f` and a split
 An operation is **split-safe** if it is split-invariant *and* it preserves
 the disjointness facts in the lineage qualifier.
 
-**Tier A** operations are split-safe: `flat_map`, `map_bag`, `promote`,
+**Tier A** operations are split-safe: `flat_map`, `map_bags`, `promote`,
 `lookup`, `lookup_total`, `split`, `union`, and `unpivot`.  They compose
 freely and require no extra ceremony around splits.
 
@@ -340,7 +340,7 @@ Both drop the lineage qualifier on their output, and that is the whole
 content of the Tier: neither demands completeness (`demote` propagates
 it to the coarser key, ADR 0023; for `pivot` an absent row becomes a
 missing cell, ADR 0020).  The completeness demand sits downstream, at the
-reducing `map_bag`.
+reducing `map_bags`.
 
 The central guarantee of Mensura is that a pipeline composed entirely of
 Tier A operations cannot introduce data leakage between disjoint partitions.
@@ -468,12 +468,12 @@ warnings.
    for how each qualifier propagates and how the content changes.
 
 3. **Split-invariance is the default.** Chapter 5's Tier A operations
-   (`union`, `split`, `unpivot`, `flat_map`, `map_bag`, `promote`, and
+   (`union`, `split`, `unpivot`, `flat_map`, `map_bags`, `promote`, and
    `lookup`/`lookup_total` against a fixed table) are split-invariant by
    construction and require no extra ceremony.  The Tier B operations break
    split-invariance and drop the lineage qualifier: `demote`, which
    drops a key component, and `pivot`, which spreads a key axis.  Neither
-   demands completeness; the demand sits at the reducing `map_bag`, which
+   demands completeness; the demand sits at the reducing `map_bags`, which
    over a bag requires an explicit `completeness_check { … }` stage, a
    `@complete_over` annotation on its source, or an `assume`
    (ADR 0020, ADR 0023).  See `docs/language/07-pipelines.md`.

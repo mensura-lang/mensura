@@ -117,7 +117,7 @@ follow-up.  The companion LL(1) grammar proof remains the open M0 item.
   productions.  The freeze is contingent on this proof.
 - The `Table<Qs, C>` type and the qualifier framework (ADR 0004): the
   propagation combinators and the constraint-hook interface.
-- Typing rules for the pipeline primitives (`flat_map`, `map_bag`,
+- Typing rules for the pipeline primitives (`flat_map`, `map_bags`,
   `promote`/`demote`, `lookup`/`lookup_total`, `split`/`union`,
   `unpivot`/`pivot`), with their cardinality and completeness effects.
 - The disjointness constraint hook over the lineage qualifier
@@ -156,7 +156,7 @@ Output: `mensura run` materializes a Tier A view from stores, end to end
 
 - `mensura-runtime`: the DBSP-style processing layer over the SQLite storage
   backend (`docs/toolkit/00-storage-backend.md`).
-- Implement the Tier A primitives at runtime (`flat_map`/`filter`/`map_bag`/
+- Implement the Tier A primitives at runtime (`flat_map`/`filter`/`map_bags`/
   `lookup`/...), reading from and writing to stores.
 - Disjointness and completeness proven at compile time, then trusted at
   runtime.

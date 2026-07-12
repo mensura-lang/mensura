@@ -10,5 +10,5 @@ store readings {
 }
 
 view bad {
-  readings |> map_bag |k, b| (.x = b.temperature + 1.0)
+  readings |> map_bags |k, b| (.x = b.temperature + 1.0)
 }

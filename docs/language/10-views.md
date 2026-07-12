@@ -46,7 +46,7 @@ conformance clause, and a **block** that hosts the pipeline:
 ```mensura
 view feature_window : Tabular[Machine] {
   let base = readings |> promote machine;
-  base |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
+  base |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
 }
 ```
 
@@ -77,7 +77,7 @@ through it and surface on the view:
   their domains.  This is the pure structure; the qualifiers below describe it.
 - **Cardinality** (table-scoped qualifier): `singletons` or `bag`, as the
   pipeline leaves it.  A summarizing view that ends in a single-record
-  `map_bag` is `singletons`; a view that ends in a `bag`-shaped stage is
+  `map_bags` is `singletons`; a view that ends in a `bag`-shaped stage is
   `bag`.
 - **Totality** (column-scoped qualifier): a value is total unless an operation
   made it optional (a `lookup` leaves its added columns optional until a
@@ -136,17 +136,17 @@ pipeline's result.
 view machine_temperature : Tabular[Machine] {
   readings
   |> promote machine
-  |> map_bag |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
+  |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
 }
 ```
 
 `promote` adds `machine` to the key (content: key grows; cardinality and
-completeness preserved); `map_bag` reduces each bag to one record, so the
+completeness preserved); `map_bags` reduces each bag to one record, so the
 result is `singletons` per `(..., machine)` key (a fact the pipeline produces,
 not one the view imposes).  All Tier A, so it composes safely.  The view claims
 `Tabular[Machine]`, so the conformance check confirms the output's key is
 `Machine`'s and, since the shape has no `attr*` block, that the output is
-`singletons` (ADR 0022), which the `map_bag` supplies.
+`singletons` (ADR 0022), which the `map_bags` supplies.
 
 **Split and re-merge, with a `let` fork.**
 
@@ -188,7 +188,7 @@ and are noted here only so the scope is unambiguous:
   amending ADR 0012), so claiming any all-`attr` shape requires a
   `singletons` output.
 - **Tier B inside a view.**  Hosting `demote` and `pivot` in a view
-  body, and discharging the reducing `map_bag`'s completeness obligation
+  body, and discharging the reducing `map_bags`'s completeness obligation
   (`completeness_check`, `@complete_over`, a `registry` source, or `assume`)
   at the hosting site (`09-typing-reference.md`, section 8; `demote`
   propagates the fact rather than demanding it, ADR 0023, and `pivot`

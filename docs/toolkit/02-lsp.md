@@ -94,7 +94,7 @@ Token types (the legend advertised at `initialize`):
 | Type         | Source                                                |
 |--------------|-------------------------------------------------------|
 | `keyword`    | Contextual keywords: declaration headers (`unit`, `store`, `shape`, `attr`, `domain`, `enum`, `view`), the conditional (`if`, `then`, `else`), the predicate operators (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement keywords (`let`, `assert`). |
-| `function`   | Pipeline operations (`flat_map`, `map_bag`, `split`, `union`, `lookup`, `lookup_total`, `promote`, `demote`, `unpivot`, `pivot`, `assume`, `completeness_check`), carried with the `defaultLibrary` modifier. |
+| `function`   | Pipeline operations (`flat_map`, `map_bags`, `split`, `union`, `lookup`, `lookup_total`, `promote`, `demote`, `unpivot`, `pivot`, `assume`, `completeness_check`), carried with the `defaultLibrary` modifier. |
 | `type`       | Declaration and reference names of units and shapes, and conformance targets. |
 | `property`   | Field and attribute names, including the literal parts of a name template. |
 | `parameter`  | Shape parameters and `{param}` holes inside a name template. |

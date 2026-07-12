@@ -80,7 +80,7 @@ fn attention_needed_materializes_the_degraded_machines() {
 fn machine_temperature_reduces_the_bag_store() {
     // The end-to-end bag-store path (ADR 0022 + ADR 0023): the `readings`
     // bag holds several rows per machine, the view assumes completeness and
-    // the reducing `map_bag` folds each machine's bag to its maximum.
+    // the reducing `map_bags` folds each machine's bag to its maximum.
     let program = fleet_program();
     let mut db = seeded_db(&program);
     materialize_views(&mut db, &program).unwrap();

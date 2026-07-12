@@ -45,7 +45,7 @@ Where a clearer name exists, the surface departs from the book.
 | Retired | Current | Why |
 | --- | --- | --- |
 | `map` | `flat_map` | The body returns a collection (`()` drops the row, `(a, b)` expands), flattened into the key's bag.  That is exactly Rust/Scala `flat_map`, not a 1:1 map; the honest name also explains why there is no separate `filter` primitive. |
-| `group_map` | `map_bag` | The lambda receives the key's whole bag (`\|k, b\|`) and returns its replacement: one bag in, one bag out, a map over the table's bags.  A record return is a singleton replacement (the aggregate shape, collapsing the bag to one row); a bag return is a many-row replacement (the window shape).  The aggregation, like `flat_map`'s filtering, happens inside the lambda, so the operator's name stays neutral where `reduce` or `agg` would be false for windows.  "Group" speaks SQL in a language whose word is "bag", and it suggests the operation groups something; the bag exists by virtue of the key alone. |
+| `group_map` | `map_bags` | The lambda receives the key's whole bag (`\|k, b\|`) and returns its replacement: one bag in, one bag out, a map over the table's bags.  A record return is a singleton replacement (the aggregate shape, collapsing the bag to one row); a bag return is a many-row replacement (the window shape).  The aggregation, like `flat_map`'s filtering, happens inside the lambda, so the operator's name stays neutral where `reduce` or `agg` would be false for windows.  "Group" speaks SQL in a language whose word is "bag", and it suggests the operation groups something; the bag exists by virtue of the key alone. |
 | `extend_key` | `promote` | The verb everyone already reaches for: ADR 0024's prose ("promote, work at the finer key, demote") and the corpus file names (`roundtrip_promote_first*`) used it while the code said `extend_key`.  The verb's object is exactly the argument: `promote ts` moves the column `ts` into the key. |
 | `shrink_key` | `demote` | Same, in the other direction: `demote ts` moves the key component out.  Retiring the formal `project` alias also removes the collision with relational-algebra projection (column selection), which this operation is not. |
 | `left_join` | `lookup` | The operation is not a general relational join but a directed lookup against a fixed table: a lambda maps each current row to the right table's key and pulls that row's columns in, as optionals.  "Join" promises symmetric relation matching that is not there. |
@@ -61,7 +61,7 @@ with a row-receiving `flat_map` would falsely suggest the Rust/Scala
 relationship (same input, flattened output).  Since ops are matched by
 name in a keyword-free lexer, `map` should remain a recognized-but-rejected
 name with a pointed diagnostic ("no `map` in Mensura: `flat_map` receives
-a row, `map_bag` receives the bag") instead of a silent misread.  That
+a row, `map_bags` receives the bag") instead of a silent misread.  That
 targeted diagnostic is **not yet implemented**: `map` currently falls
 through to the generic "unsupported operation" path with an edit-distance
 suggestion.  The follow-up is flagged with a `TODO(ADR-0025)` at the
@@ -123,7 +123,7 @@ function, not the surface key move.  Only surface-describing Lean comments
   framing the expression-level `bag<T>` (a column's values across those
   rows) as a projection of it, records the bag/fiber correspondence, and
   notes that `union` means multiset sum, not deduplicating set union.
-- **The `flat_map`/`map_bag` asymmetry is deliberate.**  Only the
+- **The `flat_map`/`map_bags` asymmetry is deliberate.**  Only the
   row-level operation flattens (each row's returned collection is merged
   into the bag); the bag-level operation maps one bag to one bag, so
   "flat" would be false there.  The names differ where the semantics do.
@@ -154,10 +154,10 @@ record-returning specialization, matching the "aggregate shape" prose.
 
 - Checker identifiers: `Context::group` -> `Context::bag`,
   `group_value_record` -> `bag_value_record`, `op_group_map` ->
-  `op_map_bag`, `group_record_content` -> `bag_record_content`,
+  `op_map_bags`, `group_record_content` -> `bag_record_content`,
   `op_bind` -> `op_union`.
 - Diagnostics: "a reducing `group_map` needs completeness ..." -> "a
-  reducing `map_bag` ...".
+  reducing `map_bags` ...".
 - The op-name match in `pipe_check`, the highlighter/LSP completions,
   the grammar doc's op list, `docs/examples/*.mensura`, and the corpus
   (including the file renames `shrink_after_assume` -> `demote_after_assume`,
@@ -177,7 +177,7 @@ record-returning specialization, matching the "aggregate shape" prose.
   understood, and the `un-` prefix advertises the inversion).
 - `assume` (honest about admitting an obligation by fiat), `attr` /
   `attr*`, `store`, `view`, `shape`, `unit`.
-- Tier A / Tier B, and the "aggregate" and "window" shapes of `map_bag`.
+- Tier A / Tier B, and the "aggregate" and "window" shapes of `map_bags`.
 - Qualifier vocabulary: establish / consume / discharge, completeness,
   totality, lineage, grading, functional.
 

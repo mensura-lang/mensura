@@ -15,7 +15,7 @@ surface in expressions.  The
 concrete LL(1) grammar lives in `04-grammar.md`; this document is about
 meaning and shape, and quotes grammar only where it clarifies a design
 choice.  Casing of names follows `05-naming-and-casing.md`.  The
-table-level operations (`flat_map`, `map_bag`, the joins, `split`, the `|>`
+table-level operations (`flat_map`, `map_bags`, the joins, `split`, the `|>`
 pipe) are part of this same sublanguage but are catalogued in the
 pipeline document; this document stops at the value level.
 
@@ -131,7 +131,7 @@ between bars and the body after, following Rust.  Multiple parameters
 are comma-separated: `|a, b| a + b`.  Lambdas are the explicit way to
 give an operation a per-element computation, for example a quantifier body
 `|x| x > 30`.  Pipeline lambdas are **key-first**, binding the key before the
-value: `flat_map`/join `|k, r|`, `map_bag |k, b|`, `split |k|` (ADR 0015, and
+value: `flat_map`/join `|k, r|`, `map_bags |k, b|`, `split |k|` (ADR 0015, and
 `07-pipelines.md`).  `|_, r|` ignores the key.
 
 The closing bar of a lambda and the `|>` pipe both use `|`.  The two
@@ -347,7 +347,7 @@ empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
   document fixes only that such literals are a distinct kind and do not
   participate in plain arithmetic.
 - **The pipeline level.**  The `|>` pipe, the operation catalogue
-  (`promote`, `flat_map`, `map_bag`, the joins, `split`, `union`) and their
+  (`promote`, `flat_map`, `map_bags`, the joins, `split`, `union`) and their
   split-safety obligations are the same sublanguage applied at table type,
   catalogued in the pipeline document.  Filtering is not a primitive: it is
   `flat_map |k, r| if c then r else ()` (ADR 0015).  `|>` appears in the precedence table here because it is one

@@ -5,7 +5,7 @@
 //! of typed rows.  The checker has already established that the body is
 //! well-typed, so evaluation cannot fail on shape; every "internal" error
 //! here marks a case the frontend is supposed to have ruled out.  All Tier A
-//! operations execute (`flat_map`, `map_bag`, `promote`, the joins,
+//! operations execute (`flat_map`, `map_bags`, `promote`, the joins,
 //! `split`/`union`, `unpivot`), plus `pivot` (Tier B only for its lineage
 //! effect, ADR 0020; batch evaluation is unaffected), and the establish
 //! stages (`assume`, `completeness_check`) are identities: their facts are
@@ -251,7 +251,7 @@ fn apply_op(
     };
     match op.as_str() {
         "flat_map" => Ok(TableVal::Table(eval_flat_map(expect_table(input)?, args)?)),
-        "map_bag" => Ok(TableVal::Table(eval_map_bag(expect_table(input)?, args)?)),
+        "map_bags" => Ok(TableVal::Table(eval_map_bags(expect_table(input)?, args)?)),
         "promote" => Ok(TableVal::Table(eval_promote(expect_table(input)?, args)?)),
         "split" => eval_split(expect_table(input)?, args),
         "union" => Ok(TableVal::Table(eval_bind(input)?)),
@@ -526,15 +526,15 @@ fn eval_row(scope: &Scope, expr: &Expr) -> Result<NamedRow, EvalError> {
 }
 
 // ---------------------------------------------------------------------------
-// map_bag
+// map_bags
 
-/// `map_bag |k, b| record` (section 6.2): group rows by key and transform
+/// `map_bags |k, b| record` (section 6.2): group rows by key and transform
 /// each group.  All single-valued fields: one aggregate row per key.  All
 /// bag-valued fields: one window row per input row of the group.
-fn eval_map_bag(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let (params, body) = lambda_parts(args, 2)?;
     let ExprKind::Record(fields) = &body.kind else {
-        return internal("`map_bag` body is not a record");
+        return internal("`map_bags` body is not a record");
     };
     let attrs: Vec<Col> = fields
         .iter()
@@ -583,7 +583,7 @@ fn eval_map_bag(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
             match eval_scalar(&scope, &field.value)? {
                 RtVal::V(v) => aggregates.push(v),
                 RtVal::Bag(vs) => windows.push(vs),
-                RtVal::Rec(_) => return internal("a `map_bag` field yielded a row"),
+                RtVal::Rec(_) => return internal("a `map_bags` field yielded a row"),
             }
         }
         match (aggregates.is_empty(), windows.is_empty()) {
@@ -604,7 +604,7 @@ fn eval_map_bag(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
                     rows.push(out);
                 }
             }
-            _ => return internal("a mixed `map_bag` record (the checker rejects this)"),
+            _ => return internal("a mixed `map_bags` record (the checker rejects this)"),
         }
     }
     Ok(SourceTable {
@@ -614,7 +614,7 @@ fn eval_map_bag(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
     })
 }
 
-/// The statically known domain of a `map_bag` field: a window copies its
+/// The statically known domain of a `map_bags` field: a window copies its
 /// column, the aggregates have fixed or copied domains.
 fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<ColumnType> {
     let member_domain = |e: &Expr| match &e.kind {
@@ -849,7 +849,7 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
 /// `name` is an enum key column and `value` the only attribute (the
 /// checker's gates); each residual key's fiber gathers into one wide row,
 /// one column per variant, and an absent (key, variant) row becomes a
-/// missing cell.  Residual keys come out in key order, like `map_bag`'s
+/// missing cell.  Residual keys come out in key order, like `map_bags`'s
 /// groups.
 fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let [name_arg, value_arg] = args else {
@@ -1410,15 +1410,15 @@ mod tests {
     }
 
     #[test]
-    fn map_bag_aggregates_one_row_per_key() {
-        // `flat_map` expands each row to two, then `map_bag` folds each group
+    fn map_bags_aggregates_one_row_per_key() {
+        // `flat_map` expands each row to two, then `map_bags` folds each group
         // back to one aggregate row.  The expansion is complete by
         // construction, a fact the checker cannot yet derive, so the reducer's
         // ADR 0023 obligation is discharged with `assume`.
         let rows = eval(
             r#"view stats {
                  let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
-                 doubled |> map_bag |_, b| (.total = sum b.hours, .n = count b.hours, .worst = max b.hours)
+                 doubled |> map_bags |_, b| (.total = sum b.hours, .n = count b.hours, .worst = max b.hours)
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
@@ -1445,11 +1445,11 @@ mod tests {
     }
 
     #[test]
-    fn map_bag_windows_one_row_per_member() {
+    fn map_bags_windows_one_row_per_member() {
         let rows = eval(
             r#"view windowed {
                  let doubled = machines |> flat_map |_, r| (r, r);
-                 doubled |> map_bag |_, b| (.h = to_real b.hours)
+                 doubled |> map_bags |_, b| (.h = to_real b.hours)
                }"#,
             vec![machine("m1", "operational", 10, None)],
         );
@@ -1655,7 +1655,7 @@ mod tests {
     #[test]
     fn pivot_gathers_each_residual_fiber_into_one_wide_row() {
         // Two long rows per slot gather into one wide row; keys come out in
-        // key order, like `map_bag`'s groups.
+        // key order, like `map_bags`'s groups.
         let rows = eval_over(
             READINGS,
             r#"view wide { readings |> unpivot metric reading |> pivot metric reading }"#,
