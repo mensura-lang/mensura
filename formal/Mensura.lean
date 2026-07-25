@@ -28,6 +28,10 @@ Module flatMap (each file imports only what it builds on):
     CompleteOver     population-relative completeness, its propagation
                      through demote/demote, and the fiber-level
                      trivial discharge at card <= 1 (ADR 0023)
+  Units/
+    Dimension        physical dimensions as the free abelian group over the
+                     seven SI base dimensions, with decidable equality
+                     (ADR 0026); standalone, independent of the table algebra
 
 The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
@@ -44,3 +48,4 @@ import Mensura.Completeness.Reindex
 import Mensura.Completeness.Verbs
 import Mensura.Completeness.PivotAttr
 import Mensura.Completeness.CompleteOver
+import Mensura.Units.Dimension

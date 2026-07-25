@@ -168,13 +168,21 @@ This is the "first working language" milestone; narrow on purpose.
 Output: dimensional quantities are first-class, and unit mismatch is a compile
 error.
 
-- Design docs first: physical units and precision; measure semantics.
-- Dimensional unit algebra: SI base units and derived units (for example
-  `length / time^2`), with unit checking and conversion.
-- `NxE` precision literals (integer significand, signed exponent) carrying
-  significance.
+- Design docs first (ADR 0026 dimensions, 0027 modules, 0028 the `si` stdlib;
+  the language doc `11-physical-units.md` on top).
+- Dimensions as the free abelian group over the seven SI base dimensions,
+  formally backed (ADR 0026); a dimensioned type is `D[real]`; unit checking
+  and automatic (linear) conversion, with affine units (Celsius) handled at
+  ingestion.
+- Units are ordinary dimensioned constants (`9.8 * m / s^2`), shipped by a
+  small module system (ADR 0027: top-level const bindings + imports) and a
+  bundled `si` standard library generated from the mechanized group (ADR 0028).
+  The third-party package layer (manifest, hashes, `pin`) is provisional and
+  deferred until it has a consumer.
+- Precision (the `NxE` significand/exponent idea) is deferred to a future
+  library extension of `real`, not M3 core.
 - Measure-semantics annotations (`@additive`, `@semiadditive`, `@foldable`)
-  that gate which window rollups are valid.
+  that gate which window rollups are valid: a later doc after units land.
 
 ## M4 - Devices, collect, and ingestion
 
