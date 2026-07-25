@@ -1,4 +1,4 @@
-# Units and indices
+# Units and keys
 
 A **unit** is the kind of entity your rows are about.  It is Wickham's
 *observational unit* made syntactic: "Person", "Course", "Machine" are units;
@@ -10,12 +10,12 @@ another.
 {{#include ../examples/unit-person.mensura}}
 ```
 
-The fields between the braces are the unit's **index**.  Two observations are
+The fields between the braces are the unit's **key**.  Two observations are
 observations of the same `Person` exactly when they agree on `id`.
 
-## Composite indices
+## Composite keys
 
-An index can have more than one field.  A course is identified by its name and
+A key can have more than one field.  A course is identified by its name and
 the year it ran, so neither field alone is enough:
 
 ```mensura
@@ -33,7 +33,7 @@ they may change, or how observations enter the system.  Those belong to a
 tabulated by several stores that carry different attributes and policies but
 agree on what the entity is.
 
-Index field types are the key-eligible primitives (`string`, `int`, `bool`, `date`) and named enums; a continuous `real` measurement cannot be a key (ADR 0014).
+Key field types are the key-eligible primitives (`string`, `int`, `bool`, `date`) and named enums; a continuous `real` measurement cannot be a key (ADR 0014).
 Indices whose fields reference other units (compound units) are a later
 feature; see [What's next](../whats-next.md).  The full design lives in
 `docs/language/01-units.md`.

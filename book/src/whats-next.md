@@ -1,8 +1,8 @@
 # What's next
 
 This book grows with the language.  Today it covers modelling data (units,
-scalar types, stores, and shapes) and transforming it (views, `map`, and the
-reshape pair), plus checking a program and creating and materializing its
+scalar types, stores, and shapes) and transforming it (views, `flat_map`, and
+the reshape pair), plus checking a program and creating and materializing its
 tables in a database.  The features still being built are documented here as
 they land.
 

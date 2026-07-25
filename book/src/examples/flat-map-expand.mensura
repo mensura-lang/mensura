@@ -6,5 +6,5 @@ store samples {
   attr { value: real }
 }
 view doubled {
-  samples |> map |k, r| (r, r)
+  samples |> flat_map |k, r| (r, r)
 }

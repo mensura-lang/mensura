@@ -27,7 +27,7 @@ The checker has two type domains and they stay separate:
   valued expressions against named `Sources`, producing a `PipeTy`
   (`Table` or `Pair`).  Its operations are the Tier A primitives.
 - The **value layer** (`crates/mensura-types/src/expr_check.rs`) types scalar
-  expressions against a row/group/key `Context`, producing a `Ty` (`Value`,
+  expressions against a row/bag/key `Context`, producing a `Ty` (`Value`,
   `Bag`, `Bool`, `Record`).  Its applicable builtins are `to_real` and the
   aggregates.
 
@@ -97,6 +97,6 @@ partial application held as a value, or application of anything outside the
 built-in operation sets.  That surface is ADR 0018's open question 2 and
 stays open.  The practical consequence is the saturation guard above: peeling
 the trailing argument as the input is sound only for a saturated stage, so an
-unsaturated bare form such as `extend_key cols` with no table reports "a
+unsaturated bare form such as `promote cols` with no table reports "a
 pipeline operation needs an input" rather than being typed as a partial
 application.

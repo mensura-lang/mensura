@@ -7,5 +7,5 @@ store machines {
   attr { status: Status }
 }
 view attention_needed {
-  machines |> map |_, r| if r.status == "degraded" then r else ()
+  machines |> flat_map |_, r| if r.status == "degraded" then r else ()
 }

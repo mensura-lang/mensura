@@ -9,6 +9,6 @@ store grades {
 }
 view report {
   grades                                    // keyed by (student, subject)
-  |> group_map |k, g| (.score = max g.score) // card -> 1 per (student, subject)
+  |> map_bags |k, b| (.score = max b.score) // card -> 1 per (student, subject)
   |> pivot subject score                    // legal: each cell is card <= 1
 }

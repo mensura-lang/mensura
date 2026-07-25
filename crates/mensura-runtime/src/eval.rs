@@ -5,12 +5,12 @@
 //! of typed rows.  The checker has already established that the body is
 //! well-typed, so evaluation cannot fail on shape; every "internal" error
 //! here marks a case the frontend is supposed to have ruled out.  All Tier A
-//! operations execute (`map`, `group_map`, `extend_key`, the joins,
-//! `split`/`bind`, `unpivot`), plus `pivot` (Tier B only for its lineage
+//! operations execute (`flat_map`, `map_bags`, `promote`, the joins,
+//! `split`/`union`, `unpivot`), plus `pivot` (Tier B only for its lineage
 //! effect, ADR 0020; batch evaluation is unaffected), and the establish
 //! stages (`assume`, `completeness_check`) are identities: their facts are
 //! proven at compile time and trusted at runtime (`ROADMAP.md` M2).
-//! `shrink_key` is not yet executable.
+//! `demote` is not yet executable.
 
 use std::collections::BTreeMap;
 
@@ -64,10 +64,10 @@ fn col(name: impl Into<String>, ty: Option<ColumnType>) -> Col {
 }
 
 /// A table value flowing through a pipeline: its key/value column split and
-/// its rows (index values first, then attributes, positionally).
+/// its rows (key values first, then attributes, positionally).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceTable {
-    index: Vec<Col>,
+    key: Vec<Col>,
     attrs: Vec<Col>,
     rows: Vec<Row>,
 }
@@ -76,20 +76,20 @@ impl SourceTable {
     /// Present a store's scanned rows to the evaluator.  `rows` are in the
     /// schema's column order, as [`StorageBackend::scan`] returns them.
     pub fn from_store(schema: &Schema, rows: Vec<Row>) -> SourceTable {
-        let mut index = Vec::new();
+        let mut key = Vec::new();
         let mut attrs = Vec::new();
         for c in &schema.columns {
             let entry = col(c.name.clone(), Some(c.ty.clone()));
             match c.role {
-                ColumnRole::Index => index.push(entry),
+                ColumnRole::Key => key.push(entry),
                 ColumnRole::Attr => attrs.push(entry),
             }
         }
-        SourceTable { index, attrs, rows }
+        SourceTable { key, attrs, rows }
     }
 
     fn key_len(&self) -> usize {
-        self.index.len()
+        self.key.len()
     }
 
     fn attr_position(&self, name: &str) -> Option<usize> {
@@ -98,7 +98,7 @@ impl SourceTable {
 }
 
 /// A pipeline value: a single table, or the pair a `split` yields and a
-/// `bind` consumes.  Mirrors the checker's `PipeTy`.
+/// `union` consumes.  Mirrors the checker's `PipeTy`.
 #[derive(Clone, Debug)]
 enum TableVal {
     Table(SourceTable),
@@ -112,7 +112,7 @@ fn expect_table(v: TableVal) -> Result<SourceTable, EvalError> {
     }
 }
 
-/// One output row of a `map` body: named values in output-column order.
+/// One output row of a `flat_map` body: named values in output-column order.
 type NamedRow = Vec<(String, Value)>;
 
 /// A scalar-expression value: a single [`Value`], a group's bag at one key,
@@ -147,7 +147,7 @@ fn key_of(v: &Value) -> Result<KeyVal, EvalError> {
 }
 
 /// Evaluate a view plan over its sources, returning the materialized rows in
-/// the plan's column order (index columns, then attributes).
+/// the plan's column order (key columns, then attributes).
 pub fn eval_view(
     plan: &ViewPlan,
     sources: &BTreeMap<String, SourceTable>,
@@ -182,7 +182,7 @@ fn align(plan: &ViewPlan, table: SourceTable) -> Result<Vec<Row>, EvalError> {
         return Ok(Vec::new());
     }
     let actual: Vec<&String> = table
-        .index
+        .key
         .iter()
         .chain(table.attrs.iter())
         .map(|c| &c.name)
@@ -250,21 +250,18 @@ fn apply_op(
         return internal("pipeline stage without an operation name");
     };
     match op.as_str() {
-        "map" => Ok(TableVal::Table(eval_map(expect_table(input)?, args)?)),
-        "group_map" => Ok(TableVal::Table(eval_group_map(expect_table(input)?, args)?)),
-        "extend_key" => Ok(TableVal::Table(eval_extend_key(
-            expect_table(input)?,
-            args,
-        )?)),
+        "flat_map" => Ok(TableVal::Table(eval_flat_map(expect_table(input)?, args)?)),
+        "map_bags" => Ok(TableVal::Table(eval_map_bags(expect_table(input)?, args)?)),
+        "promote" => Ok(TableVal::Table(eval_promote(expect_table(input)?, args)?)),
         "split" => eval_split(expect_table(input)?, args),
-        "bind" => Ok(TableVal::Table(eval_bind(input)?)),
-        "left_join" => Ok(TableVal::Table(eval_join(
+        "union" => Ok(TableVal::Table(eval_bind(input)?)),
+        "lookup" => Ok(TableVal::Table(eval_join(
             env,
             expect_table(input)?,
             args,
             JoinKind::Left,
         )?)),
-        "inner_join" => Ok(TableVal::Table(eval_join(
+        "lookup_total" => Ok(TableVal::Table(eval_join(
             env,
             expect_table(input)?,
             args,
@@ -273,7 +270,7 @@ fn apply_op(
         "unpivot" => Ok(TableVal::Table(eval_unpivot(expect_table(input)?, args)?)),
         "pivot" => Ok(TableVal::Table(eval_pivot(expect_table(input)?, args)?)),
         "assume" | "completeness_check" => Ok(TableVal::Table(expect_table(input)?)),
-        "shrink_key" => err("`shrink_key` is Tier B and not yet executable \
+        "demote" => err("`demote` is Tier B and not yet executable \
              (docs/toolkit/04-processing-layer.md)"),
         other => err(format!(
             "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
@@ -316,7 +313,7 @@ fn row_scope(table: &SourceTable, kname: &str, rname: &str, row: &Row) -> Scope 
     let (key, vals) = row.split_at(table.key_len());
     let mut scope = Scope::new();
     if kname != "_" {
-        scope.insert(kname.to_string(), record(&table.index, key));
+        scope.insert(kname.to_string(), record(&table.key, key));
     }
     if rname != "_" {
         scope.insert(rname.to_string(), record(&table.attrs, vals));
@@ -336,13 +333,13 @@ fn record(cols: &[Col], values: &[Value]) -> RtVal {
 // ---------------------------------------------------------------------------
 // map
 
-/// `map |k, r| collection` (ADR 0015): evaluate the body once per input row;
+/// `flat_map |k, r| collection` (ADR 0015): evaluate the body once per input row;
 /// each yielded value row becomes one output row under the same key, and
 /// `( )` yields none.
-fn eval_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+fn eval_flat_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let (params, body) = lambda_parts(args, 2)?;
-    let Some(schema) = map_row_schema(&input, params[0], params[1], body)? else {
-        return internal("a `map` body that always drops (the checker rejects this)");
+    let Some(schema) = flat_map_row_schema(&input, params[0], params[1], body)? else {
+        return internal("a `flat_map` body that always drops (the checker rejects this)");
     };
     let mut rows = Vec::new();
     for row in &input.rows {
@@ -351,7 +348,7 @@ fn eval_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError
             if named.len() != schema.len()
                 || named.iter().zip(&schema).any(|((n, _), c)| *n != c.name)
             {
-                return internal("`map` rows with differing schemas");
+                return internal("`flat_map` rows with differing schemas");
             }
             let mut out: Row = row[..input.key_len()].to_vec();
             out.extend(named.into_iter().map(|(_, v)| v));
@@ -359,17 +356,17 @@ fn eval_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError
         }
     }
     Ok(SourceTable {
-        index: input.index,
+        key: input.key,
         attrs: schema,
         rows,
     })
 }
 
-/// The output columns of a `map` body, derived statically so they are known
+/// The output columns of a `flat_map` body, derived statically so they are known
 /// even when the input holds no rows.  Mirrors the checker's
 /// `row_collection` on names; domains are carried where a field copies a
 /// column, and dropped (`None`) where it computes.
-fn map_row_schema(
+fn flat_map_row_schema(
     input: &SourceTable,
     kname: &str,
     rname: &str,
@@ -379,7 +376,7 @@ fn map_row_schema(
         ExprKind::Tuple(items) => {
             let mut schema: Option<Vec<Col>> = None;
             for item in items {
-                let s = map_single_row(input, kname, rname, item)?;
+                let s = flat_map_single_row(input, kname, rname, item)?;
                 schema = Some(match schema {
                     None => s,
                     Some(prev) => unify_cols(prev, s)?,
@@ -388,18 +385,18 @@ fn map_row_schema(
             Ok(schema)
         }
         ExprKind::If { then, els, .. } => {
-            let a = map_row_schema(input, kname, rname, then)?;
-            let b = map_row_schema(input, kname, rname, els)?;
+            let a = flat_map_row_schema(input, kname, rname, then)?;
+            let b = flat_map_row_schema(input, kname, rname, els)?;
             Ok(match (a, b) {
                 (Some(a), Some(b)) => Some(unify_cols(a, b)?),
                 (a, b) => a.or(b),
             })
         }
-        _ => Ok(Some(map_single_row(input, kname, rname, body)?)),
+        _ => Ok(Some(flat_map_single_row(input, kname, rname, body)?)),
     }
 }
 
-fn map_single_row(
+fn flat_map_single_row(
     input: &SourceTable,
     kname: &str,
     rname: &str,
@@ -418,13 +415,13 @@ fn map_single_row(
         // A whole-row body: the checker reads the row record's fields off a
         // sorted map, so the output columns are alphabetical.
         ExprKind::Name(n) if n == rname => Ok(sorted_cols(&input.attrs)),
-        ExprKind::Name(n) if n == kname => Ok(sorted_cols(&input.index)),
+        ExprKind::Name(n) if n == kname => Ok(sorted_cols(&input.key)),
         ExprKind::If { then, els, .. } => {
-            let a = map_single_row(input, kname, rname, then)?;
-            let b = map_single_row(input, kname, rname, els)?;
+            let a = flat_map_single_row(input, kname, rname, then)?;
+            let b = flat_map_single_row(input, kname, rname, els)?;
             unify_cols(a, b)
         }
-        _ => internal("a `map` row form the checker should have rejected"),
+        _ => internal("a `flat_map` row form the checker should have rejected"),
     }
 }
 
@@ -438,7 +435,7 @@ fn sorted_cols(cols: &[Col]) -> Vec<Col> {
 /// a domain survives only where both sides agree on it.
 fn unify_cols(a: Vec<Col>, b: Vec<Col>) -> Result<Vec<Col>, EvalError> {
     if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| x.name != y.name) {
-        return internal("`map` rows with differing schemas");
+        return internal("`flat_map` rows with differing schemas");
     }
     Ok(a.into_iter()
         .zip(b)
@@ -465,7 +462,7 @@ fn static_domain(input: &SourceTable, kname: &str, rname: &str, expr: &Expr) -> 
                 .find(|c| c.name == field.name)
                 .and_then(|c| c.ty.clone()),
             ExprKind::Name(n) if n == kname => input
-                .index
+                .key
                 .iter()
                 .find(|c| c.name == field.name)
                 .and_then(|c| c.ty.clone()),
@@ -480,7 +477,7 @@ fn static_domain(input: &SourceTable, kname: &str, rname: &str, expr: &Expr) -> 
     }
 }
 
-/// Evaluate a `map` body as a collection of value rows (ADR 0015): `( )` is
+/// Evaluate a `flat_map` body as a collection of value rows (ADR 0015): `( )` is
 /// empty, `(a, b)` expands, an `if` filters or branches, and any other body
 /// is a single row.
 fn eval_rows(scope: &Scope, body: &Expr) -> Result<Vec<NamedRow>, EvalError> {
@@ -523,28 +520,28 @@ fn eval_row(scope: &Scope, expr: &Expr) -> Result<NamedRow, EvalError> {
                     _ => internal("a row field that is not a single value"),
                 })
                 .collect(),
-            _ => internal("a `map` body row is not a record"),
+            _ => internal("a `flat_map` body row is not a record"),
         },
     }
 }
 
 // ---------------------------------------------------------------------------
-// group_map
+// map_bags
 
-/// `group_map |k, g| record` (section 6.2): group rows by key and transform
+/// `map_bags |k, b| record` (section 6.2): group rows by key and transform
 /// each group.  All single-valued fields: one aggregate row per key.  All
 /// bag-valued fields: one window row per input row of the group.
-fn eval_group_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let (params, body) = lambda_parts(args, 2)?;
     let ExprKind::Record(fields) = &body.kind else {
-        return internal("`group_map` body is not a record");
+        return internal("`map_bags` body is not a record");
     };
     let attrs: Vec<Col> = fields
         .iter()
         .map(|f| {
             col(
                 f.name.name.clone(),
-                group_static_domain(&input, params[1], &f.value),
+                bag_static_domain(&input, params[1], &f.value),
             )
         })
         .collect();
@@ -562,7 +559,7 @@ fn eval_group_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eva
         let key = input.rows[members[0]][..nkeys].to_vec();
         let mut scope = Scope::new();
         if params[0] != "_" {
-            scope.insert(params[0].to_string(), record(&input.index, &key));
+            scope.insert(params[0].to_string(), record(&input.key, &key));
         }
         if params[1] != "_" {
             let bags: BTreeMap<String, RtVal> = input
@@ -586,7 +583,7 @@ fn eval_group_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eva
             match eval_scalar(&scope, &field.value)? {
                 RtVal::V(v) => aggregates.push(v),
                 RtVal::Bag(vs) => windows.push(vs),
-                RtVal::Rec(_) => return internal("a `group_map` field yielded a row"),
+                RtVal::Rec(_) => return internal("a `map_bags` field yielded a row"),
             }
         }
         match (aggregates.is_empty(), windows.is_empty()) {
@@ -607,22 +604,22 @@ fn eval_group_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eva
                     rows.push(out);
                 }
             }
-            _ => return internal("a mixed `group_map` record (the checker rejects this)"),
+            _ => return internal("a mixed `map_bags` record (the checker rejects this)"),
         }
     }
     Ok(SourceTable {
-        index: input.index,
+        key: input.key,
         attrs,
         rows,
     })
 }
 
-/// The statically known domain of a `group_map` field: a window copies its
+/// The statically known domain of a `map_bags` field: a window copies its
 /// column, the aggregates have fixed or copied domains.
-fn group_static_domain(input: &SourceTable, gname: &str, expr: &Expr) -> Option<ColumnType> {
+fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<ColumnType> {
     let member_domain = |e: &Expr| match &e.kind {
         ExprKind::Member(base, field) => match &base.kind {
-            ExprKind::Name(n) if n == gname => input
+            ExprKind::Name(n) if n == bname => input
                 .attrs
                 .iter()
                 .find(|c| c.name == field.name)
@@ -658,21 +655,21 @@ fn group_static_domain(input: &SourceTable, gname: &str, expr: &Expr) -> Option<
 }
 
 // ---------------------------------------------------------------------------
-// extend_key
+// promote
 
-/// `extend_key cols` (section 6.3): promote the named attribute columns into
-/// the index, in argument order.
-fn eval_extend_key(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+/// `promote cols` (section 6.3): promote the named attribute columns into
+/// the key, in argument order.
+fn eval_promote(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     for arg in args {
         let ExprKind::Name(name) = &arg.kind else {
-            return internal("`extend_key` expects column names");
+            return internal("`promote` expects column names");
         };
         let Some(pos) = table.attr_position(name) else {
-            return internal(format!("`extend_key` on unknown column `{name}`"));
+            return internal(format!("`promote` on unknown column `{name}`"));
         };
         let nkeys = table.key_len();
         let column = table.attrs.remove(pos);
-        table.index.push(column);
+        table.key.push(column);
         for row in &mut table.rows {
             let v = row.remove(nkeys + pos);
             row.insert(nkeys, v);
@@ -682,7 +679,7 @@ fn eval_extend_key(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable
 }
 
 // ---------------------------------------------------------------------------
-// split / bind
+// split / union
 
 /// `split |k| pred` (section 6.5): route each row by a predicate over its
 /// key.  `true` goes left, `false` right; both sides keep the schema.
@@ -694,7 +691,7 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
     for row in &input.rows {
         let mut scope = Scope::new();
         if params[0] != "_" {
-            scope.insert(params[0].to_string(), record(&input.index, &row[..nkeys]));
+            scope.insert(params[0].to_string(), record(&input.key, &row[..nkeys]));
         }
         if eval_bool(&scope, body)? {
             left_rows.push(row.clone());
@@ -703,29 +700,29 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
         }
     }
     let left = SourceTable {
-        index: input.index.clone(),
+        key: input.key.clone(),
         attrs: input.attrs.clone(),
         rows: left_rows,
     };
     let right = SourceTable {
-        index: input.index,
+        key: input.key,
         attrs: input.attrs,
         rows: right_rows,
     };
     Ok(TableVal::Pair(left, right))
 }
 
-/// `bind` (section 6.5): the union of a pair of tables of the same schema,
+/// `union` (section 6.5): the union of a pair of tables of the same schema,
 /// left side first.
 fn eval_bind(input: TableVal) -> Result<SourceTable, EvalError> {
     let TableVal::Pair(a, b) = input else {
-        return internal("`bind` expects a pair of tables");
+        return internal("`union` expects a pair of tables");
     };
-    let index = unify_cols(a.index, b.index)?;
+    let key = unify_cols(a.key, b.key)?;
     let attrs = unify_cols(a.attrs, b.attrs)?;
     let mut rows = a.rows;
     rows.extend(b.rows);
-    Ok(SourceTable { index, attrs, rows })
+    Ok(SourceTable { key, attrs, rows })
 }
 
 // ---------------------------------------------------------------------------
@@ -737,9 +734,9 @@ enum JoinKind {
     Inner,
 }
 
-/// `left_join` / `inner_join right (|k, l| key)` (section 6.4): join a fixed
+/// `lookup` / `lookup_total right (|k, r| key)` (section 6.4): join a fixed
 /// right table by a key computed over the left row.  The right table is a
-/// store (keyed, single index column), so at most one row matches.
+/// store (keyed, single key column), so at most one row matches.
 fn eval_join(
     env: &BTreeMap<String, TableVal>,
     input: SourceTable,
@@ -756,7 +753,7 @@ fn eval_join(
         return internal(format!("unknown join target `{right_name}`"));
     };
     if right.key_len() != 1 {
-        return internal("a join's right table must have a single index column");
+        return internal("a join's right table must have a single key column");
     }
     let mut by_key: BTreeMap<KeyVal, &[Value]> = BTreeMap::new();
     for row in &right.rows {
@@ -787,7 +784,7 @@ fn eval_join(
     let mut attrs = input.attrs;
     attrs.extend(right.attrs.iter().cloned());
     Ok(SourceTable {
-        index: input.index,
+        key: input.key,
         attrs,
         rows,
     })
@@ -798,7 +795,7 @@ fn eval_join(
 
 /// `unpivot name value` (section 6.6, ADR 0020): fold **all** attribute
 /// columns into one `value` column, spreading their names into a new `enum`
-/// index column `name`.  A missing cell yields **no row** (drop semantics),
+/// key column `name`.  A missing cell yields **no row** (drop semantics),
 /// so the value column is total by construction (`unpivotDrop` in
 /// `formal/Mensura/Table.lean`).
 fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
@@ -821,8 +818,8 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
     }
 
     let variants: Vec<String> = input.attrs.iter().map(|c| c.name.clone()).collect();
-    let mut index = input.index.clone();
-    index.push(col(
+    let mut key = input.key.clone();
+    key.push(col(
         name_col.clone(),
         Some(ColumnType::Enum {
             name: name_col.clone(),
@@ -845,14 +842,14 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
             rows.push(out);
         }
     }
-    Ok(SourceTable { index, attrs, rows })
+    Ok(SourceTable { key, attrs, rows })
 }
 
 /// `pivot name value` (section 6.6, ADR 0020): the inverse of `unpivot`.
-/// `name` is an enum index column and `value` the only attribute (the
+/// `name` is an enum key column and `value` the only attribute (the
 /// checker's gates); each residual key's fiber gathers into one wide row,
 /// one column per variant, and an absent (key, variant) row becomes a
-/// missing cell.  Residual keys come out in key order, like `group_map`'s
+/// missing cell.  Residual keys come out in key order, like `map_bags`'s
 /// groups.
 fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let [name_arg, value_arg] = args else {
@@ -862,10 +859,10 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
     else {
         return internal("`pivot`'s name and value must be identifiers");
     };
-    let Some(name_pos) = input.index.iter().position(|c| &c.name == name_col) else {
-        return internal(format!("`pivot` on non-index column `{name_col}`"));
+    let Some(name_pos) = input.key.iter().position(|c| &c.name == name_col) else {
+        return internal(format!("`pivot` on non-key column `{name_col}`"));
     };
-    let Some(ColumnType::Enum { variants, .. }) = input.index[name_pos].ty.clone() else {
+    let Some(ColumnType::Enum { variants, .. }) = input.key[name_pos].ty.clone() else {
         return err(format!(
             "`pivot` cannot recover `{name_col}`'s enum variants: an upstream \
              stage computed the column, losing its declared enum; not yet \
@@ -877,8 +874,8 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
     }
     let value_ty = input.attrs[0].ty.clone();
 
-    let index: Vec<Col> = input
-        .index
+    let key: Vec<Col> = input
+        .key
         .iter()
         .enumerate()
         .filter(|&(i, _)| i != name_pos)
@@ -933,7 +930,7 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
             key
         })
         .collect();
-    Ok(SourceTable { index, attrs, rows })
+    Ok(SourceTable { key, attrs, rows })
 }
 
 // ---------------------------------------------------------------------------
@@ -1315,7 +1312,7 @@ mod tests {
     fn map_filters_by_returning_the_empty_collection() {
         let rows = eval(
             r#"view attention_needed {
-                 machines |> map |_, r| if r.status == "degraded" then r else ()
+                 machines |> flat_map |_, r| if r.status == "degraded" then r else ()
                }"#,
             vec![
                 machine("m1", "operational", 10, Some("2026-01-01")),
@@ -1340,7 +1337,7 @@ mod tests {
     fn map_computes_record_fields_in_field_order() {
         let rows = eval(
             r#"view doubled {
-                 machines |> map |_, r| (.twice = r.hours * 2, .flagged = r.status != "operational")
+                 machines |> flat_map |_, r| (.twice = r.hours * 2, .flagged = r.status != "operational")
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
@@ -1368,8 +1365,8 @@ mod tests {
     fn let_bindings_chain_stages() {
         let rows = eval(
             r#"view chained {
-                 let flagged = machines |> map |_, r| if r.last_service is missing then r else ();
-                 flagged |> map |_, r| (.hours = r.hours)
+                 let flagged = machines |> flat_map |_, r| if r.last_service is missing then r else ();
+                 flagged |> flat_map |_, r| (.hours = r.hours)
                }"#,
             vec![
                 machine("m1", "operational", 10, Some("2026-01-01")),
@@ -1383,7 +1380,7 @@ mod tests {
     fn empty_source_materializes_an_empty_view() {
         let rows = eval(
             r#"view attention_needed {
-                 machines |> map |_, r| if r.status == "degraded" then r else ()
+                 machines |> flat_map |_, r| if r.status == "degraded" then r else ()
                }"#,
             Vec::new(),
         );
@@ -1391,17 +1388,17 @@ mod tests {
     }
 
     #[test]
-    fn extend_key_promotes_a_column_into_the_key() {
+    fn promote_promotes_a_column_into_the_key() {
         let rows = eval(
             r#"view keyed {
-                 machines |> extend_key hours |> map |k, _| (.h = k.hours)
+                 machines |> promote hours |> flat_map |k, _| (.h = k.hours)
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
                 machine("m2", "degraded", 20, None),
             ],
         );
-        // The promoted column sits at the end of the key; the map body reads
+        // The promoted column sits at the end of the key; the flat_map body reads
         // it off `k` to prove it moved.
         assert_eq!(
             rows,
@@ -1413,15 +1410,15 @@ mod tests {
     }
 
     #[test]
-    fn group_map_aggregates_one_row_per_key() {
-        // `map` expands each row to two, then `group_map` folds each group
+    fn map_bags_aggregates_one_row_per_key() {
+        // `flat_map` expands each row to two, then `map_bags` folds each group
         // back to one aggregate row.  The expansion is complete by
         // construction, a fact the checker cannot yet derive, so the reducer's
         // ADR 0023 obligation is discharged with `assume`.
         let rows = eval(
             r#"view stats {
-                 let doubled = machines |> map |_, r| (r, r) |> assume { complete };
-                 doubled |> group_map |_, g| (.total = sum g.hours, .n = count g.hours, .worst = max g.hours)
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.total = sum b.hours, .n = count b.hours, .worst = max b.hours)
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
@@ -1448,11 +1445,11 @@ mod tests {
     }
 
     #[test]
-    fn group_map_windows_one_row_per_member() {
+    fn map_bags_windows_one_row_per_member() {
         let rows = eval(
             r#"view windowed {
-                 let doubled = machines |> map |_, r| (r, r);
-                 doubled |> group_map |_, g| (.h = to_real g.hours)
+                 let doubled = machines |> flat_map |_, r| (r, r);
+                 doubled |> map_bags |_, b| (.h = to_real b.hours)
                }"#,
             vec![machine("m1", "operational", 10, None)],
         );
@@ -1470,7 +1467,7 @@ mod tests {
         let rows = eval(
             r#"view roundtrip {
                  let parts = machines |> split |k| k.id == "m1";
-                 parts |> bind
+                 parts |> union
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
@@ -1535,10 +1532,10 @@ mod tests {
     }
 
     #[test]
-    fn left_join_keeps_unmatched_rows_with_missing() {
+    fn lookup_keeps_unmatched_rows_with_missing() {
         let rows = eval_over(
             FLEET,
-            r#"view located { machines |> left_join sites (|_, r| r.site) }"#,
+            r#"view located { machines |> lookup sites (|_, r| r.site) }"#,
             &fleet_rows(),
         );
         assert_eq!(
@@ -1561,10 +1558,10 @@ mod tests {
     }
 
     #[test]
-    fn inner_join_drops_unmatched_rows() {
+    fn lookup_total_drops_unmatched_rows() {
         let rows = eval_over(
             FLEET,
-            r#"view located { machines |> inner_join sites (|_, r| r.site) }"#,
+            r#"view located { machines |> lookup_total sites (|_, r| r.site) }"#,
             &fleet_rows(),
         );
         assert_eq!(rows.len(), 1);
@@ -1658,7 +1655,7 @@ mod tests {
     #[test]
     fn pivot_gathers_each_residual_fiber_into_one_wide_row() {
         // Two long rows per slot gather into one wide row; keys come out in
-        // key order, like `group_map`'s groups.
+        // key order, like `map_bags`'s groups.
         let rows = eval_over(
             READINGS,
             r#"view wide { readings |> unpivot metric reading |> pivot metric reading }"#,
@@ -1680,16 +1677,16 @@ mod tests {
     }
 
     #[test]
-    fn tier_b_shrink_key_reports_not_executable() {
+    fn tier_b_demote_reports_not_executable() {
         let err = try_eval_over(
             MACHINES,
             r#"view coarse {
-                 machines |> extend_key hours |> assume { complete } |> shrink_key hours
+                 machines |> promote hours |> assume { complete } |> demote hours
                }"#,
             &[("machines", Vec::new())],
         )
         .expect_err("Tier B must not execute");
-        assert!(err.message.contains("shrink_key"), "{err}");
+        assert!(err.message.contains("demote"), "{err}");
         assert!(err.message.contains("not yet executable"), "{err}");
     }
 }

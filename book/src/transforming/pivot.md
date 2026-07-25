@@ -9,7 +9,7 @@ chapter.
 ## unpivot: wide to long
 
 `unpivot name value` folds **all** attribute columns into two columns: `name`
-takes the folded column's name (as a new `enum` index column) and `value` takes
+takes the folded column's name (as a new `enum` key column) and `value` takes
 its cell.
 
 ```mensura
@@ -28,7 +28,7 @@ follow from folding *all* attributes:
 ## pivot: long to wide
 
 `pivot name value` is the inverse: for each residual key it gathers the values
-indexed by the `name` key column into one wide row.  Because `unpivot` and
+keyed by the `name` key column into one wide row.  Because `unpivot` and
 `pivot` are inverses on a functional table, folding and then spreading
 reconstructs the original wide table.
 
@@ -36,9 +36,9 @@ reconstructs the original wide table.
 {{#include ../examples/reshape-roundtrip.mensura}}
 ```
 
-`pivot` spreads an **index** column, so its `name` argument must already be in
+`pivot` spreads a **key** column, so its `name` argument must already be in
 the key.  An enum sitting in attribute position is rejected with a diagnostic
-that names the fix, promote it with `extend_key` first:
+that names the fix: move it into the key with `promote` first.
 
 ```mensura
 {{#include ../examples/pivot-promote.mensura}}
@@ -55,13 +55,13 @@ rejected:
 ```mensura,ignore
 readings
 |> unpivot metric reading
-|> map |k, r| (r, r)     // expands each row: now a bag
-|> pivot metric reading  // rejected: pivot requires a singletons input
+|> flat_map |k, r| (r, r)  // expands each row: now a bag
+|> pivot metric reading    // rejected: pivot requires a singletons input
 ```
 
 The long form's key discipline is what normally supplies the `singletons` fact:
 one row per `(key, variant)`.  When several values genuinely share a
-`(key, variant)`, the fix is an aggregate upstream (a `group_map` reducing the
+`(key, variant)`, the fix is an aggregate upstream (a `map_bags` reducing the
 bag to one value) before the pivot.
 
 ## When the wide columns are not total

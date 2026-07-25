@@ -1,5 +1,5 @@
 // Accept: the demote-first round trip on a bag store (ADR 0024,
-// `ungroup_project`, no side condition): demoting `channel` and promoting
+// `promote_demote`, no side condition): demoting `channel` and promoting
 // it back restores the entity key, and the bag stays a bag.  Store and
 // view claim the same `attr*` shape, so the conformance check certifies
 // the restoration.
@@ -20,5 +20,5 @@ store readings : SensorLog {
   }
 }
 view demoted_and_back : SensorLog {
-  readings |> shrink_key channel |> extend_key channel
+  readings |> demote channel |> promote channel
 }

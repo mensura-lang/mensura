@@ -23,16 +23,16 @@ short pipeline:
 
 | bag-NRC + Σ generator         | operation                          |
 | ----------------------------- | ---------------------------------- |
-| empty, singleton, union `⊎`   | empty table, one-row table, `bind` |
-| functorial map, tuple, π      | `map`                              |
-| flatten `μ` (one level)       | `ungroup`                          |
-| nest / group-by               | `project`                          |
-| equality, conditional, filter | `map` with predicate body          |
+| empty, singleton, union `⊎`   | empty table, one-row table, `union` |
+| functorial flatMap, tuple, π      | `flatMap`                              |
+| flatten `μ` (one level)       | `promote`                          |
+| nest / group-by               | `demote`                          |
+| equality, conditional, filter | `flatMap` with predicate body          |
 | additive fold `Σ`             | `aggregate`                        |
-| product / join                | `leftJoin` / `innerJoin`           |
+| product / join                | `lookup` / `lookupTotal`           |
 
 `pivot` is then derived (nest-by-name then reshape) and so is anti-join /
-difference (`antiJoin` below = `leftJoin` then filter on the unmatched side),
+difference (`antiJoin` below = `lookup` then filter on the unmatched side),
 so nothing in the practical verb set is missing.  Each verb below is defined
 purely in terms of the core operations, with its split-safety machine-checked
 when it holds: the practical dataframe/SQL verb set lives inside the algebra,
@@ -50,36 +50,36 @@ variable {U G : Type _} {τ : G → Type}
 variable {V : Type}
 
 /-- `filter` (dplyr `filter`, relational selection): keep the rows satisfying a
-predicate.  A `map`, hence split-safe. -/
+predicate.  A `flatMap`, hence split-safe. -/
 def filterRows (p : K → Row H σ → Bool) : Table K H σ → Table K H σ :=
-  map (fun k f => if p k f then {f} else 0)
+  flatMap (fun k f => if p k f then {f} else 0)
 
 theorem filterRows_splitSafe (p : K → Row H σ → Bool) :
-    SplitSafe (filterRows (σ := σ) p) := map_splitSafe _
+    SplitSafe (filterRows (σ := σ) p) := flatMap_splitSafe _
 
 /-- `mutate` (dplyr `mutate`, relational extension): add a derived column.  A
-`map`, hence split-safe. -/
+`flatMap`, hence split-safe. -/
 def mutateCol (g : K → Row H σ → V) (T : Table K H σ) :
     Table K (H ⊕ Unit) (Sum.elim σ (fun _ => V)) :=
-  map (fun k f => {Row.elim f (fun _ => some (g k f))}) T
+  flatMap (fun k f => {Row.elim f (fun _ => some (g k f))}) T
 
 theorem mutateCol_splitSafe (g : K → Row H σ → V) :
     SplitSafe (mutateCol (σ := σ) g) := by
-  unfold mutateCol; exact map_splitSafe _
+  unfold mutateCol; exact flatMap_splitSafe _
 
 /-- `anti_join` / set difference against a fixed table: keep the left rows with
 *no* match on the right.  This is the operation that recovers difference, the one
 classical relational verb not among the positive generators -- and it is here, as
-a `map`, hence split-safe.  No separate primitive is needed. -/
+a `flatMap`, hence split-safe.  No separate primitive is needed. -/
 def antiJoin (key : K → U) (right : Table U G τ) (T : Table K H σ) : Table K H σ :=
-  map (fun k f => if (right.rows (key k)).card = 0 then {f} else 0) T
+  flatMap (fun k f => if (right.rows (key k)).card = 0 then {f} else 0) T
 
 theorem antiJoin_splitSafe (key : K → U) (right : Table U G τ) :
     SplitSafe (antiJoin (σ := σ) key right) := by
-  unfold antiJoin; exact map_splitSafe _
+  unfold antiJoin; exact flatMap_splitSafe _
 
 /-- `distinct` (dplyr `distinct`, duplicate elimination): dedup each key's bag.
-It is neither a per-row `map` nor a single-row `aggregate`, but it *is* a strict
+It is neither a per-row `flatMap` nor a single-row `aggregate`, but it *is* a strict
 `fiberMap`, so it is split-safe directly by `fiberMap_splitSafe` -- a concrete
 verb showing `fiberMap` earns its keep as the universal safe primitive. -/
 def distinct [DecidableEq (Row H σ)] (T : Table K H σ) : Table K H σ :=

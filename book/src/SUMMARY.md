@@ -10,7 +10,7 @@
 
 # Modelling data
 
-- [Units and indices](modelling/units.md)
+- [Units and keys](modelling/units.md)
 - [Scalar types](modelling/scalar-types.md)
 - [Stores and attributes](modelling/stores.md)
 - [Shapes](modelling/shapes.md)
@@ -23,7 +23,7 @@
 # Transforming data
 
 - [Views](transforming/views.md)
-- [Reshaping rows with map](transforming/map.md)
+- [Reshaping rows with flat_map](transforming/flat-map.md)
 - [Pivoting and unpivoting](transforming/pivot.md)
 
 ---

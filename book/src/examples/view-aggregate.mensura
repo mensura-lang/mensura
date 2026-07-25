@@ -8,5 +8,5 @@ store readings {
 view hottest {
   readings
   |> assume { complete }
-  |> group_map |k, g| (.max_kelvin = max g.kelvin)
+  |> map_bags |k, b| (.max_kelvin = max b.kelvin)
 }

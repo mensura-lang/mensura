@@ -12,5 +12,5 @@ store readings {
 }
 
 view promoted {
-  extend_key label readings
+  promote label readings
 }

@@ -18,10 +18,10 @@ compiler itself rather than a word list: only the parser knows that the first
 the rows are about.
 
 **Attributes are the data carried per row.**  The `attr` block lists the
-non-index attributes, each a name and a type.  A machine's commissioning date
+non-key attributes, each a name and a type.  A machine's commissioning date
 and its human-readable label travel with each observation of that machine.
 
-The `id: string` inside `unit Machine` is the unit's **index**: the field that
-identifies one machine from another.  Index fields become the store's primary
+The `id: string` inside `unit Machine` is the unit's **key**: the field that
+identifies one machine from another.  Key fields become the store's primary
 key when it is created.  The next chapter runs this program and shows what it
 produces.

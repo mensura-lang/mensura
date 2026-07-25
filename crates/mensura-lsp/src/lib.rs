@@ -16,9 +16,7 @@ mod line_index;
 use std::collections::HashMap;
 use std::error::Error;
 
-use lsp_server::{
-    Connection, ExtractError, Message, Notification, Request, Response, ResponseError,
-};
+use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
 use lsp_types::{
     InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
@@ -135,24 +133,18 @@ fn handle_request(
                     data: analyze(src, encoding).tokens,
                 })
             });
-            connection.sender.send(Message::Response(Response {
-                id,
-                result: Some(serde_json::to_value(result)?),
-                error: None,
-            }))?;
+            connection
+                .sender
+                .send(Message::Response(Response::new_ok(id, result)))?;
         }
         _ => {
             // Nothing else is advertised; answer with a protocol error rather
             // than leaving the request unanswered.
-            connection.sender.send(Message::Response(Response {
-                id: request.id,
-                result: None,
-                error: Some(ResponseError {
-                    code: -32601, // MethodNotFound
-                    message: format!("unhandled request: {}", request.method),
-                    data: None,
-                }),
-            }))?;
+            connection.sender.send(Message::Response(Response::new_err(
+                request.id,
+                -32601, // MethodNotFound
+                format!("unhandled request: {}", request.method),
+            )))?;
         }
     }
     Ok(())

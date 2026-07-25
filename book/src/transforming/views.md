@@ -13,10 +13,10 @@ decide what comes out.
 `readings` is the bag store of
 [Recurring observations](../modelling/stores.md#recurring-observations): each
 machine carries a bag of kelvin readings, keyed by the machine itself.  The
-`|>` pipe feeds it to `map`, which rewrites each reading into one carrying a
-`celsius` column.  The view's schema, its index, and its tracked properties are
-whatever that pipeline produces; a view has no attribute block because it
-declares nothing, it computes.
+`|>` pipe feeds it to `flat_map`, which rewrites each reading into one carrying
+a `celsius` column.  The view's schema, its key columns, and its tracked
+properties are whatever that pipeline produces; a view has no attribute block
+because it declares nothing, it computes.
 
 ## The body is a block
 
@@ -30,51 +30,51 @@ and using it more than once.
 ```
 
 Here `split` routes each row wholly to one side of a pair by a predicate over
-the key, and `bind` merges the pair back into one table.  Because the key is
+the key, and `union` merges the pair back into one table.  Because the key is
 the machine, the split routes whole machines: every reading of `m-01` lands on
 the same side.  That is the point of keeping the entity as the key (see
 [What the types track](../concepts/what-the-types-track.md)): the boundary a
 split draws coincides with the entities that must not leak across a
 train/test divide.  There is no special pipeline grammar: stages compose left
 to right, `let` names a table, and a tuple brings several tables together for
-a merge like `bind`.
+a merge like `union`.
 
-## Aggregating over a group
+## Aggregating over a bag
 
-In a bag store the groups are already there: the machine is the key, and its
-readings are the bag.  `group_map` folds each machine's bag to a single
+In a bag store the bags are already there: the machine is the key, and its
+readings are the bag.  `map_bags` folds each machine's bag to a single
 record.
 
 ```mensura
 {{#include ../examples/view-aggregate.mensura}}
 ```
 
-The stage with an obligation is the reducing `group_map`: a fold like `max`
+The stage with an obligation is the reducing `map_bags`: a fold like `max`
 over a bag with rows missing is silently wrong, so the reducer *consumes* a
-[completeness](../concepts/what-the-types-track.md) fact, "every group is
+[completeness](../concepts/what-the-types-track.md) fact, "every bag is
 whole," which must be established upstream.  A raw `store` does not carry it:
-unlike a `collect`, which is a complete census by construction, a store
+unlike a `registry`, which is a complete census by construction, a store
 accumulates observations that can have gaps (a machine offline for a stretch
 leaves holes in its bag), so completeness is a claim you make, not a given.
 `assume { complete }` makes that claim by fiat, locally and visibly; a
-`completeness_check { ... }` stage would prove it instead.  (A `group_map`
+`completeness_check { ... }` stage would prove it instead.  (A `map_bags`
 over a default store's own key needs no such discharge: with at most one row
-per key, a present group is already whole.)
+per key, a present bag is already whole.)
 
 ## Coarsening a composite key
 
-Time sometimes belongs in the index: keying a history by `(machine, ts)` is
+Time sometimes belongs in the key: keying a history by `(machine, ts)` is
 how a program declares that validation happens at the timestamp level.  Such a
-store is a default store again, one row per `(machine, ts)`, and grouping per
-machine now means *coarsening* the key first: `shrink_key ts` drops `ts` out
+store is a default store again, one row per `(machine, ts)`, and folding per
+machine now means *coarsening* the key first: `demote ts` drops `ts` out
 of the key, so rows that differed only in their timestamp share the key
-`machine` and form one group.
+`machine` and form one bag.
 
 ```mensura
 {{#include ../examples/view-coarsen.mensura}}
 ```
 
-`shrink_key` itself only reindexes: its result is an honest bag of whatever
+`demote` itself only rekeys: its result is an honest bag of whatever
 rows are present, so it demands nothing, and it *propagates* a completeness
 fact from the finer key to the coarser one, so the `assume` may equally sit
 before it.  The obligation is the reducer's, exactly as above.  This view
@@ -87,9 +87,9 @@ A view carries the same content and qualifiers as any table (see [What the
 types track](../concepts/what-the-types-track.md)), each derived from the
 pipeline, not declared:
 
-- **Content**: the index and non-index columns the pipeline yields.
+- **Content**: the key and non-key columns the pipeline yields.
 - **Cardinality**: `singletons` (at most one row per key) or `bag`.  A view that
-  ends in a summarizing `group_map` is `singletons`; one that ends in a
+  ends in a summarizing `map_bags` is `singletons`; one that ends in a
   bag-shaped stage is `bag`.  A view declares no cardinality the way a store
   does: the pipeline decides, and a derived table may genuinely be a bag.
 - **Totality**: whether each value is known or may be missing.
@@ -106,11 +106,11 @@ run against the computed schema rather than a declared one.
 ```
 
 This is the `celsius` view from the top of the page with a `: Celsius` shape
-claim added.  Its `map` stage rewrites each reading row for row, so the output
-is still a bag of `celsius` values per machine: the shape says so with an
+claim added.  Its `flat_map` stage rewrites each reading row for row, so the
+output is still a bag of `celsius` values per machine: the shape says so with an
 `attr*` block, and the conformance check confirms both the column and the
 cardinality.  A shape written with plain `attr` blocks demands `singletons`
-instead; `hottest` above could claim one, since its reducing `group_map`
+instead; `hottest` above could claim one, since its reducing `map_bags`
 leaves one row per machine.
 
 ## Creating a view
@@ -121,5 +121,5 @@ queried like any other.  A view is recomputed from its sources on each run, so
 re-running an unchanged program leaves the same rows.
 
 The chapters that follow look at the two reshaping operations most worth seeing
-on their own: [`map`](map.md), which rewrites, drops, and expands rows, and
-[`pivot`/`unpivot`](pivot.md), which move between long and wide form.
+on their own: [`flat_map`](flat-map.md), which rewrites, drops, and expands
+rows, and [`pivot`/`unpivot`](pivot.md), which move between long and wide form.

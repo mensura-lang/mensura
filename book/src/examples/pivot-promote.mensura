@@ -8,5 +8,5 @@ store obs {
   attr { reading: real }
 }
 view wide {
-  obs |> extend_key metric |> pivot metric reading
+  obs |> promote metric |> pivot metric reading
 }

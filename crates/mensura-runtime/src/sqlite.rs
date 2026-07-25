@@ -71,22 +71,22 @@ impl StorageBackend for SqliteBackend {
 
     fn scan(&self, table: &TableShape) -> Result<Vec<Row>, StorageError> {
         let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
-        let mut index: Vec<String> = table
+        let mut key: Vec<String> = table
             .columns
             .iter()
-            .filter(|c| c.role == ColumnRole::Index)
+            .filter(|c| c.role == ColumnRole::Key)
             .map(|c| quote_ident(&c.name))
             .collect();
         // An unkeyed table (a `bag` store or view, ADR 0022) can hold several
         // rows per key; the surrogate rowid breaks the tie so a scan stays
         // deterministic even though a bag carries no row order.
         if !table.keyed {
-            index.push("_rowid_".to_string());
+            key.push("_rowid_".to_string());
         }
-        let order = if index.is_empty() {
+        let order = if key.is_empty() {
             String::new()
         } else {
-            format!(" ORDER BY {}", index.join(", "))
+            format!(" ORDER BY {}", key.join(", "))
         };
         let sql = format!(
             "SELECT {} FROM {}{}",
@@ -172,7 +172,7 @@ fn encode(value: &Value) -> rusqlite::types::Value {
 
 /// Build the `CREATE TABLE IF NOT EXISTS` statement for a table shape.  A
 /// keyed shape (a `singletons` store or view) gets the composite primary
-/// key over its index columns; an unkeyed one (a `bag` store or view,
+/// key over its key columns; an unkeyed one (a `bag` store or view,
 /// ADR 0022, `docs/toolkit/04-processing-layer.md`) gets none.
 pub fn create_table_sql(shape: &TableShape) -> String {
     let mut lines: Vec<String> = shape
@@ -192,14 +192,14 @@ pub fn create_table_sql(shape: &TableShape) -> String {
         })
         .collect();
 
-    let index: Vec<String> = shape
+    let key: Vec<String> = shape
         .columns
         .iter()
-        .filter(|c| c.role == ColumnRole::Index)
+        .filter(|c| c.role == ColumnRole::Key)
         .map(|c| quote_ident(&c.name))
         .collect();
-    if shape.keyed && !index.is_empty() {
-        lines.push(format!("  PRIMARY KEY ({})", index.join(", ")));
+    if shape.keyed && !key.is_empty() {
+        lines.push(format!("  PRIMARY KEY ({})", key.join(", ")));
     }
 
     format!(
@@ -209,24 +209,24 @@ pub fn create_table_sql(shape: &TableShape) -> String {
     )
 }
 
-/// Build the non-unique covering index over an unkeyed store's index columns
+/// Build the non-unique covering index over an unkeyed store's key columns
 /// (ADR 0022): a `bag` store keeps its key lookup fast without a PRIMARY KEY.
-/// `None` when the shape has no index columns to cover.
+/// `None` when the shape has no key columns to cover.
 pub fn create_key_index_sql(shape: &TableShape) -> Option<String> {
-    let index: Vec<String> = shape
+    let key: Vec<String> = shape
         .columns
         .iter()
-        .filter(|c| c.role == ColumnRole::Index)
+        .filter(|c| c.role == ColumnRole::Key)
         .map(|c| quote_ident(&c.name))
         .collect();
-    if index.is_empty() {
+    if key.is_empty() {
         return None;
     }
     Some(format!(
         "CREATE INDEX IF NOT EXISTS {} ON {} ({});",
         quote_ident(&format!("{}_key", shape.name)),
         quote_ident(&shape.name),
-        index.join(", ")
+        key.join(", ")
     ))
 }
 
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn unkeyed_shape_has_no_primary_key() {
         // A `bag` view materializes without a primary key
-        // (`docs/toolkit/04-processing-layer.md`); its index columns stay
+        // (`docs/toolkit/04-processing-layer.md`); its key columns stay
         // `NOT NULL`.
         let mut shape = schema(PERSONS, "persons").shape();
         shape.keyed = false;
@@ -333,7 +333,7 @@ mod tests {
     fn bag_store_has_no_primary_key_and_a_covering_index() {
         // ADR 0022: a `bag` store maps to a rowid table (no PRIMARY KEY, the
         // implicit rowid is the surrogate row identifier) plus a non-unique
-        // covering index over the index columns.
+        // covering index over the key columns.
         let s = schema(BAG_READINGS, "readings");
         let sql = create_table_sql(&s.shape());
         assert!(!sql.contains("PRIMARY KEY"), "{sql}");
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_decodes_typed_rows_in_index_order() {
+    fn scan_decodes_typed_rows_in_key_order() {
         let src = r#"
             unit Machine { id: string }
             enum Status { "ok" "bad" }

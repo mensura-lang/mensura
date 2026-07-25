@@ -35,7 +35,7 @@ milestones below.
   - `mensura repl`: interactive REPL.
   - `mensura lsp`: language server (LSP over stdio).
   - `mensura serve <file>`: run a program as a web service (store and
-    `collect` endpoints).
+    `registry` endpoints).
   - `mensura migrate <from> <to>`: generate a migration plan between two schema
     revisions.
 - **Specs first.**  Every language- or tooling-level feature lands as a design
@@ -77,9 +77,9 @@ mensura/
   (ADR 0004).
 - **Calculus.**  The data-handling algebra is mechanized in Lean 4 under
   `formal/`: split-safety and its composition, completeness, the split-safe
-  `pivotAttr` with its reversibility, and the `bind` disjointness lemma.
+  `pivotAttr` with its reversibility, and the `union` disjointness lemma.
 - **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
-  -> SQLite` is built for the "basic" subset: scalar-index units, stores with
+  -> SQLite` is built for the "basic" subset: scalar-key units, stores with
   primitive and `enum` attributes, shapes, and named enums.  The expression
   sublanguage and the full Tier A / Tier B pipeline algebra (the eight
   primitives, with cardinality, completeness, and tag-based disjointness) are
@@ -89,7 +89,7 @@ mensura/
   types are M3.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): physical units and precision; measure semantics (additivity);
-  devices and `collect`; ingestion endpoints; streaming windows and refresh; ML
+  devices and `registry`; ingestion endpoints; streaming windows and refresh; ML
   signatures and validation; the serving/transport integration; and the
   toolkit docs for the CLI, diagnostics, and LSP.
 
@@ -117,8 +117,8 @@ follow-up.  The companion LL(1) grammar proof remains the open M0 item.
   productions.  The freeze is contingent on this proof.
 - The `Table<Qs, C>` type and the qualifier framework (ADR 0004): the
   propagation combinators and the constraint-hook interface.
-- Typing rules for the pipeline primitives (`map`, `group_map`,
-  `extend_key`/`shrink_key`, `left_join`/`inner_join`, `split`/`bind`,
+- Typing rules for the pipeline primitives (`flat_map`, `map_bags`,
+  `promote`/`demote`, `lookup`/`lookup_total`, `split`/`union`,
   `unpivot`/`pivot`), with their cardinality and completeness effects.
 - The disjointness constraint hook over the lineage qualifier
   (`docs/language/08-lineage.md`).
@@ -156,8 +156,8 @@ Output: `mensura run` materializes a Tier A view from stores, end to end
 
 - `mensura-runtime`: the DBSP-style processing layer over the SQLite storage
   backend (`docs/toolkit/00-storage-backend.md`).
-- Implement the Tier A primitives at runtime (`map`/`filter`/`group_map`/
-  `left_join`/...), reading from and writing to stores.
+- Implement the Tier A primitives at runtime (`flat_map`/`filter`/`map_bags`/
+  `lookup`/...), reading from and writing to stores.
 - Disjointness and completeness proven at compile time, then trusted at
   runtime.
 
@@ -168,21 +168,29 @@ This is the "first working language" milestone; narrow on purpose.
 Output: dimensional quantities are first-class, and unit mismatch is a compile
 error.
 
-- Design docs first: physical units and precision; measure semantics.
-- Dimensional unit algebra: SI base units and derived units (for example
-  `length / time^2`), with unit checking and conversion.
-- `NxE` precision literals (integer significand, signed exponent) carrying
-  significance.
+- Design docs first (ADR 0026 dimensions, 0027 modules, 0028 the `si` stdlib;
+  the language doc `11-physical-units.md` on top).
+- Dimensions as the free abelian group over the seven SI base dimensions,
+  formally backed (ADR 0026); a dimensioned type is `D[real]`; unit checking
+  and automatic (linear) conversion, with affine units (Celsius) handled at
+  ingestion.
+- Units are ordinary dimensioned constants (`9.8 * m / s^2`), shipped by a
+  small module system (ADR 0027: top-level const bindings + imports) and a
+  bundled `si` standard library generated from the mechanized group (ADR 0028).
+  The third-party package layer (manifest, hashes, `pin`) is provisional and
+  deferred until it has a consumer.
+- Precision (the `NxE` significand/exponent idea) is deferred to a future
+  library extension of `real`, not M3 core.
 - Measure-semantics annotations (`@additive`, `@semiadditive`, `@foldable`)
-  that gate which window rollups are valid.
+  that gate which window rollups are valid: a later doc after units land.
 
 ## M4 - Devices, collect, and ingestion
 
 Output: device readings land in stores under a typed ingestion path.
 
-- Design docs first: devices and `collect`; ingestion (the `insert`/`update`/
+- Design docs first: devices and `registry`; ingestion (the `insert`/`update`/
   `set`/`where`/`case` forms).
-- `device` and `collect` declarations; `collect` is complete by mechanism
+- `device` and `registry` declarations; `registry` is complete by mechanism
   (overview pillar 7).
 - Store ingestion via the CLI or as a library; the over-the-wire transport is
   wired in M7.
@@ -231,7 +239,7 @@ unified `auth {}`, RBAC plus bounded ABAC) and
 wire-agnostic; deploy config owns transport selection).  Naming and wire
 translation are in `docs/language/05-naming-and-casing.md`.
 
-- Auto-generated REST and MQTT endpoints for stores, `collect`, and views.
+- Auto-generated REST and MQTT endpoints for stores, `registry`, and views.
 - Device identity, RBAC, and compile-time permission-flow analysis.
 - Change-control annotations (`@audited`, `@versioned`, `@auto`,
   `@allowcreate`).
@@ -291,5 +299,5 @@ them correctly, and every `docs/examples/` file compiles.
    other `std` qualifiers stay inside a decidable fragment is open (ADR 0004).
 
 The earlier open question on split-invariance for binary operations is closed
-by the Lean formalization: `bind` is total and split-safe, and the Tier A / Tier
+by the Lean formalization: `union` is total and split-safe, and the Tier A / Tier
 B boundary is proved.

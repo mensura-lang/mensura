@@ -7,5 +7,5 @@ store readings {
 }
 view roundtrip {
   let parts = readings |> split |k| k.id == "m-01";
-  parts |> bind
+  parts |> union
 }

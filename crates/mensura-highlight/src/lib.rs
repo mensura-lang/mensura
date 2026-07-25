@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn pipeline_operations_are_functions() {
         // Operation heads on the right of `|>` color as builtin functions.
-        let ks = kinds("view v { readings |> extend_key machine }");
+        let ks = kinds("view v { readings |> promote machine }");
         assert!(ks.contains(&HighlightKind::Function));
     }
 

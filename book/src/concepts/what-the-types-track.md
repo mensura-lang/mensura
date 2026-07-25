@@ -6,7 +6,7 @@ it is enough to catch a misspelled column or a string added to an integer.
 
 Mensura tracks the schema too, but the schema is the least interesting part of
 a table's type.  A Mensura table is the indexed table of the design notes: a
-triple `(K, H, c)` of index (key) columns `K`, non-index columns `H`, and a
+triple `(K, H, c)` of key columns `K`, non-key columns `H`, and a
 cell function `c`.  Rows are *entities*, identified by their key.  On top of
 that structure the type carries facts about the *data itself*, facts a schema
 cannot express and that other tools therefore leave to runtime, to convention,
@@ -17,18 +17,19 @@ Three of those facts do the heavy lifting for correctness: **cardinality**,
 mathematically and, more to the point, about the mistakes they make
 *impossible to write* rather than merely possible to debug.
 
-> The pipeline algebra of this chapter type-checks and runs today: `map`,
-> `group_map`, `extend_key`/`shrink_key`, the joins, `split`/`bind`, and
+> The pipeline algebra of this chapter type-checks and runs today: `flat_map`,
+> `map_bags`, `promote`/`demote`, the lookups, `split`/`union`, and
 > `pivot`/`unpivot` all compile with `mensura check`, and all but
-> `shrink_key` (not yet executable) materialize with `mensura run` (see the
-> [Transforming data](../transforming/views.md) chapters).  Two things remain design previews and are marked as such below:
+> `demote` (not yet executable) materialize with `mensura run` (see the
+> [Transforming data](../transforming/views.md) chapters).  Two things remain
+> design previews and are marked as such below:
 > the learning operations `fit`/`evaluate` that *consume* disjointness, and the
 > richer completeness witnesses.  The [What's next](../whats-next.md) page tracks
 > the frontier.  The full specifications live in
 > `docs/language/07-pipelines.md` and `docs/language/08-lineage.md`, each backed
 > by a machine-checked proof in `formal/`.
 
-The operations used below (`map`, `group_map`, `shrink_key`, `split`, `bind`,
+The operations used below (`flat_map`, `map_bags`, `demote`, `split`, `union`,
 `pivot`, and the rest) are introduced one line each in
 [The kernel operations](the-kernel.md); this chapter assumes you have met them
 there.
@@ -58,8 +59,8 @@ type, and it enters at the source: a plain store holds at most one row per key
 store declared with `attr*` is a *bag store*, holding many observations per
 entity (see [Recurring observations](../modelling/stores.md#recurring-observations)).
 From there every operation transforms it predictably: coarsening a key with
-`shrink_key` makes rows that differed only in the dropped component share a key,
-so cardinality *grows*; an aggregating `group_map` reduces a group back to a
+`demote` makes rows that differed only in the dropped component share a key,
+so cardinality *grows*; an aggregating `map_bags` reduces a bag back to a
 single record, so cardinality drops to `1`.
 
 Cardinality is what makes scalar reasoning legal.  A scalar operator (`a - b`, a
@@ -84,34 +85,34 @@ The duplicate that would have exploded at runtime cannot reach runtime.
 ## Completeness: is the partition whole
 
 **Completeness** is a unary fact about one table: writing `complete_over(k)`,
-every group over the key `k` has *all* of its rows present.  It is not about the
-schema and not about any single value; it is about whether a partition is fully
+every key's bag has *all* of its rows present.  It is not about the schema and
+not about any single value; it is about whether a partition is fully
 materialized.
 
-Completeness is what licenses *reducing* a group.  A fold (`sum`, `max`,
-`count`) over a group equals the true value only if none of the group's rows
-are missing, so it is the reducing `group_map` that *consumes* the fact.
-Coarsening the key with `shrink_key` demands nothing by itself: a bag of the
+Completeness is what licenses *reducing* a bag.  A fold (`sum`, `max`,
+`count`) over a bag equals the true value only if none of the bag's rows
+are missing, so it is the reducing `map_bags` that *consumes* the fact.
+Coarsening the key with `demote` demands nothing by itself: a bag of the
 rows present is an honest table, and the operation *propagates* the fact from
 the finer key to the coarser one.  (`pivot` also coarsens the key and needs no
 license either: an absent row simply becomes a missing cell, and a related
 fact, `exhaustive`, decides whether the spread columns come out total.)  So
-completeness is *established* upstream, *propagated* by the reindex, and
+completeness is *established* upstream, *propagated* by the rekey, and
 *consumed* by the reduction:
 
 ```mensura,ignore
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }  // establish
-|> shrink_key course                                 // propagate to the coarser key
-|> group_map |k, g| (.total_credits = sum g.credits) // consume
+|> demote course                                    // propagate to the coarser key
+|> map_bags |k, b| (.total_credits = sum b.credits) // consume
 ```
 
 One case discharges for free: a reduction over a default store's own key
-needs no fact at all, because at most one row per key means a present group
+needs no fact at all, because at most one row per key means a present bag
 is already whole; only a coarsened key, or a bag store, can hold a partial
-group for a fold to be silently wrong on.
+bag for a fold to be silently wrong on.
 
-A table earns the fact in one of three ways: by **mechanism** (a `collect`
+A table earns the fact in one of three ways: by **mechanism** (a `registry`
 source is complete by construction), by a **check** (the `completeness_check`
 stage above), or by an **annotation** (`@complete_over(col)` on a source store).
 When none of these apply, `assume { ... }` admits the operation by fiat, locally
@@ -162,13 +163,13 @@ this demand that their two tables be disjoint.
 
 The fact survives a whole pipeline because every split-invariant (Tier A)
 operation preserves it, and such operations compose: a disjointness fact
-established by `split` is carried, intact, through `map`, `filter`, the joins,
-and `group_map` to the point where `evaluate` consumes it.  Two operations lose
-it on purpose: `bind` unions two regions (so a merged table is disjoint from a
-third only if *both* halves were), and the key-changing operations `shrink_key`
-and `pivot` drop it, because a region described over the old key no longer
-denotes the same entities.  Past such a point the fact must be re-established
-with a check or relaxed with `assume`.
+established by `split` is carried, intact, through `flat_map`, `filter`, the
+lookups, and `map_bags` to the point where `evaluate` consumes it.  Two
+operations lose it on purpose: `union` unions two regions (so a merged table is
+disjoint from a third only if *both* halves were), and the key-changing
+operations `demote` and `pivot` drop it, because a region described over the old
+key no longer denotes the same entities.  Past such a point the fact must be
+re-established with a check or relaxed with `assume`.
 
 **What other systems cannot do.**  Leakage is the canonical, expensive, and
 *silent* failure of applied machine learning.  In scikit-learn with pandas you
@@ -184,7 +185,7 @@ before the model is ever fit.
 ## The common thread
 
 None of these three is an annotation you remember to add.  Each is **derived
-from how data enters** (a `store` or `collect` mechanism fixes it), **transformed
+from how data enters** (a `store` or `registry` mechanism fixes it), **transformed
 by every operation** (each primitive states how it moves the fact), and
 **demanded exactly where unsoundness would otherwise hide** (a reshape, a
 rollup, an evaluation).  Where the fact cannot be proved, you do not lose it

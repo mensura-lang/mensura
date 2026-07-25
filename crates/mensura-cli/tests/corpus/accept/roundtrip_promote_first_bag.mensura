@@ -22,5 +22,5 @@ store readings : SensorLog {
   }
 }
 view promoted_and_back : SensorLog {
-  readings |> extend_key ts |> shrink_key ts
+  readings |> promote ts |> demote ts
 }

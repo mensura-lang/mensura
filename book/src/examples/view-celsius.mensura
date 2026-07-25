@@ -6,5 +6,5 @@ store readings {
   attr* { kelvin: real }
 }
 view celsius {
-  readings |> map |k, r| (.celsius = r.kelvin - 273.15)
+  readings |> flat_map |k, r| (.celsius = r.kelvin - 273.15)
 }

@@ -8,7 +8,7 @@ store history {
 }
 view hottest {
   history
-  |> shrink_key ts
+  |> demote ts
   |> assume { complete }
-  |> group_map |k, g| (.max_kelvin = max g.kelvin)
+  |> map_bags |k, b| (.max_kelvin = max b.kelvin)
 }

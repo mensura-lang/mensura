@@ -3,5 +3,5 @@
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } attr { temperature: real } }
 view bad {
-  readings |> extend_key machine |> pivot machine temperature
+  readings |> promote machine |> pivot machine temperature
 }

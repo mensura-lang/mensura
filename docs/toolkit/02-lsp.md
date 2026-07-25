@@ -7,7 +7,7 @@ features that make `.mensura` files legible in an editor today, **semantic
 token highlighting** and **diagnostics**.  Hover, completion, goto-definition,
 and find-references are forward references (see the end of this document).
 
-Scope follows the rest of the toolchain: units and scalar-index stores with
+Scope follows the rest of the toolchain: units and scalar-key stores with
 primitive attributes (`docs/language/01-units.md`,
 `docs/language/02-stores.md`), plus `view` bodies and the pipeline sublanguage
 (`docs/language/10-views.md`, `docs/language/07-pipelines.md`).  Compound
@@ -94,7 +94,7 @@ Token types (the legend advertised at `initialize`):
 | Type         | Source                                                |
 |--------------|-------------------------------------------------------|
 | `keyword`    | Contextual keywords: declaration headers (`unit`, `store`, `shape`, `attr`, `domain`, `enum`, `view`), the conditional (`if`, `then`, `else`), the predicate operators (`or`, `and`, `not`, `is`, `known`, `missing`), and the statement keywords (`let`, `assert`). |
-| `function`   | Pipeline operations (`map`, `group_map`, `split`, `bind`, `left_join`, `inner_join`, `extend_key`, `shrink_key`, `unpivot`, `pivot`, `assume`, `completeness_check`), carried with the `defaultLibrary` modifier. |
+| `function`   | Pipeline operations (`flat_map`, `map_bags`, `split`, `union`, `lookup`, `lookup_total`, `promote`, `demote`, `unpivot`, `pivot`, `assume`, `completeness_check`), carried with the `defaultLibrary` modifier. |
 | `type`       | Declaration and reference names of units and shapes, and conformance targets. |
 | `property`   | Field and attribute names, including the literal parts of a name template. |
 | `parameter`  | Shape parameters and `{param}` holes inside a name template. |

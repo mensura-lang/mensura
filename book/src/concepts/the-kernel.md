@@ -21,7 +21,7 @@ Three pieces of glue thread operations together:
 - **`let`**, to name an intermediate table and reuse it (forking a pipeline is
   binding a table once and using it twice).
 - **tuples**, to bring several tables together for an operation that merges
-  them: `(train, test) |> bind`.
+  them: `(train, test) |> union`.
 
 ```mensura
 unit Reading { ts: int }
@@ -29,8 +29,8 @@ store readings { unit { Reading } attr { kelvin:real machine:string } }
 
 view celsius {
   readings
-  |> extend_key machine
-  |> map |k, r| (.celsius = r.kelvin - 273.15)
+  |> promote machine
+  |> flat_map |k, r| (.celsius = r.kelvin - 273.15)
 }
 ```
 
@@ -40,24 +40,24 @@ Each is a pure function from a table to a table.
 
 | operation | what it does |
 | --- | --- |
-| `map` | per-row transform returning a row multiset: rewrite, drop, or expand each row (so filtering is `map` with `if c then r else ()`) |
-| `group_map` | per-key transform over a whole group (an aggregate, or a window) |
-| `extend_key` | move a non-index column *into* the key (refine the index) |
-| `shrink_key` | move a column *out* of the key (coarsen the index) |
-| `left_join` / `inner_join` | join the table against a fixed lookup table |
+| `flat_map` | per-row transform returning a row multiset: rewrite, drop, or expand each row (so filtering is `flat_map` with `if c then r else ()`) |
+| `map_bags` | per-key transform over the whole bag (an aggregate, or a window) |
+| `promote` | move a non-key column *into* the key (refine the key) |
+| `demote` | move a column *out* of the key (coarsen the key) |
+| `lookup` / `lookup_total` | join the table against a fixed lookup table |
 | `split` | partition a table by a predicate over the key, into two halves |
-| `bind` | merge two tables of the same schema into one |
+| `union` | merge two tables of the same schema into one |
 | `unpivot` | reshape wide to long: turn value columns into rows |
 | `pivot` | reshape long to wide: gather rows into one wide row per key |
 
 A few relationships are worth seeing now, because the next chapter turns on
 them:
 
-- `extend_key` and `shrink_key` are true inverses: one makes the key finer,
+- `promote` and `demote` are true inverses: one makes the key finer,
   the other coarser, and promoting a column then demoting it (in either
   order) is the identity.
-- `split` and `bind` are partner operations: `split` cuts a table into two
-  halves that share no key, and `bind` is what puts two tables back together.
+- `split` and `union` are partner operations: `split` cuts a table into two
+  halves that share no key, and `union` is what puts two tables back together.
 - `unpivot` and `pivot` are inverses: long form and wide form of the same data.
 
 That is the whole kernel.  Everything else (the named forms `filter`, `mutate`,

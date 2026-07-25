@@ -178,7 +178,7 @@ is a name.  A shape with no parameters omits the list entirely
 ## Name interpolation
 
 A backtick name is a uniform attribute-name form.  *Any* attribute
-name (a unit index field, a store attribute, or a shape attribute) may
+name (a unit key field, a store attribute, or a shape attribute) may
 be written backtick-quoted, and `` `a` `` denotes the same attribute as
 the bare `a`.  Backticks add one capability: inside them, `{param}`
 interpolates a `string` parameter.
@@ -454,4 +454,4 @@ without modification.
   (`shape Any {}`) is now expressible and any store conforms to it;
   whether that is the right spelling for "works on any table" is open.
 - **Attribute identity** (cross-shape, cross-store).  Still open;
-  important for `bind` and `join`.
+  important for `union` and `join`.

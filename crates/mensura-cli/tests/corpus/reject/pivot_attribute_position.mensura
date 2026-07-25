@@ -1,5 +1,5 @@
 // Reject (resolve): `pivot` spreads an index column; a non-index enum must
-// be promoted with `extend_key` first (the hint the diagnostic carries).
+// be promoted with `promote` first (the hint the diagnostic carries).
 enum Metric { "lo" "hi" }
 unit Obs { ts: int }
 store obs { unit { Obs } attr { metric: Metric } attr { reading: real } }

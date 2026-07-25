@@ -9,8 +9,8 @@ Canada: Leanpub. doi: 10.5281/zenodo.14498010. url: https://leanpub.com/dsp.
 
 `unpivot` and `unpivotDrop` are split-safe; `pivot` is *not even*
 split-invariant (a name-separating split breaks it), which refines the book:
-its pivot split-invariance relies on cell-wise-merge bind over ragged cells,
-which this total-row / union-bind model deliberately does not have.  The
+its pivot split-invariance relies on cell-wise-merge union over ragged cells,
+which this total-row / union-union model deliberately does not have.  The
 inverse results: `pivot_unpivot` (reify variant, functional tables),
 and the mutually inverse drop pair `pivot_unpivotDrop` / `unpivotDrop_pivot`
 on functional minimal tables, the long-to-wide-to-long direction carrying no
@@ -39,8 +39,8 @@ noncomputable def cellOf (m : Multiset (Row Unit (fun _ => V))) : Cell V :=
   simp [cellOf, Multiset.toList_singleton]
 
 /-- def:pivot-w2l (unpivot, wide-to-long).  Spread each name-column `n` of a wide
-row into its own output key `(k, n)`, carrying that column's value.  A map-like
-operation, hence a `BindHom` and `SplitSafe` -- the safe reshape direction. -/
+row into its own output key `(k, n)`, carrying that column's value.  A flatMap-like
+operation, hence a `UnionHom` and `SplitSafe` -- the safe reshape direction. -/
 def unpivot (T : Table K N (fun _ => V)) : Table (K × N) Unit (fun _ => V) :=
   ⟨fun p => (T.rows p.1).map (fun f => fun _ => f p.2)⟩
 
@@ -60,12 +60,12 @@ def Functional {H : Type _} {σ : H → Type} (T : Table K H σ) : Prop :=
 
 /-! ### Reshape: unpivot is split-safe, pivot is not, and they are inverses -/
 
-/-- `unpivot` is a bind-homomorphism (it is map-like over the input key). -/
-theorem unpivot_bindHom : BindHom (unpivot (K := K) (N := N) (V := V)) := by
+/-- `unpivot` is a union-homomorphism (it is flatMap-like over the input key). -/
+theorem unpivot_unionHom : UnionHom (unpivot (K := K) (N := N) (V := V)) := by
   intro T₀ T₁
   apply Table.ext_rows
   rintro ⟨k, n⟩
-  simp only [unpivot, bind]
+  simp only [unpivot, union]
   exact Multiset.map_add _ _ _
 
 theorem unpivot_preservesDisjoint :
@@ -78,13 +78,13 @@ theorem unpivot_preservesDisjoint :
 
 /-- Hence `unpivot` is split-safe -- the safe reshape direction. -/
 theorem unpivot_splitSafe : SplitSafe (unpivot (K := K) (N := N) (V := V)) :=
-  ⟨unpivot_preservesDisjoint, unpivot_bindHom.splitInvariant⟩
+  ⟨unpivot_preservesDisjoint, unpivot_unionHom.splitInvariant⟩
 
 /-- `pivot` is *not* split-invariant: a split that separates the names of one key
-yields two complementary partial rows that union-`bind` keeps apart (card 1 on
+yields two complementary partial rows that union-`union` keeps apart (card 1 on
 the left, card 2 on the right).  This refines the book, whose pivot
-split-invariance relies on cell-wise-merge bind over ragged cells -- which this
-total-row / union-bind model deliberately does not have. -/
+split-invariance relies on cell-wise-merge union over ragged cells -- which this
+total-row / union-union model deliberately does not have. -/
 theorem pivot_not_splitInvariant :
     ¬ SplitInvariant (pivot (K := Unit) (N := Bool) (V := Unit)) := by
   intro h
@@ -93,7 +93,7 @@ theorem pivot_not_splitInvariant :
     ⟨fun p => if p.2 then {fun _ => none} else 0⟩
     (by intro p; cases hp : p.2 <;> simp [hp])
   apply_fun (fun U => (U.rows ()).card) at hd
-  simp [pivot, bind, Bool.forall_bool] at hd
+  simp [pivot, union, Bool.forall_bool] at hd
 
 /-- def:pivot inverts def:pivot-w2l on functional tables (the "card constant"
 case): pivoting an unpivoted wide table recovers it.  This reversibility is the
@@ -133,7 +133,7 @@ completeness or saturation side condition in either direction. -/
 `n` of a wide row into its own output key `(k, n)`, emitting a long row
 only when the cell is present.  The long value column is total by
 construction.  Being `Multiset.bind`-shaped per output key over a single
-input key (compare `ungroup`), it is a bind-homomorphism, hence
+input key (compare `promote`), it is a union-homomorphism, hence
 split-safe. -/
 def unpivotDrop (T : Table K N (fun _ => V)) : Table (K × N) Unit (fun _ => V) :=
   ⟨fun p => (T.rows p.1).bind (fun f =>
@@ -141,13 +141,13 @@ def unpivotDrop (T : Table K N (fun _ => V)) : Table (K × N) Unit (fun _ => V) 
     | some v => {fun _ => some v}
     | none => 0)⟩
 
-/-- `unpivotDrop` is a bind-homomorphism: the drop is decided per input
-row, so it distributes over every bind. -/
-theorem unpivotDrop_bindHom : BindHom (unpivotDrop (K := K) (N := N) (V := V)) := by
+/-- `unpivotDrop` is a union-homomorphism: the drop is decided per input
+row, so it distributes over every union. -/
+theorem unpivotDrop_unionHom : UnionHom (unpivotDrop (K := K) (N := N) (V := V)) := by
   intro T₀ T₁
   apply Table.ext_rows
   rintro ⟨k, n⟩
-  simp only [unpivotDrop, bind]
+  simp only [unpivotDrop, union]
   exact Multiset.add_bind _ _ _
 
 theorem unpivotDrop_preservesDisjoint :
@@ -161,7 +161,7 @@ theorem unpivotDrop_preservesDisjoint :
 /-- `unpivotDrop` is split-safe, like the reify variant: dropping a missing
 cell is a per-row decision. -/
 theorem unpivotDrop_splitSafe : SplitSafe (unpivotDrop (K := K) (N := N) (V := V)) :=
-  ⟨unpivotDrop_preservesDisjoint, unpivotDrop_bindHom.splitInvariant⟩
+  ⟨unpivotDrop_preservesDisjoint, unpivotDrop_unionHom.splitInvariant⟩
 
 /-- `pivot` inverts `unpivotDrop` on functional, **minimal** wide tables.
 Minimality is load-bearing where it was not for the reify variant

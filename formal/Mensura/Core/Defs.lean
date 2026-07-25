@@ -1,6 +1,6 @@
 /-
 Indexed tables over multisets, with per-column typed domains: the core data
-structure of the algebra, `split`/`bind`, and the three safety properties.
+structure of the algebra, `split`/`union`, and the three safety properties.
 
 Main Source:  Chapter 5, section "Formal structured data" and "Split-invariant
 operations", of F. A. N. Verri (2026). Data Science Project: An Inductive Learning
@@ -27,16 +27,16 @@ tuples carry over:
   column values are bound together structurally; the chapter's positional
   alignment invariant is unrepresentable.
 
-* **`bind` is a real commutative monoid.**  Multiset union is commutative,
+* **`union` is a real commutative monoid.**  Multiset union is commutative,
   associative, total, and bias-free, so the row-wise operations are
-  bind-homomorphisms unconditionally, hence split-invariant for free.
+  union-homomorphisms unconditionally, hence split-invariant for free.
 
 `card(r)` is the multiset's cardinality; `card(r) = 0` is an absent row.
 
 Three properties are formalized, in increasing/orthogonal strength:
-* `SplitInvariant` -- distributes over the bind of *disjoint* tables (the
+* `SplitInvariant` -- distributes over the union of *disjoint* tables (the
   chapter's def:split-invariance, the per-operation guarantee);
-* `BindHom` -- distributes over *every* bind (strictly stronger);
+* `UnionHom` -- distributes over *every* union (strictly stronger);
 * `SplitSafe` -- split-invariant *and* disjointness-preserving, the class
   closed under composition, so an entire *pipeline* stays split-invariant.
 
@@ -102,39 +102,39 @@ def split (s : K → Bool) (T : Table K H σ) : Table K H σ × Table K H σ :=
   (⟨fun k => bif s k then 0 else T.rows k⟩,
    ⟨fun k => bif s k then T.rows k else 0⟩)
 
-/-- def:bind.  Multiset union of the two tables' rows at each key: the chapter's
+/-- def:union.  Multiset union of the two tables' rows at each key: the chapter's
 cell concatenation made order-free, commutative, associative, total, bias-free. -/
-def bind (T₀ T₁ : Table K H σ) : Table K H σ :=
+def union (T₀ T₁ : Table K H σ) : Table K H σ :=
   ⟨fun k => T₀.rows k + T₁.rows k⟩
 
 /-- def:disjoint-tables.  At every key, at least one table is empty.  This makes
-`split` a partition (so `bind ∘ split = id`), and it is the hypothesis of
+`split` a partition (so `union ∘ split = id`), and it is the hypothesis of
 `SplitInvariant`. -/
 def Disjoint (T₀ T₁ : Table K H σ) : Prop :=
   ∀ k, T₀.rows k = 0 ∨ T₁.rows k = 0
 
 /-- def:split-invariance, faithful to the chapter: `f` distributes over the
-`bind` of *disjoint* tables -- exactly what a `split` produces (`split_disjoint`).
+`union` of *disjoint* tables -- exactly what a `split` produces (`split_disjoint`).
 `f` may change the schema and key type; disjointness is asked of the inputs.
 
 **This is the property Mensura tracks and enforces.**  The disjointness
 hypothesis is load-bearing: a `split` never divides a key's multiset, so
 row-collapsing operations like `aggregate` stay invariant
 (`aggregate_splitInvariant`).  Drop the hypothesis and it strengthens to
-`BindHom`, which `aggregate` fails. -/
+`UnionHom`, which `aggregate` fails. -/
 def SplitInvariant (f : Table K H σ → Table K' H' σ') : Prop :=
-  ∀ T₀ T₁ : Table K H σ, Disjoint T₀ T₁ → f (bind T₀ T₁) = bind (f T₀) (f T₁)
+  ∀ T₀ T₁ : Table K H σ, Disjoint T₀ T₁ → f (union T₀ T₁) = union (f T₀) (f T₁)
 
-/-- `f` distributes over *every* `bind`: a full commutative-monoid homomorphism,
-strictly stronger than `SplitInvariant` (`BindHom.splitInvariant`).  The row-wise
+/-- `f` distributes over *every* `union`: a full commutative-monoid homomorphism,
+strictly stronger than `SplitInvariant` (`UnionHom.splitInvariant`).  The row-wise
 operations satisfy it because they act on each nested row independently and
 multiset union distributes (`Multiset.add_bind`). -/
-def BindHom (f : Table K H σ → Table K' H' σ') : Prop :=
-  ∀ T₀ T₁ : Table K H σ, f (bind T₀ T₁) = bind (f T₀) (f T₁)
+def UnionHom (f : Table K H σ → Table K' H' σ') : Prop :=
+  ∀ T₀ T₁ : Table K H σ, f (union T₀ T₁) = union (f T₀) (f T₁)
 
-/-- Every bind-homomorphism is split-invariant: split-invariance asks for the
+/-- Every union-homomorphism is split-invariant: split-invariance asks for the
 equation only on disjoint binds, a special case. -/
-theorem BindHom.splitInvariant {f : Table K H σ → Table K' H' σ'} (h : BindHom f) :
+theorem UnionHom.splitInvariant {f : Table K H σ → Table K' H' σ'} (h : UnionHom f) :
     SplitInvariant f := by
   intro T₀ T₁ _
   exact h T₀ T₁
@@ -147,13 +147,13 @@ def PreservesDisjoint (f : Table K H σ → Table K' H' σ') : Prop :=
   ∀ T₀ T₁ : Table K H σ, Disjoint T₀ T₁ → Disjoint (f T₀) (f T₁)
 
 /-- The class of operations safe to put in a pipeline between a split and a
-bind: split-invariant *and* disjointness-preserving.  Unlike bare
+union: split-invariant *and* disjointness-preserving.  Unlike bare
 `SplitInvariant`, this is closed under composition (`SplitSafe.comp`) and
 contains the identity (`SplitSafe.id`), so a whole pipeline of `SplitSafe`
-operations is split-invariant -- applying it between split and bind equals
-applying it to the full table.  `project` is split-invariant but *not* here
+operations is split-invariant -- applying it between split and union equals
+applying it to the full table.  `demote` is split-invariant but *not* here
 (it does not preserve disjointness), which is exactly why pipelines through it,
-such as `aggregate ∘ project`, can disagree with the full-table result. -/
+such as `aggregate ∘ demote`, can disagree with the full-table result. -/
 def SplitSafe (f : Table K H σ → Table K' H' σ') : Prop :=
   PreservesDisjoint f ∧ SplitInvariant f
 
@@ -170,7 +170,7 @@ theorem SplitSafe.comp {f : Table K H σ → Table K' H' σ'}
   obtain ⟨hfP, hfS⟩ := hf
   obtain ⟨hgP, hgS⟩ := hg
   refine ⟨fun T₀ T₁ h => hgP _ _ (hfP _ _ h), fun T₀ T₁ h => ?_⟩
-  show g (f (bind T₀ T₁)) = bind (g (f T₀)) (g (f T₁))
+  show g (f (union T₀ T₁)) = union (g (f T₀)) (g (f T₁))
   rw [hfS T₀ T₁ h]
   exact hgS (f T₀) (f T₁) (hfP T₀ T₁ h)
 
@@ -181,36 +181,36 @@ theorem split_disjoint (s : K → Bool) (T : Table K H σ) :
   simp only [split]
   cases s k <;> simp
 
-/-- Bind undoes split: split and bind are mutual inverses (one direction). -/
-theorem bind_split (s : K → Bool) (T : Table K H σ) :
-    bind (split s T).1 (split s T).2 = T := by
+/-- Bind undoes split: split and union are mutual inverses (one direction). -/
+theorem union_split (s : K → Bool) (T : Table K H σ) :
+    union (split s T).1 (split s T).2 = T := by
   apply Table.ext_rows
   intro k
-  simp only [bind, split]
+  simp only [union, split]
   cases s k <;> simp
 
-/-- `bind` is commutative -- unconditionally. -/
-theorem bind_comm (T₀ T₁ : Table K H σ) : bind T₀ T₁ = bind T₁ T₀ := by
+/-- `union` is commutative -- unconditionally. -/
+theorem union_comm (T₀ T₁ : Table K H σ) : union T₀ T₁ = union T₁ T₀ := by
   apply Table.ext_rows
   intro k
-  simp only [bind]
+  simp only [union]
   exact add_comm _ _
 
-/-- `bind` is associative. -/
-theorem bind_assoc (T₀ T₁ T₂ : Table K H σ) :
-    bind (bind T₀ T₁) T₂ = bind T₀ (bind T₁ T₂) := by
+/-- `union` is associative. -/
+theorem union_assoc (T₀ T₁ T₂ : Table K H σ) :
+    union (union T₀ T₁) T₂ = union T₀ (union T₁ T₂) := by
   apply Table.ext_rows
   intro k
-  simp only [bind]
+  simp only [union]
   exact add_assoc _ _ _
 
-/-- `bind` weakens disjointness: a merge is disjoint from a third table iff
+/-- `union` weakens disjointness: a merge is disjoint from a third table iff
 *both* of its parts are.  Multiset union can only grow a table's support, so
 binding can only *lose* a disjointness fact (binding in a table that overlaps
-`T₂` destroys `Disjoint _ T₂`).  This backs the `bind` propagation rule in
+`T₂` destroys `Disjoint _ T₂`).  This backs the `union` propagation rule in
 `docs/language/08-lineage.md`. -/
-theorem bind_disjoint_iff (T₀ T₁ T₂ : Table K H σ) :
-    Disjoint (bind T₀ T₁) T₂ ↔ Disjoint T₀ T₂ ∧ Disjoint T₁ T₂ := by
+theorem union_disjoint_iff (T₀ T₁ T₂ : Table K H σ) :
+    Disjoint (union T₀ T₁) T₂ ↔ Disjoint T₀ T₂ ∧ Disjoint T₁ T₂ := by
   -- A multiset sum is empty exactly when both summands are.
   have hadd : ∀ s t : Multiset (Row H σ), s + t = 0 ↔ s = 0 ∧ t = 0 := by
     intro s t
@@ -248,9 +248,9 @@ def Substantive (f : Row H σ) : Prop := ∃ h, f h ≠ none
 standing well-formedness assumption, so `card` counts only real rows). -/
 def Minimal (T : Table K H σ) : Prop := ∀ k, ∀ f ∈ T.rows k, Substantive f
 
-/-- `bind` preserves minimality: a row of the union is a row of one summand. -/
+/-- `union` preserves minimality: a row of the union is a row of one summand. -/
 theorem Minimal.bind {T₀ T₁ : Table K H σ} (h₀ : Minimal T₀) (h₁ : Minimal T₁) :
-    Minimal (bind T₀ T₁) := by
+    Minimal (union T₀ T₁) := by
   intro k f hf
   rcases Multiset.mem_add.mp hf with hf | hf
   · exact h₀ k f hf
