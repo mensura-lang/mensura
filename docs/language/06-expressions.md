@@ -116,13 +116,13 @@ The atomic values are:
 Member access is written `a.b.c` and binds tighter than application, so
 `f a.b` is `f (a.b)`.
 
-A second family of numeric literal, the `NxE` measured literal
-(`10x3`, meaning ten times ten-to-the-three with the precision its
-integer significand implies), is reserved for measured SI values and is
-specified with the physical-units feature, not here.  An `NxE` literal
-is never an ordinary number: it carries a dimension and a precision, so
-mixing it with plain arithmetic (`10x3 + 1`) is a type error by
-construction.  See the forward references.
+Dimensioned values need no literal form: a physical quantity is written
+with ordinary multiplication against a unit constant
+(`9.8 * meter / second^2`; see `11-physical-units.md`, ADR 0026).  The
+`NxE` measured literal (`10x3`) once reserved here coupled a dimension
+with a measurement precision; ADR 0026 separates the two, so the literal
+is deferred with the future precision library and is no longer reserved
+for units.
 
 ### Lambdas
 
@@ -338,14 +338,13 @@ empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
 
 - **Consolidated rules.**  The expression rules above are collected, with the
   pipeline and completeness rules, in `09-typing-reference.md` (the M0 freeze).
-- **Measured SI values.**  The `NxE` literal (`10x3`), the attachment of
-  a physical unit by juxtaposition (`10x3 m`, with no `SI(...)`
-  constructor), the physical-unit grammar (`m/s^2` under ordinary operator
-  precedence, with no whitespace-significance), dimensional checking, and
-  conversion between physical units all belong to the physical-units and
-  precision feature.  This
-  document fixes only that such literals are a distinct kind and do not
-  participate in plain arithmetic.
+- **Measured SI values.**  Settled by `11-physical-units.md` (ADR 0026):
+  units are ordinary dimensioned constants combined with the explicit
+  operators (`9.8 * meter / second^2`), so there is no juxtaposition
+  attachment, no `SI(...)` constructor, and no unit grammar beyond the
+  operators above.  Dimensional checking and automatic conversion are
+  specified there.  The once-reserved `NxE` measured literal is deferred
+  with the precision library (ADR 0026, Decision 9).
 - **The pipeline level.**  The `|>` pipe, the operation catalogue
   (`promote`, `flat_map`, `map_bags`, the joins, `split`, `union`) and their
   split-safety obligations are the same sublanguage applied at table type,
@@ -359,6 +358,11 @@ empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
   and aggregates each site admits (`now`, `env`, `lookup`, `prev`,
   `next`, `sum`, `min`, `max`, `count`, `any`, `all`, `to_real`, ...) is
   fixed per site as those sites are specified, not by this document.
+  The seven intrinsic base units (`second`, `meter`, `kilogram`,
+  `ampere`, `kelvin`, `mole`, `candela`) are ambient value bindings in
+  every expression context, and top-level `let` bindings and imported
+  module members join the context the same way
+  (`11-physical-units.md`, `12-modules-and-imports.md`).
 - **ADR follow-up.**  The authorization examples in
   `docs/decisions/0005-identity-and-authorization.md`, written today as
   `lookup(principal)` and `@auto(auth.id)`, are still to be re-spelled to

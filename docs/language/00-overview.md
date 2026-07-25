@@ -482,7 +482,10 @@ warnings.
    key columns, and each column declares its domain, including physical
    units and semantic refinements (CPF, email, regex-constrained strings).
    Physical-unit and semantic mismatches are compile errors, not runtime
-   conversions.
+   conversions.  Precisely: the type tracks the physical **dimension**
+   (`temperature[real]`, `docs/language/11-physical-units.md`, ADR 0026),
+   magnitudes normalize to SI base units, and conversion within a
+   dimension is automatic.
 
 5. **Change control is declared, not assumed.** How persisted data may
    evolve is store policy, to be expressed by declared annotations

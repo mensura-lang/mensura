@@ -8,6 +8,10 @@ Accepted.  Revises the `C`/`Qs` boundary set by
 and its extensibility decision; this ADR only redraws the boundary between its
 two parts.  The rewrite of `09` sections 1, 3.1-3.5, and 4 and the
 `docs/language/10-views.md` cross-references land with this acceptance.
+Revised in part by `docs/decisions/0026-dimensional-physical-units.md`:
+physical dimension lives in `C` as part of a column's domain, not in the
+per-column `Qs` slot this ADR anticipated for units; precision keeps that
+slot.
 
 ## Context
 
@@ -61,7 +65,9 @@ qualifiers, including per-column ones.
      here.
    - **`column`**: one value per column, spanning **both index and non-index
      columns**.  Totality is column-scoped; future units, precision, and PII
-     taint fit here.
+     taint fit here.  (*Revised by ADR 0026*: physical **dimension** is part
+     of the column's domain in `C`, because dimensional arithmetic is type
+     computation, not fact propagation; **precision** keeps this `Qs` slot.)
 
 3. **There is no per-key scope.**  A fact "about keys" is one of:
    - a universal over all keys, which is **table**-scoped (cardinality,
@@ -138,7 +144,9 @@ Positive:
   about it.  Totality and completeness are recognized as the same kind of fact.
 - The open row now hosts per-column qualifiers, so units and precision (M3) and
   PII taint join `Qs` with no language change, which is the extensibility ADR
-  0004 actually promised.
+  0004 actually promised.  (*Revised by ADR 0026*: dimension went to `C`
+  instead; precision and PII taint remain the anticipated per-column
+  qualifiers.)
 - The metaprogramming surface is uniform: built-in and library qualifiers share
   one shape (state space, scope, per-primitive rules, optional hook).
 - A hardcoded law ("index columns are total") is explained as a qualifier
