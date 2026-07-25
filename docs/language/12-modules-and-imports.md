@@ -14,10 +14,15 @@ position.  It binds one of two kinds, disambiguated by the presence of a
 parameter list after the name:
 
 - **A const value binding**: `let name = expr` (an optional `: type`
-  ascription is accepted, as in the block form).  The body is an ordinary
-  expression evaluated at compile time; it may reference literals, the
-  intrinsic base units, imported module members, and other top-level
-  bindings.
+  ascription is accepted, as in the block form).  The body is a **const
+  expression** evaluated at compile time: literals and arithmetic
+  (`+ - * / ^`, unary minus, grouping, member access) over the intrinsic
+  base units, imported module members, and other top-level bindings.
+  Juxtaposition application (and with it pipes, lambdas, blocks, and the
+  word operators) is excluded: a const names a pure value, and because a
+  top-level item has no terminator, an application spine would otherwise
+  swallow the next item's leading keyword (see `04-grammar.md`,
+  `const_expr`).
 
   ```mensura
   let km = 1000.0 * meter
@@ -105,8 +110,8 @@ module-internal diagnostics become user-facing; it lands with that layer.
 ```ebnf
 item        = ... | let_decl | import_decl ;
 let_decl    = "let" ident ( value_let | alias_let ) ;
-value_let   = [ ":" type ] "=" expr ;
-alias_let   = "[" ident { "," ident } "]" "=" type ;
+value_let   = [ ":" type ] "=" const_expr ;
+alias_let   = "[" ident { "," ident } "]" "=" tl_expr ;
 import_decl = "import" ident ;
 ```
 

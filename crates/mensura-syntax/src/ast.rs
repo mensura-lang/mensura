@@ -21,6 +21,40 @@ pub enum Item {
     Shape(ShapeDecl),
     Enum(EnumDecl),
     View(ViewDecl),
+    Import(ImportDecl),
+    Let(LetDecl),
+}
+
+/// `import name`: a qualified, bundled-only module import
+/// (`docs/language/12-modules-and-imports.md`, ADR 0027).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportDecl {
+    pub name: Ident,
+    pub span: Span,
+}
+
+/// A top-level `let` binding (`docs/language/12-modules-and-imports.md`,
+/// ADR 0027).  The kind is decided by the token after the name: `[` opens
+/// the parameter list of a type-level dimension alias (ADR 0026,
+/// Decision 8); `:` or `=` continues a const value binding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LetDecl {
+    pub name: Ident,
+    pub kind: LetKind,
+    pub span: Span,
+}
+
+/// The two kinds a top-level `let` binds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LetKind {
+    /// `let name [: type] = expr`: an immutable, pure const value.
+    Value {
+        ty: Option<TypeExpr>,
+        value: crate::expr::Expr,
+    },
+    /// `let name[T, ...] = <type-level expr>`: a dimension alias, whose
+    /// body is parsed with the type grammar.
+    DimAlias { params: Vec<Ident>, body: TypeExpr },
 }
 
 /// `view name [: Shape, ...] { ...block... }` (`docs/language/10-views.md`).
@@ -199,21 +233,46 @@ pub struct DomainEntry {
     pub span: Span,
 }
 
-/// A type expression in a field or attribute.
+/// A type expression in a field, attribute, ascription, or alias body.
 ///
-/// The base type is a single identifier: a primitive name (`string`,
-/// `number`, ...), a unit reference, or a named `enum`; the resolver decides
-/// which it is.  A trailing `?` marks the value optional (it may be missing in
-/// an observed row); see ADR 0010 and `docs/language/02-stores.md`.
+/// The common case is a single identifier: a primitive name (`string`,
+/// `real`, ...), a unit reference, or a named `enum`; the resolver decides
+/// which it is.  The remaining forms are the type-level expression grammar
+/// of `docs/language/11-physical-units.md` (ADR 0026): a dimension (or
+/// alias) applied to a backing (`temperature[real]`), and `*`/`/`/`^`
+/// combinations of those.  A trailing `?` on the whole type marks the
+/// value optional (it may be missing in an observed row); see ADR 0010 and
+/// `docs/language/02-stores.md`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeExpr {
-    /// The base type name.
-    pub name: Ident,
+    pub kind: TypeKind,
     /// The span of the trailing `?` optional marker, if present.  `None` means
-    /// the value is total (known in every observed row, the default).
+    /// the value is total (known in every observed row, the default).  Only
+    /// the outermost type of a field carries it; nested nodes are `None`.
     pub optional: Option<Span>,
     /// The source span of the whole type expression, covering the `?` if any.
     pub span: Span,
+}
+
+/// The shape of a type-level expression node
+/// (`04-grammar.md`, `tl_expr`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeKind {
+    /// A lone identifier: a primitive, a unit reference, a named `enum`, a
+    /// base dimension, a dimension alias, or an alias parameter; the
+    /// resolver decides which.
+    Named(Ident),
+    /// `base[backing]`: type-level application.  The base is a named
+    /// dimension or alias, or a parenthesized type-level expression; the
+    /// backing is a single identifier (`real`, or an alias parameter).
+    Apply { base: Box<TypeExpr>, backing: Ident },
+    /// `a * b` at the type level (dimension product).
+    Mul(Box<TypeExpr>, Box<TypeExpr>),
+    /// `a / b` at the type level (dimension quotient).
+    Div(Box<TypeExpr>, Box<TypeExpr>),
+    /// `a ^ n` at the type level: an integer-literal exponent, optionally
+    /// negated.
+    Pow(Box<TypeExpr>, i32),
 }
 
 impl TypeExpr {
@@ -225,5 +284,14 @@ impl TypeExpr {
     /// Whether the value may be missing (`?` was written).
     pub fn is_optional(&self) -> bool {
         self.optional.is_some()
+    }
+
+    /// The lone identifier when this type is a plain named type
+    /// (`string`, `MyEnum`, ...), else `None`.
+    pub fn named(&self) -> Option<&Ident> {
+        match &self.kind {
+            TypeKind::Named(id) => Some(id),
+            _ => None,
+        }
     }
 }

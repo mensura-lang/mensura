@@ -11,8 +11,9 @@ pub mod parser;
 pub mod token;
 
 pub use ast::{
-    Attr, DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg,
-    ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
+    Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LetDecl, LetKind, NameSeg,
+    NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr,
+    TypeKind, UnitDecl, ViewDecl,
 };
 pub use expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 pub use lexer::{LexError, Lexed, is_identifier, lex, tokenize};

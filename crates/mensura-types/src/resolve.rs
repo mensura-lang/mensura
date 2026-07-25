@@ -181,6 +181,20 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                 check_case(&v.name.name, v.name.span, Case::Snake, "view", &mut errors);
                 views.push(v);
             }
+            // Transitional: resolved by the modules/consts commit of this
+            // change series.
+            Item::Import(i) => {
+                errors.push(ResolveError::new(
+                    "`import` is not yet supported".to_string(),
+                    i.span,
+                ));
+            }
+            Item::Let(l) => {
+                errors.push(ResolveError::new(
+                    "a top-level `let` is not yet supported".to_string(),
+                    l.span,
+                ));
+            }
         }
     }
 
@@ -1159,7 +1173,7 @@ fn add_column(
                 "an key field must be a key-eligible type: `{}` cannot be a key",
                 type_name(&ct)
             ),
-            field.ty.name.span,
+            field.ty.span(),
         ));
     }
     columns.push(Column {
@@ -1207,7 +1221,14 @@ fn resolve_type(
     // Resolve only the base type here; optionality (`?`) is read from the
     // `TypeExpr` by the caller, which knows the column's role (an key field
     // may not be optional; ADR 0010).
-    let id = &ty.name;
+    let Some(id) = ty.named() else {
+        // Transitional: the dimensioned forms are resolved by the types-core
+        // commit of this change series.
+        return Err(ResolveError::new(
+            "dimensioned types are not yet supported".to_string(),
+            ty.span(),
+        ));
+    };
     match id.name.as_str() {
         "string" => Ok(ColumnType::String),
         "int" => Ok(ColumnType::Int),

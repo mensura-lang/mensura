@@ -96,9 +96,17 @@ attr_name     = ident | template ;
 view_decl     = "view" ident [ conforms ] block ;
 
 let_decl      = "let" ident ( value_let | alias_let ) ;
-value_let     = [ ":" type ] "=" expr ;
-alias_let     = "[" ident { "," ident } "]" "=" type ;
+value_let     = [ ":" type ] "=" const_expr ;
+alias_let     = "[" ident { "," ident } "]" "=" tl_expr ;
 import_decl   = "import" ident ;
+
+const_expr    = const_mul { ( "+" | "-" ) const_mul } ;
+const_mul     = const_unary { ( "*" | "/" ) const_unary } ;
+const_unary   = "-" const_unary | const_pow ;
+const_pow     = const_postfix [ "^" const_unary ] ;
+const_postfix = const_primary { "." ident } ;
+const_primary = number | string | "true" | "false" | ident
+              | "(" const_expr ")" ;
 
 type          = tl_expr [ "?" ] ;
 tl_expr       = tl_term { ( "*" | "/" ) tl_term } ;
@@ -116,8 +124,19 @@ tl_factor     = ident [ "[" ident "]" ]
 - **`let_decl`**: after the bound name the next token decides the kind: `[`
   opens the alias parameter list (a type-level dimension alias, ADR 0026
   Decision 8) and the body is parsed with the type grammar; `:` or `=`
-  continues the value form and the body is parsed with the expression
-  grammar.  One token decides.
+  continues the value form and the body is parsed with the **const
+  expression grammar** (`const_expr`).  One token decides.
+- **`const_expr`**: the arithmetic levels of the expression grammar
+  (`+ -`, `* /`, unary `-`, `^`, member access, grouping) over literals
+  and names, with juxtaposition application deliberately excluded.  A
+  top-level item has no terminator, so an application spine after a const
+  body would swallow the next item's leading keyword
+  (`let x = 2.0 * meter let y = ...` would read `meter let` as an
+  application).  Excluding application, and with it pipes, lambdas,
+  blocks, and the word operators, makes the body self-terminating: after
+  a complete `const_expr`, no item-starting word can continue it.  A
+  const names a pure value, so nothing is lost
+  (`12-modules-and-imports.md`).
 - **`import_decl`**: `import` selects it and a single module name follows.
 - **`view_decl`**: after the view name the next token is either `:` (a
   `conforms` clause is present) or `{` (it is absent and the `block` body
