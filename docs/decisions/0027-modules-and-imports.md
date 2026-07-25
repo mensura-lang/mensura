@@ -93,20 +93,33 @@ named derived units) is an ordinary import, not ambient.  So `9.8 * meter / seco
 type-checks with no import, while the terse `9.8 * si.m / si.s^2` (or, with an
 `exposing` refinement, `9.8 * m / s^2`) requires `import si`.
 
-### 5.  Identity/location split
+### 5.  Identity/provenance/location split
 
-A module has an **identity** (the name the source imports) separate from its
-**location** (how the toolchain finds it).  Source names the module; a project
-manifest (`mensura.toml`) resolves the name to a location.  Source therefore
-stays portable: the same `import si` resolves differently per project without
-editing source.
+A module has an **identity** (the name the source imports), a **provenance
+class** (bundled with the toolchain, or manifest-resolved), and a
+**location** (how the toolchain finds it within its class).  The import form
+fixes the identity and the class; only the location is the manifest's
+business.  A bare `import si` is the bundled class: it resolves against the
+toolchain and never consults the manifest, so it means the same thing in
+every project.  A manifest-resolved import uses a marked form (Decision 7)
+and is portable in the intended sense: the same marked import resolves to a
+different location per project (`mensura.toml`) without editing source.
 
-### 6.  Resolution: `bundled` is the motivated mechanism
+### 6.  Resolution: a bare import is `bundled`, and only `bundled`
 
-`bundled` resolution finds a module that ships with the toolchain.  This is all
-the units work needs: `si` is bundled (ADR 0028), resolvable offline, with no
-manifest required for the default.  A module resolves to an environment, and
-`import` unions it disjointly into the importer's environment (Decision 3).
+`bundled` resolution finds a module that ships with the toolchain, and a
+**bare** import (`import si`, no marker) resolves `bundled` exclusively: it
+never consults the manifest, and a manifest entry that names a bundled module
+is a compile error.  The consequences are deliberate.  A bare import cannot
+be remapped, so no manifest can silently substitute another module for the
+standard library; and bundled names need no reservation rule, because there
+is no mechanism by which a third-party module could answer a bare import.
+Manifest-resolved imports use a marked form whose surface is finalized with
+the third-party layer (Decision 7).
+
+This is all the units work needs: `si` is bundled (ADR 0028), resolvable
+offline, with no manifest.  A module resolves to an environment, and `import`
+unions it disjointly into the importer's environment (Decision 3).
 
 ### 7.  Third-party distribution (provisional; no consumer yet)
 
@@ -114,12 +127,18 @@ Recorded as the intended direction, **not finalized**, because nothing outside
 the bundled `si` consumes it and `mensura check` emits no artifact to hang it on
 today:
 
+- In source, a manifest-resolved module is imported with a **marked** form
+  (for instance `import external geo`; the keyword is settled in the
+  finalizing ADR), so the trust boundary is visible at the import site: a
+  bare import is toolchain-shipped, a marked import is whatever the manifest
+  says (Decision 6).
 - `mensura.toml` is the manifest **and** the lockfile: a module's hash is
   recorded there (no separate lockfile to forget), and `mensura pin` writes
   hashes.
-- Resolution kinds are manifest fields, not URL schemes: `bundled`, `git` (with
-  a hash), and `path` (relative only, hash-free, and **taints the check** as
-  non-portable, so dev and release differ by exactly that bit).
+- Resolution kinds are manifest fields, not URL schemes: `git` (with a hash)
+  and `path` (relative only, hash-free, and **taints the check** as
+  non-portable, so dev and release differ by exactly that bit).  Bundled
+  modules never appear in the manifest (Decision 6).
 - A single-file escape hatch allows a URL with an inline hash directly in the
   import, ugly on purpose.
 
@@ -129,8 +148,7 @@ can taint it), and the exact manifest schema.  Sketch:
 
 ```toml
 [modules]
-si   = { source = "bundled" }
-geo  = { source = "git", url = "github.com/user/geo.git", hash = "abc123" }
+geo   = { source = "git", url = "github.com/user/geo.git", hash = "abc123" }
 mylib = { source = "path", path = "../mylib" }   # taints the check
 ```
 
@@ -159,6 +177,9 @@ Positive:
   top-level `let` and `import`; everything else is a library.
 - Collision-as-error and qualified-by-default make name provenance explicit,
   extending the resolver's existing discipline.
+- A bare import cannot be hijacked: `import si` resolves against the
+  toolchain in every project, with no manifest consulted, so nothing can
+  silently substitute another module for the standard library.
 
 Negative:
 
@@ -181,18 +202,29 @@ Neutral:
 
 1. **In-source resolution blocks** (`import si { source { "git" } url { ... } }`).
    Rejected: resolution scattered across source files is unportable; the
-   identity/location split puts it in the manifest.  Only the single-file
-   URL+hash escape hatch keeps a location in source.
+   identity/provenance/location split puts locations in the manifest.  Only
+   the single-file URL+hash escape hatch keeps a location in source.  What is
+   rejected is in-source *location*, not in-source *provenance class*: the
+   bare/marked import distinction (Decisions 6 and 7) puts the class in
+   source deliberately, because it is part of what the program means, while
+   the URL, path, and hash stay in the manifest.
 
-2. **A glob / unqualified import** (`from si import *`).  Rejected: it
+2. **Marking the bundled side instead** (`import bundled si`, with the bare
+   form manifest-resolved), or marking both sides.  Rejected: every standard
+   library import would pay an annotation forever to flag a third-party
+   ecosystem that is still provisional, and the trust boundary belongs on the
+   untrusted thing.  "A bare import is toolchain-shipped" is one global rule
+   a reader learns once.
+
+3. **A glob / unqualified import** (`from si import *`).  Rejected: it
    reintroduces shadowing and hides provenance.  Selective `exposing` is the
    contemplated middle ground (Open questions).
 
-3. **Exporting pipelines/views.**  Rejected: those are materialized,
+4. **Exporting pipelines/views.**  Rejected: those are materialized,
    site-specific resources, not reusable definitions; modules export values and
    type-level names.
 
-4. **Fully designing the package manager now** (git/path/hash/pin/taint).
+5. **Fully designing the package manager now** (git/path/hash/pin/taint).
    Rejected for this PR: no consumer, and `mensura check` has no artifact to
    taint; recorded as provisional (Decision 7) and finalized later.
 
@@ -204,8 +236,11 @@ Neutral:
 - **`exposing` lists.**  Whether a selective-unqualified import (bringing chosen
   names, e.g. unit symbols, into scope unqualified) is worth the surface once
   unit-heavy files appear; and its collision rules.
-- **Diagnostic wording** for hashless URLs and for a would-be shadow (an import
-  that collides with a local or another import).
+- **Diagnostic wording** for hashless URLs, for a would-be shadow (an import
+  that collides with a local or another import), and for a manifest entry
+  that names a bundled module (Decision 6).
+- **The marked-import keyword** (`external`?  `managed`?) for
+  manifest-resolved modules, settled in the ADR that finalizes Decision 7.
 - **Manifest schema** and the third-party layer generally (Decision 7),
   finalized in its own ADR with a real consumer.
 

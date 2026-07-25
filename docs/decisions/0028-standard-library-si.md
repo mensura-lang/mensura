@@ -25,11 +25,13 @@ is produced, and the discipline the standard library follows.
 `si` lives in the main repository and is versioned with the toolchain: one
 release train, no independent `si` version.  This is a deliberate closed door:
 you cannot update `si` without a toolchain release, and cannot pin an old `si`
-against a new toolchain.  For stable physics (`si`) that is the right trade.  It
-does sit in mild tension with ADR 0027's provisional third-party layer
-(per-module hashes and pinning): the stdlib is monolithically versioned, so the
-pinning machinery exists for *third-party* modules, not for `si`.  Recorded so
-the boundary is explicit.
+against a new toolchain.  For stable physics (`si`) that is the right trade.
+The boundary with ADR 0027's provisional third-party layer is structural, not
+conventional: the pinning machinery (per-module hashes, `mensura pin`)
+applies to manifest-resolved modules only, and `si` is imported bare and
+never appears in the manifest (ADR 0027, Decision 6), so the monolithically
+versioned stdlib and the individually pinned third-party layer cannot be
+confused.
 
 ### 2.  Generated from the mechanized dimension group
 
@@ -42,11 +44,12 @@ cannot drift from the proved group: the base-unit symbols, the prefix table
 ...) are all emitted from one source of truth.  The generator's output is
 ordinary Mensura source (const bindings per ADR 0026/0027), reviewable as such.
 
-### 3.  Default resolution is `bundled`, offline-first
+### 3.  Imported bare: `bundled`, offline-first, un-remappable
 
-`import si` resolves `bundled` by default (ADR 0027): it ships with the
-toolchain, needs no manifest, no network in CI, and is overridable like any
-manifest entry.  A program that uses only `si` stays manifest-free.
+A bare `import si` resolves `bundled`, and only `bundled` (ADR 0027, Decision
+6): it ships with the toolchain, needs no manifest, no network in CI, and
+cannot be remapped, because a bare import never consults the manifest.  A
+program that uses only `si` stays manifest-free.
 
 ### 4.  The standard library stays small and proven
 
@@ -54,7 +57,10 @@ The library is deliberately minimal: `si` now; later `precision` (the backing
 extension of `real`, ADR 0026 Decision 9) and perhaps `stats`.  Each module gets
 the ADR treatment and formal backing where applicable (`si` is backed by the
 dimension group; `precision` will carry its own).  Breadth is a non-goal, in
-keeping with the project's ML-validation scope.
+keeping with the project's ML-validation scope.  Other candidates under the
+same discipline are `math` (mathematical constants and operations) and
+`rand` (seeded, reproducible pseudo-random primitives backing sampling and
+split strategies).
 
 ### 5.  Corpus examples import `si` via bundled resolution
 
@@ -84,7 +90,9 @@ Negative:
 Neutral:
 
 - `si` is a normal module: nothing about it is special to the language beyond
-  being the default `bundled` target; it could in principle be overridden.
+  being bundled.  It cannot be overridden: a bare import never consults the
+  manifest (ADR 0027, Decision 6), so a project that wants a different units
+  library imports it under another name.
 
 ## Open questions
 
