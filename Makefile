@@ -1,4 +1,4 @@
-.PHONY: test check fmt install serve-book
+.PHONY: test check fmt install book-serve
 
 test:
 	+cargo test --workspace
@@ -15,6 +15,6 @@ install:
 # Live-reload the book locally.  Builds the `mensura-mdbook` preprocessor first
 # so `mdbook serve` (which invokes it) check-gates every ```mensura block on
 # the first request rather than failing part way in.
-serve-book:
+book-serve:
 	+cargo build --package mensura-mdbook
 	mdbook serve book
