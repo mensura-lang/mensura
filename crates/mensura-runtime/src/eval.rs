@@ -1174,6 +1174,13 @@ fn arithmetic(op: BinOp, a: Value, b: Value) -> Result<Value, EvalError> {
             BinOp::Pow => x.powf(y),
             _ => unreachable!(),
         })),
+        // A dimensioned base raised to an integer-literal exponent
+        // (`r.x ^ 2`, ADR 0026): the only place the checker admits a mixed
+        // `real`/`int` pair.
+        (Value::Real(x), Value::Int(y)) if op == BinOp::Pow => match i32::try_from(y) {
+            Ok(exp) => Ok(Value::Real(x.powi(exp))),
+            Err(_) => err("`^` exponent out of range"),
+        },
         _ => internal("arithmetic on values the checker should have rejected"),
     }
 }

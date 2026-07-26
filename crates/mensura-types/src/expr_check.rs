@@ -17,6 +17,7 @@ use mensura_syntax::{BinOp, Expr, ExprKind, Ident, Span, UnOp};
 
 use crate::model::ColumnType;
 use crate::table::TableType;
+use crate::units::{BASE_UNITS, Dimension};
 
 /// The optional axis of a single value (`09` section 3.3 / 5.3). Distinct from
 /// the table-scoped `table::Totality`; here it is a per-value flag.
@@ -88,9 +89,38 @@ pub enum Agg {
     All,
 }
 
+/// The ambient value environment (`12-modules-and-imports.md`): names in
+/// scope at every expression site before a lambda binds its parameters.
+/// It holds the seven intrinsic base units ([`intrinsics`]), and the
+/// resolver extends it with top-level const bindings and imported modules
+/// (each module a [`Ty::Record`] of its members, so `si.km` types through
+/// ordinary member access).
+pub type Ambient = BTreeMap<String, Ty>;
+
+/// The intrinsic initial environment (ADR 0026, Decision 6; ADR 0027,
+/// Decision 4): the seven base units, each a total dimensioned value of
+/// its base dimension.
+pub fn intrinsics() -> Ambient {
+    BASE_UNITS
+        .iter()
+        .map(|unit| {
+            let dim = Dimension::of_base_unit(unit).expect("a base unit has a base dimension");
+            (
+                unit.to_string(),
+                Ty::Value {
+                    domain: ColumnType::Quantity(dim),
+                    opt: Optionality::Total,
+                },
+            )
+        })
+        .collect()
+}
+
 /// The typing context `Gamma` (section 5.1): the named values in scope and the
 /// in-scope builtins. Which builtins are in scope is a property of the context,
-/// not the grammar.
+/// not the grammar.  Lambda parameters are bound after the ambient names, so a
+/// parameter shadows an ambient name (ordinary lexical scoping; the top-level
+/// collision rule is the resolver's, not this layer's).
 pub struct Context {
     names: BTreeMap<String, Ty>,
     aggregates: BTreeMap<String, Agg>,
@@ -100,9 +130,15 @@ impl Context {
     /// Bind a row lambda's key-first parameters `|k, r|` (ADR 0015): `kname` to
     /// the key (key columns as total values), `rname` to the value row
     /// (non-key columns as single values carrying their totality).
-    pub fn row(kname: &str, rname: &str, table: &TableType) -> Context {
+    pub fn row(ambient: &Ambient, kname: &str, rname: &str, table: &TableType) -> Context {
         Context {
-            names: bind2(kname, key_record(table), rname, value_record(table)),
+            names: bind2(
+                ambient,
+                kname,
+                key_record(table),
+                rname,
+                value_record(table),
+            ),
             aggregates: builtin_aggregates(),
         }
     }
@@ -110,18 +146,24 @@ impl Context {
     /// Bind a group lambda's key-first parameters `|k, b|` (ADR 0015): `kname` to
     /// the key (key columns as total values, constant within a bag), `bname`
     /// to the value columns as bags (section 5.4).
-    pub fn bag(kname: &str, bname: &str, table: &TableType) -> Context {
+    pub fn bag(ambient: &Ambient, kname: &str, bname: &str, table: &TableType) -> Context {
         Context {
-            names: bind2(kname, key_record(table), bname, bag_value_record(table)),
+            names: bind2(
+                ambient,
+                kname,
+                key_record(table),
+                bname,
+                bag_value_record(table),
+            ),
             aggregates: builtin_aggregates(),
         }
     }
 
     /// Bind a `split` predicate's parameter `|k|` to a record of the table's
     /// key columns as total values (the key, `09` section 6.5).
-    pub fn key(param: &str, table: &TableType) -> Context {
+    pub fn key(ambient: &Ambient, param: &str, table: &TableType) -> Context {
         Context {
-            names: bind(param, key_record(table)),
+            names: bind(ambient, param, key_record(table)),
             aggregates: builtin_aggregates(),
         }
     }
@@ -135,15 +177,16 @@ impl Context {
     }
 }
 
-fn bind(param: &str, ty: Ty) -> BTreeMap<String, Ty> {
-    let mut names = BTreeMap::new();
+fn bind(ambient: &Ambient, param: &str, ty: Ty) -> BTreeMap<String, Ty> {
+    let mut names = ambient.clone();
     names.insert(param.to_string(), ty);
     names
 }
 
-/// Bind two key-first parameters, skipping `_` (the ignored key).
-fn bind2(a: &str, aty: Ty, b: &str, bty: Ty) -> BTreeMap<String, Ty> {
-    let mut names = BTreeMap::new();
+/// Bind two key-first parameters over the ambient names, skipping `_` (the
+/// ignored key).  Parameters land last, so they shadow ambient names.
+fn bind2(ambient: &Ambient, a: &str, aty: Ty, b: &str, bty: Ty) -> BTreeMap<String, Ty> {
+    let mut names = ambient.clone();
     if a != "_" {
         names.insert(a.to_string(), aty);
     }
@@ -400,7 +443,9 @@ fn type_aggregate(ctx: &Context, agg: Agg, name: &str, arg: &Expr) -> Result<Ty,
 
 fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     match op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Pow => {
+        // `+`/`-` require *equal* domains, dimension included (ADR 0026):
+        // `meter + second`, and `meter + 1.0`, are rejected by the match.
+        BinOp::Add | BinOp::Sub => {
             let domain = matching_operands(
                 ctx,
                 lhs,
@@ -411,17 +456,9 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
             )?;
             Ok(total(domain))
         }
-        BinOp::Div => {
-            let domain = matching_operands(
-                ctx,
-                lhs,
-                rhs,
-                |d| matches!(d, ColumnType::Real),
-                "`/`",
-                "a real (`/` is real only)",
-            )?;
-            Ok(total(domain))
-        }
+        BinOp::Mul => type_mul(ctx, lhs, rhs),
+        BinOp::Div => type_div(ctx, lhs, rhs),
+        BinOp::Pow => type_pow(ctx, lhs, rhs),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
             matching_operands(
                 ctx,
@@ -445,6 +482,133 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
         }
         BinOp::In => type_membership(ctx, lhs, rhs),
         BinOp::Pipe => apply_value(ctx, rhs, Some(lhs)),
+    }
+}
+
+/// `*` (ADR 0026, `11-physical-units.md`): matching `int`s stay `int`; two
+/// `real`-backed operands multiply their dimensions (bare `real` is the
+/// group identity, and an identity result collapses back to `real`); `int`
+/// never mixes with a `real`-backed domain (no coercion, ADR 0014).
+fn type_mul(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = Vec::new();
+    let ld = operand_domain(
+        ctx,
+        lhs,
+        ColumnType::is_numeric,
+        "arithmetic",
+        "a number",
+        &mut errs,
+    );
+    let rd = operand_domain(
+        ctx,
+        rhs,
+        ColumnType::is_numeric,
+        "arithmetic",
+        "a number",
+        &mut errs,
+    );
+    let (Some(ld), Some(rd)) = (ld, rd) else {
+        return Err(errs);
+    };
+    match (ld.dimension(), rd.dimension()) {
+        (Some(a), Some(b)) => Ok(total((a * b).applied())),
+        _ if ld == rd => Ok(total(ld)),
+        _ => Err(vec![TypeError::new(
+            format!(
+                "arithmetic expects operands of the same type, found {} and {}",
+                domain_name(&ld),
+                domain_name(&rd)
+            ),
+            lhs.span,
+        )]),
+    }
+}
+
+/// `/` (ADR 0014, ADR 0026): `real`-backed operands only; the result divides
+/// the dimensions, so a same-dimension ratio cancels to bare `real`.
+fn type_div(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = Vec::new();
+    let ok = |d: &ColumnType| matches!(d, ColumnType::Real | ColumnType::Quantity(_));
+    let ld = operand_domain(ctx, lhs, ok, "`/`", "a real (`/` is real only)", &mut errs);
+    let rd = operand_domain(ctx, rhs, ok, "`/`", "a real (`/` is real only)", &mut errs);
+    let (Some(ld), Some(rd)) = (ld, rd) else {
+        return Err(errs);
+    };
+    let (Some(a), Some(b)) = (ld.dimension(), rd.dimension()) else {
+        unreachable!("`/` operands are real-backed, so both carry a dimension");
+    };
+    Ok(total((a / b).applied()))
+}
+
+/// `^` (ADR 0026, `11-physical-units.md`): on a dimensionless base the
+/// status quo (matching numeric operands, so `real ^ real` and `int ^ int`);
+/// on a dimensioned base the exponent must be an integer literal (optionally
+/// negated), because the result dimension is computed at compile time.
+/// `^ 0` cancels to bare `real`.
+fn type_pow(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = Vec::new();
+    let ld = operand_domain(
+        ctx,
+        lhs,
+        ColumnType::is_numeric,
+        "arithmetic",
+        "a number",
+        &mut errs,
+    );
+    let Some(ld) = ld else {
+        return Err(errs);
+    };
+    if let ColumnType::Quantity(dim) = ld {
+        let Some(n) = int_literal(rhs) else {
+            return Err(vec![TypeError::new(
+                "the exponent of a dimensioned value must be an integer literal \
+                 (the result dimension is computed at compile time)",
+                rhs.span,
+            )]);
+        };
+        let Ok(n) = i32::try_from(n) else {
+            return Err(vec![TypeError::new(
+                "the exponent of a dimensioned value is out of range",
+                rhs.span,
+            )]);
+        };
+        return Ok(total(dim.pow(n).applied()));
+    }
+    let rd = operand_domain(
+        ctx,
+        rhs,
+        ColumnType::is_numeric,
+        "arithmetic",
+        "a number",
+        &mut errs,
+    );
+    let Some(rd) = rd else {
+        return Err(errs);
+    };
+    if ld == rd {
+        Ok(total(ld))
+    } else {
+        Err(vec![TypeError::new(
+            format!(
+                "arithmetic expects operands of the same type, found {} and {}",
+                domain_name(&ld),
+                domain_name(&rd)
+            ),
+            lhs.span,
+        )])
+    }
+}
+
+/// The value of an integer-literal expression, seeing through one unary
+/// negation (`x ^ -2` parses as `x ^ (-2)`).
+fn int_literal(e: &Expr) -> Option<i64> {
+    match &e.kind {
+        ExprKind::Int(n) => Some(*n),
+        ExprKind::Unary(UnOp::Neg, inner) => match &inner.kind {
+            ExprKind::Int(n) => n.checked_neg(),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -796,14 +960,15 @@ fn require_bool(ctx: &Context, operand: &Expr, what: &str) -> Vec<TypeError> {
     }
 }
 
-fn domain_name(domain: &ColumnType) -> &'static str {
+fn domain_name(domain: &ColumnType) -> String {
     match domain {
-        ColumnType::String => "string",
-        ColumnType::Int => "int",
-        ColumnType::Real => "real",
-        ColumnType::Bool => "bool",
-        ColumnType::Date => "date",
-        ColumnType::Enum { .. } => "enum",
+        ColumnType::String => "string".into(),
+        ColumnType::Int => "int".into(),
+        ColumnType::Real => "real".into(),
+        ColumnType::Quantity(dim) => dim.type_name(),
+        ColumnType::Bool => "bool".into(),
+        ColumnType::Date => "date".into(),
+        ColumnType::Enum { .. } => "enum".into(),
     }
 }
 
@@ -843,6 +1008,12 @@ mod tests {
                     false,
                 ),
                 scol("flag", ColumnType::Bool, ColumnRole::Attr, false),
+                scol(
+                    "kelvin_reading",
+                    ColumnType::Quantity(Dimension::base("temperature").unwrap()),
+                    ColumnRole::Attr,
+                    false,
+                ),
             ],
             cardinality: crate::table::Cardinality::Singletons,
             span: Span::new(0, 0),
@@ -857,11 +1028,11 @@ mod tests {
     }
 
     fn row_ctx() -> Context {
-        Context::row("k", "r", &sample_table())
+        Context::row(&intrinsics(), "k", "r", &sample_table())
     }
 
     fn bag_ctx() -> Context {
-        Context::bag("k", "b", &sample_table())
+        Context::bag(&intrinsics(), "k", "b", &sample_table())
     }
 
     #[test]
@@ -1065,5 +1236,109 @@ mod tests {
         let ctx = bag_ctx();
         assert!(ty_of(&ctx, "b.temperature |> bogus").is_err());
         assert!(ty_of(&ctx, "bogus b.temperature").is_err());
+    }
+
+    // ADR 0026 (`11-physical-units.md`): dimensional arithmetic over the
+    // intrinsic base units and dimensioned columns.
+
+    fn quantity(dim: &str) -> ColumnType {
+        ColumnType::Quantity(Dimension::base(dim).unwrap())
+    }
+
+    #[test]
+    fn dimensional_arithmetic_follows_the_group() {
+        let ctx = row_ctx();
+        // The intrinsics are ambient dimensioned values of magnitude one.
+        assert_eq!(ty_of(&ctx, "kelvin"), Ok(total(quantity("temperature"))));
+        // Scaling by a bare real keeps the dimension (real is the identity).
+        assert_eq!(
+            ty_of(&ctx, "350.0 * kelvin"),
+            Ok(total(quantity("temperature")))
+        );
+        // `9.8 * meter / second^2` is an acceleration.
+        let accel = Dimension::base("length").unwrap() / Dimension::base("time").unwrap().pow(2);
+        assert_eq!(
+            ty_of(&ctx, "9.8 * meter / second^2"),
+            Ok(total(ColumnType::Quantity(accel)))
+        );
+        // A same-dimension ratio cancels to bare `real`.
+        assert_eq!(ty_of(&ctx, "meter / meter"), Ok(total(ColumnType::Real)));
+        // `+` requires equal dimensions, and bare `real` is a different
+        // dimension (the identity) from `length`.
+        let errs = ty_of(&ctx, "meter + second").expect_err("dimension mismatch");
+        assert!(errs[0].message.contains("same type"));
+        assert!(ty_of(&ctx, "meter + 1.0").is_err());
+        // `int` never mixes with a `real`-backed domain.
+        assert!(ty_of(&ctx, "2 * meter").is_err());
+        // Negation preserves the dimension.
+        assert_eq!(ty_of(&ctx, "-kelvin"), Ok(total(quantity("temperature"))));
+    }
+
+    #[test]
+    fn dimensioned_pow_takes_an_integer_literal() {
+        let ctx = row_ctx();
+        // `^ 0` cancels to bare `real`; a negative literal is allowed.
+        assert_eq!(ty_of(&ctx, "second ^ 0"), Ok(total(ColumnType::Real)));
+        let hz = Dimension::base("time").unwrap().pow(-1);
+        assert_eq!(
+            ty_of(&ctx, "second ^ -1"),
+            Ok(total(ColumnType::Quantity(hz)))
+        );
+        let errs = ty_of(&ctx, "second ^ 2.0").expect_err("non-literal exponent");
+        assert!(errs[0].message.contains("integer literal"));
+        // Dimensionless bases keep the status quo: `real ^ int` stays
+        // rejected (`11-physical-units.md`).
+        assert!(ty_of(&ctx, "3.0 ^ 2").is_err());
+        assert_eq!(ty_of(&ctx, "2 ^ 3"), Ok(total(ColumnType::Int)));
+    }
+
+    #[test]
+    fn dimensions_gate_comparison_and_equality() {
+        let ctx = row_ctx();
+        // Same dimension: orderable.
+        assert_eq!(ty_of(&ctx, "r.kelvin_reading > kelvin"), Ok(Ty::Bool));
+        // Cross-dimension comparison is a mismatch.
+        assert!(ty_of(&ctx, "meter < second").is_err());
+        assert!(ty_of(&ctx, "r.kelvin_reading > 30.0").is_err());
+        // Equality stays undefined on any real-backed domain, and the
+        // diagnostic renders the dimensioned type.
+        let errs = ty_of(&ctx, "kelvin == kelvin").expect_err("real-backed equality");
+        assert!(errs[0].message.contains("temperature[real]"));
+    }
+
+    #[test]
+    fn aggregates_preserve_the_dimension() {
+        let ctx = bag_ctx();
+        assert_eq!(
+            ty_of(&ctx, "max b.kelvin_reading"),
+            Ok(total(quantity("temperature")))
+        );
+        assert_eq!(
+            ty_of(&ctx, "sum b.kelvin_reading"),
+            Ok(total(quantity("temperature")))
+        );
+        assert_eq!(
+            ty_of(&ctx, "count b.kelvin_reading"),
+            Ok(total(ColumnType::Int))
+        );
+        // A mean-style ratio: dimensioned sum over a dimensionless count.
+        assert_eq!(
+            ty_of(
+                &ctx,
+                "sum b.kelvin_reading / to_real (count b.kelvin_reading)"
+            ),
+            Ok(total(quantity("temperature")))
+        );
+    }
+
+    #[test]
+    fn lambda_parameters_shadow_intrinsics() {
+        // A pre-existing lambda parameter named like an intrinsic keeps
+        // working: parameters bind after the ambient names.
+        let ctx = Context::row(&intrinsics(), "k", "meter", &sample_table());
+        assert_eq!(
+            ty_of(&ctx, "meter.temperature"),
+            Ok(total(ColumnType::Real))
+        );
     }
 }

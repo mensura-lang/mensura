@@ -211,7 +211,8 @@ store readings {
 }
 
 view machine_temperature {
-  readings |> map_bags |_, b| (.max_temperature = max b.temperature)
+  readings |> assume { complete }
+           |> map_bags |_, b| (.max_temperature = max b.temperature)
 }
 ```
 

@@ -30,10 +30,13 @@ pub enum PipeTy {
 }
 
 /// The named source tables in scope (a store presented to a pipeline,
-/// `10-views.md`, "Sources resolve by name").
+/// `10-views.md`, "Sources resolve by name"), together with the ambient
+/// value environment every expression site sees (the intrinsic base units,
+/// top-level consts, and imported modules; `12-modules-and-imports.md`).
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
     bound: BTreeMap<String, PipeTy>,
+    ambient: crate::expr_check::Ambient,
 }
 
 impl Sources {
@@ -44,6 +47,12 @@ impl Sources {
     /// Add a store source, presented as a single table.
     pub fn with(mut self, name: &str, table: TableType) -> Self {
         self.bound.insert(name.to_string(), PipeTy::Table(table));
+        self
+    }
+
+    /// Set the ambient value environment expression sites resolve against.
+    pub fn with_ambient(mut self, ambient: crate::expr_check::Ambient) -> Self {
+        self.ambient = ambient;
         self
     }
 
@@ -161,16 +170,16 @@ fn dispatch_op(
     let result = match op {
         "promote" => op_promote(input, args, span),
         "demote" => op_demote(input, args, span),
-        "flat_map" => op_flat_map(input, args, span),
-        "map_bags" => op_map_bags(input, args, span),
-        "split" => op_split(input, args, span),
+        "flat_map" => op_flat_map(sources, input, args, span),
+        "map_bags" => op_map_bags(sources, input, args, span),
+        "split" => op_split(sources, input, args, span),
         "union" => op_union(input, args, span),
         "lookup" => op_join(sources, input, args, span, JoinKind::Left),
         "lookup_total" => op_join(sources, input, args, span, JoinKind::Inner),
         "unpivot" => op_unpivot(input, args, span),
         "pivot" => op_pivot(input, args, span),
         "assume" => op_assume(input, args, span),
-        "completeness_check" => op_completeness_check(input, args, span),
+        "completeness_check" => op_completeness_check(sources, input, args, span),
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
             // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
@@ -262,7 +271,7 @@ fn op_join(
     };
 
     let (params, body) = lambda_params(&[key_arg], "join", 2, key_arg.span)?;
-    let ctx = Context::row(params[0], params[1], &left);
+    let ctx = Context::row(&sources.ambient, params[0], params[1], &left);
     let key_ty = type_expr(&ctx, body)?;
     match key_ty.known_value_domain() {
         Some(domain) if *domain == right_key.domain => {}
@@ -328,10 +337,15 @@ fn op_join(
 /// `Bag`). A body that can drop (some branch yields fewer rows than it was
 /// given) may leave holes in a fiber, so it forfeits `exhaustive`; a provably
 /// non-dropping body carries it (`map_exhaustive`, ADR 0020 section 2).
-fn op_flat_map(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_flat_map(
+    sources: &Sources,
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "flat_map", 2, span)?;
-    let ctx = Context::row(params[0], params[1], &table);
+    let ctx = Context::row(&sources.ambient, params[0], params[1], &table);
     let (schema, sizes) = row_collection(&ctx, body, &table)?;
     let Some(schema) = schema else {
         return Err(error(
@@ -608,10 +622,15 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// the aggregate shape, one per input row in the window shape, so no fiber
 /// loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive` the
 /// aggregate-shape special case).
-fn op_map_bags(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_map_bags(
+    sources: &Sources,
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "map_bags", 2, span)?;
-    let ctx = Context::bag(params[0], params[1], &table);
+    let ctx = Context::bag(&sources.ambient, params[0], params[1], &table);
     let (columns, totality, cardinality) = bag_record_content(&ctx, body)?;
     if cardinality == Cardinality::Singletons
         && table.qualifiers.cardinality == Cardinality::Bag
@@ -716,10 +735,15 @@ fn bag_record_content(
 /// both sides: the predicate reads the full key, so it can send two variants of
 /// the same residual fiber to different sides (`split_not_exhaustive`,
 /// ADR 0020 section 2).
-fn op_split(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_split(
+    sources: &Sources,
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "split", 1, span)?;
-    let ctx = Context::key(params[0], &table);
+    let ctx = Context::key(&sources.ambient, params[0], &table);
     if type_expr(&ctx, body)? != Ty::Bool {
         return Err(error("`split`'s predicate must be a boolean", body.span));
     }
@@ -1280,6 +1304,7 @@ fn op_assume(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
 /// current key. Each assert is a boolean over the key context (`k`). Establishes
 /// `Complete`; all other qualifiers preserved.
 fn op_completeness_check(
+    sources: &Sources,
     input: PipeTy,
     args: &[&Expr],
     span: Span,
@@ -1299,7 +1324,7 @@ fn op_completeness_check(
     };
     let mut errs = Vec::new();
     let mut assert_count = 0;
-    let ctx = Context::key("k", &table);
+    let ctx = Context::key(&sources.ambient, "k", &table);
     for stmt in &block.stmts {
         match stmt {
             Stmt::Assert(e) => {
