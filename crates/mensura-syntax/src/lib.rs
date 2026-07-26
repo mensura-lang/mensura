@@ -1,8 +1,9 @@
 //! Syntax layer for the Mensura language: lexer, AST, and the hand-written
 //! recursive-descent, LL(1) parser (`docs/language/04-grammar.md`).
 //!
-//! The parser covers the declaration subset (`unit`, `store`, `shape`, `enum`)
-//! through [`parse`], and the expression sublanguage through [`parse_expr`].
+//! The parser covers the top-level items (`unit`, `store`, `shape`, `enum`,
+//! `view`, `let`, `import`) through [`parse`], and the expression
+//! sublanguage through [`parse_expr`].
 
 pub mod ast;
 pub mod expr;
