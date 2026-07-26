@@ -34,9 +34,12 @@ pub struct ImportDecl {
 }
 
 /// A top-level `let` binding (`docs/language/12-modules-and-imports.md`,
-/// ADR 0027).  The kind is decided by the token after the name: `[` opens
-/// the parameter list of a type-level dimension alias (ADR 0026,
-/// Decision 8); `:` or `=` continues a const value binding.
+/// ADR 0027, Decision 1 as revised).  Like every other item body, a `let`
+/// body is brace-closed, so item boundaries stay independent of the
+/// expression grammar.  The kind is decided by the token after the name:
+/// `[` opens the parameter list of a type-level dimension alias (ADR
+/// 0026, Decision 8); `:` (an ascription) or `{` continues a const value
+/// binding.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LetDecl {
     pub name: Ident,
@@ -47,13 +50,15 @@ pub struct LetDecl {
 /// The two kinds a top-level `let` binds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LetKind {
-    /// `let name [: type] = expr`: an immutable, pure const value.
+    /// `let name [: type] { block }`: an immutable, pure const value.  The
+    /// body is the ordinary statement block; the const evaluator bounds
+    /// what it may compute.
     Value {
         ty: Option<TypeExpr>,
-        value: crate::expr::Expr,
+        value: crate::expr::Block,
     },
-    /// `let name[T, ...] = <type-level expr>`: a dimension alias, whose
-    /// body is parsed with the type grammar.
+    /// `let name[T, ...] { <type-level expr> }`: a dimension alias, whose
+    /// braced body is parsed with the type grammar.
     DimAlias { params: Vec<Ident>, body: TypeExpr },
 }
 

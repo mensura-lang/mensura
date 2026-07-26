@@ -18,7 +18,7 @@ import si
 
 // A dimensioned threshold constant: `kelvin` is an intrinsic base unit, so
 // `overheat` is a `temperature[real]` value, usable in any view body.
-let overheat = 350.0 * kelvin
+let overheat { 350.0 * kelvin }
 
 unit Machine {
   id: string

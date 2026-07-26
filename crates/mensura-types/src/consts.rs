@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use mensura_syntax::{BinOp, Expr, ExprKind, Ident, Span, TypeExpr, UnOp};
+use mensura_syntax::{BinOp, Block, Expr, ExprKind, Ident, Span, Stmt, TypeExpr, UnOp};
 
 use crate::expr_check::{Optionality, Ty};
 use crate::model::ColumnType;
@@ -61,11 +61,13 @@ impl ConstValue {
     }
 }
 
-/// One top-level value binding awaiting evaluation.
+/// One top-level value binding awaiting evaluation.  The body is the
+/// braced statement block of ADR 0027 Decision 1 (as revised): local
+/// `let`s and a trailing result expression.
 pub(crate) struct ConstDecl<'a> {
     pub name: &'a Ident,
     pub ty: Option<&'a TypeExpr>,
-    pub value: &'a Expr,
+    pub value: &'a Block,
 }
 
 /// Evaluate a set of const bindings against the intrinsics and the imported
@@ -156,7 +158,7 @@ impl<'a> Evaluator<'a> {
             return None;
         }
         self.in_progress.push(name.to_string());
-        let value = self.eval(decl.value);
+        let value = self.eval_block(decl.value, &mut Vec::new());
         self.in_progress.pop();
         if let Some(v) = &value {
             self.done.insert(name.to_string(), v.clone());
@@ -164,7 +166,55 @@ impl<'a> Evaluator<'a> {
         value
     }
 
-    fn eval(&mut self, e: &Expr) -> Option<ConstValue> {
+    /// Evaluate a const block: local `let`s (lexically scoped, shadowing
+    /// outer names) and a trailing result expression.  `assert` is not yet
+    /// supported here (`12-modules-and-imports.md`, "Deferred").
+    fn eval_block(
+        &mut self,
+        block: &Block,
+        locals: &mut Vec<(String, ConstValue)>,
+    ) -> Option<ConstValue> {
+        let depth = locals.len();
+        let mut result = None;
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            let last = i + 1 == block.stmts.len();
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    let v = self.eval_expr(value, locals)?;
+                    locals.push((name.name.clone(), v));
+                }
+                Stmt::Assert(e) => {
+                    return self.fail(
+                        "an `assert` in a const binding is not yet supported",
+                        e.span,
+                    );
+                }
+                Stmt::Expr(e) if last => {
+                    result = Some(self.eval_expr(e, locals)?);
+                }
+                Stmt::Expr(e) => {
+                    return self.fail(
+                        "only the final expression of a const block is its result",
+                        e.span,
+                    );
+                }
+            }
+        }
+        locals.truncate(depth);
+        match result {
+            Some(v) => Some(v),
+            None => self.fail(
+                "a const block must end in its result expression",
+                block.span,
+            ),
+        }
+    }
+
+    fn eval_expr(
+        &mut self,
+        e: &Expr,
+        locals: &mut Vec<(String, ConstValue)>,
+    ) -> Option<ConstValue> {
         match &e.kind {
             ExprKind::Int(n) => Some(ConstValue::Int(*n)),
             ExprKind::Float(x) => Some(ConstValue::Real {
@@ -173,9 +223,13 @@ impl<'a> Evaluator<'a> {
             }),
             ExprKind::Str(s) => Some(ConstValue::Str(s.clone())),
             ExprKind::Bool(b) => Some(ConstValue::Bool(*b)),
-            ExprKind::Name(name) => self.value_of(name, e.span),
-            ExprKind::Member(base, field) => self.member(base, field),
-            ExprKind::Unary(UnOp::Neg, operand) => match self.eval(operand)? {
+            ExprKind::Name(name) => match locals.iter().rev().find(|(n, _)| n == name) {
+                Some((_, v)) => Some(v.clone()),
+                None => self.value_of(name, e.span),
+            },
+            ExprKind::Member(base, field) => self.member(base, field, locals),
+            ExprKind::Block(block) => self.eval_block(block, locals),
+            ExprKind::Unary(UnOp::Neg, operand) => match self.eval_expr(operand, locals)? {
                 ConstValue::Int(n) => match n.checked_neg() {
                     Some(n) => Some(ConstValue::Int(n)),
                     None => self.fail("integer overflow in a const expression", e.span),
@@ -187,8 +241,8 @@ impl<'a> Evaluator<'a> {
                 _ => self.fail("negation expects a number", operand.span),
             },
             ExprKind::Binary(op, lhs, rhs) => {
-                let a = self.eval(lhs);
-                let b = self.eval(rhs);
+                let a = self.eval_expr(lhs, locals);
+                let b = self.eval_expr(rhs, locals);
                 self.arith(*op, a?, b?, lhs.span, rhs.span)
             }
             _ => self.fail(
@@ -199,13 +253,24 @@ impl<'a> Evaluator<'a> {
     }
 
     /// `module.member`: the only member access a const expression admits.
-    fn member(&mut self, base: &Expr, field: &Ident) -> Option<ConstValue> {
+    fn member(
+        &mut self,
+        base: &Expr,
+        field: &Ident,
+        locals: &[(String, ConstValue)],
+    ) -> Option<ConstValue> {
         let ExprKind::Name(module) = &base.kind else {
             return self.fail(
                 "member access in a const expression reads a module member (`si.km`)",
                 base.span,
             );
         };
+        if locals.iter().any(|(n, _)| n == module) {
+            return self.fail(
+                "member access in a const expression reads a module member (`si.km`)",
+                base.span,
+            );
+        }
         let Some(env) = self.modules.get(module) else {
             return self.fail(
                 format!("unknown module `{module}` in a const expression"),

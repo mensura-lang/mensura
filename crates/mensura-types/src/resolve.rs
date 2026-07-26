@@ -2839,8 +2839,8 @@ mod tests {
     fn dimension_aliases_expand_transparently() {
         let schemas = resolve_str(
             r#"
-            let speed[T] = (length / time)[T]
-            let accel[T] = speed[T] / time[T]
+            let speed[T] { (length / time)[T] }
+            let accel[T] { speed[T] / time[T] }
             unit Machine { id: string }
             store readings {
               unit { Machine }
@@ -2880,7 +2880,7 @@ mod tests {
         }));
         // An alias must be applied.
         let errs = errors(
-            "let speed[T] = (length / time)[T]
+            "let speed[T] { (length / time)[T] }
              unit U { id: string } store s { unit { U } attr { v: speed } }",
         );
         assert!(errs.iter().any(|e| {
@@ -2901,27 +2901,27 @@ mod tests {
     fn dimension_alias_declarations_are_validated() {
         // Recursive aliases are cycles.
         let errs = errors(
-            "let a[T] = b[T]
-             let b[T] = a[T]",
+            "let a[T] { b[T] }
+             let b[T] { a[T] }",
         );
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("recursive dimension alias"))
         );
         // Exactly one backing parameter.
-        let errs = errors("let speed[T, U] = (length / time)[T]");
+        let errs = errors("let speed[T, U] { (length / time)[T] }");
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("exactly one backing parameter"))
         );
         // An alias may not shadow the built-in type vocabulary.
-        let errs = errors("let length[T] = (time / time)[T]");
+        let errs = errors("let length[T] { (time / time)[T] }");
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("built-in type name"))
         );
         // Alias names are lowercase; parameters are PascalCase.
-        let errs = errors("let Speed[T] = (length / time)[T]");
+        let errs = errors("let Speed[T] { (length / time)[T] }");
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("must be snake_case"))
@@ -3006,7 +3006,7 @@ mod tests {
         let program = resolve_program(
             r#"
             import si
-            let limit = 350.0 * kelvin
+            let limit { 350.0 * kelvin }
             unit Machine { id: string }
             store readings {
               unit { Machine }
@@ -3041,14 +3041,14 @@ mod tests {
     fn consts_are_order_independent_but_not_recursive() {
         // `km` is declared after its user: order-independence.
         resolve_program(
-            "let two_km = 2.0 * km
-             let km = 1000.0 * meter",
+            "let two_km { 2.0 * km }
+             let km { 1000.0 * meter }",
         )
         .expect("order-independent bindings");
         // A cycle is a diagnostic.
         let errs = errors(
-            "let a = b + 1.0
-             let b = a + 1.0",
+            "let a { b + 1.0 }
+             let b { a + 1.0 }",
         );
         assert!(
             errs.iter()
@@ -3057,10 +3057,37 @@ mod tests {
     }
 
     #[test]
+    fn const_blocks_host_local_lets() {
+        // The value body is the ordinary statement block (ADR 0027,
+        // Decision 1 as revised): local `let`s scope lexically and the
+        // trailing expression is the result.
+        let program = resolve_program(
+            "let overheat: temperature[real] {
+                 let base = 300.0 * kelvin;
+                 base + 50.0 * kelvin
+             }",
+        )
+        .expect("a const block with locals resolves");
+        assert!(program.schemas.is_empty());
+        // An `assert` in a const block is deferred.
+        let errs = errors("let x { assert true; 1.0 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`assert` in a const binding"))
+        );
+        // A block without a trailing result has no value.
+        let errs = errors("let x { let y = 1.0; }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("must end in its result expression"))
+        );
+    }
+
+    #[test]
     fn const_ascriptions_are_checked() {
-        resolve_program("let limit: temperature[real] = 350.0 * kelvin")
+        resolve_program("let limit: temperature[real] { 350.0 * kelvin }")
             .expect("a correct ascription");
-        let errs = errors("let limit: temperature[real] = 350.0");
+        let errs = errors("let limit: temperature[real] { 350.0 }");
         assert!(errs.iter().any(|e| {
             e.message
                 .contains("declared `temperature[real]` but its value is `real`")
@@ -3069,14 +3096,14 @@ mod tests {
 
     #[test]
     fn const_dimension_mismatch_is_an_error() {
-        let errs = errors("let nonsense = meter + second");
+        let errs = errors("let nonsense { meter + second }");
         assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
     }
 
     #[test]
     fn value_namespace_collisions_are_errors() {
         // An intrinsic cannot be redeclared.
-        let errs = errors("let meter = 2.0");
+        let errs = errors("let meter { 2.0 }");
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("intrinsic base unit"))
@@ -3084,14 +3111,14 @@ mod tests {
         // Imports and lets share one namespace.
         let errs = errors(
             "import si
-             let si = 1.0",
+             let si { 1.0 }",
         );
         assert!(errs.iter().any(|e| e.message.contains("duplicate")));
         // A value name may not reuse a table name.
         let errs = errors(
             "unit Machine { id: string }
              store readings { unit { Machine } attr* { kelvin_r: real } }
-             let readings = 1.0",
+             let readings { 1.0 }",
         );
         assert!(
             errs.iter()
@@ -3108,7 +3135,7 @@ mod tests {
         );
         let errs = errors(
             "import si
-             let x = si.bogus",
+             let x { si.bogus }",
         );
         assert!(
             errs.iter()
@@ -3117,7 +3144,7 @@ mod tests {
         // A module name is not a value.
         let errs = errors(
             "import si
-             let x = si",
+             let x { si }",
         );
         assert!(
             errs.iter()
@@ -3128,7 +3155,7 @@ mod tests {
     #[test]
     fn a_const_is_not_a_table() {
         let errs = errors(
-            "let km = 1000.0 * meter
+            "let km { 1000.0 * meter }
              view v { km |> flat_map |_, r| r }",
         );
         assert!(

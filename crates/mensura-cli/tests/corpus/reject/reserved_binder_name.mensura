@@ -1,0 +1,3 @@
+// Reject: a reserved word cannot name a `let` binding; a value named `let`
+// or `known` could never be referenced (`04-grammar.md`).
+let known { 1.0 }

@@ -1,4 +1,4 @@
 // Reject: imports and top-level `let`s share one value namespace, and a
 // collision is an error, not a shadow (ADR 0027, Decision 3).
 import si
-let si = 1.0
+let si { 1.0 }

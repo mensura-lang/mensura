@@ -4,8 +4,8 @@
 // view body all type-check together.
 import si
 
-let overheat = 350.0 * kelvin
-let speed[T] = (length / time)[T]
+let overheat { 350.0 * kelvin }
+let speed[T] { (length / time)[T] }
 
 unit Machine { id: string }
 

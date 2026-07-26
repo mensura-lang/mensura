@@ -1,0 +1,11 @@
+// Reject: statements are `;`-separated, and `let`/`assert` are reserved in
+// expressions, so a forgotten separator stops at the next statement keyword
+// with a pointed error instead of mis-parsing it as an application argument
+// (`04-grammar.md`, "Reserved words in expressions").
+unit Machine { id: string }
+store machines { unit { Machine } attr { rank: int } }
+view v {
+  let t = machines
+  let u = t;
+  u
+}
