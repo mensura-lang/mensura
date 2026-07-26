@@ -83,6 +83,10 @@ pub fn type_pipeline(sources: &Sources, expr: &Expr) -> Result<PipeTy, Vec<TypeE
     match &expr.kind {
         ExprKind::Name(name) => match sources.get(name) {
             Some(pipe) => Ok(pipe.clone()),
+            None if sources.ambient.contains_key(name) => Err(error(
+                format!("`{name}` is a constant, not a table"),
+                expr.span,
+            )),
             None => {
                 let hint = suffix(name, sources.bound.keys().cloned().collect::<Vec<_>>());
                 Err(error(format!("unknown source `{name}`{hint}"), expr.span))

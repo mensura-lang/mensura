@@ -125,7 +125,12 @@ five existing declarations; the LL(1) argument is in `04-grammar.md`.
   (ADR 0027, Decision 7; provisional, no consumer yet).
 - `exposing` lists (selective unqualified import).
 - Module-qualified names in *type* position (`geo.speed[real]`): rejected
-  with "not yet supported" until a bundled module exports an alias.
+  with "not yet supported" until a bundled module exports an alias.  For
+  the same reason a module that *declares* a dimension alias is rejected
+  (its type-level exports would be unreachable).
+- Imports *inside* a bundled module (with the DAG check they imply):
+  `si` imports nothing, so module-internal imports are rejected with
+  "not yet supported" until a second bundled module needs them.
 - File identities on spans (above).
 - Value-level `let` statements inside view blocks remain table-valued
   only; scalar block `let`s are a separate follow-up.

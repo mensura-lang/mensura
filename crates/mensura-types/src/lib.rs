@@ -5,8 +5,11 @@
 //! for what a store is and `docs/toolkit/03-storage-backend.md` for how a
 //! `Schema` becomes a table.
 
+mod consts;
 pub mod expr_check;
+mod lower;
 pub mod model;
+mod modules;
 pub mod pipe_check;
 pub mod resolve;
 mod suggest;

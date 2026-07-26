@@ -14,7 +14,7 @@
 //! [`Schema`]; a store yields a [`Schema`] and a view a [`ViewPlan`]
 //! (`docs/toolkit/04-processing-layer.md`).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use mensura_syntax::{
     Attr, Block, EnumDecl, Expr, ExprKind, Field, Ident, Item, LetKind, NameSeg, NameTemplate,
@@ -22,7 +22,9 @@ use mensura_syntax::{
     ViewDecl, is_identifier,
 };
 
+use crate::consts::{ConstDecl, eval_const_bindings};
 use crate::model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
+use crate::modules::ModuleEnv;
 use crate::pipe_check::{Sources, type_view};
 use crate::table::{Cardinality, TableType};
 use crate::units::Dimension;
@@ -35,7 +37,7 @@ pub struct ResolveError {
 }
 
 impl ResolveError {
-    fn new(message: impl Into<String>, span: Span) -> Self {
+    pub(crate) fn new(message: impl Into<String>, span: Span) -> Self {
         ResolveError {
             message: message.into(),
             span,
@@ -117,6 +119,8 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     let mut enums: HashMap<&str, &EnumDecl> = HashMap::new();
     let mut views: Vec<&ViewDecl> = Vec::new();
     let mut dim_aliases: DimAliases = HashMap::new();
+    let mut imports: Vec<&mensura_syntax::ImportDecl> = Vec::new();
+    let mut const_decls: Vec<ConstDecl> = Vec::new();
 
     for item in &program.items {
         match item {
@@ -184,25 +188,27 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                 check_case(&v.name.name, v.name.span, Case::Snake, "view", &mut errors);
                 views.push(v);
             }
-            // Transitional: resolved by the modules/consts commit of this
-            // change series.
             Item::Import(i) => {
-                errors.push(ResolveError::new(
-                    "`import` is not yet supported".to_string(),
-                    i.span,
-                ));
+                check_case(
+                    &i.name.name,
+                    i.name.span,
+                    Case::Snake,
+                    "import",
+                    &mut errors,
+                );
+                imports.push(i);
             }
             Item::Let(l) => match &l.kind {
                 LetKind::DimAlias { params, body } => {
                     collect_dim_alias(&l.name, params, body, &mut dim_aliases, &mut errors);
                 }
-                // Transitional: const value bindings land with the
-                // modules/consts commit of this change series.
-                LetKind::Value { .. } => {
-                    errors.push(ResolveError::new(
-                        "a top-level `let` value binding is not yet supported".to_string(),
-                        l.span,
-                    ));
+                LetKind::Value { ty, value } => {
+                    check_case(&l.name.name, l.name.span, Case::Snake, "let", &mut errors);
+                    const_decls.push(ConstDecl {
+                        name: &l.name,
+                        ty: ty.as_ref(),
+                        value,
+                    });
                 }
             },
         }
@@ -230,6 +236,101 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
             Err(e) => errors.push(e),
         }
     }
+
+    // The value namespace (`12-modules-and-imports.md`): imports, top-level
+    // `let`s (both kinds), and the intrinsic base units form one namespace,
+    // and a collision is an error, not a shadow (ADR 0027, Decision 3).  A
+    // value name may not reuse a store or view name either: pipeline
+    // positions resolve table names and expression positions resolve value
+    // names, and one name in both would read ambiguously (and make constant
+    // folding unsound).
+    let mut table_names: HashSet<&str> = store_names.clone();
+    for v in &views {
+        table_names.insert(&v.name.name);
+    }
+    let mut value_names: HashSet<&str> = HashSet::new();
+    for item in &program.items {
+        let (name, what) = match item {
+            Item::Import(i) => (&i.name, "import"),
+            Item::Let(l) => (&l.name, "`let` binding"),
+            _ => continue,
+        };
+        if crate::units::BASE_UNITS.contains(&name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "`{}` is an intrinsic base unit and cannot be redeclared",
+                    name.name
+                ),
+                name.span,
+            ));
+            continue;
+        }
+        if !value_names.insert(&name.name) {
+            errors.push(ResolveError::new(
+                format!("duplicate {what} `{}`", name.name),
+                name.span,
+            ));
+        }
+        if table_names.contains(name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "{what} `{}` collides with a store or view of the same name",
+                    name.name
+                ),
+                name.span,
+            ));
+        }
+    }
+
+    // Resolve imports: a bare import is bundled-only (ADR 0027, Decision 6).
+    // A bundled module's own diagnostics carry no usable span here (spans
+    // have no file identity yet), so they report at the import site.
+    let mut modules: BTreeMap<String, &'static ModuleEnv> = BTreeMap::new();
+    for i in &imports {
+        match crate::modules::bundled(&i.name.name) {
+            None => errors.push(ResolveError::new(
+                format!(
+                    "unknown module `{}`: a bare import resolves against the \
+                     bundled modules only (`si`)",
+                    i.name.name
+                ),
+                i.name.span,
+            )),
+            Some(Err(messages)) => {
+                for message in messages {
+                    errors.push(ResolveError::new(message.clone(), i.span));
+                }
+            }
+            Some(Ok(env)) => {
+                modules.insert(i.name.name.clone(), env);
+            }
+        }
+    }
+
+    // Evaluate the const bindings: order-independent and non-recursive, so
+    // evaluation is demand-driven with cycle detection (`crate::consts`).
+    let ascription = |ty: &TypeExpr| -> Result<ColumnType, ResolveError> {
+        resolve_type(ty, &units, &enums, &dim_aliases)
+    };
+    let (const_values, const_errors) = eval_const_bindings(&const_decls, &modules, &ascription);
+    errors.extend(const_errors);
+
+    // The ambient value environment every expression site sees: the
+    // intrinsics, the consts, and each module as a record of its members
+    // (`si.km` then types through ordinary member access).
+    let mut ambient = crate::expr_check::intrinsics();
+    for (name, value) in &const_values {
+        ambient.insert(name.clone(), value.ty());
+    }
+    for (name, env) in &modules {
+        let members = env
+            .values
+            .iter()
+            .map(|(n, v)| (n.clone(), v.ty()))
+            .collect();
+        ambient.insert(name.clone(), crate::expr_check::Ty::Record(members));
+    }
+    let subst = crate::lower::Subst::new(&const_values, &modules);
 
     // Stores and views share one table namespace at the storage level
     // (`docs/toolkit/04-processing-layer.md`): both materialize as a table
@@ -285,9 +386,8 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     let mut view_plans = Vec::new();
     if !views.is_empty() {
         // Expression sites inside view bodies see the ambient environment:
-        // the seven intrinsic base units (ADR 0026, Decision 6; top-level
-        // consts and imported modules join it with the modules commit).
-        let mut sources = Sources::new().with_ambient(crate::expr_check::intrinsics());
+        // the intrinsics, the top-level consts, and the imported modules.
+        let mut sources = Sources::new().with_ambient(ambient.clone());
         for schema in &schemas {
             sources = sources.with(&schema.store, TableType::from_store(schema));
         }
@@ -308,7 +408,11 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                         &dim_aliases,
                         &mut errors,
                     );
-                    view_plans.push(view_plan(v, &output, &store_names));
+                    // Constant-fold the body before it reaches the
+                    // runtime (`crate::lower`).
+                    let mut plan = view_plan(v, &output, &store_names);
+                    crate::lower::lower_view_body(&mut plan.body, &subst);
+                    view_plans.push(plan);
                 }
                 Err(errs) => {
                     for e in errs {
@@ -1151,7 +1255,7 @@ fn attr_block_word(c: Cardinality) -> &'static str {
     }
 }
 
-fn type_name(ty: &ColumnType) -> String {
+pub(crate) fn type_name(ty: &ColumnType) -> String {
     match ty {
         ColumnType::String => "string".into(),
         ColumnType::Int => "int".into(),
@@ -1308,21 +1412,15 @@ fn collect_dim_alias<'a>(
         "alias parameter",
         errors,
     );
-    if aliases
-        .insert(
-            &name.name,
-            DimAliasDef {
-                param: &param.name,
-                body,
-            },
-        )
-        .is_some()
-    {
-        errors.push(ResolveError::new(
-            format!("duplicate dimension alias `{}`", name.name),
-            name.span,
-        ));
-    }
+    // A duplicate alias name is reported by the value-namespace pass (all
+    // `let`s and imports share it), so the insert may overwrite silently.
+    aliases.insert(
+        &name.name,
+        DimAliasDef {
+            param: &param.name,
+            body,
+        },
+    );
 }
 
 /// A collected dimension alias (`let name[T] = <type-level expr>`, ADR 0026
@@ -1364,6 +1462,13 @@ struct TlEnv<'a> {
     /// stands for at this expansion (the actual backing when the alias is
     /// applied, or itself when the declaration is being validated).
     param: Option<(&'a str, TlBacking)>,
+}
+
+/// Resolve a type expression against the built-in vocabulary only (no
+/// units, enums, or aliases in scope): the environment a bundled module's
+/// ascriptions see (`crate::modules`).
+pub(crate) fn resolve_type_builtin(ty: &TypeExpr) -> Result<ColumnType, ResolveError> {
+    resolve_type(ty, &HashMap::new(), &HashMap::new(), &HashMap::new())
 }
 
 fn resolve_type(
@@ -2891,5 +2996,151 @@ mod tests {
         "#;
         let errs = errors(bad);
         assert!(errs.iter().any(|e| e.message.contains("same type")));
+    }
+
+    // ADR 0027 (`12-modules-and-imports.md`): imports, top-level consts,
+    // and constant lowering.
+
+    #[test]
+    fn imports_and_consts_resolve_and_lower() {
+        let program = resolve_program(
+            r#"
+            import si
+            let limit = 350.0 * kelvin
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* {
+                temperature: temperature[real]
+                distance:    length[real]
+              }
+            }
+            view hot {
+              readings |> flat_map |_, r|
+                if r.temperature > limit and r.distance > 2.0 * si.km then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        // The lowered body carries only literals for the consts: `limit`
+        // folded to 350.0, `si.km` to 1000.0, and no name references remain.
+        let body = format!("{:?}", program.views[0].body);
+        assert!(body.contains("Float(350.0)"), "limit folds: {body}");
+        assert!(body.contains("Float(1000.0)"), "si.km folds: {body}");
+        assert!(
+            !body.contains("\"si\""),
+            "no module reference remains: {body}"
+        );
+        assert!(
+            !body.contains("\"limit\""),
+            "no const reference remains: {body}"
+        );
+    }
+
+    #[test]
+    fn consts_are_order_independent_but_not_recursive() {
+        // `km` is declared after its user: order-independence.
+        resolve_program(
+            "let two_km = 2.0 * km
+             let km = 1000.0 * meter",
+        )
+        .expect("order-independent bindings");
+        // A cycle is a diagnostic.
+        let errs = errors(
+            "let a = b + 1.0
+             let b = a + 1.0",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("recursive const binding"))
+        );
+    }
+
+    #[test]
+    fn const_ascriptions_are_checked() {
+        resolve_program("let limit: temperature[real] = 350.0 * kelvin")
+            .expect("a correct ascription");
+        let errs = errors("let limit: temperature[real] = 350.0");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("declared `temperature[real]` but its value is `real`")
+        }));
+    }
+
+    #[test]
+    fn const_dimension_mismatch_is_an_error() {
+        let errs = errors("let nonsense = meter + second");
+        assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
+    }
+
+    #[test]
+    fn value_namespace_collisions_are_errors() {
+        // An intrinsic cannot be redeclared.
+        let errs = errors("let meter = 2.0");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("intrinsic base unit"))
+        );
+        // Imports and lets share one namespace.
+        let errs = errors(
+            "import si
+             let si = 1.0",
+        );
+        assert!(errs.iter().any(|e| e.message.contains("duplicate")));
+        // A value name may not reuse a table name.
+        let errs = errors(
+            "unit Machine { id: string }
+             store readings { unit { Machine } attr* { kelvin_r: real } }
+             let readings = 1.0",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("collides with a store or view"))
+        );
+    }
+
+    #[test]
+    fn unknown_module_and_member_are_pointed() {
+        let errs = errors("import geo");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown module `geo`"))
+        );
+        let errs = errors(
+            "import si
+             let x = si.bogus",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("module `si` has no member `bogus`"))
+        );
+        // A module name is not a value.
+        let errs = errors(
+            "import si
+             let x = si",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`si` is a module, not a value"))
+        );
+    }
+
+    #[test]
+    fn a_const_is_not_a_table() {
+        let errs = errors(
+            "let km = 1000.0 * meter
+             view v { km |> flat_map |_, r| r }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`km` is a constant, not a table"))
+        );
+    }
+
+    #[test]
+    fn the_bundled_si_module_resolves() {
+        // The embedded stdlib source itself must be clean: importing it
+        // surfaces any internal error at the import site.
+        resolve_program("import si").expect("si resolves");
     }
 }
