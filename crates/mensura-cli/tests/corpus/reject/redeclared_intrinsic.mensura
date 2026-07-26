@@ -1,0 +1,3 @@
+// Reject: the seven base units are intrinsic bindings (ADR 0026,
+// Decision 6) and cannot be redeclared.
+let meter = 2.0

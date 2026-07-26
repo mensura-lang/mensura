@@ -1,13 +1,24 @@
 // Fleet monitoring: the machine registry for a streaming
 // predictive-maintenance example.  This file grows as the language does; today
-// it holds only what the current implementation compiles (scalar-key units,
-// named enums, shapes, basic stores, and a simple view).
+// it holds what the current implementation compiles (scalar-key units, named
+// enums, shapes, basic stores, views, and M3's dimensional units: dimensioned
+// sensor columns, `import si`, and const bindings).
 //
 // Still to come, milestone by milestone:
-//   M3  dimensional sensor units and precision (temperature, vibration, ...)
+//   M3+ measurement precision (a library extension of `real`, ADR 0026) and
+//       measure semantics (`@additive`, ...)
 //   M4  device declarations and ingestion (sensor readings land in stores)
 //   M5  windowed feature views and incremental refresh
 //   M6  the leak-free remaining-useful-life pipeline and its validation
+
+// The SI unit library: symbols, prefixes, and named derived units as
+// ordinary dimensioned constants (ADR 0028).  A bare import is bundled with
+// the toolchain; members are qualified (`si.km`).
+import si
+
+// A dimensioned threshold constant: `kelvin` is an intrinsic base unit, so
+// `overheat` is a `temperature[real]` value, usable in any view body.
+let overheat = 350.0 * kelvin
 
 unit Machine {
   id: string
@@ -61,15 +72,28 @@ view attention_needed : Tabular[Machine] {
 store readings {
   unit { Machine }
   attr* {
-    kelvin: real
+    // A dimensioned column (ADR 0026, `11-physical-units.md`): the type
+    // carries the physical dimension, magnitudes are stored normalized to
+    // the SI base unit (kelvin here), and a dimension mismatch downstream
+    // is a compile error.
+    temperature: temperature[real]
   }
 }
 
 // Reducing a bag folds each machine's readings, which is silently wrong on a
 // partial bag, so the reducing `map_bags` demands completeness (ADR 0023).
 // Until ingestion (M4) establishes the fact at the source by mechanism, the
-// view assumes it, locally and visibly.
+// view assumes it, locally and visibly.  `max` preserves the dimension, so
+// `max_temperature` is `temperature[real]` too.
 view machine_temperature : Tabular[Machine] {
   readings |> assume { complete }
-           |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+           |> map_bags |k, b| (.max_temperature = max b.temperature)
+}
+
+// Dimensional arithmetic in a view body: the comparison type-checks because
+// both sides are `temperature[real]`; comparing against a bare `350.0` (or
+// a duration) would be a compile error.  No shape claim: the output is a
+// filtered bag of readings, not a `singletons` table.
+view overheating {
+  readings |> flat_map |_, r| if r.temperature > overheat then r else ()
 }

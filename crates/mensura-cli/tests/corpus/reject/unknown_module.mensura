@@ -1,0 +1,3 @@
+// Reject: a bare import resolves against the bundled modules only
+// (ADR 0027, Decision 6), and no bundled module is named `geo`.
+import geo

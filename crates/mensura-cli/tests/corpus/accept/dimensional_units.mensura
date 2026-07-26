@@ -1,0 +1,25 @@
+// Accept: M3 dimensional units end to end (ADR 0026/0027/0028).  An
+// imported si member, an intrinsic base unit, a top-level const, a
+// dimension alias, dimensioned columns, and dimensional arithmetic in a
+// view body all type-check together.
+import si
+
+let overheat = 350.0 * kelvin
+let speed[T] = (length / time)[T]
+
+unit Machine { id: string }
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: temperature[real]
+    vibration:   (length / time^2)[real]
+    velocity:    speed[real]
+    distance:    length[real]
+  }
+}
+
+view worrying {
+  readings |> flat_map |_, r|
+    if r.temperature > overheat and r.distance > 2.0 * si.km then r else ()
+}

@@ -1,0 +1,10 @@
+// Reject: the exponent of a dimensioned value must be an integer literal
+// (the result dimension is computed at compile time; ADR 0026).
+unit Machine { id: string }
+store readings {
+  unit { Machine }
+  attr* { temperature: temperature[real] }
+}
+view v {
+  readings |> flat_map |_, r| (.x = r.temperature ^ 2.0)
+}

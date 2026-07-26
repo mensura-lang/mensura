@@ -18,7 +18,8 @@ fn fleet_program() -> ResolvedProgram {
 
 /// Create the example's stores and seed both: the `machines` singletons
 /// store and the `readings` bag store (duplicate keys are the point of the
-/// latter, ADR 0022).
+/// latter, ADR 0022).  The dimensioned `temperature` column stores plain
+/// base-unit (kelvin) magnitudes (`docs/toolkit/00-storage-backend.md`).
 fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
     let mut db = SqliteBackend::open_in_memory().unwrap();
     for schema in &program.schemas {
@@ -32,7 +33,8 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
            INSERT INTO "readings" VALUES
              ('m1', 300.0),
              ('m1', 302.5),
-             ('m2', 299.0);"#,
+             ('m2', 299.0),
+             ('m3', 371.5);"#,
     )
     .unwrap();
     db
@@ -48,7 +50,8 @@ fn attention_needed_materializes_the_degraded_machines() {
         materialized,
         vec![
             ("attention_needed".to_string(), 1),
-            ("machine_temperature".to_string(), 2),
+            ("machine_temperature".to_string(), 3),
+            ("overheating".to_string(), 1),
         ]
     );
 
@@ -72,7 +75,7 @@ fn attention_needed_materializes_the_degraded_machines() {
 
     // A re-run over unchanged stores replaces the contents, not appends.
     let again = materialize_views(&mut db, &program).unwrap();
-    assert_eq!(again.len(), 2);
+    assert_eq!(again.len(), 3);
     assert_eq!(db.scan(&view.shape()).unwrap().len(), 1);
 }
 
@@ -80,7 +83,9 @@ fn attention_needed_materializes_the_degraded_machines() {
 fn machine_temperature_reduces_the_bag_store() {
     // The end-to-end bag-store path (ADR 0022 + ADR 0023): the `readings`
     // bag holds several rows per machine, the view assumes completeness and
-    // the reducing `map_bags` folds each machine's bag to its maximum.
+    // the reducing `map_bags` folds each machine's bag to its maximum.  The
+    // column is dimensioned (`temperature[real]`, ADR 0026); at runtime it
+    // is a plain base-unit magnitude.
     let program = fleet_program();
     let mut db = seeded_db(&program);
     materialize_views(&mut db, &program).unwrap();
@@ -96,6 +101,29 @@ fn machine_temperature_reduces_the_bag_store() {
         vec![
             vec![Value::String("m1".into()), Value::Real(302.5)],
             vec![Value::String("m2".into()), Value::Real(299.0)],
+            vec![Value::String("m3".into()), Value::Real(371.5)],
         ]
+    );
+}
+
+#[test]
+fn overheating_compares_against_the_lowered_const() {
+    // The units path end to end (ADR 0026/0027): `overheat` is a top-level
+    // const (`350.0 * kelvin`) folded into the view body at resolve time,
+    // so the runtime compares plain magnitudes and only the reading above
+    // 350 kelvin survives the filter.
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
+    materialize_views(&mut db, &program).unwrap();
+
+    let view = program
+        .views
+        .iter()
+        .find(|v| v.name == "overheating")
+        .expect("the example declares overheating");
+    let rows = db.scan(&view.shape()).unwrap();
+    assert_eq!(
+        rows,
+        vec![vec![Value::String("m3".into()), Value::Real(371.5)]]
     );
 }
