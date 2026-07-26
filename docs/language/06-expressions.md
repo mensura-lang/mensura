@@ -105,7 +105,9 @@ The atomic values are:
   (`(a, b)`) rows (ADR 0015).
 - **Records**: `(.a = x, .b = y)`, labeled products; a field may carry an
   explicit type, `(.a : T = x)`.  `:` is typing, `=` is the value, matching
-  every other binder (`name [: Type] = value`).  A record field carries no
+  the other expression-level binder, the statement `let`
+  (`name [: Type] = value`); item-level bindings are brace-closed instead
+  (`12-modules-and-imports.md`).  A record field carries no
   `const`/`var` role marker; the marker ADR 0015 reserved is dropped
   (`docs/decisions/0019-attr-blocks-and-dropped-const-var.md`).
 - **Lambdas**: `|x| e` and `|x, y| e` (see below); an optional return type is

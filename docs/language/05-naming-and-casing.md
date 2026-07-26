@@ -29,7 +29,7 @@ built-in vocabulary.
   `real`, `string`, `bool`, `date`), the seven base dimensions
   (`time`, `length`, `mass`, `current`, `temperature`, `amount`,
   `luminosity`), and dimension aliases declared with a generic `let`
-  (`let speed[T] = ...`), which extend the vocabulary and take the same
+  (`let speed[T] { ... }`), which extend the vocabulary and take the same
   lowercase form (ADR 0026, Decision 5).  The PascalCase rule governs
   user-declared type *names* (`unit`, `shape`, `enum`), not this
   vocabulary.

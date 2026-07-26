@@ -100,8 +100,8 @@ A dimension alias is a generic top-level `let` whose body is a type-level
 expression over its parameter (ADR 0026, Decision 8):
 
 ```mensura
-let speed[T] = (length / time)[T]
-let accel[T] = speed[T] / time[T]
+let speed[T] { (length / time)[T] }
+let accel[T] { speed[T] / time[T] }
 ```
 
 Aliases are **transparent** (expanded to exponent vectors before
@@ -219,7 +219,7 @@ view machine_temperature {
 `max b.temperature` is `temperature[real]`; adding it to a duration, or
 comparing it to a bare `3.0`, is a compile error.  A threshold constant
 is written in whatever unit is convenient and normalizes automatically:
-`let limit = 350.0 * kelvin`.
+`let limit { 350.0 * kelvin }`.
 
 ## Deferred
 

@@ -96,17 +96,9 @@ attr_name     = ident | template ;
 view_decl     = "view" ident [ conforms ] block ;
 
 let_decl      = "let" ident ( value_let | alias_let ) ;
-value_let     = [ ":" type ] "=" const_expr ;
-alias_let     = "[" ident { "," ident } "]" "=" tl_expr ;
+value_let     = [ ":" type ] block ;
+alias_let     = "[" ident { "," ident } "]" "{" tl_expr "}" ;
 import_decl   = "import" ident ;
-
-const_expr    = const_mul { ( "+" | "-" ) const_mul } ;
-const_mul     = const_unary { ( "*" | "/" ) const_unary } ;
-const_unary   = "-" const_unary | const_pow ;
-const_pow     = const_postfix [ "^" const_unary ] ;
-const_postfix = const_primary { "." ident } ;
-const_primary = number | string | "true" | "false" | ident
-              | "(" const_expr ")" ;
 
 type          = tl_expr [ "?" ] ;
 tl_expr       = tl_term { ( "*" | "/" ) tl_term } ;
@@ -123,19 +115,19 @@ tl_factor     = ident [ "[" ident "]" ]
   `import` selects `import_decl`; the seven FIRST sets are disjoint words.
 - **`let_decl`**: after the bound name the next token decides the kind: `[`
   opens the alias parameter list (a type-level dimension alias, ADR 0026
-  Decision 8) and the body is parsed with the type grammar; `:` or `=`
-  continues the value form and the body is parsed with the **const
-  expression grammar** (`const_expr`).  One token decides.
-- **`const_expr`**: the arithmetic levels of the expression grammar
-  (`+ -`, `* /`, unary `-`, `^`, member access, grouping) over literals
-  and names, with juxtaposition application deliberately excluded.  A
-  top-level item has no terminator, so an application spine after a const
-  body would swallow the next item's leading keyword
-  (`let x = 2.0 * meter let y = ...` would read `meter let` as an
-  application).  Excluding application, and with it pipes, lambdas,
-  blocks, and the word operators, makes the body self-terminating: after
-  a complete `const_expr`, no item-starting word can continue it.  A
-  const names a pure value, so nothing is lost
+  Decision 8) and a braced body parsed with the type grammar follows; `:`
+  (an ascription) or `{` continues the value form, whose body is the
+  ordinary expression-grammar `block`.  One token decides.
+- **Item bodies are brace-closed.**  Every item with a body ends at a `}`
+  (`import` has no body), which is what makes item boundaries independent
+  of the expression grammar.  A top-level item has no terminator, so an
+  unbraced expression body would let the application spine swallow the
+  next item's leading keyword (`let x = 2.0 * meter let y = ...` would
+  read `meter let` as an application), and every future extension of the
+  expression grammar would have to be re-audited against the item-level
+  FOLLOW set.  The brace closes that hazard class structurally; a `let`
+  body is the same statement block a `view` hosts, with the const
+  evaluator (not the grammar) enforcing what a constant may compute
   (`12-modules-and-imports.md`).
 - **`import_decl`**: `import` selects it and a single module name follows.
 - **`view_decl`**: after the view name the next token is either `:` (a
@@ -530,12 +522,19 @@ freeze condition.
 
 Combining juxtaposition application with word operators forces a small,
 local exception to the lexer's keyword-freedom: inside an expression the
-words `or`, `and`, `not`, `in`, `is`, `known`, `missing`, `if`, `then`, and
-`else` are **reserved** and cannot name a value, and inside a `block` the
-statement keywords `let` and `assert` are reserved in statement position.  This is
-unavoidable with one token of lookahead, since after an operand an ident
-could otherwise be read either as the next argument (juxtaposition) or as an
-infix operator, and only reservation resolves the choice.  The reservation is
+words `or`, `and`, `not`, `in`, `is`, `known`, `missing`, `if`, `then`,
+`else`, and the statement keywords `let` and `assert` are **reserved** and
+cannot name a value.  This is unavoidable with one token of lookahead,
+since after an operand an ident could otherwise be read either as the next
+argument (juxtaposition) or as an infix operator, and only reservation
+resolves the choice.  Reserving `let` and `assert` throughout expressions
+(not merely in statement position) closes the statement-boundary leak: in
+`{ let t = a let u = b }` the missing `;` would otherwise let the
+application spine read `a let` as an application and surface a mislocated
+error (or, once general application lands, a mis-typed one); with the
+reservation the parser stops at `let` and reports the missing separator.
+For the same reason a reserved word cannot *name* a `let` binding: a value
+named `let` or `known` could never be referenced.  The reservation is
 local to the expression sublanguage; elsewhere these words remain ordinary
 identifiers, as the keyword-free lexer intends.
 

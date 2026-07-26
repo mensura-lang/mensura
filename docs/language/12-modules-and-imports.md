@@ -10,33 +10,35 @@ is dimensional units (`11-physical-units.md`, ADR 0026).
 ## Top-level `let`
 
 `let` is lifted from the statement block (`06-expressions.md`) to item
-position.  It binds one of two kinds, disambiguated by the presence of a
-parameter list after the name:
+position, where, like every other item with a body, it is **brace-closed**
+(a top-level item has no terminator, so an unbraced expression body would
+swallow the next item's leading keyword; `04-grammar.md`).  It binds one
+of two kinds, disambiguated by the token after the name:
 
-- **A const value binding**: `let name = expr` (an optional `: type`
-  ascription is accepted, as in the block form).  The body is a **const
-  expression** evaluated at compile time: literals and arithmetic
+- **A const value binding**: `let name { ... }` (an optional `: type`
+  ascription sits before the brace).  The body is the ordinary statement
+  block a `view` hosts: local `let`s and a trailing result expression,
+  evaluated at compile time.  The const evaluator, not the grammar,
+  bounds what a constant may compute: literals and arithmetic
   (`+ - * / ^`, unary minus, grouping, member access) over the intrinsic
-  base units, imported module members, and other top-level bindings.
-  Juxtaposition application (and with it pipes, lambdas, blocks, and the
-  word operators) is excluded: a const names a pure value, and because a
-  top-level item has no terminator, an application spine would otherwise
-  swallow the next item's leading keyword (see `04-grammar.md`,
-  `const_expr`).
+  base units, imported module members, other top-level bindings, and the
+  block's local `let`s.  Anything effectful or table-shaped (pipelines,
+  lambdas, aggregates) is rejected as "not a const expression"; an
+  `assert` in a const block is not yet supported.
 
   ```mensura
-  let km = 1000.0 * meter
-  let newton = kilogram * meter / second^2
-  let limit = 350.0 * kelvin
+  let km { 1000.0 * meter }
+  let newton { kilogram * meter / second^2 }
+  let limit: temperature[real] { 350.0 * kelvin }
   ```
 
-- **A dimension alias**: `let name[T] = <type-level expression>`
+- **A dimension alias**: `let name[T] { <type-level expression> }`
   (`11-physical-units.md`; ADR 0026, Decision 8).  The bracketed
-  parameters mark the binding as type-level, and the body is parsed with
-  the type grammar.
+  parameters mark the binding as type-level, and the braced body is
+  parsed with the type grammar.
 
   ```mensura
-  let speed[T] = (length / time)[T]
+  let speed[T] { (length / time)[T] }
   ```
 
 Top-level bindings are **immutable, pure, and order-independent**: they
@@ -110,8 +112,8 @@ module-internal diagnostics become user-facing; it lands with that layer.
 ```ebnf
 item        = ... | let_decl | import_decl ;
 let_decl    = "let" ident ( value_let | alias_let ) ;
-value_let   = [ ":" type ] "=" const_expr ;
-alias_let   = "[" ident { "," ident } "]" "=" tl_expr ;
+value_let   = [ ":" type ] block ;
+alias_let   = "[" ident { "," ident } "]" "{" tl_expr "}" ;
 import_decl = "import" ident ;
 ```
 
@@ -135,6 +137,8 @@ five existing declarations; the LL(1) argument is in `04-grammar.md`.
 - File identities on spans (above).
 - Value-level `let` statements inside view blocks remain table-valued
   only; scalar block `let`s are a separate follow-up.
+- `assert` statements inside a const block (compile-time checked
+  assertions); rejected with "not yet supported".
 
 ## Forward references
 

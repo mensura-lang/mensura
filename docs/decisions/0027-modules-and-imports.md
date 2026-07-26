@@ -56,6 +56,23 @@ scope, and `let name[T] = <dimension>` binds a type-level dimension alias (ADR
 Bindings are order-independent within a module (they name values, not effects)
 and non-recursive.  This is the form that lets units be constants.
 
+**Revised during implementation.**  The item-level surface is
+**brace-closed**: `let name { <block> }` for a value (with an optional
+`: type` ascription before the brace) and `let name[T] { <dimension> }`
+for an alias.  The `=` form above assumed the statement `let` could lift
+unchanged, but a top-level item has no terminator, so an unbraced
+expression body lets the application spine swallow the next item's
+leading keyword (`let x = 2.0 * meter let y = ...` reads `meter let` as
+juxtaposition), and every future expression-grammar extension would need
+re-auditing against the item-level FOLLOW set.  The brace closes the
+hazard class structurally and restores the language's item convention
+(every item body ends at `}`); `=` remains the binder at expression level
+(statement `let`s, record fields), where `;`/`}` provide the terminators.
+The value body is the same statement block a `view` hosts, with the const
+evaluator enforcing purity and const-ness semantically.  The kind is
+still one token of lookahead: `[` after the name selects the alias form.
+See `docs/language/12-modules-and-imports.md` and `04-grammar.md`.
+
 ### 2.  Modules export const bindings and type-level names only
 
 A module is a file.  It exports **const bindings** (Decision 1) and
