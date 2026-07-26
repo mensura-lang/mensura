@@ -4,9 +4,9 @@
 // Bundled with the toolchain: a bare `import si` resolves here and only
 // here (ADR 0027, Decision 6).  Every binding is recomputed against the
 // mechanized dimension group on each compile, and the oracle test in
-// `crates/mensura-types` (`stdlib_si`) pins each binding's resolved
-// dimension and base-unit magnitude: edit the two together (ADR 0028,
-// Decision 2 as revised).
+// `crates/mensura-types/src/modules.rs` (`si_matches_its_oracle`) pins
+// each binding's resolved dimension and base-unit magnitude: edit the two
+// together (ADR 0028, Decision 2 as revised).
 //
 // Casing: full lowercase names always; short symbols only where they are
 // snake_case-valid, so `A`, `K`, `N`, `Pa`, `Hz`, `W`, `J`, `V` are not

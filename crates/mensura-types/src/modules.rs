@@ -94,3 +94,127 @@ fn load(name: &str, src: &str) -> Result<ModuleEnv, Vec<String>> {
         Err(errs.iter().map(|e| prefixed(&e.message)).collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `si` oracle (ADR 0028, Decision 2 as revised): each binding's
+    /// expected dimension exponent vector and base-unit magnitude, checked
+    /// bidirectionally against the resolved module.  This pins the
+    /// *checker's output* for the shipped units, which generation could
+    /// not; edit this table together with `stdlib/si.mensura`.
+    ///
+    /// Axis order (`crate::units::BASE_DIMENSIONS`):
+    /// time, length, mass, current, temperature, amount, luminosity.
+    /// Magnitudes are written as the same f64 expressions the module
+    /// evaluates, so equality is exact.
+    fn si_oracle() -> Vec<(&'static str, [i32; 7], f64)> {
+        const TIME: [i32; 7] = [1, 0, 0, 0, 0, 0, 0];
+        const LENGTH: [i32; 7] = [0, 1, 0, 0, 0, 0, 0];
+        const MASS: [i32; 7] = [0, 0, 1, 0, 0, 0, 0];
+        const FREQ: [i32; 7] = [-1, 0, 0, 0, 0, 0, 0];
+        const FORCE: [i32; 7] = [-2, 1, 1, 0, 0, 0, 0];
+        const PRESSURE: [i32; 7] = [-2, -1, 1, 0, 0, 0, 0];
+        const ENERGY: [i32; 7] = [-2, 2, 1, 0, 0, 0, 0];
+        const POWER: [i32; 7] = [-3, 2, 1, 0, 0, 0, 0];
+        const CHARGE: [i32; 7] = [1, 0, 0, 1, 0, 0, 0];
+        const VOLTAGE: [i32; 7] = [-3, 2, 1, -1, 0, 0, 0];
+        let gram = 0.001;
+        vec![
+            // Base-unit symbols.
+            ("s", TIME, 1.0),
+            ("m", LENGTH, 1.0),
+            ("kg", MASS, 1.0),
+            ("mol", [0, 0, 0, 0, 0, 1, 0], 1.0),
+            ("cd", [0, 0, 0, 0, 0, 0, 1], 1.0),
+            // The gram.
+            ("gram", MASS, gram),
+            ("g", MASS, gram),
+            // Time units.
+            ("minute", TIME, 60.0),
+            ("hour", TIME, 3600.0),
+            ("day", TIME, 86400.0),
+            ("h", TIME, 3600.0),
+            // Named derived units.
+            ("hertz", FREQ, 1.0),
+            ("newton", FORCE, 1.0),
+            ("pascal", PRESSURE, 1.0),
+            ("joule", ENERGY, 1.0),
+            ("watt", POWER, 1.0),
+            ("coulomb", CHARGE, 1.0),
+            ("volt", VOLTAGE, 1.0),
+            // Prefixed seconds.
+            ("nanosecond", TIME, 0.000000001),
+            ("microsecond", TIME, 0.000001),
+            ("millisecond", TIME, 0.001),
+            ("ns", TIME, 0.000000001),
+            ("us", TIME, 0.000001),
+            ("ms", TIME, 0.001),
+            // Prefixed meters.
+            ("nanometer", LENGTH, 0.000000001),
+            ("micrometer", LENGTH, 0.000001),
+            ("millimeter", LENGTH, 0.001),
+            ("centimeter", LENGTH, 0.01),
+            ("kilometer", LENGTH, 1000.0),
+            ("nm", LENGTH, 0.000000001),
+            ("um", LENGTH, 0.000001),
+            ("mm", LENGTH, 0.001),
+            ("cm", LENGTH, 0.01),
+            ("km", LENGTH, 1000.0),
+            // Prefixed grams.
+            ("nanogram", MASS, 0.000000001 * gram),
+            ("microgram", MASS, 0.000001 * gram),
+            ("milligram", MASS, 0.001 * gram),
+            ("ng", MASS, 0.000000001 * gram),
+            ("ug", MASS, 0.000001 * gram),
+            ("mg", MASS, 0.001 * gram),
+            // Conventional prefixed derived units.
+            ("kilopascal", PRESSURE, 1000.0),
+            ("megapascal", PRESSURE, 1000000.0),
+            ("kilojoule", ENERGY, 1000.0),
+            ("kilowatt", POWER, 1000.0),
+            ("kilohertz", FREQ, 1000.0),
+            ("megahertz", FREQ, 1000000.0),
+            ("gigahertz", FREQ, 1000000000.0),
+        ]
+    }
+
+    #[test]
+    fn si_matches_its_oracle() {
+        let env = bundled("si")
+            .expect("si is bundled")
+            .as_ref()
+            .expect("si resolves cleanly");
+        let oracle = si_oracle();
+        // Every oracle row is a binding with the expected dimension and
+        // exact base-unit magnitude.
+        for (name, exps, magnitude) in &oracle {
+            let value = env
+                .values
+                .get(*name)
+                .unwrap_or_else(|| panic!("si has no binding `{name}`: stale oracle row"));
+            let ConstValue::Real { magnitude: m, dim } = value else {
+                panic!("`{name}` is not a dimensioned real");
+            };
+            assert_eq!(
+                dim.exponents(),
+                *exps,
+                "`{name}` has dimension `{dim}`, not the oracle's"
+            );
+            assert_eq!(m, magnitude, "`{name}` has magnitude {m}, not {magnitude}");
+        }
+        // And every binding has an oracle row (no unlisted binding).
+        for name in env.values.keys() {
+            assert!(
+                oracle.iter().any(|(n, ..)| n == name),
+                "binding `{name}` has no oracle row: add it to `si_oracle`"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_bundled_module_is_none() {
+        assert!(bundled("geo").is_none());
+    }
+}
