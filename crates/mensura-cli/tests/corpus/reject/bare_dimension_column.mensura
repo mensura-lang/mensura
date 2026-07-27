@@ -1,0 +1,7 @@
+// Reject: a dimension is not a column type by itself; it must be applied
+// to a backing (`temperature[real]`, ADR 0026).
+unit Machine { id: string }
+store readings {
+  unit { Machine }
+  attr* { temperature: temperature }
+}

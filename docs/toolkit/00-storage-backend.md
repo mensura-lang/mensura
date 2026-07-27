@@ -87,12 +87,24 @@ A store becomes exactly one table.
 | Mensura type | SQLite column type | Notes                                  |
 |--------------|--------------------|----------------------------------------|
 | `string`     | `TEXT`             |                                        |
-| `number`     | `NUMERIC`          | integer or real                        |
+| `int`        | `INTEGER`          | discrete (ADR 0014)                    |
+| `real`       | `REAL`             | continuous measurement                 |
 | `bool`       | `INTEGER`          | `0` / `1`                              |
 | `date`       | `TEXT`             | ISO 8601                               |
 | `enum(...)`  | `TEXT`             | `CHECK (col IN ('a', 'b', ...))`       |
+| `D[real]`    | `REAL`             | base-unit magnitude; see below         |
 
-Physical-unit and precision types are deferred and have no mapping yet.
+A dimensioned column (`temperature[real]`, `11-physical-units.md`, ADR
+0026) persists its magnitude **normalized to the coherent SI base unit**
+in an ordinary `REAL` column; the dimension is tracked only at the type
+level and stores no companion metadata.  This closes ADR 0026's open
+question on persisting a dimensioned magnitude: values are already
+base-normalized the moment they are computed (units are scale factors,
+conversion happens in expression evaluation), so the storage layer sees
+plain reals and round-trips them unchanged.  The recorded consequence: a
+database file does not itself say that a column holds kelvin; the source
+declaration does.  Precision types remain deferred and have no mapping
+yet.
 
 ### Example
 

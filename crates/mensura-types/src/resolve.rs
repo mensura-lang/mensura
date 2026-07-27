@@ -14,16 +14,20 @@
 //! [`Schema`]; a store yields a [`Schema`] and a view a [`ViewPlan`]
 //! (`docs/toolkit/04-processing-layer.md`).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use mensura_syntax::{
-    Attr, Block, EnumDecl, Expr, ExprKind, Field, Item, NameSeg, NameTemplate, Program, ShapeArg,
-    ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, TypeExpr, UnitDecl, ViewDecl, is_identifier,
+    Attr, Block, EnumDecl, Expr, ExprKind, Field, Ident, Item, LetKind, NameSeg, NameTemplate,
+    Program, ShapeArg, ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, TypeExpr, TypeKind, UnitDecl,
+    ViewDecl, is_identifier,
 };
 
+use crate::consts::{ConstDecl, eval_const_bindings};
 use crate::model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
+use crate::modules::ModuleEnv;
 use crate::pipe_check::{Sources, type_view};
 use crate::table::{Cardinality, TableType};
+use crate::units::Dimension;
 
 /// A resolution failure, located by a source span.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,7 +37,7 @@ pub struct ResolveError {
 }
 
 impl ResolveError {
-    fn new(message: impl Into<String>, span: Span) -> Self {
+    pub(crate) fn new(message: impl Into<String>, span: Span) -> Self {
         ResolveError {
             message: message.into(),
             span,
@@ -114,6 +118,9 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     let mut shapes: HashMap<&str, &ShapeDecl> = HashMap::new();
     let mut enums: HashMap<&str, &EnumDecl> = HashMap::new();
     let mut views: Vec<&ViewDecl> = Vec::new();
+    let mut dim_aliases: DimAliases = HashMap::new();
+    let mut imports: Vec<&mensura_syntax::ImportDecl> = Vec::new();
+    let mut const_decls: Vec<ConstDecl> = Vec::new();
 
     for item in &program.items {
         match item {
@@ -181,8 +188,149 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                 check_case(&v.name.name, v.name.span, Case::Snake, "view", &mut errors);
                 views.push(v);
             }
+            Item::Import(i) => {
+                check_case(
+                    &i.name.name,
+                    i.name.span,
+                    Case::Snake,
+                    "import",
+                    &mut errors,
+                );
+                imports.push(i);
+            }
+            Item::Let(l) => match &l.kind {
+                LetKind::DimAlias { params, body } => {
+                    collect_dim_alias(&l.name, params, body, &mut dim_aliases, &mut errors);
+                }
+                LetKind::Value { ty, value } => {
+                    check_case(&l.name.name, l.name.span, Case::Snake, "let", &mut errors);
+                    const_decls.push(ConstDecl {
+                        name: &l.name,
+                        ty: ty.as_ref(),
+                        value,
+                    });
+                }
+            },
         }
     }
+
+    // Validate each alias body in an environment where its parameter stands
+    // for itself; this also catches cross-alias reference cycles.
+    for (name, def) in &dim_aliases {
+        let env = TlEnv {
+            units: &units,
+            enums: &enums,
+            aliases: &dim_aliases,
+            param: Some((def.param, TlBacking::Param(def.param.to_string()))),
+        };
+        let mut stack = vec![name.to_string()];
+        match eval_tl(def.body, &env, &mut stack) {
+            Ok(TlValue::Dim(_) | TlValue::Applied { .. }) => {}
+            Ok(TlValue::Plain(ct)) => errors.push(ResolveError::new(
+                format!(
+                    "the body of dimension alias `{name}` must be a dimension, found `{}`",
+                    type_name(&ct)
+                ),
+                def.body.span(),
+            )),
+            Err(e) => errors.push(e),
+        }
+    }
+
+    // The value namespace (`12-modules-and-imports.md`): imports, top-level
+    // `let`s (both kinds), and the intrinsic base units form one namespace,
+    // and a collision is an error, not a shadow (ADR 0027, Decision 3).  A
+    // value name may not reuse a store or view name either: pipeline
+    // positions resolve table names and expression positions resolve value
+    // names, and one name in both would read ambiguously (and make constant
+    // folding unsound).
+    let mut table_names: HashSet<&str> = store_names.clone();
+    for v in &views {
+        table_names.insert(&v.name.name);
+    }
+    let mut value_names: HashSet<&str> = HashSet::new();
+    for item in &program.items {
+        let (name, what) = match item {
+            Item::Import(i) => (&i.name, "import"),
+            Item::Let(l) => (&l.name, "`let` binding"),
+            _ => continue,
+        };
+        if crate::units::BASE_UNITS.contains(&name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "`{}` is an intrinsic base unit and cannot be redeclared",
+                    name.name
+                ),
+                name.span,
+            ));
+            continue;
+        }
+        if !value_names.insert(&name.name) {
+            errors.push(ResolveError::new(
+                format!("duplicate {what} `{}`", name.name),
+                name.span,
+            ));
+        }
+        if table_names.contains(name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "{what} `{}` collides with a store or view of the same name",
+                    name.name
+                ),
+                name.span,
+            ));
+        }
+    }
+
+    // Resolve imports: a bare import is bundled-only (ADR 0027, Decision 6).
+    // A bundled module's own diagnostics carry no usable span here (spans
+    // have no file identity yet), so they report at the import site.
+    let mut modules: BTreeMap<String, &'static ModuleEnv> = BTreeMap::new();
+    for i in &imports {
+        match crate::modules::bundled(&i.name.name) {
+            None => errors.push(ResolveError::new(
+                format!(
+                    "unknown module `{}`: a bare import resolves against the \
+                     bundled modules only (`si`)",
+                    i.name.name
+                ),
+                i.name.span,
+            )),
+            Some(Err(messages)) => {
+                for message in messages {
+                    errors.push(ResolveError::new(message.clone(), i.span));
+                }
+            }
+            Some(Ok(env)) => {
+                modules.insert(i.name.name.clone(), env);
+            }
+        }
+    }
+
+    // Evaluate the const bindings: order-independent and non-recursive, so
+    // evaluation is demand-driven with cycle detection (`crate::consts`).
+    let ascription = |ty: &TypeExpr| -> Result<ColumnType, ResolveError> {
+        resolve_type(ty, &units, &enums, &dim_aliases)
+    };
+    let (const_values, const_errors) = eval_const_bindings(&const_decls, &modules, &ascription);
+    errors.extend(const_errors);
+
+    // The ambient value environment every expression site sees: the
+    // intrinsics, the consts, and each module as a record of its members
+    // (`si.km` then types through ordinary member access).
+    let mut ambient = crate::expr_check::intrinsics();
+    for (name, value) in &const_values {
+        ambient.insert(name.clone(), value.ty());
+    }
+    for (name, env) in &modules {
+        let members = env
+            .values
+            .iter()
+            .map(|(n, v)| (n.clone(), v.ty()))
+            .collect();
+        ambient.insert(name.clone(), crate::expr_check::Ty::Record(members));
+    }
+    let subst = crate::lower::Subst::new(&const_values, &modules);
 
     // Stores and views share one table namespace at the storage level
     // (`docs/toolkit/04-processing-layer.md`): both materialize as a table
@@ -211,7 +359,7 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     // Pass 2: resolve each shape's structure, for conformance checks below.
     let mut resolved_shapes: HashMap<&str, ResolvedShape> = HashMap::new();
     for (name, sh) in &shapes {
-        match resolve_shape(sh, &units, &enums) {
+        match resolve_shape(sh, &units, &enums, &dim_aliases) {
             Ok(rs) => {
                 resolved_shapes.insert(name, rs);
             }
@@ -222,7 +370,7 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     // Pass 3: resolve each store, then check the shapes it claims.
     let mut schemas = Vec::new();
     for s in &stores {
-        match resolve_store(s, &units, &enums) {
+        match resolve_store(s, &units, &enums, &dim_aliases) {
             Ok(schema) => {
                 check_conformance(s, &schema, &shapes, &resolved_shapes, &units, &mut errors);
                 schemas.push(schema);
@@ -237,7 +385,9 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     // (`docs/toolkit/04-processing-layer.md`).
     let mut view_plans = Vec::new();
     if !views.is_empty() {
-        let mut sources = Sources::new();
+        // Expression sites inside view bodies see the ambient environment:
+        // the intrinsics, the top-level consts, and the imported modules.
+        let mut sources = Sources::new().with_ambient(ambient.clone());
         for schema in &schemas {
             sources = sources.with(&schema.store, TableType::from_store(schema));
         }
@@ -255,9 +405,14 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                         &resolved_shapes,
                         &units,
                         &enums,
+                        &dim_aliases,
                         &mut errors,
                     );
-                    view_plans.push(view_plan(v, &output, &store_names));
+                    // Constant-fold the body before it reaches the
+                    // runtime (`crate::lower`).
+                    let mut plan = view_plan(v, &output, &store_names);
+                    crate::lower::lower_view_body(&mut plan.body, &subst);
+                    view_plans.push(plan);
                 }
                 Err(errs) => {
                     for e in errs {
@@ -374,6 +529,7 @@ fn resolve_store(
     s: &StoreDecl,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
+    aliases: &DimAliases,
 ) -> Result<Schema, Vec<ResolveError>> {
     let Some(unit) = units.get(s.unit.name.as_str()) else {
         return Err(vec![ResolveError::new(
@@ -407,6 +563,7 @@ fn resolve_store(
             ColumnRole::Key,
             units,
             enums,
+            aliases,
         );
     }
     for a in &s.attrs {
@@ -418,6 +575,7 @@ fn resolve_store(
             ColumnRole::Attr,
             units,
             enums,
+            aliases,
         );
     }
 
@@ -510,6 +668,7 @@ fn resolve_shape(
     sh: &ShapeDecl,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
+    aliases: &DimAliases,
 ) -> Result<ResolvedShape, Vec<ResolveError>> {
     let mut errors = Vec::new();
 
@@ -617,7 +776,7 @@ fn resolve_shape(
                 ));
             }
         }
-        match resolve_type(&f.ty, units, enums) {
+        match resolve_type(&f.ty, units, enums, aliases) {
             Ok(ty) => attrs.push(ResolvedAttr {
                 name: f.name.clone(),
                 ty,
@@ -854,6 +1013,7 @@ fn bind_shape_args<'a>(
 /// - the shape's cardinality (its `attr` / `attr*` blocks, ADR 0022 amending
 ///   ADR 0012) must match the output's computed cardinality: an all-`attr`
 ///   shape requires `singletons`, an `attr*` shape requires `bag`.
+#[allow(clippy::too_many_arguments)]
 fn check_view_conformance(
     view: &ViewDecl,
     output: &TableType,
@@ -861,6 +1021,7 @@ fn check_view_conformance(
     resolved: &HashMap<&str, ResolvedShape>,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
+    aliases: &DimAliases,
     errors: &mut Vec<ResolveError>,
 ) {
     for claim in &view.conforms {
@@ -895,7 +1056,7 @@ fn check_view_conformance(
         if let Some(uname) = required_unit
             && let Some(unit) = units.get(uname).copied()
         {
-            let expected = unit_key_columns(unit, units, enums);
+            let expected = unit_key_columns(unit, units, enums, aliases);
             let actual: Vec<(String, ColumnType)> = output
                 .content
                 .key
@@ -1005,12 +1166,13 @@ fn unit_key_columns(
     unit: &UnitDecl,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
+    aliases: &DimAliases,
 ) -> Vec<(String, ColumnType)> {
     let mut out = Vec::new();
     for f in &unit.fields {
         if let (Ok(name), Ok(ty)) = (
             literal_field_name(&f.name),
-            resolve_type(&f.ty, units, enums),
+            resolve_type(&f.ty, units, enums, aliases),
         ) {
             out.push((name, ty));
         }
@@ -1093,17 +1255,19 @@ fn attr_block_word(c: Cardinality) -> &'static str {
     }
 }
 
-fn type_name(ty: &ColumnType) -> String {
+pub(crate) fn type_name(ty: &ColumnType) -> String {
     match ty {
         ColumnType::String => "string".into(),
         ColumnType::Int => "int".into(),
         ColumnType::Real => "real".into(),
+        ColumnType::Quantity(dim) => dim.type_name(),
         ColumnType::Bool => "bool".into(),
         ColumnType::Date => "date".into(),
         ColumnType::Enum { name, .. } => name.clone(),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_column(
     columns: &mut Vec<Column>,
     seen: &mut HashSet<String>,
@@ -1112,6 +1276,7 @@ fn add_column(
     role: ColumnRole,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
+    aliases: &DimAliases,
 ) {
     // Units and stores carry no parameters, so a field name must render to a
     // plain identifier with no interpolation.
@@ -1144,7 +1309,7 @@ fn add_column(
             span,
         ));
     }
-    let ct = match resolve_type(&field.ty, units, enums) {
+    let ct = match resolve_type(&field.ty, units, enums, aliases) {
         Ok(ct) => ct,
         Err(e) => {
             errors.push(e);
@@ -1159,7 +1324,7 @@ fn add_column(
                 "an key field must be a key-eligible type: `{}` cannot be a key",
                 type_name(&ct)
             ),
-            field.ty.name.span,
+            field.ty.span(),
         ));
     }
     columns.push(Column {
@@ -1199,35 +1364,357 @@ fn literal_field_name(name: &NameTemplate) -> Result<String, ResolveError> {
     Ok(rendered)
 }
 
+/// Collect one dimension alias declaration into the alias namespace
+/// (ADR 0026, Decision 8): a lowercase name that does not shadow the
+/// built-in type vocabulary, exactly one PascalCase backing parameter, and
+/// no duplicates.  The body is validated after pass 1, once every alias is
+/// known.
+fn collect_dim_alias<'a>(
+    name: &'a Ident,
+    params: &'a [Ident],
+    body: &'a TypeExpr,
+    aliases: &mut DimAliases<'a>,
+    errors: &mut Vec<ResolveError>,
+) {
+    check_case(
+        &name.name,
+        name.span,
+        Case::Snake,
+        "dimension alias",
+        errors,
+    );
+    let builtin = Dimension::base(&name.name).is_some()
+        || matches!(
+            name.name.as_str(),
+            "string" | "int" | "real" | "bool" | "date"
+        );
+    if builtin {
+        errors.push(ResolveError::new(
+            format!(
+                "`{}` is a built-in type name and cannot be redeclared",
+                name.name
+            ),
+            name.span,
+        ));
+        return;
+    }
+    let [param] = params else {
+        errors.push(ResolveError::new(
+            "a dimension alias takes exactly one backing parameter",
+            name.span,
+        ));
+        return;
+    };
+    check_case(
+        &param.name,
+        param.span,
+        Case::Pascal,
+        "alias parameter",
+        errors,
+    );
+    // A duplicate alias name is reported by the value-namespace pass (all
+    // `let`s and imports share it), so the insert may overwrite silently.
+    aliases.insert(
+        &name.name,
+        DimAliasDef {
+            param: &param.name,
+            body,
+        },
+    );
+}
+
+/// A collected dimension alias (`let name[T] = <type-level expr>`, ADR 0026
+/// Decision 8): its single backing parameter and its unexpanded body.
+/// Aliases are transparent, fully applied, and non-recursive; expansion
+/// happens in `eval_tl` and a cycle is a diagnostic.
+pub(crate) struct DimAliasDef<'a> {
+    pub param: &'a str,
+    pub body: &'a TypeExpr,
+}
+
+pub(crate) type DimAliases<'a> = HashMap<&'a str, DimAliasDef<'a>>;
+
+/// What a type-level expression evaluates to
+/// (`docs/language/11-physical-units.md`).
+enum TlValue {
+    /// A plain scalar domain (`string`, `int`, an enum, ...).
+    Plain(ColumnType),
+    /// A bare dimension: not a column type until applied to a backing.
+    Dim(Dimension),
+    /// A dimension applied to a backing.
+    Applied { dim: Dimension, backing: TlBacking },
+}
+
+/// The backing slot of an applied dimension: `real` today, or an alias's
+/// backing parameter inside its body.
+#[derive(Clone, PartialEq)]
+enum TlBacking {
+    Real,
+    Param(String),
+}
+
+/// The environment a type-level expression evaluates in.
+struct TlEnv<'a> {
+    units: &'a HashMap<&'a str, &'a UnitDecl>,
+    enums: &'a HashMap<&'a str, &'a EnumDecl>,
+    aliases: &'a DimAliases<'a>,
+    /// Inside an alias body: the backing parameter's name and what it
+    /// stands for at this expansion (the actual backing when the alias is
+    /// applied, or itself when the declaration is being validated).
+    param: Option<(&'a str, TlBacking)>,
+}
+
+/// Resolve a type expression against the built-in vocabulary only (no
+/// units, enums, or aliases in scope): the environment a bundled module's
+/// ascriptions see (`crate::modules`).
+pub(crate) fn resolve_type_builtin(ty: &TypeExpr) -> Result<ColumnType, ResolveError> {
+    resolve_type(ty, &HashMap::new(), &HashMap::new(), &HashMap::new())
+}
+
 fn resolve_type(
     ty: &TypeExpr,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
+    aliases: &DimAliases,
 ) -> Result<ColumnType, ResolveError> {
     // Resolve only the base type here; optionality (`?`) is read from the
     // `TypeExpr` by the caller, which knows the column's role (an key field
     // may not be optional; ADR 0010).
-    let id = &ty.name;
-    match id.name.as_str() {
-        "string" => Ok(ColumnType::String),
-        "int" => Ok(ColumnType::Int),
-        "real" => Ok(ColumnType::Real),
-        "bool" => Ok(ColumnType::Bool),
-        "date" => Ok(ColumnType::Date),
-        other if enums.contains_key(other) => {
-            let e = enums[other];
-            Ok(ColumnType::Enum {
+    let env = TlEnv {
+        units,
+        enums,
+        aliases,
+        param: None,
+    };
+    let mut stack = Vec::new();
+    match eval_tl(ty, &env, &mut stack)? {
+        TlValue::Plain(ct) => Ok(ct),
+        TlValue::Applied {
+            dim,
+            backing: TlBacking::Real,
+        } => Ok(dim.applied()),
+        // Unreachable from a column position (`param` is `None`), kept as a
+        // diagnostic rather than a panic.
+        TlValue::Applied { .. } => Err(ResolveError::new(
+            "an alias parameter cannot appear outside its alias body",
+            ty.span(),
+        )),
+        TlValue::Dim(d) => Err(ResolveError::new(
+            format!(
+                "a dimension is not a column type by itself: apply it to a backing, `{}`",
+                d.type_name()
+            ),
+            ty.span(),
+        )),
+    }
+}
+
+/// Evaluate a type-level expression to a [`TlValue`], expanding aliases
+/// transparently.  `stack` carries the alias-expansion chain for cycle
+/// detection.
+fn eval_tl(ty: &TypeExpr, env: &TlEnv, stack: &mut Vec<String>) -> Result<TlValue, ResolveError> {
+    match &ty.kind {
+        TypeKind::Named(id) => eval_tl_name(id, env),
+        TypeKind::Apply { base, backing } => {
+            let b = eval_backing(backing, env)?;
+            match &base.kind {
+                TypeKind::Named(id) => apply_named(id, b, env, stack),
+                _ => match eval_tl(base, env, stack)? {
+                    TlValue::Dim(d) => Ok(TlValue::Applied { dim: d, backing: b }),
+                    TlValue::Applied { .. } => Err(ResolveError::new(
+                        "this type is already applied to a backing",
+                        base.span(),
+                    )),
+                    TlValue::Plain(ct) => Err(ResolveError::new(
+                        format!("`{}` is not a dimension", type_name(&ct)),
+                        base.span(),
+                    )),
+                },
+            }
+        }
+        TypeKind::Mul(a, b) | TypeKind::Div(a, b) => {
+            let mul = matches!(ty.kind, TypeKind::Mul(..));
+            let lhs = eval_tl(a, env, stack)?;
+            let rhs = eval_tl(b, env, stack)?;
+            combine_tl(lhs, rhs, mul, a.span(), b.span())
+        }
+        TypeKind::Pow(base, n) => match eval_tl(base, env, stack)? {
+            TlValue::Dim(d) => Ok(TlValue::Dim(d.pow(*n))),
+            TlValue::Applied { dim, backing } => Ok(TlValue::Applied {
+                dim: dim.pow(*n),
+                backing,
+            }),
+            TlValue::Plain(ct) => Err(ResolveError::new(
+                format!("`{}` is not a dimension", type_name(&ct)),
+                base.span(),
+            )),
+        },
+    }
+}
+
+/// A lone identifier in type position: a base dimension, an alias (which
+/// must be applied), a primitive, an enum, or a unit reference.
+fn eval_tl_name(id: &Ident, env: &TlEnv) -> Result<TlValue, ResolveError> {
+    let name = id.name.as_str();
+    if let Some((p, _)) = &env.param
+        && *p == name
+    {
+        return Err(ResolveError::new(
+            format!(
+                "`{name}` is this alias's backing parameter: it can appear only inside `[...]`"
+            ),
+            id.span,
+        ));
+    }
+    if let Some(d) = Dimension::base(name) {
+        return Ok(TlValue::Dim(d));
+    }
+    if env.aliases.contains_key(name) {
+        return Err(ResolveError::new(
+            format!("dimension alias `{name}` must be applied to a backing: write `{name}[real]`"),
+            id.span,
+        ));
+    }
+    match name {
+        "string" => Ok(TlValue::Plain(ColumnType::String)),
+        "int" => Ok(TlValue::Plain(ColumnType::Int)),
+        "real" => Ok(TlValue::Plain(ColumnType::Real)),
+        "bool" => Ok(TlValue::Plain(ColumnType::Bool)),
+        "date" => Ok(TlValue::Plain(ColumnType::Date)),
+        other if env.enums.contains_key(other) => {
+            let e = env.enums[other];
+            Ok(TlValue::Plain(ColumnType::Enum {
                 name: e.name.name.clone(),
                 variants: e.variants.iter().map(|v| v.value.clone()).collect(),
-            })
+            }))
         }
-        other if units.contains_key(other) => Err(ResolveError::new(
+        other if env.units.contains_key(other) => Err(ResolveError::new(
             format!("compound fields are not yet supported (references unit `{other}`)"),
             id.span,
         )),
         other => Err(ResolveError::new(
             format!("unknown type `{other}`"),
             id.span,
+        )),
+    }
+}
+
+/// Apply a named base to a backing: `temperature[real]` (a base dimension)
+/// or `speed[real]` (an alias, expanded transparently with its parameter
+/// bound to the actual backing).
+fn apply_named(
+    id: &Ident,
+    backing: TlBacking,
+    env: &TlEnv,
+    stack: &mut Vec<String>,
+) -> Result<TlValue, ResolveError> {
+    let name = id.name.as_str();
+    if let Some(d) = Dimension::base(name) {
+        return Ok(TlValue::Applied { dim: d, backing });
+    }
+    if let Some(alias) = env.aliases.get(name) {
+        if stack.iter().any(|n| n == name) {
+            return Err(ResolveError::new(
+                format!("recursive dimension alias `{name}`"),
+                id.span,
+            ));
+        }
+        stack.push(name.to_string());
+        let inner = TlEnv {
+            units: env.units,
+            enums: env.enums,
+            aliases: env.aliases,
+            param: Some((alias.param, backing.clone())),
+        };
+        let value = eval_tl(alias.body, &inner, stack);
+        stack.pop();
+        return match value? {
+            // A body that never mentions its parameter is a bare dimension;
+            // the application supplies the backing.
+            TlValue::Dim(d) => Ok(TlValue::Applied { dim: d, backing }),
+            applied @ TlValue::Applied { .. } => Ok(applied),
+            TlValue::Plain(ct) => Err(ResolveError::new(
+                format!(
+                    "the body of dimension alias `{name}` is `{}`, not a dimension",
+                    type_name(&ct)
+                ),
+                id.span,
+            )),
+        };
+    }
+    Err(ResolveError::new(
+        format!("`{name}` is not a dimension, so it cannot take a backing"),
+        id.span,
+    ))
+}
+
+/// The backing slot of a type application: `real`, or the enclosing alias's
+/// backing parameter.
+fn eval_backing(id: &Ident, env: &TlEnv) -> Result<TlBacking, ResolveError> {
+    let name = id.name.as_str();
+    if let Some((p, b)) = &env.param
+        && *p == name
+    {
+        return Ok(b.clone());
+    }
+    match name {
+        "real" => Ok(TlBacking::Real),
+        "int" => Err(ResolveError::new(
+            "`int` is never dimensioned (ADR 0014): the backing of a dimension must be `real`",
+            id.span,
+        )),
+        other => Err(ResolveError::new(
+            format!("the backing of a dimension must be `real`, found `{other}`"),
+            id.span,
+        )),
+    }
+}
+
+/// Combine two type-level operands under `*` or `/`: dimensions combine
+/// with dimensions, applied types with same-backing applied types.
+fn combine_tl(
+    lhs: TlValue,
+    rhs: TlValue,
+    mul: bool,
+    lspan: Span,
+    rspan: Span,
+) -> Result<TlValue, ResolveError> {
+    let combine = |a: Dimension, b: Dimension| if mul { a * b } else { a / b };
+    match (lhs, rhs) {
+        (TlValue::Dim(a), TlValue::Dim(b)) => Ok(TlValue::Dim(combine(a, b))),
+        (
+            TlValue::Applied {
+                dim: a,
+                backing: ba,
+            },
+            TlValue::Applied {
+                dim: b,
+                backing: bb,
+            },
+        ) => {
+            if ba == bb {
+                Ok(TlValue::Applied {
+                    dim: combine(a, b),
+                    backing: ba,
+                })
+            } else {
+                Err(ResolveError::new(
+                    "the two sides of a type-level `*`/`/` have different backings",
+                    rspan,
+                ))
+            }
+        }
+        (TlValue::Plain(ct), _) => Err(ResolveError::new(
+            format!("`{}` is not a dimension", type_name(&ct)),
+            lspan,
+        )),
+        (_, TlValue::Plain(ct)) => Err(ResolveError::new(
+            format!("`{}` is not a dimension", type_name(&ct)),
+            rspan,
+        )),
+        _ => Err(ResolveError::new(
+            "cannot mix an applied type and a bare dimension in one type-level expression",
+            rspan,
         )),
     }
 }
@@ -2318,5 +2805,369 @@ mod tests {
             e.message.contains("requires a `singletons` table")
                 && e.message.contains("but the view's output is `bag`")
         }));
+    }
+
+    // ADR 0026 (`11-physical-units.md`): dimensioned column types and
+    // dimension aliases.
+
+    fn quantity(dim: &str) -> ColumnType {
+        ColumnType::Quantity(Dimension::base(dim).unwrap())
+    }
+
+    #[test]
+    fn dimensioned_columns_resolve() {
+        let schemas = resolve_str(
+            r#"
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* {
+                temperature: temperature[real]
+                vibration:   (length / time^2)[real]
+              }
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let cols = &schemas[0].columns;
+        assert_eq!(cols[1].ty, quantity("temperature"));
+        let accel = Dimension::base("length").unwrap() / Dimension::base("time").unwrap().pow(2);
+        assert_eq!(cols[2].ty, ColumnType::Quantity(accel));
+    }
+
+    #[test]
+    fn dimension_aliases_expand_transparently() {
+        let schemas = resolve_str(
+            r#"
+            let speed[T] { (length / time)[T] }
+            let accel[T] { speed[T] / time[T] }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* {
+                vibration: accel[real]
+                velocity:  speed[real]
+              }
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let cols = &schemas[0].columns;
+        let length = Dimension::base("length").unwrap();
+        let time = Dimension::base("time").unwrap();
+        assert_eq!(cols[1].ty, ColumnType::Quantity(length / time.pow(2)));
+        assert_eq!(cols[2].ty, ColumnType::Quantity(length / time));
+    }
+
+    #[test]
+    fn dimension_type_errors_are_pointed() {
+        // A bare dimension is not a column type.
+        let errs = errors("unit U { id: string } store s { unit { U } attr { t: temperature } }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("apply it to a backing, `temperature[real]`")
+        }));
+        // `int` is never dimensioned.
+        let errs =
+            errors("unit U { id: string } store s { unit { U } attr { t: temperature[int] } }");
+        assert!(errs.iter().any(|e| e.message.contains("never dimensioned")));
+        // The backing must be `real`.
+        let errs =
+            errors("unit U { id: string } store s { unit { U } attr { t: temperature[bogus] } }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("the backing of a dimension must be `real`")
+        }));
+        // An alias must be applied.
+        let errs = errors(
+            "let speed[T] { (length / time)[T] }
+             unit U { id: string } store s { unit { U } attr { v: speed } }",
+        );
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("must be applied to a backing: write `speed[real]`")
+        }));
+        // Only dimensions combine under the type-level operators.
+        let errs = errors(
+            "unit U { id: string } store s { unit { U } attr { t: (string / time)[real] } }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`string` is not a dimension"))
+        );
+    }
+
+    #[test]
+    fn dimension_alias_declarations_are_validated() {
+        // Recursive aliases are cycles.
+        let errs = errors(
+            "let a[T] { b[T] }
+             let b[T] { a[T] }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("recursive dimension alias"))
+        );
+        // Exactly one backing parameter.
+        let errs = errors("let speed[T, U] { (length / time)[T] }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("exactly one backing parameter"))
+        );
+        // An alias may not shadow the built-in type vocabulary.
+        let errs = errors("let length[T] { (time / time)[T] }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("built-in type name"))
+        );
+        // Alias names are lowercase; parameters are PascalCase.
+        let errs = errors("let Speed[T] { (length / time)[T] }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("must be snake_case"))
+        );
+    }
+
+    #[test]
+    fn dimensioned_key_field_is_rejected() {
+        // A dimensioned real is a continuous measurement, not an identity.
+        let errs = errors(
+            "unit Probe { depth: length[real] }
+             store probes { unit { Probe } attr { note: string } }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`length[real]` cannot be a key"))
+        );
+    }
+
+    #[test]
+    fn view_preserves_column_dimensions() {
+        // The dimension rides the domain through the pipeline checker: a
+        // `max` rollup of a dimensioned column stays dimensioned, and unit
+        // intrinsics type inside view bodies.
+        let program = resolve_program(
+            r#"
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { temperature: temperature[real] }
+            }
+            view hottest {
+              readings |> assume { complete }
+                       |> map_bags |_, b| (.max_temperature = max b.temperature)
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let plan = &program.views[0];
+        let max_t = plan
+            .columns
+            .iter()
+            .find(|c| c.name == "max_temperature")
+            .expect("the rollup column");
+        assert_eq!(max_t.ty, quantity("temperature"));
+    }
+
+    #[test]
+    fn view_bodies_see_the_intrinsic_units() {
+        // `350.0 * kelvin` types inside a `flat_map` body, and a
+        // cross-dimension comparison is a compile error.
+        let ok = r#"
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { temperature: temperature[real] }
+            }
+            view hot {
+              readings |> flat_map |_, r| if r.temperature > 350.0 * kelvin then r else ()
+            }
+        "#;
+        resolve_program(ok).expect("should resolve");
+        let bad = r#"
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { temperature: temperature[real] }
+            }
+            view hot {
+              readings |> flat_map |_, r| if r.temperature > 350.0 * second then r else ()
+            }
+        "#;
+        let errs = errors(bad);
+        assert!(errs.iter().any(|e| e.message.contains("same type")));
+    }
+
+    // ADR 0027 (`12-modules-and-imports.md`): imports, top-level consts,
+    // and constant lowering.
+
+    #[test]
+    fn imports_and_consts_resolve_and_lower() {
+        let program = resolve_program(
+            r#"
+            import si
+            let limit { 350.0 * kelvin }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* {
+                temperature: temperature[real]
+                distance:    length[real]
+              }
+            }
+            view hot {
+              readings |> flat_map |_, r|
+                if r.temperature > limit and r.distance > 2.0 * si.km then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        // The lowered body carries only literals for the consts: `limit`
+        // folded to 350.0, `si.km` to 1000.0, and no name references remain.
+        let body = format!("{:?}", program.views[0].body);
+        assert!(body.contains("Float(350.0)"), "limit folds: {body}");
+        assert!(body.contains("Float(1000.0)"), "si.km folds: {body}");
+        assert!(
+            !body.contains("\"si\""),
+            "no module reference remains: {body}"
+        );
+        assert!(
+            !body.contains("\"limit\""),
+            "no const reference remains: {body}"
+        );
+    }
+
+    #[test]
+    fn consts_are_order_independent_but_not_recursive() {
+        // `km` is declared after its user: order-independence.
+        resolve_program(
+            "let two_km { 2.0 * km }
+             let km { 1000.0 * meter }",
+        )
+        .expect("order-independent bindings");
+        // A cycle is a diagnostic.
+        let errs = errors(
+            "let a { b + 1.0 }
+             let b { a + 1.0 }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("recursive const binding"))
+        );
+    }
+
+    #[test]
+    fn const_blocks_host_local_lets() {
+        // The value body is the ordinary statement block (ADR 0027,
+        // Decision 1 as revised): local `let`s scope lexically and the
+        // trailing expression is the result.
+        let program = resolve_program(
+            "let overheat: temperature[real] {
+                 let base = 300.0 * kelvin;
+                 base + 50.0 * kelvin
+             }",
+        )
+        .expect("a const block with locals resolves");
+        assert!(program.schemas.is_empty());
+        // An `assert` in a const block is deferred.
+        let errs = errors("let x { assert true; 1.0 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`assert` in a const binding"))
+        );
+        // A block without a trailing result has no value.
+        let errs = errors("let x { let y = 1.0; }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("must end in its result expression"))
+        );
+    }
+
+    #[test]
+    fn const_ascriptions_are_checked() {
+        resolve_program("let limit: temperature[real] { 350.0 * kelvin }")
+            .expect("a correct ascription");
+        let errs = errors("let limit: temperature[real] { 350.0 }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("declared `temperature[real]` but its value is `real`")
+        }));
+    }
+
+    #[test]
+    fn const_dimension_mismatch_is_an_error() {
+        let errs = errors("let nonsense { meter + second }");
+        assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
+    }
+
+    #[test]
+    fn value_namespace_collisions_are_errors() {
+        // An intrinsic cannot be redeclared.
+        let errs = errors("let meter { 2.0 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("intrinsic base unit"))
+        );
+        // Imports and lets share one namespace.
+        let errs = errors(
+            "import si
+             let si { 1.0 }",
+        );
+        assert!(errs.iter().any(|e| e.message.contains("duplicate")));
+        // A value name may not reuse a table name.
+        let errs = errors(
+            "unit Machine { id: string }
+             store readings { unit { Machine } attr* { kelvin_r: real } }
+             let readings { 1.0 }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("collides with a store or view"))
+        );
+    }
+
+    #[test]
+    fn unknown_module_and_member_are_pointed() {
+        let errs = errors("import geo");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown module `geo`"))
+        );
+        let errs = errors(
+            "import si
+             let x { si.bogus }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("module `si` has no member `bogus`"))
+        );
+        // A module name is not a value.
+        let errs = errors(
+            "import si
+             let x { si }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`si` is a module, not a value"))
+        );
+    }
+
+    #[test]
+    fn a_const_is_not_a_table() {
+        let errs = errors(
+            "let km { 1000.0 * meter }
+             view v { km |> flat_map |_, r| r }",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`km` is a constant, not a table"))
+        );
+    }
+
+    #[test]
+    fn the_bundled_si_module_resolves() {
+        // The embedded stdlib source itself must be clean: importing it
+        // surfaces any internal error at the import site.
+        resolve_program("import si").expect("si resolves");
     }
 }

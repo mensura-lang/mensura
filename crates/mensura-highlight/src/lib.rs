@@ -10,8 +10,8 @@
 //! `docs/toolkit/03-book-highlighting.md`.
 
 use mensura_syntax::{
-    Field, Item, NameSeg, NameTemplate, Program, ShapeArg, Span, Token, TokenKind, lex,
-    parse_with_meta,
+    Field, Item, LetKind, NameSeg, NameTemplate, Program, ShapeArg, Span, Token, TokenKind,
+    TypeExpr, TypeKind, lex, parse_with_meta,
 };
 use mensura_types::resolve;
 
@@ -208,17 +208,57 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                 // The body is a pipeline expression; its tokens are colored by
                 // the token stream, so no declaration-level spans are added here.
             }
+            Item::Import(import) => {
+                // The `import` keyword is in the parser's keyword spans; the
+                // module name is a term-level namespace, left unclassified
+                // like other expression identifiers.
+                let _ = import;
+            }
+            Item::Let(decl) => match &decl.kind {
+                // A value binding's body is an expression; its tokens are
+                // colored by the token stream, like a view body.
+                LetKind::Value { ty, .. } => {
+                    if let Some(ty) = ty {
+                        highlight_type(builder, ty);
+                    }
+                }
+                // A dimension alias is a type-level binding: its name, its
+                // parameters, and every identifier in its body are types.
+                LetKind::DimAlias { params, body } => {
+                    builder.push(decl.name.span, HighlightKind::Type);
+                    for p in params {
+                        builder.push(p.span, HighlightKind::Parameter);
+                    }
+                    highlight_type(builder, body);
+                }
+            },
         }
     }
 }
 
 fn highlight_field(builder: &mut Builder, field: &Field) {
     highlight_name(builder, &field.name);
-    // The base type name is a single identifier (primitive, unit, or named
-    // enum); named enum variants are highlighted at the `enum` declaration.  A
-    // trailing `?` optional marker is a `Question` token, colored as an
-    // operator by the token stream.
-    builder.push(field.ty.name.span, HighlightKind::Type);
+    highlight_type(builder, &field.ty);
+}
+
+/// Color every identifier in a type-level expression as a type: the base
+/// names of a dimension expression and the backing of an application
+/// (`temperature[real]`).  The `*`/`/`/`^`/`[`/`]` tokens and a trailing `?`
+/// optional marker are colored as operators by the token stream; named enum
+/// variants are highlighted at the `enum` declaration.
+fn highlight_type(builder: &mut Builder, ty: &TypeExpr) {
+    match &ty.kind {
+        TypeKind::Named(id) => builder.push(id.span, HighlightKind::Type),
+        TypeKind::Apply { base, backing } => {
+            highlight_type(builder, base);
+            builder.push(backing.span, HighlightKind::Type);
+        }
+        TypeKind::Mul(a, b) | TypeKind::Div(a, b) => {
+            highlight_type(builder, a);
+            highlight_type(builder, b);
+        }
+        TypeKind::Pow(base, _) => highlight_type(builder, base),
+    }
 }
 
 /// Highlight an attribute name.  A plain identifier is one property span; a

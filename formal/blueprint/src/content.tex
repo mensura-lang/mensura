@@ -683,3 +683,24 @@ are the intended targets.
   counterpart of \ref{def:exhaustive}.  Unmechanized; needed to back the
   Tier B discharge rules with theorems.
 \end{definition}
+
+\begin{theorem}[Dimensional-arithmetic soundness]
+  \label{thm:dimension-arith-sound}
+  \lean{Mensura.Units.Dimension.arith_sound} % planned
+  \uses{def:dimension, def:dimension-exponents}
+  The expression checker's rules for \texttt{*}, \texttt{/}, and integer
+  \texttt{\^{}} on dimensioned types compute exactly the group operations
+  of \ref{def:dimension}: the checker's exponent arithmetic and the
+  mechanized group agree on every derived dimension (ADR 0026,
+  Decision 10).
+\end{theorem}
+
+\begin{theorem}[Conversion correctness]
+  \label{thm:unit-conversion-correct}
+  \lean{Mensura.Units.conversion_correct} % planned
+  \uses{def:dimension}
+  A unit is a positive scale factor relative to its dimension's base
+  unit, and normalizing a magnitude to base preserves the represented
+  quantity: converting through any chain of same-dimension units is the
+  identity on the quantity (ADR 0026, Decision 10).
+\end{theorem}

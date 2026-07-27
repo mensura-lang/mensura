@@ -1,0 +1,7 @@
+// Reject: `int` is never dimensioned (ADR 0014/0026); the backing of a
+// dimension must be `real`.
+unit Machine { id: string }
+store readings {
+  unit { Machine }
+  attr* { spin: temperature[int] }
+}

@@ -152,7 +152,10 @@ fn decode(
         ColumnType::Date => cell.as_str().map(|s| Value::Date(s.to_string())),
         ColumnType::Enum { .. } => cell.as_str().map(|s| Value::Enum(s.to_string())),
         ColumnType::Int => cell.as_i64().map(Value::Int),
-        ColumnType::Real => cell.as_f64().map(Value::Real),
+        // A dimensioned column persists its base-unit magnitude as a plain
+        // real; the dimension is compile-time only (ADR 0026,
+        // `docs/toolkit/00-storage-backend.md`).
+        ColumnType::Real | ColumnType::Quantity(_) => cell.as_f64().map(Value::Real),
         ColumnType::Bool => cell.as_i64().map(|i| Value::Bool(i != 0)),
     }
     .map_err(|_| mismatch())
@@ -234,7 +237,8 @@ fn column_type_sql(ty: &ColumnType, col: &str) -> String {
     match ty {
         ColumnType::String => "TEXT".to_string(),
         ColumnType::Int => "INTEGER".to_string(),
-        ColumnType::Real => "REAL".to_string(),
+        // A dimensioned column stores its base-unit magnitude (ADR 0026).
+        ColumnType::Real | ColumnType::Quantity(_) => "REAL".to_string(),
         ColumnType::Bool => "INTEGER".to_string(),
         ColumnType::Date => "TEXT".to_string(),
         ColumnType::Enum { variants, .. } => {

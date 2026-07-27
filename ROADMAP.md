@@ -56,7 +56,8 @@ mensura/
                            ```mensura examples are highlighted and check-gated
   crates/
     mensura-syntax/     -- lexer, parser, AST
-    mensura-types/      -- name resolution, the resolved Schema, the hooks
+    mensura-types/      -- name resolution, the resolved Schema, the hooks;
+                           bundles the stdlib modules (stdlib/si.mensura)
     mensura-runtime/    -- SQLite storage backend and the processing layer
     mensura-highlight/  -- source classification shared by the LSP and the book
     mensura-lsp/        -- the `mensura lsp` backend
@@ -88,7 +89,7 @@ mensura/
   devices and cross-store ingestion first need them); physical-unit/precision
   types are M3.
 - **Design docs still to write** (each ahead of its milestone, per specs
-  first): physical units and precision; measure semantics (additivity);
+  first): precision; measure semantics (additivity);
   devices and `registry`; ingestion endpoints; streaming windows and refresh; ML
   signatures and validation; the serving/transport integration; and the
   toolkit docs for the CLI, diagnostics, and LSP.
@@ -169,16 +170,21 @@ Output: dimensional quantities are first-class, and unit mismatch is a compile
 error.
 
 - Design docs first (ADR 0026 dimensions, 0027 modules, 0028 the `si` stdlib;
-  the language doc `11-physical-units.md` on top).
+  the language docs `11-physical-units.md` and `12-modules-and-imports.md`
+  on top).
 - Dimensions as the free abelian group over the seven SI base dimensions,
   formally backed (ADR 0026); a dimensioned type is `D[real]`; unit checking
   and automatic (linear) conversion, with affine units (Celsius) handled at
   ingestion.
-- Units are ordinary dimensioned constants (`9.8 * m / s^2`), shipped by a
-  small module system (ADR 0027: top-level const bindings + imports) and a
-  bundled `si` standard library generated from the mechanized group (ADR 0028).
-  The third-party package layer (manifest, hashes, `pin`) is provisional and
-  deferred until it has a consumer.
+- Units are ordinary dimensioned constants (`9.8 * meter / second^2`),
+  shipped by a small module system (ADR 0027: top-level const bindings +
+  imports with bundled resolution) and a bundled `si` standard library
+  consistent with the mechanized group (ADR 0028, as amended: hand-written
+  with an oracle test until the table grows enough to earn a generator).
+  The third-party package layer (manifest, hashes, `pin`) is provisional
+  and deferred until it has a consumer; finalizing it (the marked import
+  form, the manifest schema, the check artifact) is a later,
+  post-M3 roadmap item of its own (ADR 0027, Decision 7).
 - Precision (the `NxE` significand/exponent idea) is deferred to a future
   library extension of `real`, not M3 core.
 - Measure-semantics annotations (`@additive`, `@semiadditive`, `@foldable`)

@@ -1,0 +1,4 @@
+// Reject: dimension aliases are non-recursive (ADR 0026, Decision 8);
+// a reference cycle is a compile error.
+let a[T] { b[T] }
+let b[T] { a[T] }

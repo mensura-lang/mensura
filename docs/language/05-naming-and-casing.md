@@ -12,21 +12,49 @@ this document is only about names.
 
 ## The convention
 
-Declared names split into two classes by what they denote.
+Declared names split into two classes by what they denote, plus a fixed
+built-in vocabulary.
 
 - **Types** use **PascalCase**.  These are the names that classify values and
   appear in type position: `unit` and `shape`.  Examples: `Machine`,
   `TemperatureSensor`, `FeatureWindow`.
 - **Terms** use **snake_case**.  These are named resources, instances, and
-  fields: `store` and `registry` names, attribute (column) names, and
-  `string`-valued shape parameters.  Examples: `temperature_readings`,
-  `foundation_day`, `date_field`.
+  fields: `store` and `registry` names, attribute (column) names,
+  `string`-valued shape parameters, and `let` value bindings at every
+  scope (a block statement or a top-level item,
+  `12-modules-and-imports.md`).  Examples: `temperature_readings`,
+  `foundation_day`, `date_field`, `km`.
+- **Built-in type names** are a fixed **lowercase** vocabulary the
+  resolver matches rather than case-checks: the primitives (`int`,
+  `real`, `string`, `bool`, `date`), the seven base dimensions
+  (`time`, `length`, `mass`, `current`, `temperature`, `amount`,
+  `luminosity`), and dimension aliases declared with a generic `let`
+  (`let speed[T] { ... }`), which extend the vocabulary and take the same
+  lowercase form (ADR 0026, Decision 5).  The PascalCase rule governs
+  user-declared type *names* (`unit`, `shape`, `enum`), not this
+  vocabulary.
 
 A shape parameter follows its kind, since the type/term split applies to it
 too.  A `Unit` parameter is a type parameter (like `U` in `Tabular[U: Unit]`
 or `FeatureWindow[U]`), so it is PascalCase.  A `string` parameter names a
 value (like `date_field` in `Ageable[date_field: string]`), so it is
 snake_case.
+
+The `[...]` bracket is uniformly **type-level parameter application**
+(ADR 0026, Decision 5): shape parameters (`Tabular[U: Unit]`), the
+backing of a dimension (`temperature[real]`), and the parameters of a
+dimension alias (`speed[T]`) are one construct.
+
+Unit *names and symbols* are value-level terms and follow snake_case:
+the intrinsics (`meter`, `second`, ...) and the `si` library's bindings
+(`si.newton`, `si.km`).  Because a term binding must be snake_case,
+`si` binds full lowercase names always and short SI symbols only where
+they are already snake_case-valid (`s`, `m`, `g`, `kg`, `km`, `ms`,
+`mol`, `cd`, ...); uppercase and mixed-case symbols (`A`, `K`, `N`,
+`Pa`, `Hz`) are not bound.  This resolves ADR 0028's SI-symbol casing
+question in favor of one rule with no exceptions; a future `exposing`
+form with renaming can revisit the terse spellings without a casing
+change.
 
 A `view` is a materialized, queried resource, like a `store` or `registry`: it
 is defined by a pipeline and exposed over a wire
@@ -96,8 +124,11 @@ The convention is a **hard compile-time error**, not a warning.  The resolver
 (`crates/mensura-types/src/resolve.rs`) rejects a name in the wrong class and
 collects the diagnostic alongside the others rather than failing fast, so a
 single run reports every violation.  A `unit` or `shape` whose name is not
-PascalCase, or a `store`, `registry`, `view`, attribute, or parameter whose name
-is not snake_case, is a resolution error.
+PascalCase, or a `store`, `registry`, `view`, attribute, parameter, `let`
+value binding, or `import` name that is not snake_case, is a resolution
+error.  A dimension alias declared with a generic `let` must be lowercase
+(it joins the built-in type vocabulary), which the snake_case check
+already enforces.
 
 Enforcing rather than warning is what lets wire-name translation be
 total and deterministic: every declared name is in a known case, so its REST,

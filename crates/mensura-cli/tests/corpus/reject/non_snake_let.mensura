@@ -1,0 +1,3 @@
+// Reject: a `let` value binding is a term and follows snake_case at every
+// scope (`05-naming-and-casing.md`).
+let Overheat { 350.0 * kelvin }

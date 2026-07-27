@@ -1,0 +1,80 @@
+// The `si` standard library: SI unit symbols, prefixes, and named derived
+// units as ordinary dimensioned constants (ADR 0026, ADR 0027, ADR 0028).
+//
+// Bundled with the toolchain: a bare `import si` resolves here and only
+// here (ADR 0027, Decision 6).  Every binding is recomputed against the
+// mechanized dimension group on each compile, and the oracle test in
+// `crates/mensura-types/src/modules.rs` (`si_matches_its_oracle`) pins
+// each binding's resolved dimension and base-unit magnitude: edit the two
+// together (ADR 0028, Decision 2 as revised).
+//
+// Casing: full lowercase names always; short symbols only where they are
+// snake_case-valid, so `A`, `K`, `N`, `Pa`, `Hz`, `W`, `J`, `V` are not
+// bound (`docs/language/05-naming-and-casing.md`).  The seven base-unit
+// *names* (`second`, `meter`, ...) are language intrinsics, not members
+// of this module.
+
+// Base-unit symbols.
+let s { second }
+let m { meter }
+let kg { kilogram }
+let mol { mole }
+let cd { candela }
+
+// The gram: SI prefixes attach to the gram, never to the kilogram
+// (ADR 0026, Decision 1).
+let gram { 0.001 * kilogram }
+let g { gram }
+
+// Time units beyond the second.
+let minute { 60.0 * second }
+let hour { 3600.0 * second }
+let day { 86400.0 * second }
+let h { hour }
+
+// Named derived units, by full lowercase name (their SI symbols are not
+// snake_case-valid).
+let hertz { second ^ -1 }
+let newton { kilogram * meter / second ^ 2 }
+let pascal { newton / meter ^ 2 }
+let joule { newton * meter }
+let watt { joule / second }
+let coulomb { ampere * second }
+let volt { watt / ampere }
+
+// The common prefix subset (ADR 0028, "Prefix scope"): nano, micro,
+// milli, centi, kilo, mega, giga, on the second, the meter, and the gram.
+// `u` is the conventional ASCII spelling of the micro symbol.
+let nanosecond { 0.000000001 * second }
+let microsecond { 0.000001 * second }
+let millisecond { 0.001 * second }
+let ns { nanosecond }
+let us { microsecond }
+let ms { millisecond }
+
+let nanometer { 0.000000001 * meter }
+let micrometer { 0.000001 * meter }
+let millimeter { 0.001 * meter }
+let centimeter { 0.01 * meter }
+let kilometer { 1000.0 * meter }
+let nm { nanometer }
+let um { micrometer }
+let mm { millimeter }
+let cm { centimeter }
+let km { kilometer }
+
+let nanogram { 0.000000001 * gram }
+let microgram { 0.000001 * gram }
+let milligram { 0.001 * gram }
+let ng { nanogram }
+let ug { microgram }
+let mg { milligram }
+
+// Conventional prefixed derived units.
+let kilopascal { 1000.0 * pascal }
+let megapascal { 1000000.0 * pascal }
+let kilojoule { 1000.0 * joule }
+let kilowatt { 1000.0 * watt }
+let kilohertz { 1000.0 * hertz }
+let megahertz { 1000000.0 * hertz }
+let gigahertz { 1000000000.0 * hertz }

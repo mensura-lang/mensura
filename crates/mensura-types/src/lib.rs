@@ -5,12 +5,16 @@
 //! for what a store is and `docs/toolkit/03-storage-backend.md` for how a
 //! `Schema` becomes a table.
 
+mod consts;
 pub mod expr_check;
+mod lower;
 pub mod model;
+mod modules;
 pub mod pipe_check;
 pub mod resolve;
 mod suggest;
 pub mod table;
+pub mod units;
 
 pub use expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 pub use model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, TableShape, ViewPlan};
@@ -20,3 +24,4 @@ pub use table::{
     Branch, Cardinality, Completeness, Content, Exhaustive, Lineage, Qualifiers, Side, SplitId,
     TableType, Totality,
 };
+pub use units::Dimension;

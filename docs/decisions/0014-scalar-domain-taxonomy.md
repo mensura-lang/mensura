@@ -172,6 +172,10 @@ Neutral:
   later.  `date` is orderable here but not numeric; `date` arithmetic (durations
   between dates) is also left open.
 - Exactly how M3's dimensional units and precision refine `real`.
+  (*Answered by ADR 0026*: a dimension is applied to `real` as a backing,
+  `temperature[real]`, so `real` is refined without being replaced and
+  this taxonomy is not reopened; precision remains open as a future
+  library extension of the backing.)
 - Reintroducing `mean` and other statistics as named sugar.
 - Missing-aware aggregates (working over an optional bag) once value narrowing
   lands.

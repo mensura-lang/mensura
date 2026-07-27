@@ -140,6 +140,11 @@ qualify (ADR 0013).
 
 The key columns and the non-key columns with their domains: the pure
 structure of the data, the ordinary record-of-columns part of the type.
+A column's domain includes its physical dimension when it has one
+(`temperature[real]`, `11-physical-units.md`): dimension is *what the
+data is*, and dimensional arithmetic is type computation over `C`, not a
+propagated fact in `Qs` (ADR 0026, revising ADR 0013's anticipation that
+units would be a per-column qualifier; precision keeps that slot).
 Cardinality and totality are not part of `C`; they are qualifiers in `Qs`
 (sections 3.2, 3.3).  Reindexing moves columns between the key and the
 non-key part.
@@ -294,10 +299,26 @@ default (`06`, "Cardinality and missing values").  So `r.temperature > 30.0`
 type-checks only when `temperature` is read at one row and is total.
 
 The scalar domain also gates which operator applies, strictly and without
-coercion (ADR 0014): numeric `number` splits into `int` and `real`; `+ - * ^`
-need matching numeric operands; `/` is `real`-only; `< <= > >=` and `min`/`max`
+coercion (ADR 0014): numeric `number` splits into `int` and `real`; `+ -`
+need matching numeric operands; `< <= > >=` and `min`/`max`
 take the orderable domains (`int`, `real`, `date`); and `== !=` take the
-equatable domains, so they are **not** defined on `real`.
+equatable domains, so they are **not** defined on `real` or any
+`real`-backed domain.
+
+Dimensions refine the numeric rules (`11-physical-units.md`, ADR 0026).
+A `real`-backed domain carries a dimension exponent vector, with bare
+`real` the zero vector; `int` is never dimensioned.  Then:
+
+- `+ -` require *equal* domains, dimension included, so `meter + second`
+  and `meter + 1.0` are rejected;
+- `*` and `/` combine two `real`-backed operands, adding (respectively
+  subtracting) their exponent vectors; a zero result vector is bare
+  `real`.  `*` on matching `int`s stays `int`; `/` never applies to
+  `int` (unchanged);
+- `^` on a dimensioned base takes an integer-literal exponent (optionally
+  negated) and scales the vector; `^ 0` yields bare `real`.  On
+  dimensionless operands `^` keeps the matching-domain rule
+  (`real ^ real`, `int ^ int`).
 
 ### 5.4  Bag combinators: many to one
 
@@ -307,7 +328,9 @@ way: `in` tests membership, `count`/`any`/`all` summarize, and the aggregates
 `sum(x) / to_real(count(x))`; ADR 0014).  An aggregate requires a total bag;
 `count` yields `int`, `sum` preserves a numeric domain, `min`/`max` preserve an
 orderable domain, and `any`/`all` take a bag of `bool`.  Each returns a single
-value.  The `b` of a bag lambda `|k, b| ...` sees the whole bag at a key (so
+value.  Domain preservation includes the dimension: `max` over a
+`temperature[real]` bag is `temperature[real]`, while `count` is always
+dimensionless `int` (ADR 0026).  The `b` of a bag lambda `|k, b| ...` sees the whole bag at a key (so
 `b.credits` is the bag of `credits`), and a scalar comparison on a bag is a type
 error until a combinator collapses it (`max b.readings > 30.0`).
 
@@ -721,6 +744,16 @@ operations, and population-relative completeness:
   `antiJoin_splitSafe`, `distinct_splitSafe` (these back named forms deferred in
   section 13, recorded here so implementers know the proofs exist).
 
+**Physical dimensions** (`Units/Dimension.lean`, ADR 0026) -- the group
+behind the section 5.3 dimensional rules: `Dimension` (the free abelian
+group over the seven `Base` dimensions) with its `CommGroup` and
+`DecidableEq` instances, `exponents`, `base`, and `base_injective` (the
+seven axes are distinct).  The planned follow-ups, per ADR 0026 Decision
+10, are dimensional-arithmetic soundness (the checker's `*`/`/`/`^` match
+the group operations) and conversion correctness (scale-factor
+normalization preserves the quantity); they are white nodes in the
+blueprint until proved.
+
 ## 12.  Conformance cases (seed)
 
 The roadmap's M0 calls for a must-accept / must-reject suite (`ROADMAP.md`, M0;
@@ -807,8 +840,11 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   annotation family.
 - **Streaming.**  `sliding_window`, `latest`, window-closedness, and `on_change`
   refresh extend these rules (M5).
-- **Physical units, precision, and measure semantics.**  Dimensional units, the
-  `NxE` measured literal, and `@additive`/`@foldable` are M3.
+- **Precision and measure semantics.**  Dimensional units are now
+  specified (`11-physical-units.md`, section 5.3 above; ADR 0026).
+  Precision (a library extension of `real`; the deferred `NxE` literal)
+  and `@additive`/`@foldable` measure semantics remain open, each with
+  its own document to come.
 - **The companion LL(1) grammar proof.**  The other M0 freeze artifact (core
   grammar proven LL(1)) lives with `04-grammar.md` and is not duplicated here;
   the freeze is contingent on it (`ROADMAP.md`, M0).

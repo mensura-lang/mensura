@@ -6,7 +6,9 @@ implemented subset covers `unit` declarations, the basic form of `store`
 declarations, `shape` declarations (with an optional unit clause and
 `Unit`/`string` parameters, the latter interpolated into attribute names)
 claimed through the `:` conformance clause on stores, `enum` declarations,
-and `view` declarations.
+`view` declarations, top-level `let` bindings and `import` items
+(`12-modules-and-imports.md`, ADR 0027), and dimensioned types in type
+position (`11-physical-units.md`, ADR 0026).
 
 The final section, the expression sublanguage, is the grammar for the one
 expression language of `06-expressions.md` (and
@@ -63,7 +65,8 @@ string literal and `template` a backtick template token.  Punctuation tokens
 ```ebnf
 program       = { item } EOF ;
 
-item          = unit_decl | store_decl | shape_decl | enum_decl | view_decl ;
+item          = unit_decl | store_decl | shape_decl | enum_decl | view_decl
+              | let_decl | import_decl ;
 
 unit_decl     = "unit" ident "{" { field } "}" ;
 field         = ident ":" type ;
@@ -92,15 +95,41 @@ attr_name     = ident | template ;
 
 view_decl     = "view" ident [ conforms ] block ;
 
-type          = named_type [ "?" ] ;
-named_type    = ident ;
+let_decl      = "let" ident ( value_let | alias_let ) ;
+value_let     = [ ":" type ] block ;
+alias_let     = "[" ident { "," ident } "]" "{" tl_expr "}" ;
+import_decl   = "import" ident ;
+
+type          = tl_expr [ "?" ] ;
+tl_expr       = tl_term { ( "*" | "/" ) tl_term } ;
+tl_term       = tl_factor [ "^" [ "-" ] int ] ;
+tl_factor     = ident [ "[" ident "]" ]
+              | "(" tl_expr ")" "[" ident "]" ;
 ```
 
 ## Why this is LL(1)
 
 - **`item`**: the parser peeks one token.  `unit` selects `unit_decl`,
   `store` selects `store_decl`, `shape` selects `shape_decl`, `enum` selects
-  `enum_decl`, `view` selects `view_decl`; the five FIRST sets are disjoint.
+  `enum_decl`, `view` selects `view_decl`, `let` selects `let_decl`, and
+  `import` selects `import_decl`; the seven FIRST sets are disjoint words.
+- **`let_decl`**: after the bound name the next token decides the kind: `[`
+  opens the alias parameter list (a type-level dimension alias, ADR 0026
+  Decision 8) and a braced body parsed with the type grammar follows; `:`
+  (an ascription) or `{` continues the value form, whose body is the
+  ordinary expression-grammar `block`.  One token decides.
+- **Item bodies are brace-closed.**  Every item with a body ends at a `}`
+  (`import` has no body), which is what makes item boundaries independent
+  of the expression grammar.  A top-level item has no terminator, so an
+  unbraced expression body would let the application spine swallow the
+  next item's leading keyword (`let x = 2.0 * meter let y = ...` would
+  read `meter let` as an application), and every future extension of the
+  expression grammar would have to be re-audited against the item-level
+  FOLLOW set.  The brace closes that hazard class structurally; a `let`
+  body is the same statement block a `view` hosts, with the const
+  evaluator (not the grammar) enforcing what a constant may compute
+  (`12-modules-and-imports.md`).
+- **`import_decl`**: `import` selects it and a single module name follows.
 - **`view_decl`**: after the view name the next token is either `:` (a
   `conforms` clause is present) or `{` (it is absent and the `block` body
   opens).  One token decides.  The body is the expression-grammar `block`
@@ -136,20 +165,53 @@ named_type    = ident ;
   (shapes carry no foreign-key resolution).
 - **`field` / attribute loops**: a loop continues on `ident` (or a `template`
   name in a shape) and ends on `}`.
-- **`type`**: a type is a single `ident`: a primitive (`string`, `int`,
-  `real`, ...), a unit reference, or a named `enum`.  Which it is, is the resolver's
-  decision, not the parser's; the parser commits on the lone identifier.
-  A trailing `?` makes the value **optional** (it may be missing in an
-  observed row; see ADR 0010 and `02-stores.md`).  After the identifier
-  the parser peeks one token and takes a single `?` if present, so the
-  optional marker preserves LL(1).  The `?` is a punctuation token the
-  lexer emits, and `parse_type` carries it on the `TypeExpr`; the resolver
+- **`type`**: a type is a type-level expression (`tl_expr`).  The common
+  case is still a single `ident`: a primitive (`string`, `int`, `real`,
+  ...), a unit reference, or a named `enum`.  Which it is, is the
+  resolver's decision, not the parser's.  A dimensioned type continues
+  from the identifier with `[`, `*`, `/`, or `^`
+  (`temperature[real]`, `(length / time^2)[real]`; see
+  `11-physical-units.md` and the subsection below).  A trailing `?` makes
+  the value **optional** (it may be missing in an observed row; see ADR
+  0010 and `02-stores.md`).  After the type-level expression the parser
+  peeks one token and takes a single `?` if present, so the optional
+  marker preserves LL(1).  The `?` is a punctuation token the lexer
+  emits, and `parse_type` carries it on the `TypeExpr`; the resolver
   rejects `?` on a key field (whether a row exists is cardinality, a
   separate axis) and threads totality onto each resolved column.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
 subset.
+
+### Why the type grammar is LL(1)
+
+The type-level expression grammar (`tl_expr`) is the expression grammar's
+precedence-cascade idea in miniature: `*`/`/` loop over `tl_term`, `^`
+is a single optional tail, and `tl_factor` splits on distinct tokens
+(`ident` versus `(`).  After an `ident`, `[` opens the backing bracket
+and any other token ends the factor; after a parenthesized group the `[`
+is mandatory.  The exponent's optional `-` sits between `^` and `int`,
+both fixed by position.  No production is left-recursive.
+
+The continuation tokens of a `type` are `*`, `/`, `^`, `[`, and the
+optional `?`.  The FOLLOW sets at every `parse_type` call site are
+disjoint from them:
+
+| type position | FOLLOW (what ends the type) | disjoint? |
+| --- | --- | --- |
+| a `unit` field / `attr` entry | next field `ident`/`template`, `}` | yes |
+| a `let` / record-field ascription | `=` | yes |
+| a lambda return ascription `\|x\| : T body` | FIRST(or_expr): idents, literals, `-`, `(`, `\|`, `{` | yes: `-` only follows `^`, and `(` only starts a factor (after `*`, `/`, or at the head), never follows a completed factor |
+
+The lambda-return row is the one genuinely hazardous context: the body
+begins immediately after the type, so the type must not be able to
+swallow a body-starting token.  It cannot: a completed `tl_expr` can only
+be continued by `*`, `/`, `^`, or `[`, none of which starts an
+expression (`\|>` is a distinct token from `\|`, and unary minus appears
+in FIRST(or_expr) but a bare `-` is not a type continuation).  So
+`|x| : speed[real] x / s` parses the type as `speed[real]` and the body
+as `x / s`.
 
 ## Notes and constraints
 
@@ -197,29 +259,35 @@ subset.
 
 ## Types in this subset
 
-`named_type` is one of the recognized primitive types, the name of a declared
-`enum`, otherwise it is read as a reference to a unit (a compound field,
-deferred):
+A lone identifier in type position is one of the recognized primitive
+types, the name of a declared `enum`, otherwise it is read as a reference
+to a unit (a compound field, deferred):
 
-| Type     | Meaning                                          |
-|----------|--------------------------------------------------|
-| `string` | text                                             |
-| `int`    | integer number                                   |
-| `real`   | real number                                      |
-| `bool`   | boolean                                          |
-| `date`   | calendar date (ISO 8601)                         |
-| `Name`   | a declared `enum`: one of its string variants    |
+| Type       | Meaning                                          |
+|------------|--------------------------------------------------|
+| `string`   | text                                             |
+| `int`      | integer number                                   |
+| `real`     | real number (dimensionless)                      |
+| `bool`     | boolean                                          |
+| `date`     | calendar date (ISO 8601)                         |
+| `Name`     | a declared `enum`: one of its string variants    |
+| `D[real]`  | a dimensioned quantity (`temperature[real]`)     |
 
 `int` and `real` are distinct domains with no implicit widening between
 them; only the key-eligible types (`string`, `int`, `bool`, `date`, `enum`)
 may be key fields (ADR 0014).
 
+A dimensioned type applies a dimension (a base dimension, an alias, or a
+parenthesized `tl_expr` such as `(length / time^2)`) to a backing, `real`
+today; see `11-physical-units.md` (ADR 0026).  A dimensioned column is
+numeric and orderable but, like `real`, not key-eligible.
+
 A trailing `?` (e.g. `date?`) makes any of these **optional**: the value may
 be missing in an observed row (ADR 0010).  Without it the value is total
 (known).  `?` is not allowed on a key field.
 
-Physical-unit types (dimensional quantities, precision) are a separate,
-larger feature with their own design doc and are not in this subset.
+Precision types are a separate, later feature (a library extension of
+`real`, ADR 0026 Decision 9) and are not in this subset.
 
 ## Worked example
 
@@ -336,9 +404,10 @@ munches it maximally, so a lone `|` stays a `Pipe` (a lambda bar), with the
 closing-bar caveat in `06-expressions.md`.  All other punctuation
 (`== != < <= > >= + - * / ^ . | ( ) { } [ ] : ; ,`) the lexer already
 emits, so the records, blocks,
-and ascriptions here need no new tokens.  The `NxE` measured literal (`10x3`)
-is a separate token reserved for the physical-units feature and does not
-appear in this subset.
+and ascriptions here need no new tokens.  (An `NxE` measured literal
+(`10x3`) was once reserved here for physical units; ADR 0026 supersedes
+it.  Units need no literal form, and a measured-precision literal is
+deferred with the precision library.)
 
 `paren` covers grouping, the homogeneous collection, and records: `(e)` is
 grouping, `()` the empty collection, `(a, b, ...)` a collection of like values
@@ -453,12 +522,19 @@ freeze condition.
 
 Combining juxtaposition application with word operators forces a small,
 local exception to the lexer's keyword-freedom: inside an expression the
-words `or`, `and`, `not`, `in`, `is`, `known`, `missing`, `if`, `then`, and
-`else` are **reserved** and cannot name a value, and inside a `block` the
-statement keywords `let` and `assert` are reserved in statement position.  This is
-unavoidable with one token of lookahead, since after an operand an ident
-could otherwise be read either as the next argument (juxtaposition) or as an
-infix operator, and only reservation resolves the choice.  The reservation is
+words `or`, `and`, `not`, `in`, `is`, `known`, `missing`, `if`, `then`,
+`else`, and the statement keywords `let` and `assert` are **reserved** and
+cannot name a value.  This is unavoidable with one token of lookahead,
+since after an operand an ident could otherwise be read either as the next
+argument (juxtaposition) or as an infix operator, and only reservation
+resolves the choice.  Reserving `let` and `assert` throughout expressions
+(not merely in statement position) closes the statement-boundary leak: in
+`{ let t = a let u = b }` the missing `;` would otherwise let the
+application spine read `a let` as an application and surface a mislocated
+error (or, once general application lands, a mis-typed one); with the
+reservation the parser stops at `let` and reports the missing separator.
+For the same reason a reserved word cannot *name* a `let` binding: a value
+named `let` or `known` could never be referenced.  The reservation is
 local to the expression sublanguage; elsewhere these words remain ordinary
 identifiers, as the keyword-free lexer intends.
 
@@ -468,8 +544,11 @@ identifiers, as the keyword-free lexer intends.
   signatures.
 - Compound units, `domain` resolution, and foreign keys.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
-- Physical-unit and precision types, including the `NxE` measured literal and
-  the physical-unit grammar.
+- Precision types and any measured-precision literal (deferred with the
+  precision library, ADR 0026 Decision 9; the dimensioned-type grammar is
+  implemented above).
+- Module-qualified names in type position (`geo.speed[real]`), and the
+  `exposing` import refinement (`12-modules-and-imports.md`).
 - The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
   joins, `split`/`union`, `unpivot`/`pivot`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the

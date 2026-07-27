@@ -1,0 +1,4 @@
+// Reject: a const binding names a value, not a table
+// (`12-modules-and-imports.md`).
+let km { 1000.0 * meter }
+view v { km |> flat_map |_, r| r }

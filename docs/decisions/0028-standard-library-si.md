@@ -44,6 +44,23 @@ cannot drift from the proved group: the base-unit symbols, the prefix table
 ...) are all emitted from one source of truth.  The generator's output is
 ordinary Mensura source (const bindings per ADR 0026/0027), reviewable as such.
 
+**Revised during implementation.**  The generator is dropped for now, and
+`si.mensura` is hand-written, for a reason the implementation made plain:
+the emitted source carries no group facts a generator could pin.  Each
+binding is an ordinary expression over the intrinsic base units
+(`let newton = kilogram * meter / second^2`), so the checker *recomputes*
+its dimension from the mechanized-group rules on every compile; the only
+hand-authored content is the physics (which product of base units, which
+scale), and that is a definition wherever it lives, unprovable in Lean or
+anywhere else.  The no-drift mechanism is therefore: (a) `si` is compiled
+by the frontend in CI like any source, and (b) an **oracle test** asserts
+each binding's *resolved* dimension exponent vector and magnitude against
+a review table, bidirectionally (no unlisted binding, no stale row),
+which checks the checker's output, something generation cannot do.  A
+(Rust) generator becomes worthwhile when the table grows toward the full
+prefix set, where the content turns combinatorial; that is the recorded
+plan, not a Lean emitter.
+
 ### 3.  Imported bare: `bundled`, offline-first, un-remappable
 
 A bare `import si` resolves `bundled`, and only `bundled` (ADR 0027, Decision
@@ -74,8 +91,10 @@ once the implementation lands.
 
 Positive:
 
-- The shipped units are provably consistent with the mechanized group (Decision
-  2): no hand-maintained unit table that can drift.
+- The shipped units are checked against the mechanized group's rules on
+  every compile, and the oracle test pins each binding's resolved
+  dimension and scale (Decision 2, as revised): no unit table that can
+  drift silently.
 - Offline-first, manifest-free default: `import si` just works.
 - The stdlib discipline (small, proven, ADR-per-module) keeps the surface honest.
 
@@ -83,9 +102,9 @@ Negative:
 
 - One release train couples `si` evolution to toolchain releases (Decision 1);
   fine for stable physics, more limiting for a future `stats`.
-- A generator plus a prelude is real implementation surface (the follow-up),
-  and the SI-symbol casing question (below) must be resolved before `si` can
-  bind its short symbols.
+- A hand-written table plus its oracle test is two places to edit per unit
+  (Decision 2, as revised); acceptable at the common-subset size, and the
+  trigger to build the Rust generator when it stops being acceptable.
 
 Neutral:
 
@@ -96,19 +115,23 @@ Neutral:
 
 ## Open questions
 
-- **SI-symbol casing.**  Unit *names* are snake_case terms and lowercase names
-  are fine (`ampere`, `kelvin`, `newton`).  But many SI *symbols* are uppercase
-  or mixed (`A`, `K`, `N`, `Pa`, `W`, `Hz`, `MPa`), which snake_case forbids for
-  a term binding.  Options: `si` exports full lowercase names always and short
-  symbols only where snake_case-valid (`s`, `m`, `kg`, `mol`, `cd`, `km`, `ms`);
-  or a designated unit-symbol namespace relaxes casing; or symbols come only via
-  an `exposing`-style alias (ADR 0027).  To resolve before the `si`
-  implementation; it also feeds the `05-naming-and-casing.md` reconciliation.
-- **The units table's authority.**  Whether the name/symbol/scale table that
-  feeds the generator lives beside the Lean module or is itself derived, and how
-  it is reviewed.
-- **Prefix scope.**  Which prefixes ship (full SI set vs a common subset) and
-  for which units, given the `kg`/`g` footnote (ADR 0026 Decision 1).
+All three were resolved with the implementation:
+
+- **SI-symbol casing.**  Resolved: one casing rule with no exceptions.
+  `si` exports full lowercase names always and short symbols only where
+  snake_case-valid (`s`, `m`, `g`, `kg`, `mol`, `cd`, `km`, `ms`, ...);
+  uppercase and mixed symbols (`A`, `K`, `N`, `Pa`, `W`, `Hz`) are not
+  bound.  A future `exposing`-with-rename can revisit the terse spellings
+  without a casing change.  Recorded in `05-naming-and-casing.md`.
+- **The units table's authority.**  Resolved by the Decision 2 revision:
+  the authority is the hand-written `si.mensura` plus the oracle test's
+  review table (resolved dimension vector and magnitude per binding),
+  which CI keeps bidirectionally consistent.
+- **Prefix scope.**  Resolved: the common engineering subset (nano, micro,
+  milli, centi, kilo, mega, giga) on second/meter/gram plus a few
+  conventional derived forms, honoring the `kg`/`g` footnote (prefixes
+  attach to `gram`; `kilogram` is the base).  The full SI set waits for
+  the generator.
 
 ## Forward references
 

@@ -6,8 +6,9 @@
 //! on the `Ident` text in the position where they are expected.
 
 use crate::ast::{
-    Attr, DomainEntry, EnumDecl, Field, Ident, Item, NameSeg, NameTemplate, Program, ShapeArg,
-    ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr, UnitDecl, ViewDecl,
+    Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LetDecl, LetKind, NameSeg,
+    NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr,
+    TypeKind, UnitDecl, ViewDecl,
 };
 use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
@@ -83,14 +84,27 @@ pub fn parse_expr(tokens: &[Token]) -> Result<Expr, ParseError> {
     Ok(expr)
 }
 
-/// The words reserved inside an expression: they are operators or presence
-/// keywords and so can never name a value.  See the "Reserved words in
-/// expressions" note in `docs/language/04-grammar.md`.  `let` and `assert` are
-/// reserved only in statement position and are handled there, not here.
+/// The words reserved inside an expression: they can never name a value.
+/// See the "Reserved words in expressions" note in
+/// `docs/language/04-grammar.md`.  The statement keywords `let` and
+/// `assert` are reserved throughout expressions, not merely in statement
+/// position: otherwise a missing `;` lets the application spine swallow
+/// the next statement's keyword (`{ let t = a let u = b }`) and the error
+/// surfaces far from the mistake, or not at all.
 fn is_expr_reserved(word: &str) -> bool {
     matches!(
         word,
-        "or" | "and" | "not" | "in" | "is" | "known" | "missing" | "if" | "then" | "else"
+        "or" | "and"
+            | "not"
+            | "in"
+            | "is"
+            | "known"
+            | "missing"
+            | "if"
+            | "then"
+            | "else"
+            | "let"
+            | "assert"
     )
 }
 
@@ -154,6 +168,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// An identifier that names a `let` binding: like [`Parser::expect_ident`],
+    /// but a reserved word is rejected (a value named `let` or `known` could
+    /// never be referenced; `docs/language/04-grammar.md`, "Reserved words in
+    /// expressions").
+    fn expect_binder(&mut self, what: &str) -> Result<Ident, ParseError> {
+        if let TokenKind::Ident(name) = self.cur_kind()
+            && is_expr_reserved(name)
+        {
+            return Err(self.error(format!(
+                "`{name}` is a reserved word and cannot name a binding"
+            )));
+        }
+        self.expect_ident(what)
+    }
+
     fn expect_str(&mut self, what: &str) -> Result<StrLit, ParseError> {
         match self.cur_kind() {
             TokenKind::Str(value) => {
@@ -207,8 +236,74 @@ impl<'a> Parser<'a> {
             Ok(Item::Enum(self.parse_enum_decl()?))
         } else if self.at_keyword("view") {
             Ok(Item::View(self.parse_view_decl()?))
+        } else if self.at_keyword("let") {
+            Ok(Item::Let(self.parse_let_decl()?))
+        } else if self.at_keyword("import") {
+            Ok(Item::Import(self.parse_import_decl()?))
         } else {
-            Err(self.error("expected a `unit`, `store`, `shape`, `enum`, or `view` declaration"))
+            Err(self.error(
+                "expected a `unit`, `store`, `shape`, `enum`, `view`, `let`, or `import` \
+                 declaration",
+            ))
+        }
+    }
+
+    /// `import_decl = "import" ident`
+    /// (`docs/language/12-modules-and-imports.md`, ADR 0027).
+    fn parse_import_decl(&mut self) -> Result<ImportDecl, ParseError> {
+        let start = self.cur_span().start;
+        self.bump_keyword(); // `import`
+        let name = self.expect_ident("a module name")?;
+        let span = Span::new(start, name.span.end);
+        Ok(ImportDecl { name, span })
+    }
+
+    /// `let_decl = "let" ident ( value_let | alias_let )`.  After the name,
+    /// `[` opens a dimension alias's parameter list and a braced body parsed
+    /// with the type grammar follows (ADR 0026, Decision 8); `:` or `{`
+    /// continues the value form, whose body is the ordinary statement block
+    /// (ADR 0027, Decision 1 as revised).  Like every other item body, both
+    /// forms are brace-closed, so item boundaries stay independent of the
+    /// expression grammar.  One token decides.
+    fn parse_let_decl(&mut self) -> Result<LetDecl, ParseError> {
+        let start = self.cur_span().start;
+        self.bump_keyword(); // `let`
+        let name = self.expect_binder("a name after `let`")?;
+        if self.eat(&TokenKind::LBracket) {
+            let mut params = vec![self.expect_ident("an alias parameter")?];
+            while self.eat(&TokenKind::Comma) {
+                params.push(self.expect_ident("an alias parameter")?);
+            }
+            self.expect(&TokenKind::RBracket, "`]` to close the alias parameters")?;
+            self.expect(&TokenKind::LBrace, "`{` to open the alias body")?;
+            let body = self.parse_tl_expr()?;
+            let end = self
+                .expect(&TokenKind::RBrace, "`}` to close the alias body")?
+                .end;
+            Ok(LetDecl {
+                name,
+                kind: LetKind::DimAlias { params, body },
+                span: Span::new(start, end),
+            })
+        } else {
+            let ty = if self.eat(&TokenKind::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            if !self.check(&TokenKind::LBrace) {
+                return Err(self.error(
+                    "`{` to open the `let` body (a top-level `let` is brace-closed: \
+                     `let name { ... }`)",
+                ));
+            }
+            let value = self.parse_block()?;
+            let span = Span::new(start, value.span.end);
+            Ok(LetDecl {
+                name,
+                kind: LetKind::Value { ty, value },
+                span,
+            })
         }
     }
 
@@ -506,26 +601,124 @@ impl<'a> Parser<'a> {
         Ok(Field { name, ty, span })
     }
 
-    /// Parse a type: a single identifier (a primitive, a unit reference, or a
-    /// named `enum`), optionally followed by a `?` optional marker.  Which the
-    /// base type is, is the resolver's decision; the `?` makes the value
-    /// optional (ADR 0010).  One token of lookahead takes a single `?` if
-    /// present, so the marker preserves LL(1).
+    /// Parse a type: a type-level expression (`tl_expr`,
+    /// `docs/language/04-grammar.md`), optionally followed by a `?` optional
+    /// marker.  The common case is still a single identifier (a primitive, a
+    /// unit reference, or a named `enum`); the dimension forms of
+    /// `11-physical-units.md` continue from it with `[`, `*`, `/`, or `^`.
+    /// Which the base type is, is the resolver's decision; the `?` makes the
+    /// value optional (ADR 0010).  One token of lookahead takes a single `?`
+    /// if present, so the marker preserves LL(1).
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
-        let name = self.expect_ident("a type")?;
-        let optional = if self.check(&TokenKind::Question) {
-            let span = self.cur_span();
+        let mut ty = self.parse_tl_expr()?;
+        if self.check(&TokenKind::Question) {
+            let q = self.cur_span();
             self.pos += 1;
-            Some(span)
-        } else {
-            None
+            ty.optional = Some(q);
+            ty.span = Span::new(ty.span.start, q.end);
+        }
+        Ok(ty)
+    }
+
+    /// `tl_expr = tl_term { ("*" | "/") tl_term }`, left-associative.
+    fn parse_tl_expr(&mut self) -> Result<TypeExpr, ParseError> {
+        let mut lhs = self.parse_tl_term()?;
+        loop {
+            let mul = self.check(&TokenKind::Star);
+            if !mul && !self.check(&TokenKind::Slash) {
+                break;
+            }
+            self.pos += 1;
+            let rhs = self.parse_tl_term()?;
+            let span = Span::new(lhs.span.start, rhs.span.end);
+            let kind = if mul {
+                TypeKind::Mul(Box::new(lhs), Box::new(rhs))
+            } else {
+                TypeKind::Div(Box::new(lhs), Box::new(rhs))
+            };
+            lhs = TypeExpr {
+                kind,
+                optional: None,
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// `tl_term = tl_factor [ "^" [ "-" ] int ]`.  The exponent is an
+    /// integer literal (the result dimension is computed at compile time),
+    /// optionally negated; the lexer has no signed-int token, so the `-` is
+    /// the ordinary `Minus`.
+    fn parse_tl_term(&mut self) -> Result<TypeExpr, ParseError> {
+        let base = self.parse_tl_factor()?;
+        if !self.eat(&TokenKind::Caret) {
+            return Ok(base);
+        }
+        let negated = self.eat(&TokenKind::Minus);
+        let TokenKind::Int(n) = *self.cur_kind() else {
+            return Err(self.error("expected an integer exponent after `^` in a type"));
         };
-        let end = optional.map_or(name.span.end, |s| s.end);
-        let span = Span::new(name.span.start, end);
+        let end = self.cur_span().end;
+        self.pos += 1;
+        let signed = if negated { -n } else { n };
+        let exp = i32::try_from(signed)
+            .map_err(|_| self.error("the type-level exponent is out of range"))?;
+        let span = Span::new(base.span.start, end);
         Ok(TypeExpr {
-            name,
-            optional,
+            kind: TypeKind::Pow(Box::new(base), exp),
+            optional: None,
             span,
+        })
+    }
+
+    /// `tl_factor = ident [ "[" ident "]" ] | "(" tl_expr ")" "[" ident "]"`.
+    /// The bracket argument is a single identifier (a backing such as `real`,
+    /// or an alias parameter); after a parenthesized group the bracket is
+    /// mandatory, since a bare parenthesized dimension is not a type.
+    fn parse_tl_factor(&mut self) -> Result<TypeExpr, ParseError> {
+        if self.check(&TokenKind::LParen) {
+            let start = self.cur_span().start;
+            self.pos += 1;
+            let inner = self.parse_tl_expr()?;
+            self.expect(&TokenKind::RParen, "`)` to close the dimension group")?;
+            self.expect(
+                &TokenKind::LBracket,
+                "`[` to apply the dimension to a backing (write `(...)[real]`)",
+            )?;
+            let backing = self.expect_ident("a backing type such as `real`")?;
+            let end = self
+                .expect(&TokenKind::RBracket, "`]` to close the type application")?
+                .end;
+            return Ok(TypeExpr {
+                kind: TypeKind::Apply {
+                    base: Box::new(inner),
+                    backing,
+                },
+                optional: None,
+                span: Span::new(start, end),
+            });
+        }
+        let name = self.expect_ident("a type")?;
+        let start = name.span.start;
+        let named = TypeExpr {
+            span: name.span,
+            kind: TypeKind::Named(name),
+            optional: None,
+        };
+        if !self.eat(&TokenKind::LBracket) {
+            return Ok(named);
+        }
+        let backing = self.expect_ident("a backing type such as `real`")?;
+        let end = self
+            .expect(&TokenKind::RBracket, "`]` to close the type application")?
+            .end;
+        Ok(TypeExpr {
+            kind: TypeKind::Apply {
+                base: Box::new(named),
+                backing,
+            },
+            optional: None,
+            span: Span::new(start, end),
         })
     }
 
@@ -947,6 +1140,12 @@ impl<'a> Parser<'a> {
                 stmts.push(self.parse_stmt()?);
             }
         }
+        // `let`/`assert` are reserved in expressions, so a statement keyword
+        // here means the separator was forgotten; say so instead of the
+        // generic close-brace error.
+        if self.at_keyword("let") || self.at_keyword("assert") {
+            return Err(self.error("expected `;` before the next statement"));
+        }
         let end = self
             .expect(&TokenKind::RBrace, "`}` to close the block")?
             .end;
@@ -961,7 +1160,7 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.at_keyword("let") {
             self.bump_keyword();
-            let name = self.expect_ident("a name after `let`")?;
+            let name = self.expect_binder("a name after `let`")?;
             let ty = if self.eat(&TokenKind::Colon) {
                 Some(self.parse_type()?)
             } else {
@@ -1168,7 +1367,7 @@ mod tests {
         let Item::Store(s) = &program.items[1] else {
             panic!("expected a store");
         };
-        assert_eq!(s.attrs[0].field.ty.name.name, "Status");
+        assert_eq!(s.attrs[0].field.ty.named().unwrap().name, "Status");
         assert!(!s.attrs[0].field.ty.is_optional());
     }
 
@@ -1187,7 +1386,7 @@ mod tests {
         };
         // `date?` is optional and its span covers the `?`.
         let opt = &s.attrs[0].field.ty;
-        assert_eq!(opt.name.name, "date");
+        assert_eq!(opt.named().unwrap().name, "date");
         assert!(opt.is_optional());
         assert_eq!(opt.span().slice(src), "date?");
         // A bare type stays total.
@@ -1469,8 +1668,200 @@ mod tests {
         let err = parse_str("wat X { }").unwrap_err();
         assert!(
             err.message
-                .contains("`unit`, `store`, `shape`, `enum`, or `view`")
+                .contains("`unit`, `store`, `shape`, `enum`, `view`, `let`, or `import`")
         );
+    }
+
+    // --- top-level `let` and `import` (`12-modules-and-imports.md`) ---------
+
+    #[test]
+    fn parses_import_and_top_level_let() {
+        let src = "import si\nlet km { 1000.0 * meter }\nlet g: real { 9.8 }";
+        let program = parse_str(src).unwrap();
+        let Item::Import(import) = &program.items[0] else {
+            panic!("expected an import");
+        };
+        assert_eq!(import.name.name, "si");
+        let Item::Let(km) = &program.items[1] else {
+            panic!("expected a let");
+        };
+        assert_eq!(km.name.name, "km");
+        assert!(matches!(km.kind, LetKind::Value { ty: None, .. }));
+        assert_eq!(km.span.slice(src), "let km { 1000.0 * meter }");
+        let Item::Let(g) = &program.items[2] else {
+            panic!("expected a let");
+        };
+        let LetKind::Value { ty: Some(ty), .. } = &g.kind else {
+            panic!("expected an ascribed value let");
+        };
+        assert_eq!(ty.named().unwrap().name, "real");
+    }
+
+    #[test]
+    fn top_level_let_body_is_a_statement_block() {
+        // The value body is the ordinary statement block (ADR 0027,
+        // Decision 1 as revised): local `let`s and a trailing result.
+        let src = "let overheat { let base = 300.0; base + 50.0 }";
+        let program = parse_str(src).unwrap();
+        let Item::Let(decl) = &program.items[0] else {
+            panic!("expected a let");
+        };
+        let LetKind::Value { value, .. } = &decl.kind else {
+            panic!("expected a value let");
+        };
+        assert_eq!(value.stmts.len(), 2);
+        assert!(matches!(value.stmts[0], Stmt::Let { .. }));
+        assert!(matches!(value.stmts[1], Stmt::Expr(_)));
+    }
+
+    #[test]
+    fn unbraced_top_level_let_points_at_the_brace_form() {
+        let err = parse_str("let km = 1000.0 * meter").unwrap_err();
+        assert!(err.message.contains("brace-closed"));
+    }
+
+    #[test]
+    fn reserved_words_cannot_name_bindings() {
+        // `let` and `assert` (and the other expression-reserved words) can
+        // never be referenced as values, so they cannot be bound either.
+        let err = parse_str("let let { 1 }").unwrap_err();
+        assert!(err.message.contains("reserved word"));
+        let err = parse_str("view v { let known = 1; known }").unwrap_err();
+        assert!(err.message.contains("reserved word"));
+    }
+
+    #[test]
+    fn missing_statement_separator_is_pointed() {
+        // With `let`/`assert` reserved in expressions, a forgotten `;` stops
+        // at the next statement keyword instead of mis-parsing it as an
+        // application argument.
+        let err = parse_str("view v { let t = a let u = b; u }").unwrap_err();
+        assert!(err.message.contains("expected `;`"), "{}", err.message);
+        let err = parse_str("view v { let t = a assert b; t }").unwrap_err();
+        assert!(err.message.contains("expected `;`"), "{}", err.message);
+    }
+
+    #[test]
+    fn parses_dimension_alias_let() {
+        // `let speed[T] { (length / time)[T] }`: the `[` after the name
+        // selects the type-level alias form (ADR 0026, Decision 8), with a
+        // braced body like every other item.
+        let src = "let speed[T] { (length / time)[T] }\nlet accel[T] { speed[T] / time[T] }";
+        let program = parse_str(src).unwrap();
+        let Item::Let(speed) = &program.items[0] else {
+            panic!("expected a let");
+        };
+        let LetKind::DimAlias { params, body } = &speed.kind else {
+            panic!("expected a dimension alias");
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "T");
+        let TypeKind::Apply { base, backing } = &body.kind else {
+            panic!("expected an application body");
+        };
+        assert!(matches!(base.kind, TypeKind::Div(..)));
+        assert_eq!(backing.name, "T");
+        // The second alias divides two applied types.
+        let Item::Let(accel) = &program.items[1] else {
+            panic!("expected a let");
+        };
+        let LetKind::DimAlias { body, .. } = &accel.kind else {
+            panic!("expected a dimension alias");
+        };
+        let TypeKind::Div(lhs, rhs) = &body.kind else {
+            panic!("expected a quotient body");
+        };
+        assert!(matches!(lhs.kind, TypeKind::Apply { .. }));
+        assert!(matches!(rhs.kind, TypeKind::Apply { .. }));
+    }
+
+    #[test]
+    fn top_level_let_and_import_record_keyword_spans() {
+        let src = "import si\nlet km { 1000.0 * meter }";
+        let tokens = tokenize(src).expect("should lex");
+        let parsed = parse_with_meta(&tokens).expect("should parse");
+        let words: Vec<&str> = parsed.keyword_spans.iter().map(|s| s.slice(src)).collect();
+        assert_eq!(words, ["import", "let"]);
+    }
+
+    // --- dimensioned types (`11-physical-units.md`) --------------------------
+
+    #[test]
+    fn parses_dimensioned_column_types() {
+        let src = r#"
+            store readings {
+              unit { Machine }
+              attr* {
+                temperature: temperature[real]
+                vibration:   (length / time^2)[real]
+                speed:       speed[real]?
+              }
+            }
+        "#;
+        let program = parse_str(src).unwrap();
+        let Item::Store(s) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        let temp = &s.attrs[0].field.ty;
+        let TypeKind::Apply { base, backing } = &temp.kind else {
+            panic!("expected an applied type");
+        };
+        assert_eq!(base.named().unwrap().name, "temperature");
+        assert_eq!(backing.name, "real");
+        // The grouped dimension expression keeps its precedence shape:
+        // `length / (time^2)`.
+        let vib = &s.attrs[1].field.ty;
+        let TypeKind::Apply { base, .. } = &vib.kind else {
+            panic!("expected an applied type");
+        };
+        let TypeKind::Div(num, den) = &base.kind else {
+            panic!("expected a quotient");
+        };
+        assert_eq!(num.named().unwrap().name, "length");
+        let TypeKind::Pow(t, 2) = &den.kind else {
+            panic!("expected time^2");
+        };
+        assert_eq!(t.named().unwrap().name, "time");
+        // A trailing `?` rides on the whole applied type.
+        let sp = &s.attrs[2].field.ty;
+        assert!(sp.is_optional());
+        assert_eq!(sp.span().slice(src), "speed[real]?");
+    }
+
+    #[test]
+    fn parses_negative_type_level_exponents() {
+        // The lexer has no signed ints, so `^-1` is `Caret Minus Int`.
+        let src = "let hz[T] { time^-1[T] }";
+        // A `^-1` binds to the factor, so the bracket applies to the whole
+        // `time^-1` only when grouped; ungrouped, `[T]` after the exponent is
+        // a parse error (the factor is complete).  Write it grouped.
+        let err = parse_str(src).unwrap_err();
+        assert!(err.message.contains("expected"));
+        let src = "let hz[T] { (time^-1)[T] }";
+        let program = parse_str(src).unwrap();
+        let Item::Let(decl) = &program.items[0] else {
+            panic!("expected a let");
+        };
+        let LetKind::DimAlias { body, .. } = &decl.kind else {
+            panic!("expected an alias");
+        };
+        let TypeKind::Apply { base, .. } = &body.kind else {
+            panic!("expected an application");
+        };
+        assert!(matches!(base.kind, TypeKind::Pow(_, -1)));
+    }
+
+    #[test]
+    fn bare_parenthesized_dimension_is_an_error() {
+        // A parenthesized dimension group must be applied to a backing.
+        let err = parse_str("unit U { x: (length / time) }").unwrap_err();
+        assert!(err.message.contains("backing"));
+    }
+
+    #[test]
+    fn type_level_exponent_must_be_an_integer() {
+        let err = parse_str("unit U { x: (length / time^2.0)[real] }").unwrap_err();
+        assert!(err.message.contains("integer exponent"));
     }
 
     #[test]

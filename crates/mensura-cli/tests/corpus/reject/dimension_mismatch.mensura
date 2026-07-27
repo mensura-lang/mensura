@@ -1,0 +1,3 @@
+// Reject: adding quantities of different dimensions (ADR 0026: `+` needs
+// equal dimensions; `meter + second` does not type).
+let nonsense { meter + second }

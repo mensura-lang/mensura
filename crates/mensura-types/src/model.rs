@@ -49,14 +49,22 @@ pub enum ColumnRole {
 
 /// The resolved type (scalar domain) of a column (ADR 0014).  `number` is split
 /// into `int` (discrete, exact, equality-stable) and `real` (a continuous
-/// measurement).
+/// measurement); a dimensioned measurement is `real` refined by a physical
+/// dimension (ADR 0026, `docs/language/11-physical-units.md`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColumnType {
     String,
     /// A discrete whole number: a count, a year, an integer identifier.
+    /// Never dimensioned (ADR 0014).
     Int,
-    /// A continuous measurement.  Not equatable and not key-eligible.
+    /// A dimensionless continuous measurement.  Not equatable and not
+    /// key-eligible.
     Real,
+    /// A dimensioned continuous measurement: a `real` backing refined by a
+    /// physical dimension (`temperature[real]`).  The invariant that the
+    /// dimension is never the group identity (which collapses to [`Real`])
+    /// is kept by [`crate::units::Dimension::applied`].
+    Quantity(crate::units::Dimension),
     Bool,
     Date,
     /// A named enumerated type: its declared name and its string variants.
@@ -67,21 +75,38 @@ pub enum ColumnType {
 }
 
 impl ColumnType {
-    /// Supports `== !=` (ADR 0014).  Every domain except `real`: exact equality
-    /// on a continuous measurement is unsound.
+    /// Supports `== !=` (ADR 0014).  Every domain except the `real`-backed
+    /// ones: exact equality on a continuous measurement is unsound.
     pub fn is_equatable(&self) -> bool {
-        !matches!(self, ColumnType::Real)
+        !matches!(self, ColumnType::Real | ColumnType::Quantity(_))
     }
 
-    /// Has a total order, supporting `< <= > >=` and `min`/`max`: `int`, `real`,
-    /// `date`.
+    /// Has a total order, supporting `< <= > >=` and `min`/`max`: `int`, the
+    /// `real`-backed domains, `date`.
     pub fn is_orderable(&self) -> bool {
-        matches!(self, ColumnType::Int | ColumnType::Real | ColumnType::Date)
+        matches!(
+            self,
+            ColumnType::Int | ColumnType::Real | ColumnType::Quantity(_) | ColumnType::Date
+        )
     }
 
-    /// Supports arithmetic and `sum`: `int`, `real`.
+    /// Supports arithmetic and `sum`: `int` and the `real`-backed domains.
     pub fn is_numeric(&self) -> bool {
-        matches!(self, ColumnType::Int | ColumnType::Real)
+        matches!(
+            self,
+            ColumnType::Int | ColumnType::Real | ColumnType::Quantity(_)
+        )
+    }
+
+    /// The physical dimension of a `real`-backed domain: the group identity
+    /// for bare `real`, the carried dimension for a quantity, and `None`
+    /// for every other domain (ADR 0026).
+    pub fn dimension(&self) -> Option<crate::units::Dimension> {
+        match self {
+            ColumnType::Real => Some(crate::units::Dimension::DIMENSIONLESS),
+            ColumnType::Quantity(d) => Some(*d),
+            _ => None,
+        }
     }
 
     /// Listable values, so it can be spread across column names (key `pivot`,
