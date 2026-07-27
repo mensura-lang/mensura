@@ -1,0 +1,10 @@
+unit Sample {
+  id: string
+}
+store samples {
+  unit { Sample }
+  attr { value: real }
+}
+view doubled {
+  samples |> flat_map |k, r| (r, r)
+}

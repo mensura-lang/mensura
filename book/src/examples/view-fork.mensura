@@ -1,0 +1,11 @@
+unit Machine {
+  id: string
+}
+store readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+view roundtrip {
+  let parts = readings |> split |k| k.id == "m-01";
+  parts |> union
+}

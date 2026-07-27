@@ -20,6 +20,12 @@
 - [The kernel operations](concepts/the-kernel.md)
 - [What the types track](concepts/what-the-types-track.md)
 
+# Transforming data
+
+- [Views](transforming/views.md)
+- [Reshaping rows with flat_map](transforming/flat-map.md)
+- [Pivoting and unpivoting](transforming/pivot.md)
+
 ---
 
 [What's next](whats-next.md)

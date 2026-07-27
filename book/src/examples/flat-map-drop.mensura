@@ -1,0 +1,11 @@
+enum Status { "ok" "degraded" "down" }
+unit Machine {
+  id: string
+}
+store machines {
+  unit { Machine }
+  attr { status: Status }
+}
+view attention_needed {
+  machines |> flat_map |_, r| if r.status == "degraded" then r else ()
+}

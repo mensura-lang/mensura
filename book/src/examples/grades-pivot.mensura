@@ -1,0 +1,14 @@
+enum Subject { "math" "science" }
+unit Grade {
+  student: string
+  subject: Subject
+}
+store grades {
+  unit { Grade }
+  attr { score: real }
+}
+view report {
+  grades                                    // keyed by (student, subject)
+  |> map_bags |k, b| (.score = max b.score) // card -> 1 per (student, subject)
+  |> pivot subject score                    // legal: each cell is card <= 1
+}

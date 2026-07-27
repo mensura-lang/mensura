@@ -33,6 +33,12 @@ applied with a different argument names a different attribute, so one `Ageable`
 contract fits a person measured from a `birthdate` and, say, a department
 measured from a `foundation_day`.
 
+A shape's attribute blocks also fix cardinality, with the same spelling a
+store uses: a shape written with plain `attr` blocks only fits a store that
+holds at most one row per key, and one written with `attr*` requires the
+named columns to be bag-valued (see
+[Recurring observations](stores.md#recurring-observations)).
+
 Shapes describe structure, not identity: that is what keeps them reusable
 across units when they do not fix one.  The full design lives in
 `docs/language/03-shapes.md`.

@@ -1,0 +1,14 @@
+unit Reading {
+  machine: string
+  ts: int
+}
+store history {
+  unit { Reading }
+  attr { kelvin: real }
+}
+view hottest {
+  history
+  |> demote ts
+  |> assume { complete }
+  |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+}

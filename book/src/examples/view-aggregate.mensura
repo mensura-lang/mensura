@@ -1,0 +1,12 @@
+unit Machine {
+  id: string
+}
+store readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+view hottest {
+  readings
+  |> assume { complete }
+  |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+}

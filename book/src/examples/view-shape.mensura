@@ -1,0 +1,14 @@
+unit Machine {
+  id: string
+}
+shape Celsius {
+  unit { Machine }
+  attr* { celsius: real }
+}
+store readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+view celsius : Celsius {
+  readings |> flat_map |k, r| (.celsius = r.kelvin - 273.15)
+}

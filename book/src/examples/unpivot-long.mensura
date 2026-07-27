@@ -1,0 +1,11 @@
+unit Reading {
+  ts: int
+}
+store readings {
+  unit { Reading }
+  attr { temperature: real }
+  attr { humidity: real }
+}
+view long {
+  readings |> unpivot metric reading
+}

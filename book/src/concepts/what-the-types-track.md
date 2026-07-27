@@ -17,11 +17,15 @@ Three of those facts do the heavy lifting for correctness: **cardinality**,
 mathematically and, more to the point, about the mistakes they make
 *impossible to write* rather than merely possible to debug.
 
-> The syntax in this chapter previews operations that are still being built
-> (pipelines, splits, joins), so the snippets are marked as design previews and
-> are not yet checked by the compiler.  The [What's next](../whats-next.md) page
-> tracks the frontier.  The ideas, and the theorems behind them, are settled;
-> the spelling is not.  The full specifications live in
+> The pipeline algebra of this chapter type-checks and runs today: `flat_map`,
+> `map_bags`, `promote`/`demote`, the lookups, `split`/`union`, and
+> `pivot`/`unpivot` all compile with `mensura check`, and all but
+> `demote` (not yet executable) materialize with `mensura run` (see the
+> [Transforming data](../transforming/views.md) chapters).  Two things remain
+> design previews and are marked as such below:
+> the learning operations `fit`/`evaluate` that *consume* disjointness, and the
+> richer completeness witnesses.  The [What's next](../whats-next.md) page tracks
+> the frontier.  The full specifications live in
 > `docs/language/07-pipelines.md` and `docs/language/08-lineage.md`, each backed
 > by a machine-checked proof in `formal/`.
 
@@ -50,7 +54,11 @@ card(k) = many   a bag of rows
 
 Carried per column, the distinction that matters is **`card <= 1`** (at most one
 value per key) versus **many** (a bag of values).  It is part of the content
-type, and every operation transforms it predictably: coarsening a key with
+type, and it enters at the source: a plain store holds at most one row per key
+(a duplicate is rejected as a sign the identity criterion is wrong), while a
+store declared with `attr*` is a *bag store*, holding many observations per
+entity (see [Recurring observations](../modelling/stores.md#recurring-observations)).
+From there every operation transforms it predictably: coarsening a key with
 `demote` makes rows that differed only in the dropped component share a key,
 so cardinality *grows*; an aggregating `map_bags` reduces a bag back to a
 single record, so cardinality drops to `1`.
@@ -61,10 +69,8 @@ comparison) needs a *single known value*, not a bag; the bag combinators (`sum`,
 to one value.  And reshaping a long table to a wide one is sound only when each
 cell it spreads holds at most one value:
 
-```mensura,ignore
-grades                                             // keyed by (student, subject)
-|> map_bags |k, b| (.score = max b.score)         // card -> 1 per (student, subject)
-|> pivot subject score                             // legal: each cell is card <= 1
+```mensura
+{{#include ../examples/grades-pivot.mensura}}
 ```
 
 **What other systems cannot do.**  Run the same reshape in pandas and a
@@ -79,26 +85,32 @@ The duplicate that would have exploded at runtime cannot reach runtime.
 ## Completeness: is the partition whole
 
 **Completeness** is a unary fact about one table: writing `complete_over(k)`,
-every key's bag has *all* of its rows present.  It is not about the
-schema and not about any single value; it is about whether a partition is fully
+every key's bag has *all* of its rows present.  It is not about the schema and
+not about any single value; it is about whether a partition is fully
 materialized.
 
-Completeness is what licenses *coarsening* a key.  When you drop a key
-component (`demote`), you are summing or folding across the rows that the
-dropped component used to separate, and that rollup means what you intend only
-if none of those rows are missing.  (`pivot` also coarsens the key but needs no
-such license: an absent row simply becomes a missing cell, and a related fact,
-`exhaustive`, decides whether the spread columns come out total.)  Formally
-`demote` breaks split-invariance and is sound only over a partition that is
-complete over the key it retains.  So completeness is *established* before it
-and *consumed* by it:
+Completeness is what licenses *reducing* a bag.  A fold (`sum`, `max`,
+`count`) over a bag equals the true value only if none of the bag's rows
+are missing, so it is the reducing `map_bags` that *consumes* the fact.
+Coarsening the key with `demote` demands nothing by itself: a bag of the
+rows present is an honest table, and the operation *propagates* the fact from
+the finer key to the coarser one.  (`pivot` also coarsens the key and needs no
+license either: an absent row simply becomes a missing cell, and a related
+fact, `exhaustive`, decides whether the spread columns come out total.)  So
+completeness is *established* upstream, *propagated* by the rekey, and
+*consumed* by the reduction:
 
 ```mensura,ignore
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }  // establish
-|> demote course                                            // consume
-|> map_bags |k, b| (.total_credits = sum b.credits)
+|> demote course                                    // propagate to the coarser key
+|> map_bags |k, b| (.total_credits = sum b.credits) // consume
 ```
+
+One case discharges for free: a reduction over a default store's own key
+needs no fact at all, because at most one row per key means a present bag
+is already whole; only a coarsened key, or a bag store, can hold a partial
+bag for a fold to be silently wrong on.
 
 A table earns the fact in one of three ways: by **mechanism** (a `registry`
 source is complete by construction), by a **check** (the `completeness_check`
@@ -151,13 +163,13 @@ this demand that their two tables be disjoint.
 
 The fact survives a whole pipeline because every split-invariant (Tier A)
 operation preserves it, and such operations compose: a disjointness fact
-established by `split` is carried, intact, through `flat_map`, `filter`, the joins,
-and `map_bags` to the point where `evaluate` consumes it.  Two operations lose
-it on purpose: `union` unions two regions (so a merged table is disjoint from a
-third only if *both* halves were), and the key-changing operations `demote`
-and `pivot` drop it, because a region described over the old key no longer
-denotes the same entities.  Past such a point the fact must be re-established
-with a check or relaxed with `assume`.
+established by `split` is carried, intact, through `flat_map`, `filter`, the
+lookups, and `map_bags` to the point where `evaluate` consumes it.  Two
+operations lose it on purpose: `union` unions two regions (so a merged table is
+disjoint from a third only if *both* halves were), and the key-changing
+operations `demote` and `pivot` drop it, because a region described over the old
+key no longer denotes the same entities.  Past such a point the fact must be
+re-established with a check or relaxed with `assume`.
 
 **What other systems cannot do.**  Leakage is the canonical, expensive, and
 *silent* failure of applied machine learning.  In scikit-learn with pandas you
