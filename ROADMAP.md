@@ -84,15 +84,19 @@ mensura/
   primitive and `enum` attributes, shapes, and named enums.  The expression
   sublanguage and the full Tier A / Tier B pipeline algebra (the eight
   primitives, with cardinality, completeness, and tag-based disjointness) are
-  implemented and checked by `mensura check` (M1).  Compound (multi-entity)
-  units and foreign-key (`domain`) resolution are scheduled for M4 (where
-  devices and cross-store ingestion first need them); physical-unit/precision
-  types are M3.
+  implemented and checked by `mensura check` (M1).  Batch view materialization
+  runs end to end (M2).  **M3 is complete**: dimensioned types (`D[real]` over
+  the seven SI base dimensions), top-level `let` bindings, bundled imports,
+  and the `si` standard library are implemented (ADRs 0026-0028).  Compound
+  (multi-entity) units and foreign-key (`domain`) resolution are scheduled for
+  M4 (where devices and cross-store ingestion first need them); precision is
+  deferred to a future library extension of `real`.
 - **Design docs still to write** (each ahead of its milestone, per specs
-  first): precision; measure semantics (additivity);
-  devices and `registry`; ingestion endpoints; streaming windows and refresh; ML
-  signatures and validation; the serving/transport integration; and the
-  toolkit docs for the CLI, diagnostics, and LSP.
+  first): devices and `registry`; ingestion endpoints; streaming windows and
+  refresh; measure semantics (M5, where the window rollups it gates are the
+  first consumer); precision; ML signatures and validation; the
+  serving/transport integration; and the toolkit docs for the CLI,
+  diagnostics, and LSP.
 
 The original design-only phase is essentially complete for the core; what
 remains is captured per milestone below.
@@ -164,10 +168,10 @@ Output: `mensura run` materializes a Tier A view from stores, end to end
 
 This is the "first working language" milestone; narrow on purpose.
 
-## M3 - Physical units, precision, and measure semantics
+## M3 - Physical units and modules (complete)
 
 Output: dimensional quantities are first-class, and unit mismatch is a compile
-error.
+error.  Delivered.
 
 - Design docs first (ADR 0026 dimensions, 0027 modules, 0028 the `si` stdlib;
   the language docs `11-physical-units.md` and `12-modules-and-imports.md`
@@ -187,8 +191,14 @@ error.
   post-M3 roadmap item of its own (ADR 0027, Decision 7).
 - Precision (the `NxE` significand/exponent idea) is deferred to a future
   library extension of `real`, not M3 core.
-- Measure-semantics annotations (`@additive`, `@semiadditive`, `@foldable`)
-  that gate which window rollups are valid: a later doc after units land.
+- Measure semantics was originally scoped here and has **moved to M5**, next
+  to the window rollups it gates.  Nothing in M3 consumes it, and ADR 0029
+  changed what it should be: an annotation over the combiner table rather
+  than a taxonomy of columns.
+
+Status: complete.  Dimensions, modules, and the `si` stdlib are implemented
+and checked (ADRs 0026-0028, `11-physical-units.md`,
+`12-modules-and-imports.md`).
 
 ## M4 - Devices, collect, and ingestion
 
@@ -210,13 +220,23 @@ Output: device readings land in stores under a typed ingestion path.
 
 Output: windowed, incrementally refreshed views over device streams.
 
-- Design doc first: streaming windows and refresh.
+- Design docs first: streaming windows and refresh; measure semantics (below).
 - `sliding_window` and tumbling windows, `latest`, window-closedness, and
   `on_change` / incremental refresh through the processing layer.
+- **Measure semantics**, moved here from M3 because the window rollups it
+  gates are the first consumer.  ADR 0029 reframed it: the annotation
+  declares which **combiners** a column admits (a temperature column admits
+  `min` and `max` but not `+`), a property of the (column, combiner) pair
+  rather than a taxonomy of columns.  That dissolves the problem of defining
+  `@semiadditive` before the language has an axis notion, and it means the
+  doc is best written against ADR 0029's combiner table once `fold` is real.
 - Per-window sampling inference (Exhaustive when the fleet is fully covered,
   Biased or Representative otherwise).
 - The temporal and dependency typing rules, and temporal referential integrity
   (the "outlives" constraint), extending `docs/language/08-lineage.md`.
+- The ordered primitives (`scan` and the sorted map) that window functions
+  need: ADR 0029, gated behind its Stage 2 `formal/` work (an arranged
+  structure over what is today a `Multiset`).
 
 ## M6 - ML strategies and validation
 
@@ -280,10 +300,11 @@ M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 ──► M6
               └──► tooling (LSP, fmt, repl) in parallel from ~M1
 ```
 
-Units (M3) precede streaming (M5) because window rollups are gated by measure
-semantics; streaming precedes ML validation (M6) because the features are
-windowed; serving (M7) is last because it puts the whole typed pipeline behind
-endpoints.
+Units (M3) precede streaming (M5) because a window rollup is a rollup of
+dimensioned quantities, and because measure semantics (now an M5 item) is
+stated over them; streaming precedes ML validation (M6) because the features
+are windowed; serving (M7) is last because it puts the whole typed pipeline
+behind endpoints.
 
 ## Validation criterion
 
