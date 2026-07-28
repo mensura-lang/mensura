@@ -6,6 +6,21 @@ Accepted, design-only.  This ADR lands as a documentation-only pull request:
 it fixes the model and the surface intent, and no code, no Lean, and no
 language-doc reconciliation ship with it.
 
+Revised in part by `docs/decisions/0031-fold-and-scan-primitives.md`,
+written after ADR 0030 landed const functions: `fold` and `scan` become
+curried builtins taking their bag explicitly (so they pipe and partially
+apply), the bag lambda's `b` becomes a bag of rows with the columnar view
+as projection sugar, the aggregates and window operations become const
+bindings in qualified bundled libraries (`bag`, `series`) with `count`
+replaced by the `#` operator, every combiner becomes a surface operator
+(`<<`/`>>` binary min/max, `<:`/`:>` the tacks), and the sorted map
+(Decision 9) is dissolved because its hosts are scan-derived.  The model
+content here (the
+closed combiner table, the open mapper, the accumulator identity,
+short-circuiting, local ordering, the tie tiers) is unchanged.  Decisions
+2, 3, 6, 9, 10, and 11 carry inline notes; four open questions are settled
+below.
+
 It opens **no milestone**.  It generalizes a surface already frozen at M0
 (`docs/language/09-typing-reference.md` section 5.4) and supplies the primitive
 that M5's window rollups (`ROADMAP.md`, "Streaming and reactive") and the
@@ -182,6 +197,13 @@ The general bag reduction is `fold` over a mapper and a combiner.  The
 **mapper** is an arbitrary per-row expression in the bag lambda's row scope.
 The **combiner** is a token drawn from the closed table of Decision 3.
 
+(*Revised by ADR 0031*: `fold` is a curried builtin with an explicit
+trailing bag, `fold : combiner -> (element -> value) -> bag -> value`, so
+it pipes ordinarily (ADR 0018) and partially applies (ADR 0030).  The
+mapper is per-element; row mappers work because the bag lambda's `b` is a
+bag of rows there.  The closed-combiner/open-mapper asymmetry below is
+unchanged.)
+
 No user-supplied combiner is admitted, and no annotation by which a user
 asserts that an operator is associative or commutative is admitted.  The
 justification is the obligation asymmetry set out in Context: the mapper's
@@ -191,6 +213,12 @@ claim costs reproducibility rather than mere accuracy.  See Alternative 1.
 The six existing aggregates become **spellings** of `fold` at fixed table
 rows, not primitives in their own right.  They keep their current surface
 syntax; nothing a user has written changes.
+
+(*Revised by ADR 0031*: ADR 0030's partial application upgrades the
+spellings to genuine const bindings, `let sum { fold `+` (|v| v) }`,
+shipped in qualified bundled libraries, so the surface *does* change:
+`bag.sum b.x` after an `import bag`, and `count` becomes the `#`
+operator.)
 
 ### 3.  The combiner table carries a (mapper, combiner, identity) triple
 
@@ -215,6 +243,12 @@ this is the cheapest possible demonstration of why.
 to be patched with an infinity.  `int` has no `+Inf`, and a `+Inf` metre is
 not a physical quantity, which is exactly the discipline ADR 0026 imposes on
 dimensioned values.  Decision 4 resolves this without inventing one.
+
+(*Revised by ADR 0031*: the mapper column's `|r| r.x` defaults become
+identity mappers over projected bags, `bag.sum b.x` being
+`fold `+` (|v| v) b.x`; the `min`/`max` rows are spelled by the new
+binary operators `<<`/`>>`; the combiner and identity columns are
+otherwise unchanged and remain the load-bearing content of this table.)
 
 ### 4.  The identity lives in the accumulator, not in the value domain
 
@@ -274,6 +308,14 @@ promised.
 "Same combiner, two variants" is the organizing idea of this ADR, and it is
 not merely a slogan: Stage 2 owes a coherence theorem that a scan's last
 element equals the corresponding fold.
+
+(*Revised by ADR 0031*: `scan` is a curried builtin whose order key is an
+ordinary argument rather than a `by` clause, since a clause is not
+partially applicable and the derived operations must be const bindings;
+tuple-valued keys order lexicographically, subsuming chained keys.  Scan
+gains an exclusive form, `prescan` (position i carries the fold of
+1..i-1), and the coherence obligation extends to it.  Decisions 7 and 8
+carry over verbatim to the key argument.)
 
 ### 7.  `by g` is an open key extractor, because its obligation is decidable
 
@@ -346,6 +388,18 @@ That completes the family by shape:
 All three take the same `by` clause and rest on the same Stage 2 arranged
 structure.
 
+(*Revised by ADR 0031*: the sorted map is dissolved as a primitive.  Its
+three hosts are scan-derived: `rank` is the ones-scan
+(`scan `+` (|_| 1)`, a running count, tie-free under Decision 11's total
+order), `lag` is the keep-right `prescan` (`prescan `:>` (|v| v)`), and
+`lead` is the same keep-right `prescan` over the dual order (the key
+wrapped by ADR 0031's intrinsic `desc`).  The family's
+third builtin is `map`, which is projection rather than a reduction.
+This section's argument that `rank` "cannot be obtained from any monoid
+on row values" stands for *inclusive* folds of the values; the position
+information it needs comes from the ones-mapper, not from a positional
+primitive.)
+
 ### 10.  The table may carry associative-only rows for the ordered variants
 
 `fold` requires commutativity because a bag has no order.  Once `by` supplies
@@ -363,6 +417,11 @@ established, they become table rows rather than a missing feature.
 combiner nor a positional map, and it needs a bounded accumulator whose
 algebra this table does not describe.  Saying so is better than stretching
 the table to cover it.
+
+(*Revised by ADR 0031*: this column is now load-bearing rather than
+prospective.  Keep-left and keep-right, spelled as the tack operators
+`<:` and `:>`, are the rows that make `lag` and `lead` scan-derivable,
+which is what lets the sorted map dissolve; see the Decision 9 note.)
 
 ### 11.  Ties are made explicit, not made impossible
 
@@ -389,7 +448,9 @@ common case, an order key drawn from the key, at zero ceremony.
 **Tier 2, chained.**  The author chains extractors, in the manner of `by g
 then h`, until the order is total in their judgment.  The checker still
 cannot prove totality, but the author has stated what to do with ties, which
-is the thing they know and the checker does not.
+is the thing they know and the checker does not.  (*Revised by ADR 0031*:
+the chain is spelled as a tuple-valued key, `|r| (r.date, r.seq)`, ordering
+lexicographically; the tier itself is unchanged.)
 
 **Tier 3, explicitly arbitrary.**  An `assume`-shaped escape hatch admits a
 tiebreak-dependent result.  It is unverified, exactly like
@@ -620,7 +681,9 @@ separate document.
   call worth revisiting once real programs exist.
 - **Surface syntax for the three tiers.**  The chaining keyword and the name
   of the arbitrary-tiebreak hatch are placeholders here; the grammar is
-  scoped out.
+  scoped out.  *Settled in part:* ADR 0031 spells tier 2 as a tuple-valued
+  key (lexicographic order), and the order key becomes an ordinary
+  argument; how the tier-3 hatch attaches to an argument is open there.
 - **Whether a prefix scan over a partial bag needs a completeness fact.**  The
   window shape demands nothing today
   (`docs/language/09-typing-reference.md`) on the grounds that one output row
@@ -632,15 +695,23 @@ separate document.
   aggregate-shape/window-shape one.  Flagged, not decided.
 - **Where the combiner token lives grammatically**: an operator section, a
   reserved word, or a name resolved from the closed table, and how that
-  interacts with the keyword-free lexer.
+  interacts with the keyword-free lexer.  *Settled:* ADR 0031, a backticked
+  operator (`` `+` ``, `` `<<` ``) resolved against the closed table, every
+  row of which is a surface operator; backticks already lex, and
+  `` `or` ``/`` `and` `` bypass the reserved words.
 - **Whether the six sugar spellings keep their exact signatures**, in
   particular whether `any` and `all` become predicate-taking.  The docs
   (`docs/language/06-expressions.md`) show a predicate form, while ADR 0014
   and the implementation both give `bag<bool> -> bool`; the open mapper
   resolves the divergence in the docs' favour, and the ADR should confirm
-  which spelling survives.
+  which spelling survives.  *Settled:* ADR 0031, `bag<bool> -> bool`
+  survives; the predicate form is written directly as `fold `or` p b` and
+  needs no second signature.
 - **Where `mean` lands and when**, contingent on ADR 0027 gaining function
-  exports, and whether `stats` is the right module.
+  exports, and whether `stats` is the right module.  *Settled in part:*
+  ADR 0030's const functions make `mean` expressible as a binding
+  (`|b| bag.sum b / to_real (#b)`, ADR 0031); whether it joins `bag` or
+  waits for `stats` is open there.
 - **Whether the dependency qualifier ever demands anything at `scan`**, or is
   only ever the optimization Decision 8 asserts.
 

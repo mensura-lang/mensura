@@ -6,7 +6,9 @@ Accepted.  Companion to `docs/decisions/0026-dimensional-physical-units.md`
 (which motivates it) and `docs/decisions/0028-standard-library-si.md` (its first
 client), landing in the same pull request.  Design-only: it fixes the model of
 top-level bindings and the module system; the parser/resolver/CLI realization is
-a follow-up.
+a follow-up.  Revised in part by
+`docs/decisions/0031-fold-and-scan-primitives.md` (Decision 4 carries the
+note).
 
 Modules and imports are **not** on the current `ROADMAP.md`; this ADR adds a
 roadmap item (a language-core piece needed by M3's units, plus a later
@@ -109,6 +111,14 @@ that you did not import.  In particular `si` (the unit symbols, prefixes, and
 named derived units) is an ordinary import, not ambient.  So `9.8 * meter / second^2`
 type-checks with no import, while the terse `9.8 * si.m / si.s^2` (or, with an
 `exposing` refinement, `9.8 * m / s^2`) requires `import si`.
+
+(*Revised by ADR 0031*: the aggregate combinators **leave the initial
+environment**.  They become const bindings in qualified bundled
+libraries (`bag`, `series`), imported like `si`, and cardinality becomes
+the `#` operator; the intrinsic environment shrinks to the base units,
+`fold`/`scan`/`map`/`desc`, `to_real`, and the pipeline operations.  This
+decision's no-implicit-prelude rule thereby holds without the aggregate
+exception it used to carry.)
 
 ### 5.  Identity/provenance/location split
 
