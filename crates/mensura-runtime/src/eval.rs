@@ -1008,12 +1008,142 @@ fn eval_scalar(scope: &Scope, expr: &Expr) -> Result<RtVal, EvalError> {
     }
 }
 
-/// The value-level builtins: `to_real` and the bag aggregates (`x |> op`
-/// and `op x` converge here, ADR 0018).
+/// The elements a mapper is applied over, one binding per element.
+///
+/// Over a projected bag the element is a value; over the fiber itself it is a
+/// *row* (ADR 0031, Decisions 1 and 4).  The group is stored columnar, so the
+/// row case transposes here: this is the one place the two representations
+/// actually differ, and it is why `map_bags` records where a row-major
+/// executor would matter.
+fn mapper_elements(scope: &Scope, bag: &Expr) -> Result<Vec<RtVal>, EvalError> {
+    match eval_scalar(scope, bag)? {
+        RtVal::Bag(vs) => Ok(vs.into_iter().map(RtVal::V).collect()),
+        RtVal::Rec(fields) => {
+            // Every column of a group has the same length (they are the same
+            // rows), so any one gives the row count.
+            let n = fields
+                .values()
+                .find_map(|v| match v {
+                    RtVal::Bag(vs) => Some(vs.len()),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let mut rows = Vec::with_capacity(n);
+            for i in 0..n {
+                let mut row = BTreeMap::new();
+                for (name, col) in &fields {
+                    let RtVal::Bag(vs) = col else {
+                        return internal("a group column that is not a bag");
+                    };
+                    let Some(v) = vs.get(i) else {
+                        return internal("ragged group columns");
+                    };
+                    row.insert(name.clone(), RtVal::V(v.clone()));
+                }
+                rows.push(RtVal::Rec(row));
+            }
+            Ok(rows)
+        }
+        RtVal::V(_) => internal("a mapper applied to a value the checker should have rejected"),
+    }
+}
+
+/// Apply a mapper to each element, yielding the mapped values.
+fn eval_mapped(scope: &Scope, mapper: &Expr, bag: &Expr) -> Result<Vec<Value>, EvalError> {
+    let ExprKind::Lambda { params, body, .. } = &mapper.kind else {
+        return internal("a mapper that is not a lambda");
+    };
+    let [param] = &params[..] else {
+        return internal("a mapper that does not take exactly one element");
+    };
+    let mut out = Vec::new();
+    for element in mapper_elements(scope, bag)? {
+        let mut inner = scope.clone();
+        inner.insert(param.name.clone(), element);
+        match eval_scalar(&inner, body)? {
+            RtVal::V(v) => out.push(v),
+            _ => return internal("a mapper that did not produce a value"),
+        }
+    }
+    Ok(out)
+}
+
+/// `fold` (ADR 0031, Decision 4): map each element, then combine with the
+/// closed table's operator.  Backed by `formal/Mensura/Fold.lean`: the
+/// combiner is associative and commutative, so the bag's arbitrary order does
+/// not matter, and the identity lives in the accumulator rather than in a
+/// user-supplied seed.
+fn eval_fold(
+    scope: &Scope,
+    combiner: &Expr,
+    mapper: &Expr,
+    bag: &Expr,
+) -> Result<RtVal, EvalError> {
+    let ExprKind::Combiner(raw) = &combiner.kind else {
+        return internal("a `fold` combiner that is not a backticked operator");
+    };
+    let mapped = eval_mapped(scope, mapper, bag)?;
+    let Some((first, rest)) = mapped.split_first() else {
+        // The empty bag.  A group arises from rows and is never empty, so the
+        // checker's total result type holds; reaching here means the invariant
+        // broke rather than that a combiner identity is missing.
+        return internal("`fold` over an empty bag");
+    };
+    let mut acc = first.clone();
+    for v in rest {
+        acc = combine(raw, acc, v.clone())?;
+    }
+    Ok(RtVal::V(acc))
+}
+
+/// One step of a fold, dispatched on the combiner's surface spelling.  The
+/// table is closed (ADR 0031, Decision 6) and the checker has already vetted
+/// both the operator and the domain.
+fn combine(op: &str, a: Value, b: Value) -> Result<Value, EvalError> {
+    match op {
+        "+" => arithmetic(BinOp::Add, a, b),
+        "*" => arithmetic(BinOp::Mul, a, b),
+        "<<" | ">>" => {
+            let ord = compare(&a, &b)?;
+            let take_left = if op == "<<" { ord.is_le() } else { ord.is_ge() };
+            Ok(if take_left { a } else { b })
+        }
+        "or" | "and" => match (a, b) {
+            (Value::Bool(x), Value::Bool(y)) => {
+                Ok(Value::Bool(if op == "or" { x || y } else { x && y }))
+            }
+            _ => internal("a boolean combiner on non-booleans"),
+        },
+        // The tacks are `scan`-only, so the checker rejects them under `fold`.
+        "<:" | ":>" => internal("a non-commutative combiner reached `fold`"),
+        other => internal(format!("`{other}` is not a combiner")),
+    }
+}
+
+/// The value-level builtins: `fold`, `map`, `to_real`, and the bag aggregates
+/// (`x |> op` and `op x` converge here, ADR 0018).
 fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, EvalError> {
     let ExprKind::Name(name) = &head.kind else {
         return internal("application of a non-name");
     };
+    // The reduction primitives take more than one argument (ADR 0031,
+    // Decision 11); the checker has already saturated them, so an arity
+    // mismatch here is internal.
+    match name.as_str() {
+        "fold" => {
+            let [combiner, mapper, bag] = args else {
+                return internal("`fold` expects a combiner, a mapper, and a bag");
+            };
+            return eval_fold(scope, combiner, mapper, bag);
+        }
+        "map" => {
+            let [mapper, bag] = args else {
+                return internal("`map` expects a mapper and a bag");
+            };
+            return Ok(RtVal::Bag(eval_mapped(scope, mapper, bag)?));
+        }
+        _ => {}
+    }
     let [arg] = args else {
         return internal(format!("`{name}` expects one argument"));
     };
@@ -1515,6 +1645,65 @@ mod tests {
             vec![machine("m1", "operational", 10, None)],
         );
         assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(2)]]);
+    }
+
+    #[test]
+    fn fold_reduces_a_projected_bag() {
+        // ADR 0031, Decision 4, backed by Stage 1 (`Mensura.foldBag`).
+        let rows = eval(
+            r#"view folded {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (
+                   .total = fold `+` (|v| v) b.hours,
+                   .biggest = fold `>>` (|v| v) b.hours,
+                   .sq = fold `+` (|v| v * v) b.hours
+                 )
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(20),
+                Value::Int(10),
+                Value::Int(200),
+            ]]
+        );
+    }
+
+    #[test]
+    fn fold_over_the_fiber_sees_whole_rows() {
+        // ADR 0029's headline example: the mapper's element is a *row*, which
+        // needs the fiber transposed out of the columnar group.
+        let rows = eval(
+            r#"view folded {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.total = fold `+` (|r| r.hours * 2) b)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(40)]]);
+    }
+
+    #[test]
+    fn map_projects_and_computes() {
+        // Decision 3: `map (|r| r.x) b` is `b.x`, and a computed bag is a
+        // window value, so the result is one row per member.
+        let rows = eval(
+            r#"view mapped {
+                 let doubled = machines |> flat_map |_, r| (r, r);
+                 doubled |> map_bags |_, b| (.h = map (|r| r.hours * 3) b)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![Value::String("m1".into()), Value::Int(30)],
+                vec![Value::String("m1".into()), Value::Int(30)],
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,19 @@
+// Rejected at resolve (typing): the tacks `<:` and `:>` are associative but
+// *not* commutative, so they are admitted under `scan` only (ADR 0031,
+// Decision 6, realizing ADR 0029 Decision 10's ordered-only column).  A fold
+// runs over an unordered bag, so a non-commutative combiner would make the
+// result depend on an order the bag does not have.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { temperature: real }
+}
+
+view bad {
+  readings
+    |> assume { complete }
+    |> map_bags |k, b| (.first = fold `<:` (|v| v) b.temperature)
+}

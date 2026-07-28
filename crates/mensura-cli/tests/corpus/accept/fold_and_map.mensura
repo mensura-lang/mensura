@@ -1,0 +1,33 @@
+// Accepted: the two reduction primitives (ADR 0031, Decisions 3, 4, 11),
+// gated by ADR 0029's Stage 1 (`formal/Mensura/Fold.lean`).  `fold` is a
+// curried builtin whose bag is the trailing argument, so it pipes by ADR
+// 0018; `map` is the projection functor and the explicit form of `b.x`.
+unit Person {
+  id: string
+}
+
+store people {
+  unit { Person }
+  attr {
+    mass: real
+    height: real
+  }
+}
+
+view reductions {
+  people
+    |> assume { complete }
+    |> map_bags |k, b| (
+      // Over a projected bag the element is a value.
+      .total = fold `+` (|v| v) b.mass,
+      // The mapper is open: any well-typed expression over the element.
+      .sq = fold `+` (|v| v * v) b.mass,
+      // Over the fiber the element is a whole *row*: ADR 0029's headline
+      // example, expressible only once `b` became the bag of rows.
+      .bmi_total = fold `+` (|r| r.mass / (r.height * r.height)) b,
+      // `map` builds a computed bag no projection sigil could express.
+      .heaviest = fold `>>` (|v| v) (map (|r| r.mass) b),
+      // The bag is the trailing argument, so the pipe composes.
+      .piped = b.mass |> fold `+` (|v| v)
+    )
+}

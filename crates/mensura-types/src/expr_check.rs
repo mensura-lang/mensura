@@ -64,6 +64,75 @@ pub enum Ty {
     /// types and re-typing the body at each call site: exact, per-site, no
     /// inference.  A function never enters a column and cannot be ascribed.
     Fn(Arc<TyClosure>),
+    /// A **builtin** function value (ADR 0031, Decision 11).  `fold`, `scan`,
+    /// and `map` have function types but no lambda bodies: the language has no
+    /// recursion and cannot express bag iteration, so they are primitives
+    /// whose *types* are function-shaped.
+    ///
+    /// A builtin cannot be a [`Ty::Fn`], because a `TyClosure` is a lambda
+    /// body rather than an arrow: there is nothing to re-type per call site.
+    /// Nor is it a uniform arrow, since each slot has its own rule (a combiner
+    /// token, then functions, then the bag).  So it carries the primitive's
+    /// identity plus the arguments already applied, and each application step
+    /// consults the primitive's own table.  A partial application is an
+    /// ordinary value, which is what lets a bundled module write
+    /// `let sum { fold `+` (|v| v) }`.
+    Builtin(Arc<PartialBuiltin>),
+}
+
+/// Which primitive a [`Ty::Builtin`] is.  The set is closed and extends by
+/// decision record, exactly as the combiner table does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Builtin {
+    /// `fold : combiner -> (element -> value) -> bag -> value`
+    /// (ADR 0031, Decision 4).  Gated by ADR 0029's Stage 1, proved in
+    /// `formal/Mensura/Fold.lean`.
+    Fold,
+    /// `map : (element -> value) -> bag -> bag` (ADR 0031, Decision 3): the
+    /// projection functor, the explicit form of `b.x`.  Order-free, so it is
+    /// not derivable from `fold` or `scan`.
+    Map,
+}
+
+impl Builtin {
+    /// The surface spelling, for diagnostics and for the initial environment.
+    pub fn name(self) -> &'static str {
+        match self {
+            Builtin::Fold => "fold",
+            Builtin::Map => "map",
+        }
+    }
+
+    /// How many arguments saturate this primitive.
+    fn arity(self) -> usize {
+        match self {
+            // combiner, mapper, bag
+            Builtin::Fold => 3,
+            // mapper, bag
+            Builtin::Map => 2,
+        }
+    }
+}
+
+/// A builtin with the arguments applied so far: the value form of a partial
+/// application (ADR 0030's currying, at a primitive).  Saturating it types the
+/// result; short of that it stays a function value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartialBuiltin {
+    pub which: Builtin,
+    /// The argument *types* bound so far, in order.  A combiner slot records
+    /// the operator it quoted rather than a type, since a combiner is not a
+    /// value.
+    pub applied: Vec<BuiltinArg>,
+}
+
+/// One argument already applied to a builtin.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BuiltinArg {
+    /// A backticked operator from the closed combiner table.
+    Combiner(BinOp),
+    /// Any other argument, kept as its type.
+    Ty(Ty),
 }
 
 /// The checker's view of a closure (ADR 0030): the lambda plus the
@@ -112,6 +181,140 @@ impl Ty {
     }
 }
 
+/// **The closed combiner table** (ADR 0031, Decision 6).
+///
+/// A backticked operator is admitted as a combiner only if it appears here.
+/// The set is closed on purpose: a fold over an *unordered* bag is
+/// deterministic only for associative-commutative combiners, and those are
+/// laws no checker can verify on a user lambda, so the algebra is compiler
+/// knowledge rather than something a call site asserts.  The mapper, by
+/// contrast, stays fully open, because its obligation is a type check.  That
+/// asymmetry (a law versus a type) is the whole design.
+///
+/// Each row records what the checker needs: which primitives admit it, the
+/// identity it fabricates (as the empty case's answer, so `None` means the
+/// result is optional there), and the domain property both operands need.
+/// The identity and absorber columns of the ADR's table play opposite roles:
+/// an absorber is *read* (a licensed short-circuit, invisible to typing),
+/// while an identity is *written*, so only the identity is modelled here.
+struct CombinerRow {
+    op: BinOp,
+    /// Spelled as the surface writes it inside backticks.
+    spelling: &'static str,
+    /// Commutative combiners are admitted under `fold`; the rest are
+    /// `scan`-only, since a key supplies the order a bag lacks.
+    commutative: bool,
+    /// Whether the domain carries an identity for this operator, i.e. whether
+    /// the empty bag has a true answer.  `<<`/`>>` have none ("there is no
+    /// smallest element of nothing"), which is what the `Option` completion of
+    /// `formal/Mensura/Fold.lean` exists for.
+    has_identity: bool,
+    /// The property both operands' shared domain must have.
+    domain: CombinerDomain,
+}
+
+/// The domain restriction a combiner row carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CombinerDomain {
+    /// Any numeric domain, dimension included: `+` requires equal dimensions
+    /// and preserves them, so `sum` works at every dimension.
+    Numeric,
+    /// **Dimensionless** numerics only (`int`, bare `real`).  A fold's
+    /// accumulator type must be invariant, and dimensioned `*` *adds* exponent
+    /// vectors (ADR 0026), so folding it would give a product whose dimension
+    /// depends on the bag's cardinality, which no static type can carry.
+    DimensionlessNumeric,
+    /// Any orderable domain, dimension included.
+    Orderable,
+    /// `bool` only.
+    Boolean,
+    /// No restriction: the tacks discard a value rather than inspect it.
+    Any,
+}
+
+/// The table.  It extends by ADR, never by a user assertion.
+const COMBINERS: [CombinerRow; 8] = [
+    CombinerRow {
+        op: BinOp::Add,
+        spelling: "+",
+        commutative: true,
+        has_identity: true,
+        domain: CombinerDomain::Numeric,
+    },
+    CombinerRow {
+        op: BinOp::Mul,
+        spelling: "*",
+        commutative: true,
+        has_identity: true,
+        domain: CombinerDomain::DimensionlessNumeric,
+    },
+    CombinerRow {
+        op: BinOp::Min,
+        spelling: "<<",
+        commutative: true,
+        has_identity: false,
+        domain: CombinerDomain::Orderable,
+    },
+    CombinerRow {
+        op: BinOp::Max,
+        spelling: ">>",
+        commutative: true,
+        has_identity: false,
+        domain: CombinerDomain::Orderable,
+    },
+    CombinerRow {
+        op: BinOp::Or,
+        spelling: "or",
+        commutative: true,
+        has_identity: true,
+        domain: CombinerDomain::Boolean,
+    },
+    CombinerRow {
+        op: BinOp::And,
+        spelling: "and",
+        commutative: true,
+        has_identity: true,
+        domain: CombinerDomain::Boolean,
+    },
+    CombinerRow {
+        op: BinOp::KeepLeft,
+        spelling: "<:",
+        commutative: false,
+        has_identity: false,
+        domain: CombinerDomain::Any,
+    },
+    CombinerRow {
+        op: BinOp::KeepRight,
+        spelling: ":>",
+        commutative: false,
+        has_identity: false,
+        domain: CombinerDomain::Any,
+    },
+];
+
+fn combiner_row(op: BinOp) -> Option<&'static CombinerRow> {
+    COMBINERS.iter().find(|row| row.op == op)
+}
+
+/// Resolve a backticked token against the table.  An unknown combiner names
+/// the table, since the set is closed and the writer cannot extend it.
+fn resolve_combiner(raw: &str, span: Span) -> Result<BinOp, Vec<TypeError>> {
+    match COMBINERS.iter().find(|row| row.spelling == raw) {
+        Some(row) => Ok(row.op),
+        None => {
+            let known = COMBINERS
+                .iter()
+                .map(|row| format!("`{}`", row.spelling))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(vec![TypeError::new(
+                format!("`{raw}` is not a combiner; the table is {known}"),
+                span,
+            )])
+        }
+    }
+}
+
 /// A type-checking diagnostic, located by span. Mirrors `ResolveError`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeError {
@@ -152,7 +355,7 @@ pub type Ambient = BTreeMap<String, Ty>;
 /// Decision 4): the seven base units, each a total dimensioned value of
 /// its base dimension.
 pub fn intrinsics() -> Ambient {
-    BASE_UNITS
+    let mut env: Ambient = BASE_UNITS
         .iter()
         .map(|unit| {
             let dim = Dimension::of_base_unit(unit).expect("a base unit has a base dimension");
@@ -164,7 +367,22 @@ pub fn intrinsics() -> Ambient {
                 },
             )
         })
-        .collect()
+        .collect();
+    // The primitives (ADR 0031, Decision 11).  They are *values* in the
+    // initial environment, not a parser special form, which is what lets a
+    // bundled module bind their partial applications by name.  The derived
+    // vocabulary (`sum`, `min`, ...) is deliberately absent: it lives in the
+    // `bag` and `series` modules and is imported (Decision 8).
+    for which in [Builtin::Fold, Builtin::Map] {
+        env.insert(
+            which.name().to_string(),
+            Ty::Builtin(Arc::new(PartialBuiltin {
+                which,
+                applied: Vec::new(),
+            })),
+        );
+    }
+    env
 }
 
 /// The typing context `Gamma` (section 5.1): the named values in scope and the
@@ -395,6 +613,22 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
                 names: ctx.names.clone(),
             })))
         }
+        // A combiner is not a value: it names an operator whose *algebra* is
+        // compiler knowledge, and it is meaningful only in a reduction's
+        // combiner slot, where `apply_builtin` consumes it (ADR 0031,
+        // Decision 6).  Reaching here means it was written somewhere else.
+        ExprKind::Combiner(raw) => {
+            // Still resolve it, so a typo is reported as a typo rather than
+            // hidden behind the position complaint.
+            resolve_combiner(raw, expr.span)?;
+            Err(vec![TypeError::new(
+                format!(
+                    "`` `{raw}` `` is a combiner, not a value; it belongs in a \
+                     reduction's combiner slot, as in ``fold `{raw}` (|v| v) b``"
+                ),
+                expr.span,
+            )])
+        }
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -467,8 +701,16 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
     // A name of function type takes the general application path
     // (ADR 0030).  The resolver forbids a binding that collides with a
     // builtin, so this cannot shadow `to_real` or an aggregate.
-    if let Some(Ty::Fn(closure)) = ctx.lookup(name) {
-        return apply_closure(ctx, name, closure.clone(), &args, head.span);
+    match ctx.lookup(name) {
+        Some(Ty::Fn(closure)) => {
+            return apply_closure(ctx, name, closure.clone(), &args, head.span);
+        }
+        // A builtin primitive (ADR 0031, Decision 11): same currying, but the
+        // slots have their own rules rather than a lambda body to re-type.
+        Some(Ty::Builtin(partial)) => {
+            return apply_builtin(ctx, partial.clone(), &args, head.span);
+        }
+        _ => {}
     }
     let [arg] = args[..] else {
         return Err(vec![TypeError::new(
@@ -560,6 +802,291 @@ fn apply_closure(
     Ok(ty)
 }
 
+/// Apply arguments to a builtin (ADR 0031, Decision 11).  Each step consults
+/// the primitive's own slot rule; short of saturation the result is another
+/// builtin value, which is what makes `let sum { fold `+` (|v| v) }` a
+/// binding rather than a special form.
+fn apply_builtin(
+    ctx: &Context,
+    partial: Arc<PartialBuiltin>,
+    args: &[&Expr],
+    head_span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let which = partial.which;
+    let mut applied = partial.applied.clone();
+    for arg in args {
+        if applied.len() >= which.arity() {
+            return Err(vec![TypeError::new(
+                format!(
+                    "`{}` takes {} arguments and is already saturated",
+                    which.name(),
+                    which.arity()
+                ),
+                arg.span,
+            )]);
+        }
+        // The combiner slot takes a backticked operator, never a value: a
+        // combiner's algebra is compiler knowledge, so it cannot be computed.
+        if which == Builtin::Fold && applied.is_empty() {
+            let ExprKind::Combiner(raw) = &arg.kind else {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "`{}`'s first argument is a backticked combiner, \
+                         like `` `+` ``",
+                        which.name()
+                    ),
+                    arg.span,
+                )]);
+            };
+            let op = resolve_combiner(raw, arg.span)?;
+            let row = combiner_row(op).expect("resolved from the table");
+            // Non-commutative rows are `scan`-only: a fold over an unordered
+            // bag has no order for the tacks to respect (Decision 6).
+            if !row.commutative {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "`` `{}` `` is not commutative, so it is admitted under \
+                         `scan` only; a fold over an unordered bag would depend \
+                         on the order",
+                        row.spelling
+                    ),
+                    arg.span,
+                )]);
+            }
+            applied.push(BuiltinArg::Combiner(op));
+            continue;
+        }
+        applied.push(BuiltinArg::Ty(type_expr(ctx, arg)?));
+    }
+    if applied.len() < which.arity() {
+        // Still partial: an ordinary value (ADR 0030's currying).
+        return Ok(Ty::Builtin(Arc::new(PartialBuiltin { which, applied })));
+    }
+    saturated_builtin(ctx, which, &applied, head_span)
+}
+
+/// Type a saturated builtin application.
+fn saturated_builtin(
+    ctx: &Context,
+    which: Builtin,
+    applied: &[BuiltinArg],
+    head_span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    match which {
+        Builtin::Fold => {
+            let [
+                BuiltinArg::Combiner(op),
+                BuiltinArg::Ty(mapper),
+                BuiltinArg::Ty(bag),
+            ] = applied
+            else {
+                return Err(vec![TypeError::new(
+                    "`fold` expects a combiner, a mapper, and a bag",
+                    head_span,
+                )]);
+            };
+            type_fold(ctx, *op, mapper, bag, head_span)
+        }
+        Builtin::Map => {
+            let [BuiltinArg::Ty(mapper), BuiltinArg::Ty(bag)] = applied else {
+                return Err(vec![TypeError::new(
+                    "`map` expects a mapper and a bag",
+                    head_span,
+                )]);
+            };
+            type_map(ctx, mapper, bag, head_span)
+        }
+    }
+}
+
+/// The element type a bag or fiber hands to a mapper.  Over a projected bag
+/// the element is a *value*; over the fiber itself it is a *row*, which is how
+/// a row-mapper fold like `fold `+` (|r| r.mass / r.height ^ 2) b` becomes
+/// expressible (ADR 0031, Decision 4).
+fn element_of(ty: &Ty, what: &str, span: Span) -> Result<Ty, Vec<TypeError>> {
+    match ty {
+        Ty::Bag { domain, opt } => Ok(Ty::Value {
+            domain: domain.clone(),
+            opt: *opt,
+        }),
+        // A row of the fiber: each field as a single value, which is exactly
+        // the `flat_map` row view.  The fiber's fields are stored as their
+        // projections, so unwrap one level.
+        Ty::Rows(fields) => Ok(Ty::Record(
+            fields
+                .iter()
+                .map(|(name, ty)| {
+                    let field = match ty {
+                        Ty::Bag { domain, opt } => Ty::Value {
+                            domain: domain.clone(),
+                            opt: *opt,
+                        },
+                        other => other.clone(),
+                    };
+                    (name.clone(), field)
+                })
+                .collect(),
+        )),
+        other => Err(vec![TypeError::new(
+            format!("{what} expects a bag, found {}", describe_ty(other)),
+            span,
+        )]),
+    }
+}
+
+/// Apply a mapper (a one-parameter function value) to one element type.
+fn apply_mapper(
+    ctx: &Context,
+    mapper: &Ty,
+    element: Ty,
+    what: &str,
+    span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let Ty::Fn(c) = mapper else {
+        return Err(vec![TypeError::new(
+            format!(
+                "{what}'s mapper must be a function, found {}",
+                describe_ty(mapper)
+            ),
+            span,
+        )]);
+    };
+    if c.params.len() != 1 {
+        return Err(vec![TypeError::new(
+            format!(
+                "{what}'s mapper takes one element, but this function takes {}",
+                c.params.len()
+            ),
+            span,
+        )]);
+    }
+    if ctx.fn_depth >= MAX_FN_DEPTH {
+        return Err(vec![TypeError::new(
+            "function applications nest too deeply: a const function may be \
+             recursive",
+            span,
+        )]);
+    }
+    let bound = vec![(c.params[0].name.clone(), element)];
+    let body_ctx = ctx.for_closure_body(c, bound);
+    type_expr(&body_ctx, &c.body).map_err(|mut errs| {
+        errs.push(TypeError::new(format!("while applying {what} here"), span));
+        errs
+    })
+}
+
+/// `fold : combiner -> (element -> value) -> bag -> value` (ADR 0031,
+/// Decision 4).  Backed by ADR 0029's Stage 1, proved in
+/// `formal/Mensura/Fold.lean`: `foldBag` over a commutative monoid, the shard
+/// lemma, and the `Option` completion with its presence lemma.
+fn type_fold(
+    ctx: &Context,
+    op: BinOp,
+    mapper: &Ty,
+    bag: &Ty,
+    span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let element = element_of(bag, "`fold`", span)?;
+    let mapped = apply_mapper(ctx, mapper, element, "`fold`", span)?;
+    let row = combiner_row(op).expect("resolved from the table");
+    // The mapper's result is what the combiner folds, so the accumulator's
+    // domain is that result's domain.  A fold's accumulator type must be
+    // invariant, which is what the per-row domain restriction enforces.
+    let (domain, opt) = match &mapped {
+        Ty::Value { domain, opt } => (domain.clone(), *opt),
+        Ty::Bool => (ColumnType::Bool, Optionality::Total),
+        other => {
+            return Err(vec![TypeError::new(
+                format!(
+                    "`fold`'s mapper must produce a value, found {}",
+                    describe_ty(other)
+                ),
+                span,
+            )]);
+        }
+    };
+    if opt == Optionality::Optional {
+        return Err(vec![TypeError::new(
+            "`fold` requires a total bag; this mapper may produce a missing \
+             value"
+                .to_string(),
+            span,
+        )]);
+    }
+    let ok = match row.domain {
+        CombinerDomain::Numeric => domain.is_numeric(),
+        CombinerDomain::DimensionlessNumeric => {
+            domain == ColumnType::Int || domain == ColumnType::Real
+        }
+        CombinerDomain::Orderable => domain.is_orderable(),
+        CombinerDomain::Boolean => domain == ColumnType::Bool,
+        CombinerDomain::Any => true,
+    };
+    if !ok {
+        let expected = match row.domain {
+            CombinerDomain::Numeric => "a numeric domain",
+            // Name the reason: this is the one row whose restriction is not
+            // obvious from the operator (ADR 0031, Decision 6).
+            CombinerDomain::DimensionlessNumeric => {
+                "a dimensionless numeric domain (`int` or bare `real`), since \
+                 a dimensioned product's dimension would depend on the bag's \
+                 size"
+            }
+            CombinerDomain::Orderable => "an orderable domain",
+            CombinerDomain::Boolean => "`bool`",
+            CombinerDomain::Any => unreachable!("`Any` always admits"),
+        };
+        return Err(vec![TypeError::new(
+            format!(
+                "`` `{}` `` folds {expected}, found {}",
+                row.spelling,
+                domain_name(&domain)
+            ),
+            span,
+        )]);
+    }
+    // The result is total either way, but for two different reasons, and the
+    // distinction is the whole content of ADR 0029 Decision 4:
+    //
+    // - A combiner *with* an identity has a true answer for the empty bag
+    //   (`0` is the sum of nothing), so the fold is total unconditionally.
+    // - A combiner *without* one has none ("there is no smallest element of
+    //   nothing"), so it folds through the `Option` completion and is total
+    //   only on a non-empty bag.  A group arises from rows and is never
+    //   empty, which is exactly the hypothesis
+    //   `Mensura.foldBagOpt_isSome_of_ne_zero` discharges.
+    //
+    // Both land on `total` here because a bag in this position is always a
+    // group.  When a possibly-empty bag becomes expressible, the identity-free
+    // rows must yield an optional value, and this is the branch that changes.
+    debug_assert!(
+        row.has_identity || matches!(row.domain, CombinerDomain::Orderable),
+        "only the orderable rows (`<<`, `>>`) lack an identity"
+    );
+    Ok(total(domain))
+}
+
+/// `map : (element -> value) -> bag -> bag` (ADR 0031, Decision 3): the
+/// projection functor and the explicit form of `b.x`.  It is not a reduction,
+/// so it needs no combiner and no proof gate beyond `Multiset.map`.
+fn type_map(ctx: &Context, mapper: &Ty, bag: &Ty, span: Span) -> Result<Ty, Vec<TypeError>> {
+    let element = element_of(bag, "`map`", span)?;
+    match apply_mapper(ctx, mapper, element, "`map`", span)? {
+        Ty::Value { domain, opt } => Ok(Ty::Bag { domain, opt }),
+        Ty::Bool => Ok(Ty::Bag {
+            domain: ColumnType::Bool,
+            opt: Optionality::Total,
+        }),
+        other => Err(vec![TypeError::new(
+            format!(
+                "`map`'s mapper must produce a value, found {}",
+                describe_ty(&other)
+            ),
+            span,
+        )]),
+    }
+}
+
 /// A short name for a `Ty` in diagnostics.
 fn ty_name(ty: &Ty) -> String {
     match ty {
@@ -568,7 +1095,7 @@ fn ty_name(ty: &Ty) -> String {
         Ty::Bool => "bool".to_string(),
         Ty::Rows(_) => "bag of rows".to_string(),
         Ty::Record(_) => "record".to_string(),
-        Ty::Fn(_) => "function".to_string(),
+        Ty::Fn(_) | Ty::Builtin(_) => "function".to_string(),
     }
 }
 
@@ -1125,7 +1652,7 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
             format!("{what} expects a value, found a row"),
             span,
         )]),
-        Ty::Fn(_) => Err(vec![TypeError::new(
+        Ty::Fn(_) | Ty::Builtin(_) => Err(vec![TypeError::new(
             format!("{what} expects a value, found a function (apply it)"),
             span,
         )]),
@@ -1202,7 +1729,7 @@ fn describe_ty(ty: &Ty) -> String {
         Ty::Bool => "a bool".to_string(),
         Ty::Rows(_) => "a bag of rows".to_string(),
         Ty::Record(_) => "a record".to_string(),
-        Ty::Fn(_) => "a function".to_string(),
+        Ty::Fn(_) | Ty::Builtin(_) => "a function".to_string(),
     }
 }
 
@@ -1509,6 +2036,105 @@ mod tests {
         let row = row_ctx();
         let errs = ty_of(&row, "#r.size").expect_err("a value is not a bag");
         assert!(errs[0].message.contains("counts a bag or a group"));
+    }
+
+    #[test]
+    fn fold_types_over_a_projected_bag() {
+        // ADR 0031, Decision 4: combiner, mapper, trailing bag.  Over a
+        // projected bag the element is a value.
+        let ctx = bag_ctx();
+        assert_eq!(
+            ty_of(&ctx, "fold `+` (|v| v) b.size"),
+            Ok(total(ColumnType::Int))
+        );
+        // The mapper is open: any well-typed expression over the element.
+        assert_eq!(
+            ty_of(&ctx, "fold `+` (|v| v * v) b.size"),
+            Ok(total(ColumnType::Int))
+        );
+        // The pipe is the same application path (ADR 0018).
+        assert_eq!(
+            ty_of(&ctx, "b.size |> fold `+` (|v| v)"),
+            Ok(total(ColumnType::Int))
+        );
+    }
+
+    #[test]
+    fn fold_over_the_fiber_takes_a_row_mapper() {
+        // ADR 0029's headline example, expressible only once `b` became the
+        // bag of rows (ADR 0031, Decisions 1 and 4): the element is a *row*.
+        let ctx = bag_ctx();
+        assert_eq!(
+            ty_of(&ctx, "fold `+` (|r| r.size) b"),
+            Ok(total(ColumnType::Int))
+        );
+    }
+
+    #[test]
+    fn map_is_the_explicit_projection() {
+        // Decision 3: `map (|r| r.x) b` is the explicit spelling of `b.x`, and
+        // it also expresses a computed bag no projection sigil could.
+        let ctx = bag_ctx();
+        assert_eq!(ty_of(&ctx, "map (|r| r.size) b"), ty_of(&ctx, "b.size"));
+        assert_eq!(
+            ty_of(&ctx, "map (|v| v * 2) b.size"),
+            Ok(Ty::Bag {
+                domain: ColumnType::Int,
+                opt: Optionality::Total,
+            })
+        );
+    }
+
+    #[test]
+    fn a_partial_reduction_is_a_value() {
+        // ADR 0031, Decision 11: short of saturation a builtin is an ordinary
+        // function value, which is what lets `bag` bind `fold `+` (|v| v)` to
+        // a name (Decision 8).
+        let ctx = bag_ctx();
+        assert!(matches!(
+            ty_of(&ctx, "fold `+` (|v| v)"),
+            Ok(Ty::Builtin(_))
+        ));
+        assert!(matches!(ty_of(&ctx, "fold `+`"), Ok(Ty::Builtin(_))));
+    }
+
+    #[test]
+    fn the_combiner_table_is_closed_and_per_primitive() {
+        let ctx = bag_ctx();
+        // An unknown combiner names the table; the set extends by ADR, never
+        // by a call site.
+        let errs = ty_of(&ctx, "fold `%` (|v| v) b.size").expect_err("not a row");
+        assert!(errs[0].message.contains("is not a combiner"));
+        assert!(errs[0].message.contains("`+`"));
+        // The tacks are associative but not commutative, so they are
+        // `scan`-only (Decision 6's ordered-only column).
+        let errs = ty_of(&ctx, "fold `<:` (|v| v) b.size").expect_err("scan only");
+        assert!(errs[0].message.contains("not commutative"));
+        // A combiner is not a value.
+        let errs = ty_of(&ctx, "`+`").expect_err("not a value");
+        assert!(errs[0].message.contains("not a value"));
+        // The combiner slot takes an operator, never a computed function.
+        let errs = ty_of(&ctx, "fold (|a| a) (|v| v) b.size").expect_err("needs a combiner");
+        assert!(errs[0].message.contains("backticked combiner"));
+    }
+
+    #[test]
+    fn folding_a_dimensioned_product_is_rejected() {
+        // The one row with a domain restriction (Decision 6): a fold's
+        // accumulator type must be invariant, but dimensioned `*` *adds*
+        // exponent vectors (ADR 0026), so the product's dimension would depend
+        // on the bag's cardinality.  `+` preserves dimensions, so `sum` works
+        // at every dimension while `prod` does not.
+        let ctx = bag_ctx();
+        let errs =
+            ty_of(&ctx, "fold `*` (|v| v) b.kelvin_reading").expect_err("dimensioned product");
+        assert!(
+            errs[0].message.contains("dimensionless"),
+            "should explain the restriction: {}",
+            errs[0].message
+        );
+        // The same bag folds fine under `+`, which preserves the dimension.
+        assert!(ty_of(&ctx, "fold `+` (|v| v) b.kelvin_reading").is_ok());
     }
 
     #[test]

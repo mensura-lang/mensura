@@ -1,0 +1,20 @@
+// Rejected at resolve (typing): a fold's accumulator type must be invariant,
+// but dimensioned `*` *adds* exponent vectors (ADR 0026), so the product's
+// dimension would depend on the bag's cardinality, which no static type can
+// carry.  The `*` row is therefore admitted at the dimensionless numeric
+// domains only, while `+` (which requires equal dimensions and preserves
+// them) works at every dimension (ADR 0031, Decision 6).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { heat: temperature[real] }
+}
+
+view bad {
+  readings
+    |> assume { complete }
+    |> map_bags |k, b| (.product = fold `*` (|v| v) b.heat)
+}

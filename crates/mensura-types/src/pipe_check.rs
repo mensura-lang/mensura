@@ -880,7 +880,7 @@ fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
         Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
-        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Fn(_) => None,
+        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Fn(_) | Ty::Builtin(_) => None,
     }
 }
 

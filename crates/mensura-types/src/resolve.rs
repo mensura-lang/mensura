@@ -269,7 +269,12 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         // Decision 4) and join the collision rule: now that a binding can
         // be a function (ADR 0030), `let sum { |x| x }` would otherwise
         // silently shadow the aggregate in application head position.
-        const EXPR_BUILTINS: [&str; 7] = ["sum", "min", "max", "count", "any", "all", "to_real"];
+        // `fold` and `map` join the list as the ADR 0031 primitives; the six
+        // aggregates leave it when the `bag` module lands and their names
+        // return to users (ADR 0031, Decision 8).
+        const EXPR_BUILTINS: [&str; 9] = [
+            "sum", "min", "max", "count", "any", "all", "to_real", "fold", "map",
+        ];
         if EXPR_BUILTINS.contains(&name.name.as_str()) {
             errors.push(ResolveError::new(
                 format!(
