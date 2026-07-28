@@ -45,6 +45,18 @@ pub enum Ty {
     },
     /// A boolean: the result of a predicate, comparison, or presence test.
     Bool,
+    /// The **fiber**: the bag of rows at one key (ADR 0031, Decision 1).  This
+    /// is the type of the `b` in `map_bags |k, b| ...`, and it matches
+    /// `formal/Mensura/Core/Defs.lean`'s `rows : K -> Multiset (Row H σ)`
+    /// exactly; the columnar record-of-bags of ADR 0015 is the *presentation*
+    /// (see [`Ty::project`]), not the model.
+    ///
+    /// It carries each field's domain and optionality, so member access can
+    /// hand back today's [`Ty::Bag`] unchanged.  Deliberately *not* a `Bag` of
+    /// `Record`: nested collections do not arrive by the back door (Decision
+    /// 10).  A rows value never enters a column and is not user-writable in
+    /// type position; it is constructible only where groups are.
+    Rows(BTreeMap<String, Ty>),
     /// A row (fields are `Value`) or a group (fields are `Bag`).
     Record(BTreeMap<String, Ty>),
     /// A const function (ADR 0030).  It carries its closure, so a saturated
@@ -71,6 +83,22 @@ pub struct TyClosure {
 }
 
 impl Ty {
+    /// Project a field out of the fiber: the sugar equation of ADR 0031,
+    /// Decision 2, stated once.
+    ///
+    /// ```text
+    /// b.x  ==  map (|r| r.x) b
+    /// ```
+    ///
+    /// In `formal/` this is `Multiset.map` at a field projection.  It is
+    /// well defined because the fiber's columns are jointly indexed by the
+    /// group's rows; that alignment is *provenance*, not structure a type
+    /// could carry, which is why there is no generic `zip` of two arbitrary
+    /// bags (ADR 0031, Alternatives).  Do not generalize it.
+    fn project(fields: &BTreeMap<String, Ty>, field: &str) -> Option<Ty> {
+        fields.get(field).cloned()
+    }
+
     /// `Some(domain)` iff this is a card-1, not-missing value: the gate the
     /// scalar rule checks (section 5.3).
     pub fn known_value_domain(&self) -> Option<&ColumnType> {
@@ -176,18 +204,18 @@ impl Context {
         }
     }
 
-    /// Bind a group lambda's key-first parameters `|k, b|` (ADR 0015): `kname` to
-    /// the key (key columns as total values, constant within a bag), `bname`
-    /// to the value columns as bags (section 5.4).
+    /// Bind a group lambda's key-first parameters `|k, b|`: `kname` to the key
+    /// (key columns as total values, constant within a bag), `bname` to the
+    /// **fiber**, the bag of rows at that key (ADR 0031, Decision 1).
+    ///
+    /// `b` was the columnar record-of-bags of ADR 0015; that is now the
+    /// derived presentation, reached by member access ([`Ty::project`]).  Bare
+    /// `b` in a scalar position was a type error before (a record is not a
+    /// value) and remains one (a bag of rows is not a value), so no existing
+    /// program reads differently.
     pub fn bag(ambient: &Ambient, kname: &str, bname: &str, table: &TableType) -> Context {
         Context {
-            names: bind2(
-                ambient,
-                kname,
-                key_record(table),
-                bname,
-                bag_value_record(table),
-            ),
+            names: bind2(ambient, kname, key_record(table), bname, fiber(table)),
             aggregates: builtin_aggregates(),
             ambient: ambient.clone(),
             fn_depth: 0,
@@ -284,9 +312,11 @@ fn value_record(table: &TableType) -> Ty {
     Ty::Record(fields)
 }
 
-/// The group value `g` of a table (ADR 0015): the non-key columns as bags
-/// carrying their totality (section 5.4). The key columns live in `k`.
-fn bag_value_record(table: &TableType) -> Ty {
+/// The **fiber** `b` of a table (ADR 0031, Decision 1): the bag of rows at one
+/// key.  The field types are the *projections* (`b.x` is a bag of `x`), which
+/// is the columnar presentation of ADR 0015 kept as sugar; the key columns
+/// live in `k`.
+fn fiber(table: &TableType) -> Ty {
     let mut fields = BTreeMap::new();
     for col in &table.content.columns {
         fields.insert(
@@ -297,7 +327,7 @@ fn bag_value_record(table: &TableType) -> Ty {
             },
         );
     }
-    Ty::Record(fields)
+    Ty::Rows(fields)
 }
 
 /// A key view of a table: the key columns as total values.
@@ -380,16 +410,22 @@ fn type_name(ctx: &Context, name: &str, span: Span) -> Result<Ty, Vec<TypeError>
 }
 
 fn type_member(ctx: &Context, base: &Expr, field: &Ident) -> Result<Ty, Vec<TypeError>> {
-    match type_expr(ctx, base)? {
-        Ty::Record(fields) => match fields.get(&field.name) {
-            Some(ty) => Ok(ty.clone()),
-            None => Err(vec![TypeError::new(
-                format!("unknown column `{}`", field.name),
+    // A record projects its field; the fiber projects too, by the sugar
+    // equation `b.x == map (|r| r.x) b` (ADR 0031, Decision 2).  Both spell
+    // the same failure the same way, so `b.nope` and `r.nope` read alike.
+    let fields = match type_expr(ctx, base)? {
+        Ty::Record(fields) | Ty::Rows(fields) => fields,
+        _ => {
+            return Err(vec![TypeError::new(
+                "member access on a non-record value",
                 field.span,
-            )]),
-        },
-        _ => Err(vec![TypeError::new(
-            "member access on a non-record value",
+            )]);
+        }
+    };
+    match Ty::project(&fields, &field.name) {
+        Some(ty) => Ok(ty),
+        None => Err(vec![TypeError::new(
+            format!("unknown column `{}`", field.name),
             field.span,
         )]),
     }
@@ -530,6 +566,7 @@ fn ty_name(ty: &Ty) -> String {
         Ty::Value { domain, .. } => domain_name(domain),
         Ty::Bag { domain, .. } => format!("bag of {}", domain_name(domain)),
         Ty::Bool => "bool".to_string(),
+        Ty::Rows(_) => "bag of rows".to_string(),
         Ty::Record(_) => "record".to_string(),
         Ty::Fn(_) => "function".to_string(),
     }
@@ -950,10 +987,15 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr) -> Result<Ty, Vec<TypeErr
         // reductions it does *not* require a total bag: the mapper discards
         // the element, so a missing value still counts its row.  Backed by
         // Stage 1 (`Mensura.foldBag`, the additive-monoid instance).
+        //
+        // Both bag shapes count.  `#b.x` counts a projected bag, and `#b`
+        // counts the fiber itself, which is the group's row count and the
+        // point of Decision 1: today one writes `count b.x` and arbitrarily
+        // picks a column.  They agree, since projection preserves cardinality.
         UnOp::Card => match type_expr(ctx, operand)? {
-            Ty::Bag { .. } => Ok(total(ColumnType::Int)),
+            Ty::Bag { .. } | Ty::Rows(_) => Ok(total(ColumnType::Int)),
             other => Err(vec![TypeError::new(
-                format!("`#` counts a bag, found {}", describe_ty(&other)),
+                format!("`#` counts a bag or a group, found {}", describe_ty(&other)),
                 operand.span,
             )]),
         },
@@ -1071,6 +1113,14 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
             format!("{what} expects a value, found a boolean"),
             span,
         )]),
+        // Bare `b` was a type error before ADR 0031 (a record is not a value)
+        // and remains one (a bag of rows is not a value), so no existing
+        // program reads differently; only the noun changes.  The hint names
+        // the projection, since that is what the writer almost always wanted.
+        Ty::Rows(_) => Err(vec![TypeError::new(
+            format!("{what} expects a value, found a bag of rows (project a column, `b.name`)"),
+            span,
+        )]),
         Ty::Record(_) => Err(vec![TypeError::new(
             format!("{what} expects a value, found a row"),
             span,
@@ -1150,6 +1200,7 @@ fn describe_ty(ty: &Ty) -> String {
         Ty::Value { domain, .. } => format!("a {}", domain_name(domain)),
         Ty::Bag { domain, .. } => format!("a bag of {}", domain_name(domain)),
         Ty::Bool => "a bool".to_string(),
+        Ty::Rows(_) => "a bag of rows".to_string(),
         Ty::Record(_) => "a record".to_string(),
         Ty::Fn(_) => "a function".to_string(),
     }
@@ -1397,6 +1448,82 @@ mod tests {
         let ctx = bag_ctx();
         let errs = ty_of(&ctx, "sum b.peak").expect_err("optional bag");
         assert!(errs[0].message.contains("total bag"));
+    }
+
+    #[test]
+    fn the_fiber_projects_to_a_bag() {
+        // ADR 0031, Decisions 1 and 2: `b` is the bag of rows, and `b.x` is
+        // the projection `map (|r| r.x) b`, which is today's `bag<T>`.  Every
+        // existing aggregate site therefore keeps its exact spelling and
+        // meaning; this test is the statement that the sugar is faithful.
+        let ctx = bag_ctx();
+        assert_eq!(
+            ty_of(&ctx, "b.size"),
+            Ok(Ty::Bag {
+                domain: ColumnType::Int,
+                opt: Optionality::Total,
+            })
+        );
+        // Optionality survives the projection, so a partial column still
+        // fails the total-bag demand above.
+        assert_eq!(
+            ty_of(&ctx, "b.peak"),
+            Ok(Ty::Bag {
+                domain: ColumnType::Real,
+                opt: Optionality::Optional,
+            })
+        );
+    }
+
+    #[test]
+    fn a_bare_fiber_is_not_a_value() {
+        // Unchanged behaviour, new noun: bare `b` was an error before the rows
+        // model (a record is not a value) and remains one (a bag of rows is
+        // not a value), so no existing program reads differently.
+        let ctx = bag_ctx();
+        let errs = ty_of(&ctx, "b + 1").expect_err("the fiber is not a value");
+        assert!(
+            errs[0].message.contains("bag of rows"),
+            "diagnostic should name the fiber: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn an_unknown_projection_reads_like_an_unknown_column() {
+        let ctx = bag_ctx();
+        let errs = ty_of(&ctx, "b.nope").expect_err("no such column");
+        assert!(errs[0].message.contains("unknown column `nope`"));
+    }
+
+    #[test]
+    fn cardinality_counts_both_bag_shapes() {
+        // `#b` is the group's row count (Decision 1's headline) and `#b.x` a
+        // projected bag's size; both are `int`.  `#b.peak` is admitted despite
+        // `peak` being optional, since counting never reads a value.
+        let ctx = bag_ctx();
+        assert_eq!(ty_of(&ctx, "#b"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "#b.size"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "#b.peak"), Ok(total(ColumnType::Int)));
+        // A value has no cardinality to take.
+        let row = row_ctx();
+        let errs = ty_of(&row, "#r.size").expect_err("a value is not a bag");
+        assert!(errs[0].message.contains("counts a bag or a group"));
+    }
+
+    #[test]
+    fn min_max_and_the_tacks_type_at_one_domain() {
+        // ADR 0031, Decision 6.  `<<`/`>>` need an orderable domain and return
+        // it; the tacks need only that the operands agree, so `real` works
+        // even though it is not equatable (ADR 0014).
+        let ctx = row_ctx();
+        assert_eq!(ty_of(&ctx, "r.size << 3"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "r.size >> 3"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "1.5 <: 2.5"), Ok(total(ColumnType::Real)));
+        assert_eq!(ty_of(&ctx, "1.5 :> 2.5"), Ok(total(ColumnType::Real)));
+        // Mismatched domains have no shared order.
+        let errs = ty_of(&ctx, "r.size << r.name").expect_err("int vs string");
+        assert!(!errs.is_empty());
     }
 
     #[test]

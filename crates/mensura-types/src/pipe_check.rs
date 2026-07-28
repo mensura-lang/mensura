@@ -708,6 +708,17 @@ fn bag_record_content(
                         totality.mark_optional(field.name.name.clone());
                     }
                 }
+                // The fiber gets its own wording: a bare `b` is the single
+                // most likely way to land here, and the fix (project or
+                // count) is worth naming (ADR 0031, Decision 1).
+                None if matches!(ty, Ty::Rows(_)) => errs.push(te(
+                    format!(
+                        "field `{}` is a bag of rows; project a column \
+                         (`b.name`) or count the group (`#b`)",
+                        field.name.name
+                    ),
+                    field.value.span,
+                )),
                 None => errs.push(te(
                     format!("field `{}` is not a value or a bag", field.name.name),
                     field.value.span,
@@ -859,13 +870,17 @@ fn lambda_params<'a>(
 }
 
 /// The column domain and totality a value type contributes, or `None` for a
-/// bag, a nested record (window/nested returns are deferred), or a function
+/// bag, a bag of rows (the fiber is a type-level notion, ADR 0031 Decision
+/// 10), a nested record (window/nested returns are deferred), or a function
 /// (which never enters a column, ADR 0030).
+///
+/// This is the storage boundary: returning `None` for the fiber is what keeps
+/// nested collections out of a column, so the rows type cannot smuggle one in.
 fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
         Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
-        Ty::Bag { .. } | Ty::Record(_) | Ty::Fn(_) => None,
+        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Fn(_) => None,
     }
 }
 

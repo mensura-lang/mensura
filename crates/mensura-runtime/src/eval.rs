@@ -562,6 +562,15 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
             scope.insert(params[0].to_string(), record(&input.key, &key));
         }
         if params[1] != "_" {
+            // `b` *types* as the fiber, a bag of rows (ADR 0031, Decision 1),
+            // but the executor is free to keep the group columnar: the rows
+            // type is a type-level notion, and the only thing the surface can
+            // do with `b` is project (`b.x`) or count (`#b`), both of which a
+            // column-major group answers directly.  Building the bags here
+            // materializes exactly those projections, so the two
+            // representations are observationally identical.  A row-major
+            // representation becomes necessary only when a *row-mapper* fold
+            // lands, since its lambda sees one whole row at a time.
             let bags: BTreeMap<String, RtVal> = input
                 .attrs
                 .iter()
@@ -1069,9 +1078,22 @@ fn eval_unary(scope: &Scope, op: UnOp, operand: &Expr) -> Result<RtVal, EvalErro
     if op == UnOp::Card {
         return match eval_scalar(scope, operand)? {
             RtVal::Bag(vs) => Ok(RtVal::V(Value::Int(vs.len() as i64))),
-            RtVal::V(_) | RtVal::Rec(_) => {
-                internal("`#` applied to a non-bag the checker should have rejected")
+            // `#b` counts the fiber's rows.  The group is stored columnar, so
+            // any column's length is the row count; they agree because
+            // projection preserves cardinality.  An attribute-less group has
+            // no column to measure, but also no rows to count that the key
+            // does not already determine, so zero is the honest answer.
+            RtVal::Rec(fields) => {
+                let n = fields
+                    .values()
+                    .find_map(|v| match v {
+                        RtVal::Bag(vs) => Some(vs.len()),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok(RtVal::V(Value::Int(n as i64)))
             }
+            RtVal::V(_) => internal("`#` applied to a value the checker should have rejected"),
         };
     }
     let v = eval_value(scope, operand)?;
@@ -1493,6 +1515,29 @@ mod tests {
             vec![machine("m1", "operational", 10, None)],
         );
         assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(2)]]);
+    }
+
+    #[test]
+    fn cardinality_of_the_fiber_counts_the_groups_rows() {
+        // ADR 0031, Decision 1's headline: `#b` is the group's row count,
+        // where today one writes `count b.x` and arbitrarily picks a column.
+        // It agrees with every projection, since projection preserves
+        // cardinality.
+        let rows = eval(
+            r#"view counted {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.rows = #b, .via_col = #b.hours)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(2),
+                Value::Int(2)
+            ]]
+        );
     }
 
     #[test]

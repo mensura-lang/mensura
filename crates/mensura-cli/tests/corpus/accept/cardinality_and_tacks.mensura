@@ -17,8 +17,10 @@ store readings {
 view summary {
   readings
     |> assume { complete }
-    // `#b.checked` counts rows even though `checked` may be missing.
-    |> map_bags |k, b| (.n = #b.temperature, .seen = #b.checked)
+    // `#b` is the group's row count (Decision 1); `#b.checked` counts rows
+    // even though `checked` may be missing.  All three agree, since
+    // projection preserves cardinality.
+    |> map_bags |k, b| (.rows = #b, .n = #b.temperature, .seen = #b.checked)
 }
 
 view clamped {
