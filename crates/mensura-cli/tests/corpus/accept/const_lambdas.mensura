@@ -14,3 +14,19 @@ let threet { add1t 2 }
 let scale { 10 }
 let f { let base = 3; |x| x * scale + base }
 let fifty_three { f 5 }
+
+// A view body applies a const function (first-class in the checker,
+// beta-reduced at lowering); higher-order application included.
+let twice { |g| |x| g (g x) }
+
+unit Machine { id: string }
+
+store readings {
+  unit { Machine }
+  attr* { size: int }
+}
+
+view sized {
+  readings |> flat_map |_, r|
+    if twice add1 r.size > threet then r else ()
+}

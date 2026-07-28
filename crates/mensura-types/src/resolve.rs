@@ -3359,6 +3359,88 @@ mod tests {
     }
 
     #[test]
+    fn const_function_applications_beta_reduce_at_lowering() {
+        // ADR 0030, Decision 5: `add1 r.size` reaches the runtime as
+        // `1 + r.size`; no function name and no residual lambda beyond the
+        // pipeline op's own remain in the lowered body.
+        let program = resolve_program(
+            r#"
+            let add { |a| |b| a + b }
+            let add1 { add 1 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add1 r.size then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(
+            !body.contains("add1"),
+            "no function reference remains: {body}"
+        );
+        assert!(
+            body.contains("Int(1)") && body.contains("Add"),
+            "the substituted body is inline arithmetic: {body}"
+        );
+        // A value-level pipe into a const function reduces the same way.
+        let program = resolve_program(
+            r#"
+            let add1 { |b| b + 1 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if (r.size |> add1) > 0 then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(!body.contains("add1"), "the piped function reduces: {body}");
+    }
+
+    #[test]
+    fn beta_reduction_avoids_capturing_the_callers_names() {
+        // Substituting `r.size` under the function's own `|r|` binder must
+        // not capture the caller's `r`: the binder alpha-renames, and full
+        // application then eliminates the renamed parameter entirely.
+        let program = resolve_program(
+            r#"
+            let pick { |x| |r| r + x }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if (pick r.size 2) > 0 then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(
+            body.contains("Int(2)") && body.contains("size"),
+            "reduced to `2 + r.size`-shaped arithmetic: {body}"
+        );
+        assert!(
+            !body.contains("__1"),
+            "the renamed binder is fully applied away: {body}"
+        );
+        assert!(
+            !body.contains("pick"),
+            "no function reference remains: {body}"
+        );
+    }
+
+    #[test]
     fn mutually_recursive_functions_hit_the_checker_depth_guard() {
         // Each binding evaluates fine in isolation (a lambda defers the
         // reference), so the recursion only manifests while typing an
