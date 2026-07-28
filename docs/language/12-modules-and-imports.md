@@ -22,15 +22,40 @@ of two kinds, disambiguated by the token after the name:
   bounds what a constant may compute: literals and arithmetic
   (`+ - * / ^`, unary minus, grouping, member access) over the intrinsic
   base units, imported module members, other top-level bindings, and the
-  block's local `let`s.  Anything effectful or table-shaped (pipelines,
-  lambdas, aggregates) is rejected as "not a const expression"; an
-  `assert` in a const block is not yet supported.
+  block's local `let`s; and **lambdas and their application**
+  (ADR 0030), below.  Anything effectful or table-shaped (pipelines,
+  aggregates) is rejected as "not a const expression"; an `assert` in a
+  const block is not yet supported.
 
   ```mensura
   let km { 1000.0 * meter }
   let newton { kilogram * meter / second^2 }
   let limit: temperature[real] { 350.0 * kelvin }
   ```
+
+- **A const function binding** is the same kind: a value `let` whose
+  result is a lambda (`docs/decisions/0030-const-functions.md`).  The
+  closure captures the block's locals by value; a parameter shadows a
+  captured local, and both shadow a top-level binding.  Two rules give
+  the surface its shape.  A multi-parameter lambda is **tupled**:
+  `|a, b| e` binds one parameter that is a 2-tuple, so currying is
+  written explicitly as nested lambdas.  And every application is
+  **saturated or an error**: partial binding is ordinary application of
+  a curried function, never a mechanism of its own.
+
+  ```mensura
+  let add   { |a| |b| a + b }     // curried
+  let add1  { add 1 }             // a function, by ordinary application
+  let three { add1 2 }            // 3, at compile time
+
+  let addt  { |a, b| a + b }      // tupled: addt (1, 2); `addt 1` errors
+  ```
+
+  A function binding cannot carry a `: type` ascription (the type
+  grammar has no arrow), a function never enters a column, and a view
+  body can *use* a const function but not *create* one.  Recursion is a
+  compile error, caught definitionally where possible and by the
+  evaluator's step budget otherwise.
 
 - **A dimension alias**: `let name[T] { <type-level expression> }`
   (`11-physical-units.md`; ADR 0026, Decision 8).  The bracketed
@@ -52,7 +77,12 @@ built-in dimensions.
 A const binding is a value, not a table: using one at pipeline position
 is an error ("`km` is a constant, not a table").  Inside view bodies,
 const names are resolved from the ambient environment and are
-constant-folded before evaluation, so the runtime never sees them.
+constant-folded before evaluation; a const *function* application is
+**beta-reduced** at lowering (`add1 r.x` reaches the runtime as
+`r.x + 1`), which is sound and total because only a const binding can
+create a function, so every closure at every call site is statically
+known.  Either way the runtime never sees a const name or a function
+(ADR 0030, "first-class in the checker, inlined in the backend").
 
 ## Imports
 
@@ -139,10 +169,19 @@ five existing declarations; the LL(1) argument is in `04-grammar.md`.
   only; scalar block `let`s are a separate follow-up.
 - `assert` statements inside a const block (compile-time checked
   assertions); rejected with "not yet supported".
+- An arrow in the type grammar, so a function binding could be ascribed
+  (ADR 0030, Open questions).
+- Lambdas as values inside view bodies (the prerequisite for
+  higher-order pipeline operations), and runtime closures generally: a
+  view uses a const function; it does not create one.
+- A bundled module that exports a function: permitted by the model
+  (ADR 0030, Decision 8), shipped by nothing until span provenance
+  lands (above).
 
 ## Forward references
 
 - The decision record: `docs/decisions/0027-modules-and-imports.md`.
+- Const functions: `docs/decisions/0030-const-functions.md`.
 - The `si` library and its discipline:
   `docs/decisions/0028-standard-library-si.md`.
 - The units feature this ships: `11-physical-units.md` (ADR 0026).
