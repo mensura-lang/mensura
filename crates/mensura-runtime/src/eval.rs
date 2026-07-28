@@ -1648,6 +1648,31 @@ mod tests {
     }
 
     #[test]
+    fn a_qualified_module_reduction_runs_end_to_end() {
+        // ADR 0031, Decision 8: `bag.max` is a const binding in a bundled
+        // module, so this exercises the whole path at once -- the module's
+        // `fold `>>` (|v| v)` eta-expands to a closure at const evaluation,
+        // the checker applies it through a `Member` head, lowering
+        // beta-reduces the qualified call, and the runtime folds.
+        let rows = eval_over(
+            &format!("import bag\n{MACHINES}"),
+            r#"view summary {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.hottest = bag.max b.hours, .total = bag.sum b.hours)
+               }"#,
+            &[("machines", vec![machine("m1", "operational", 10, None)])],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(10),
+                Value::Int(20),
+            ]]
+        );
+    }
+
+    #[test]
     fn fold_reduces_a_projected_bag() {
         // ADR 0031, Decision 4, backed by Stage 1 (`Mensura.foldBag`).
         let rows = eval(

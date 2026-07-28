@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use mensura_syntax::{BinOp, Block, Expr, ExprKind, Ident, Span, Stmt, TypeExpr, UnOp};
 
-use crate::expr_check::{Optionality, Ty, TyClosure};
+use crate::expr_check::{Builtin, Optionality, Ty, TyClosure};
 use crate::model::ColumnType;
 use crate::modules::ModuleEnv;
 use crate::resolve::ResolveError;
@@ -351,6 +351,19 @@ impl<'a> Evaluator<'a> {
             }
             ExprKind::App(..) => {
                 let (head, args) = flatten_app(e);
+                // A partial application of a reduction primitive (ADR 0031,
+                // Decision 11) is what a bundled module's
+                // ``let sum { fold `+` (|v| v) }`` evaluates to.  There is no
+                // body to substitute into, so it is *eta-expanded* into an
+                // ordinary closure `|x| fold `+` (|v| v) x` instead of
+                // becoming a new `ConstValue` variant.  Everything downstream
+                // (the checker's function type, lowering's beta-reduction,
+                // `reify`) then works unchanged, and the eta-expansion is
+                // sound because a builtin is a pure function of its
+                // arguments.
+                if let Some(builtin) = builtin_head(head) {
+                    return self.eta_expand_builtin(e, builtin, args.len());
+                }
                 let mut f = self.eval_expr(head, locals)?;
                 for arg in args {
                     f = self.apply_one(f, arg, head.span, locals)?;
@@ -363,6 +376,90 @@ impl<'a> Evaluator<'a> {
                 e.span,
             ),
         }
+    }
+
+    /// Eta-expand a partially applied reduction primitive into a closure.
+    ///
+    /// ``fold `+` (|v| v)`` becomes ``|x__0| fold `+` (|v| v) x__0``, which is
+    /// extensionally the same function and is representable with the
+    /// machinery ADR 0030 already built.  The fresh parameter name carries a
+    /// `__` marker that no UAX#31 identifier from source can collide with, so
+    /// the expansion cannot capture a name the module wrote.
+    fn eta_expand_builtin(
+        &mut self,
+        spine: &Expr,
+        builtin: Builtin,
+        applied: usize,
+    ) -> Option<ConstValue> {
+        let arity = builtin.arity();
+        if applied > arity {
+            return self.fail(
+                format!(
+                    "`{}` takes {arity} arguments and is already saturated",
+                    builtin.name()
+                ),
+                spine.span,
+            );
+        }
+        if applied == arity {
+            // Saturated at const time.  A reduction needs a *bag*, and there
+            // are no const bags, so this cannot be evaluated here; it is also
+            // not something a module would write.
+            return self.fail(
+                format!(
+                    "`{}` cannot be evaluated in a const binding: it needs a \
+                     bag, which exists only inside a pipeline",
+                    builtin.name()
+                ),
+                spine.span,
+            );
+        }
+        // One parameter per remaining slot, applied in order.
+        let params: Vec<Ident> = (applied..arity)
+            .map(|i| Ident {
+                name: format!("x__{i}"),
+                span: spine.span,
+            })
+            .collect();
+        let mut body = spine.clone();
+        for p in &params {
+            body = Expr {
+                kind: ExprKind::App(
+                    Box::new(body),
+                    Box::new(Expr {
+                        kind: ExprKind::Name(p.name.clone()),
+                        span: spine.span,
+                    }),
+                ),
+                span: spine.span,
+            };
+        }
+        // Curried, not tupled: each remaining slot is its own parameter, which
+        // is what makes `bag.max b.x` a one-argument call (ADR 0030,
+        // Decision 2).
+        let mut value = ConstValue::Closure(Arc::new(Closure {
+            params: vec![params[params.len() - 1].clone()],
+            body,
+            env: Vec::new(),
+        }));
+        for p in params.iter().rev().skip(1) {
+            let ConstValue::Closure(inner) = value else {
+                unreachable!("just constructed a closure");
+            };
+            value = ConstValue::Closure(Arc::new(Closure {
+                params: vec![p.clone()],
+                body: Expr {
+                    kind: ExprKind::Lambda {
+                        params: inner.params.clone(),
+                        ret: None,
+                        body: Box::new(inner.body.clone()),
+                    },
+                    span: spine.span,
+                },
+                env: Vec::new(),
+            }));
+        }
+        Some(value)
     }
 
     /// Apply one argument to a const function (ADR 0030, Decision 3): the
@@ -632,6 +729,16 @@ impl<'a> Evaluator<'a> {
     fn fail(&mut self, message: impl Into<String>, span: Span) -> Option<ConstValue> {
         self.errors.push(ResolveError::new(message, span));
         None
+    }
+}
+
+/// The reduction primitive a spine head names, if any (ADR 0031,
+/// Decision 11).  A local binding shadowing the name is impossible: the
+/// resolver rejects a `let` that collides with a builtin.
+fn builtin_head(head: &Expr) -> Option<Builtin> {
+    match &head.kind {
+        ExprKind::Name(n) => Builtin::from_name(n),
+        _ => None,
     }
 }
 

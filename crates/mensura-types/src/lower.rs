@@ -27,6 +27,14 @@ use crate::modules::ModuleEnv;
 
 /// The substitution: const names and module members to literal nodes, and
 /// const function names to their closures (ADR 0030).
+///
+/// A module's *function* members are keyed in `closures` by their qualified
+/// name (`bag.max`), so a qualified call reduces through exactly the same
+/// machinery as an unqualified one (ADR 0031, Decision 8).  Keying by the
+/// spelling works because a module name cannot be rebound: the resolver
+/// rejects a `let` that collides with an import, so `bag.max` denotes the
+/// module member at every site where it is not shadowed, and
+/// [`spine_head_is_function`] checks the shadowing.
 pub(crate) struct Subst {
     consts: BTreeMap<String, ExprKind>,
     modules: BTreeMap<String, BTreeMap<String, ExprKind>>,
@@ -56,21 +64,30 @@ impl Subst {
                 }
             }
         }
+        // A module's scalar members fold to literals, exactly as before; its
+        // *function* members join `closures` under their qualified name, so
+        // `bag.max b.x` reduces like any other const-function call
+        // (ADR 0031, Decision 8, which is what first makes this reachable).
+        let mut module_scalars = BTreeMap::new();
+        for (name, env) in modules {
+            let mut members = BTreeMap::new();
+            for (member, value) in &env.values {
+                match value {
+                    ConstValue::Closure(c) => {
+                        closures.insert(format!("{name}.{member}"), c.clone());
+                    }
+                    _ => {
+                        if let Some(lit) = value.literal() {
+                            members.insert(member.clone(), lit);
+                        }
+                    }
+                }
+            }
+            module_scalars.insert(name.clone(), members);
+        }
         Subst {
             consts: all_consts,
-            // No bundled module exports a function (ADR 0030, Decision 8),
-            // so module members are scalars only.
-            modules: modules
-                .iter()
-                .map(|(name, env)| {
-                    let members = env
-                        .values
-                        .iter()
-                        .filter_map(|(n, v)| Some((n.clone(), v.literal()?)))
-                        .collect();
-                    (name.clone(), members)
-                })
-                .collect(),
+            modules: module_scalars,
             closures,
         }
     }
@@ -179,6 +196,13 @@ fn reduce(e: &mut Expr, s: &Subst, env: &mut Vec<Binding>, depth: u32, fresh: &m
                 && let Some(kind) = s.modules.get(module).and_then(|m| m.get(&field.name))
             {
                 e.kind = kind.clone();
+                return;
+            }
+            // A module's *function* member in argument position reifies to
+            // its lambda, mirroring the `Name` arm above; in head position
+            // the `App` arm consumes it instead (ADR 0031, Decision 8).
+            if let Some(c) = qualified_key(e, env).and_then(|key| s.closures.get(&key)) {
+                *e = reify(&c.clone(), s, e.span, depth, fresh);
                 return;
             }
         }
@@ -299,9 +323,25 @@ fn mentions_name(e: &Expr, name: &str) -> bool {
     }
 }
 
+/// The `closures` key a module-member head denotes (`bag.max`), or `None`
+/// when the head is not a qualified name or its module is shadowed by a
+/// runtime binding.
+fn qualified_key(head: &Expr, env: &[Binding]) -> Option<String> {
+    let ExprKind::Member(base, field) = &head.kind else {
+        return None;
+    };
+    let ExprKind::Name(module) = &base.kind else {
+        return None;
+    };
+    if env.iter().any(|b| b.name() == module) {
+        return None;
+    }
+    Some(format!("{module}.{}", field.name))
+}
+
 /// Whether an expression's application-spine head is a const function (an
-/// env-bound lambda payload or a top-level closure), i.e. whether a pipe
-/// into it merges into a reduction.
+/// env-bound lambda payload, a top-level closure, or a module's function
+/// member), i.e. whether a pipe into it merges into a reduction.
 fn spine_head_is_function(e: &Expr, s: &Subst, env: &[Binding]) -> bool {
     let mut cur = e;
     while let ExprKind::App(f, _) = &cur.kind {
@@ -313,6 +353,9 @@ fn spine_head_is_function(e: &Expr, s: &Subst, env: &[Binding]) -> bool {
             Some(Binding::Shadow(_)) => false,
             None => s.closures.contains_key(n),
         },
+        ExprKind::Member(..) => {
+            qualified_key(cur, env).is_some_and(|key| s.closures.contains_key(&key))
+        }
         ExprKind::Lambda { .. } => true,
         _ => false,
     }
@@ -352,6 +395,11 @@ fn reduce_spine(
                 .get(n)
                 .map(|c| reify(&c.clone(), s, head.span, depth, fresh)),
         },
+        // A module's function member (`bag.max`), keyed by its qualified
+        // name so it reduces exactly like an unqualified const function.
+        ExprKind::Member(..) => qualified_key(&head, env)
+            .and_then(|key| s.closures.get(&key).cloned())
+            .map(|c| reify(&c, s, head.span, depth, fresh)),
         ExprKind::Lambda { .. } => {
             reduce(&mut head, s, env, depth, fresh);
             Some(head.clone())

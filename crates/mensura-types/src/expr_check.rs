@@ -104,13 +104,21 @@ impl Builtin {
     }
 
     /// How many arguments saturate this primitive.
-    fn arity(self) -> usize {
+    pub fn arity(self) -> usize {
         match self {
             // combiner, mapper, bag
             Builtin::Fold => 3,
             // mapper, bag
             Builtin::Map => 2,
         }
+    }
+
+    /// The primitive a name denotes, if any.  The set is closed, so this is
+    /// also the test for "is this an intrinsic reduction".
+    pub fn from_name(name: &str) -> Option<Builtin> {
+        [Builtin::Fold, Builtin::Map]
+            .into_iter()
+            .find(|b| b.name() == name)
     }
 }
 
@@ -692,26 +700,46 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
     if let Some(input) = piped {
         args.push(input);
     }
+    // Resolve the head to a function value, whichever way it is spelled: a
+    // bare name (ADR 0030) or a module member (`bag.max`, ADR 0031
+    // Decision 8).  A module is an ambient `Ty::Record`, so a qualified name
+    // is ordinary member access; what was missing was routing the *result*
+    // into the application path, which is why a qualified call used to report
+    // "unsupported in this increment".
+    let head_ty = match &head.kind {
+        ExprKind::Name(name) => ctx.lookup(name).cloned(),
+        ExprKind::Member(..) => match type_member_head(ctx, head) {
+            Ok(ty) => Some(ty),
+            // A malformed qualified head reports its own diagnostic (unknown
+            // module, unknown member) rather than the generic complaint.
+            Err(errs) => return Err(errs),
+        },
+        _ => {
+            return Err(vec![TypeError::new(
+                "unsupported in this increment",
+                head.span,
+            )]);
+        }
+    };
+    // The resolver forbids a binding that collides with a builtin, so a
+    // function head can never shadow `to_real` or an aggregate.
+    match head_ty {
+        Some(Ty::Fn(closure)) => {
+            return apply_closure(ctx, &head_name(head), closure, &args, head.span);
+        }
+        // A builtin primitive (ADR 0031, Decision 11): same currying, but the
+        // slots have their own rules rather than a lambda body to re-type.
+        Some(Ty::Builtin(partial)) => {
+            return apply_builtin(ctx, partial, &args, head.span);
+        }
+        _ => {}
+    }
     let ExprKind::Name(name) = &head.kind else {
         return Err(vec![TypeError::new(
             "unsupported in this increment",
             head.span,
         )]);
     };
-    // A name of function type takes the general application path
-    // (ADR 0030).  The resolver forbids a binding that collides with a
-    // builtin, so this cannot shadow `to_real` or an aggregate.
-    match ctx.lookup(name) {
-        Some(Ty::Fn(closure)) => {
-            return apply_closure(ctx, name, closure.clone(), &args, head.span);
-        }
-        // A builtin primitive (ADR 0031, Decision 11): same currying, but the
-        // slots have their own rules rather than a lambda body to re-type.
-        Some(Ty::Builtin(partial)) => {
-            return apply_builtin(ctx, partial.clone(), &args, head.span);
-        }
-        _ => {}
-    }
     let [arg] = args[..] else {
         return Err(vec![TypeError::new(
             "unsupported in this increment",
@@ -727,6 +755,28 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
             "unsupported in this increment",
             head.span,
         )]),
+    }
+}
+
+/// Type an application head that is a member access (`bag.max`).  Separate
+/// from [`type_member`] only so a failure here is not swallowed by the
+/// generic "unsupported" arm of [`apply_value`].
+fn type_member_head(ctx: &Context, head: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let ExprKind::Member(base, field) = &head.kind else {
+        unreachable!("called only on a member head");
+    };
+    type_member(ctx, base, field)
+}
+
+/// How a head prints in a call-site note: `f` or `bag.max`.
+fn head_name(head: &Expr) -> String {
+    match &head.kind {
+        ExprKind::Name(n) => n.clone(),
+        ExprKind::Member(base, field) => match &base.kind {
+            ExprKind::Name(m) => format!("{m}.{}", field.name),
+            _ => field.name.clone(),
+        },
+        _ => "the function".to_string(),
     }
 }
 

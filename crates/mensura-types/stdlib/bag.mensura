@@ -1,0 +1,29 @@
+// The `bag` standard library: the fold-derived reductions (ADR 0031,
+// Decision 8).
+//
+// Every binding here is a *definition*, not a builtin: a partial application
+// of `fold` at one row of the closed combiner table (ADR 0031, Decision 6),
+// written in the language and readable by anyone who asks what `max` means.
+// That is the point of the module, and the reason the aggregate vocabulary
+// left the initial environment: with `fold` a builtin there is no reason to
+// keep so many *names* in the language.
+//
+// Bundled with the toolchain: a bare `import bag` resolves here and only here
+// (ADR 0027, Decision 6).  The oracle test in
+// `crates/mensura-types/src/modules.rs` (`bag_matches_its_oracle`) pins each
+// binding's combiner, so editing one without the other fails.
+//
+// Gated by ADR 0029's Stage 1, proved in `formal/Mensura/Fold.lean`:
+// `foldBag` over a commutative monoid, the shard lemma, and the `Option`
+// completion whose presence lemma licenses the total result on a non-empty
+// bag.  The ordered siblings (`cumsum`, `rank`, `lag`, ...) wait for Stage 2
+// and land in `series`.
+//
+// Note `count` is absent: cardinality is the `#` operator (Decision 9).
+
+let sum  { fold `+`  (|v| v) }
+let prod { fold `*`  (|v| v) }
+let min  { fold `<<` (|v| v) }
+let max  { fold `>>` (|v| v) }
+let any  { fold `or`  (|v| v) }
+let all  { fold `and` (|v| v) }

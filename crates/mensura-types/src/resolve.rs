@@ -311,8 +311,13 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
             None => errors.push(ResolveError::new(
                 format!(
                     "unknown module `{}`: a bare import resolves against the \
-                     bundled modules only (`si`)",
-                    i.name.name
+                     bundled modules only ({})",
+                    i.name.name,
+                    crate::modules::BUNDLED_MODULES
+                        .iter()
+                        .map(|m| format!("`{m}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 i.name.span,
             )),
@@ -3414,6 +3419,40 @@ mod tests {
         .expect("should resolve");
         let body = format!("{:?}", program.views[0].body);
         assert!(!body.contains("add1"), "the piped function reduces: {body}");
+    }
+
+    #[test]
+    fn a_qualified_module_function_beta_reduces() {
+        // ADR 0031, Decision 8.  `bag.max b.x` must reach the runtime as the
+        // `fold` spine the module defines, with no residual qualified name:
+        // `si` exports only scalars, so lowering used to assume every module
+        // member had a literal, and `bag` is the first to break that.
+        let program = resolve_program(
+            r#"
+            import bag
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr { size: int }
+            }
+            view summary {
+              readings |> assume { complete } |> map_bags |_, b| (.m = bag.max b.size)
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(
+            !body.contains("\"bag\""),
+            "the qualified name is reduced away: {body}"
+        );
+        assert!(
+            body.contains("Name(\"fold\")") && body.contains("Combiner(\">>\")"),
+            "the module's definition is inlined: {body}"
+        );
+        // The eta-expansion's fresh parameter is fully applied, so none of its
+        // machinery leaks into the lowered body.
+        assert!(!body.contains("x__"), "no eta parameter remains: {body}");
     }
 
     #[test]
