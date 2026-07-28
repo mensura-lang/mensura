@@ -513,7 +513,12 @@ fn collect_expr(expr: &Expr, stores: &HashSet<&str>, found: &mut BTreeSet<String
                 found.insert(name.clone());
             }
         }
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) => {}
+        // A combiner names an operator from the closed table, never a store.
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Combiner(_) => {}
         ExprKind::Member(base, _) => collect_expr(base, stores, found),
         ExprKind::App(f, a) => {
             collect_expr(f, stores, found);

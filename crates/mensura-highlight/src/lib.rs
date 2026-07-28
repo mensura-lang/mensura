@@ -285,16 +285,22 @@ fn highlight_name(builder: &mut Builder, name: &NameTemplate) {
     }
 }
 
-/// Emit string, number, and operator spans straight from the token stream.
-/// Identifiers are left to the AST tier (or unclassified in the lex tier), so
-/// they are skipped here.
+/// Emit string, number, template, and operator spans straight from the token
+/// stream.  Identifiers are left to the AST tier (or unclassified in the lex
+/// tier), so they are skipped here.
 fn highlight_literals(builder: &mut Builder, tokens: &[Token]) {
     for token in tokens {
         let kind = match token.kind {
             TokenKind::Str(_) => HighlightKind::String,
             TokenKind::Int(_) | TokenKind::Float(_) => HighlightKind::Number,
-            // Identifiers and template names are classified by the AST tier.
-            TokenKind::Ident(_) | TokenKind::Template(_) | TokenKind::Eof => continue,
+            // Identifiers are classified by the AST tier.
+            TokenKind::Ident(_) | TokenKind::Eof => continue,
+            // A template is an attribute *name* in a declaration and a
+            // backticked *combiner* in an expression (ADR 0031, Decision 6).
+            // Coloring it as an operator here is the combiner case: the AST
+            // tier pushes the name case first, and `Operator` has the lowest
+            // priority, so a claimed name span always wins the overlap.
+            TokenKind::Template(_) => HighlightKind::Operator,
             // Everything else is an operator or punctuation.
             _ => HighlightKind::Operator,
         };
@@ -375,6 +381,25 @@ mod tests {
         assert!(ks.contains(&HighlightKind::Keyword));
         assert!(ks.contains(&HighlightKind::Type));
         assert!(ks.contains(&HighlightKind::Property));
+    }
+
+    #[test]
+    fn a_backticked_combiner_colors_as_an_operator() {
+        // ADR 0031, Decision 6.  The combiner is a `Template` token in
+        // expression position, which the lex tier now colors.
+        let ks = kinds("view v { readings |> map_bags |k, b| (.n = #b.x) }");
+        assert!(ks.contains(&HighlightKind::Operator));
+    }
+
+    #[test]
+    fn a_templated_attribute_name_still_colors_as_a_property() {
+        // The other `Template` case: an attribute name in a declaration.  The
+        // AST tier claims the span first and `Operator` has the lowest
+        // priority, so the name wins the overlap and no combiner coloring
+        // leaks into a shape.
+        let ks = kinds("shape S[p: string] { attr { `{p}_z`: real } }");
+        assert!(ks.contains(&HighlightKind::Property));
+        assert!(ks.contains(&HighlightKind::Parameter));
     }
 
     #[test]

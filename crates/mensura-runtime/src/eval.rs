@@ -642,6 +642,8 @@ fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<Co
     };
     match &expr.kind {
         ExprKind::Member(..) => member_domain(expr),
+        // `#` counts, so its column is an `int` whatever it counts.
+        ExprKind::Unary(UnOp::Card, _) => Some(ColumnType::Int),
         ExprKind::App(..) => {
             let (head, args) = flatten_app(expr);
             match args[..] {
@@ -1060,6 +1062,18 @@ fn aggregate(name: &str, values: &[Value]) -> Result<Value, EvalError> {
 }
 
 fn eval_unary(scope: &Scope, op: UnOp, operand: &Expr) -> Result<RtVal, EvalError> {
+    // `#` (ADR 0031, Decision 9) consumes the *bag*, so it is handled before
+    // `eval_value` collapses one.  `#e == fold `+` (|_| 1) e`: the mapper
+    // discards the element, so a missing value still counts its row, and the
+    // empty bag counts zero (the additive identity, not a missing result).
+    if op == UnOp::Card {
+        return match eval_scalar(scope, operand)? {
+            RtVal::Bag(vs) => Ok(RtVal::V(Value::Int(vs.len() as i64))),
+            RtVal::V(_) | RtVal::Rec(_) => {
+                internal("`#` applied to a non-bag the checker should have rejected")
+            }
+        };
+    }
     let v = eval_value(scope, operand)?;
     let out = match (op, v) {
         (UnOp::Not, Value::Bool(b)) => Value::Bool(!b),
@@ -1107,6 +1121,22 @@ fn eval_binary(scope: &Scope, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<RtVal
                 _ => ord.is_ge(),
             })
         }
+        // `<<`/`>>` (binary minimum and maximum, ADR 0031 Decision 6): the
+        // same total order the comparisons use, returning the operand rather
+        // than a boolean.  A tie returns the left operand, which is
+        // unobservable since the operands are then equal.
+        BinOp::Min | BinOp::Max => {
+            let ord = compare(&a, &b)?;
+            let take_left = match op {
+                BinOp::Min => ord.is_le(),
+                _ => ord.is_ge(),
+            };
+            if take_left { a } else { b }
+        }
+        // The tacks: `a <: b` is `a`, `a :> b` is `b`.  Both operands are
+        // evaluated, so a diagnostic in the discarded one still surfaces.
+        BinOp::KeepLeft => a,
+        BinOp::KeepRight => b,
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => arithmetic(op, a, b)?,
         BinOp::In => {
             return err("`in` is not yet executable (docs/toolkit/04-processing-layer.md)");
@@ -1448,6 +1478,61 @@ mod tests {
                     Value::Int(20)
                 ],
             ]
+        );
+    }
+
+    #[test]
+    fn cardinality_counts_rows() {
+        // `#` (ADR 0031, Decision 9): `#e == fold `+` (|_| 1) e`, so the
+        // expansion's two rows count two whatever the column holds.
+        let rows = eval(
+            r#"view counted {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.n = #b.hours)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(2)]]);
+    }
+
+    #[test]
+    fn cardinality_counts_a_missing_value_row() {
+        // The mapper discards the element, so a row whose column is missing
+        // still counts.  This is the one place `#` differs from the value
+        // reductions, which demand a total bag.
+        let rows = eval(
+            r#"view counted {
+                 machines |> assume { complete } |> map_bags |_, b| (.n = #b.last_service)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(1)]]);
+    }
+
+    #[test]
+    fn min_max_and_the_tacks_evaluate() {
+        // ADR 0031, Decision 6.  `<<`/`>>` return an operand under the same
+        // total order the comparisons use; the tacks return their named side.
+        let rows = eval(
+            r#"view clamped {
+                 machines |> flat_map |_, r| ((
+                   .lo = r.hours << 15,
+                   .hi = r.hours >> 15,
+                   .left = r.hours <: 99,
+                   .right = r.hours :> 99
+                 ))
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(10),
+                Value::Int(15),
+                Value::Int(10),
+                Value::Int(99),
+            ]]
         );
     }
 

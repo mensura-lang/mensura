@@ -273,12 +273,20 @@ impl<'a> Lexer<'a> {
             ')' => TokenKind::RParen,
             '[' => TokenKind::LBracket,
             ']' => TokenKind::RBracket,
-            ':' => TokenKind::Colon,
+            ':' => {
+                if self.peek() == Some('>') {
+                    self.bump();
+                    TokenKind::ColonGt
+                } else {
+                    TokenKind::Colon
+                }
+            }
             ',' => TokenKind::Comma,
             ';' => TokenKind::Semi,
             '.' => TokenKind::Dot,
             '?' => TokenKind::Question,
             '@' => TokenKind::At,
+            '#' => TokenKind::Hash,
             '|' => {
                 if self.peek() == Some('>') {
                     self.bump();
@@ -310,22 +318,32 @@ impl<'a> Lexer<'a> {
                     TokenKind::Minus
                 }
             }
-            '<' => {
-                if self.peek() == Some('=') {
+            '<' => match self.peek() {
+                Some('=') => {
                     self.bump();
                     TokenKind::LtEq
-                } else {
-                    TokenKind::Lt
                 }
-            }
-            '>' => {
-                if self.peek() == Some('=') {
+                Some('<') => {
+                    self.bump();
+                    TokenKind::LtLt
+                }
+                Some(':') => {
+                    self.bump();
+                    TokenKind::LtColon
+                }
+                _ => TokenKind::Lt,
+            },
+            '>' => match self.peek() {
+                Some('=') => {
                     self.bump();
                     TokenKind::GtEq
-                } else {
-                    TokenKind::Gt
                 }
-            }
+                Some('>') => {
+                    self.bump();
+                    TokenKind::GtGt
+                }
+                _ => TokenKind::Gt,
+            },
             '!' => {
                 if self.peek() == Some('=') {
                     self.bump();
@@ -573,7 +591,65 @@ mod tests {
 
     #[test]
     fn unexpected_character_is_an_error() {
-        let err = tokenize("a # b").unwrap_err();
+        // `#` used to be the witness here; it is the cardinality operator now
+        // (ADR 0031, Decision 9), so the witness is a character no production
+        // claims.
+        let err = tokenize("a $ b").unwrap_err();
         assert!(err.message.contains("unexpected character"));
+    }
+
+    #[test]
+    fn cardinality_and_tack_operators() {
+        // The five tokens ADR 0031 adds.  `#` is free (comments are `//`), and
+        // the four operators collide with nothing: the lexer has no shift
+        // tokens, and no existing production puts `>` after a `:` or `:`
+        // after a `<`.
+        assert_eq!(
+            kinds("# << >> <: :>"),
+            vec![
+                TokenKind::Hash,
+                TokenKind::LtLt,
+                TokenKind::GtGt,
+                TokenKind::LtColon,
+                TokenKind::ColonGt,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_new_operators_munch_maximally() {
+        // Each new token wins over the shorter one it extends, and the
+        // pre-existing `<=`/`>=` are unaffected.
+        assert_eq!(
+            kinds("< <= << <: > >= >> : :>"),
+            vec![
+                TokenKind::Lt,
+                TokenKind::LtEq,
+                TokenKind::LtLt,
+                TokenKind::LtColon,
+                TokenKind::Gt,
+                TokenKind::GtEq,
+                TokenKind::GtGt,
+                TokenKind::Colon,
+                TokenKind::ColonGt,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_backticked_combiner_is_a_template() {
+        // ADR 0031 Decision 6 rests on this: `+` and the reserved words `or`
+        // and `and` all lex as templates, so quoting an operator needs no new
+        // token and bypasses the reserved-word set entirely.
+        assert_eq!(
+            kinds("`+` `<<` `:>` `or` `and`"),
+            vec![
+                TokenKind::Template("+".to_string()),
+                TokenKind::Template("<<".to_string()),
+                TokenKind::Template(":>".to_string()),
+                TokenKind::Template("or".to_string()),
+                TokenKind::Template("and".to_string()),
+            ]
+        );
     }
 }

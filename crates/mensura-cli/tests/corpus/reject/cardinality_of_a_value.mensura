@@ -1,0 +1,16 @@
+// Rejected at resolve (typing): `#` counts a bag, and a value-scoped row read
+// is a single value, not a bag.  ADR 0031 Decision 9 fixes `#`'s meaning by
+// the sugar equation `#e == fold `+` (|_| 1) e`, so there is nothing to count
+// here; the language never silently bridges the cardinality axis.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { temperature: real }
+}
+
+view bad {
+  readings |> flat_map |k, r| ((.n = #r.temperature))
+}

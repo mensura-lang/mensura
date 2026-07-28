@@ -165,15 +165,17 @@ The operators, from loosest-binding to tightest:
 | `and` | left | |
 | `not` | prefix | |
 | `== != < <= > >=`, `in`, `is known`, `is missing` | non-associative | |
+| `<< >>`, `<: :>` | left | binary minimum and maximum; keep-left and keep-right |
 | `+ -` | left | |
 | `* /` | left | |
 | `-` | prefix (unary) | |
 | `^` | right | |
 | application | left | juxtaposition |
+| `#` | prefix | cardinality; its operand is a member access |
 | `.` | postfix | member access, tightest |
 
-All operators use tokens the lexer already emits.  A few rules the
-layering implies:
+Most operators use tokens the lexer already emits; ADR 0031 adds `#`, `<<`,
+`>>`, `<:`, and `:>`.  A few rules the layering implies:
 
 - **Comparisons do not chain.**  `a < b < c` is rejected; a conjunction
   (`a < b and b < c`) says it instead.  This keeps the comparison level
@@ -187,6 +189,37 @@ layering implies:
   negated argument.  `f - x` is subtraction; a negated argument must be
   parenthesized, `f (-x)`.  This is the one ambiguity juxtaposition
   introduces, and it is resolved in favour of the binary reading.
+- **`<<` and `>>` sit between arithmetic and the comparisons**, so
+  `a + b << c` is `(a + b) << c` and `a << b < c` is `(a << b) < c`.
+- **`#` binds looser than `.` and tighter than the comparisons**, so
+  `#b.x` is `#(b.x)` and `#b > 3` reads as written.  It also sits inside
+  the application spine, so `f #b` is `f (#b)`.
+
+### The four operators of ADR 0031
+
+`a << b` and `a >> b` are the **binary minimum and maximum**.  Both
+operands are of one orderable domain, dimension included, and the result is
+of that domain, so the earlier of two dates and the smaller of two
+temperatures both work.  They are independently useful (clamping,
+earlier-of-two-dates), and they are also the rows the aggregate minimum and
+maximum derive from.
+
+`a <: b` and `a :> b` are **keep-left** and **keep-right** (APL's tacks):
+`a <: b` is `a`, `a :> b` is `b`, both operands of one domain.  Their
+algebra is two lines deep, associative but *not* commutative, with no
+identity.  Their scalar reading is trivial by design; their habitat is the
+backticked combiner slot (`07-pipelines.md`), where they are what make the
+ordered window operations derivable.
+
+`#e` is the **cardinality** of a bag: `#b` is the number of rows in a
+group, `#b.x` the size of a projected bag.  Unlike the value reductions it
+does not require a total bag, because it never reads the values: a row
+whose column is missing still counts, and the empty bag counts zero.
+
+A backtick-quoted operator (`` `+` ``, `` `<<` ``, `` `:>` ``) is a
+**combiner**, the argument the reductions take.  The set of admissible
+operators is closed, so an unknown combiner is an error naming the table;
+it extends by decision record, never by assertion at a call site.
 
 ## Cardinality and missing values
 

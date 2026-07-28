@@ -371,16 +371,21 @@ pipe_expr   = or_expr  { "|>" or_expr } ;
 or_expr     = and_expr { "or" and_expr } ;
 and_expr    = not_expr { "and" not_expr } ;
 not_expr    = "not" not_expr | cmp_expr ;
-cmp_expr    = add_expr [ cmp_op add_expr | "is" presence ] ;
+cmp_expr    = tack_expr [ cmp_op tack_expr | "is" presence ] ;
 cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" ;
 presence    = "known" | "missing" ;
+tack_expr   = add_expr { tack_op add_expr } ;
+tack_op     = "<<" | ">>" | "<:" | ":>" ;
 add_expr    = mul_expr { ( "+" | "-" ) mul_expr } ;
 mul_expr    = unary_expr { ( "*" | "/" ) unary_expr } ;
 unary_expr  = "-" unary_expr | pow_expr ;
 pow_expr    = app_expr [ "^" unary_expr ] ;
-app_expr    = postfix { postfix } ;
+app_expr    = card_expr { card_expr } ;
+card_expr   = "#" card_expr | postfix ;
 postfix     = primary { "." ident } ;
-primary     = number | string | ident | lambda | conditional | paren | block ;
+primary     = number | string | ident | combiner | lambda | conditional
+            | paren | block ;
+combiner    = template ;
 lambda      = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr ;
 conditional = "if" or_expr "then" or_expr "else" or_expr ;
 
@@ -395,16 +400,30 @@ let_stmt    = "let" ident [ ":" type ] "=" expr ;
 assert_stmt = "assert" expr ;
 ```
 
-The terminals `number`, `string`, and `ident` are lexer tokens.  Boolean
-literals (`true`, `false`) and the word operators and statement keywords
-(`or`, `and`, `not`, `in`, `is`, `known`, `missing`, `let`, `assert`) are
-`ident` tokens recognized by their text in the positions shown; see the
-reserved-words note below.  `"|>"` is a single token (`PipeArrow`): the lexer
-munches it maximally, so a lone `|` stays a `Pipe` (a lambda bar), with the
-closing-bar caveat in `06-expressions.md`.  All other punctuation
-(`== != < <= > >= + - * / ^ . | ( ) { } [ ] : ; ,`) the lexer already
-emits, so the records, blocks,
-and ascriptions here need no new tokens.  (An `NxE` measured literal
+The terminals `number`, `string`, `ident`, and `template` are lexer tokens.
+Boolean literals (`true`, `false`) and the word operators and statement
+keywords (`or`, `and`, `not`, `in`, `is`, `known`, `missing`, `let`,
+`assert`) are `ident` tokens recognized by their text in the positions
+shown; see the reserved-words note below.  `"|>"` is a single token
+(`PipeArrow`): the lexer munches it maximally, so a lone `|` stays a `Pipe`
+(a lambda bar), with the closing-bar caveat in `06-expressions.md`.
+
+A `combiner` is a `template` token, the same backtick-quoted form the shape
+attribute names use (`## Lexical basis`), read here as the *operator* it
+quotes: `` `+` ``, `` `<<` ``, `` `:>` ``.  It needs no lexer work, and
+because `` `or` `` and `` `and` `` are templates rather than words, quoting
+them raises no reserved-word conflict.  The set of admissible operators is
+closed and resolved by the checker, not the grammar, so an unknown combiner
+is a typing diagnostic naming the table rather than a parse error
+(ADR 0031, Decision 6).
+
+Punctuation (`== != < <= > >= + - * / ^ . | ( ) { } [ ] : ; ,`) the lexer
+already emits, so the records, blocks, and ascriptions here need no new
+tokens.  ADR 0031 adds five: `#` (free, since comments are `//`) plus
+`<<`, `>>`, `<:`, and `:>`.  Those four collide with nothing, and maximal
+munch settles them: the lexer has no shift tokens, no production puts a `>`
+after a `:`, and none puts a `:` after a `<` (there is no generic-argument
+syntax, so `<` is only ever a comparison).  (An `NxE` measured literal
 (`10x3`) was once reserved here for physical units; ADR 0026 supersedes
 it.  Units need no literal form, and a measured-precision literal is
 deferred with the precision library.)
@@ -429,26 +448,48 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   left-recursion-free loop (`{ op operand }`) or a single optional
   (`[ op operand ]`) over the next-tighter level, so the operator token at
   hand decides whether to continue.  From loosest to tightest: `|>`, `or`,
-  `and`, `not`, the comparisons, `+ -`, `* /`, unary `-`, `^`, application,
-  member access.
+  `and`, `not`, the comparisons, `<< >> <: :>`, `+ -`, `* /`, unary `-`, `^`,
+  application, `#`, member access.
 - **`not_expr`**: the ident `not` selects the prefix branch; any other token
   starts `cmp_expr`.  One token decides.
 - **`cmp_expr`**: after the left operand, a comparison operator (or the ident
   `in`) opens the comparison branch and the ident `is` opens the presence
   branch; any other token ends the production, so comparisons do not chain.
-  `in` and `is` are distinct idents, so one token picks the branch.
+  `in` and `is` are distinct idents, so one token picks the branch.  Both
+  operand slots are `tack_expr`, so the level below is reachable from either
+  side of a comparison.
+- **`tack_expr`**: a loop over four distinct tokens (`<<`, `>>`, `<:`, `:>`),
+  each one token of lookahead, none of which begins any other production at
+  this point; any other token ends the loop.  All four share one level
+  because they are one shape of operation, so no mixed expression needs a
+  reading the layering does not give it.  Sitting between the comparisons and
+  `+ -` is what makes `a + b << c` read `(a + b) << c` and `a << b < c` read
+  `(a << b) < c` (ADR 0031, Decision 6).
+- **`card_expr`**: `#` selects the prefix branch and recurses; any other
+  token starts a `postfix`.  Placing it *inside* the application spine, with
+  a `postfix` operand, is what gives `#` its two documented bindings at once:
+  looser than member access (`#b.x` is `#(b.x)`, because `postfix` consumes
+  the `.x`) and tighter than the comparisons (`#b > 3` is `(#b) > 3`, because
+  the comparison level sits above).  It also keeps `#b` usable as an
+  argument, so `f #b` is `f (#b)` with one token of lookahead
+  (ADR 0031, Decision 9).
 - **`pow_expr`**: `^` is right-associative because its right operand is a
   `unary_expr`.  That is also why `2^-3` is `2^(-3)`, while `-2^2` is
   `-(2^2)` (the leading `-` is a `unary_expr` wrapping the whole `pow_expr`).
 - **`app_expr` (the application spine)**: the loop consumes another
-  `postfix` while the current token can start one, namely a `number`,
-  `string`, `(`, `|` (a lambda), or an `ident` that is *not* a reserved word
-  (below).  It stops on any operator, on `|>` (a different token from `|`),
-  and on `)` and `,`.  A `|` starts a lambda argument; a `|>` never does, so
-  a pipe always ends the spine and is handled by `pipe_expr`.
-- **`primary`**: `number`, `string`, and `ident` are distinct tokens; `(`
-  opens a `paren`; `{` opens a `block`; `|` opens a `lambda`; the reserved
-  ident `if` opens a `conditional`.  One token decides.
+  `card_expr` while the current token can start one, namely a `number`,
+  `string`, `template` (a combiner), `(`, `{`, `#`, `|` (a lambda), or an
+  `ident` that is *not* a reserved word (below).  It stops on any other
+  operator, on `|>` (a different token from `|`), and on `)` and `,`.  A `|`
+  starts a lambda argument; a `|>` never does, so a pipe always ends the
+  spine and is handled by `pipe_expr`.  Note `#` is in the start set while
+  `<<`/`>>`/`<:`/`:>` are not: a prefix can open an argument, an infix cannot.
+- **`primary`**: `number`, `string`, `template`, and `ident` are distinct
+  tokens; `(` opens a `paren`; `{` opens a `block`; `|` opens a `lambda`; the
+  reserved ident `if` opens a `conditional`.  One token decides.  A
+  `template` in this position is a `combiner`; in a declaration's attribute
+  position the same token is a name, but that is a different parser state, as
+  with `unit`'s two roles.
 - **`conditional`**: the reserved ident `if` selects it; `then` and `else`
   are reserved idents that fix the two branch boundaries, so each sub-expression
   (an `or_expr`) is delimited by one token of lookahead.
@@ -492,10 +533,11 @@ without first consuming input.
 
 **Disjoint FIRST at each choice.**  The only productions with alternatives are
 `not_expr` (`not` vs `FIRST(cmp_expr)`), `unary_expr` (`-` vs
-`FIRST(pow_expr)`), `primary`, `paren`'s body, and `stmt`.  `not`, `-`, and
-`if` are tokens distinct from any value-starting token; `primary`'s five arms
-start with the disjoint tokens `number` / `string` / `ident` / `|` / `{` (and
-`(` for `paren`); `paren`'s body splits on `.` (record) versus everything else
+`FIRST(pow_expr)`), `card_expr` (`#` vs `FIRST(postfix)`), `primary`,
+`paren`'s body, and `stmt`.  `not`, `-`, `#`, and `if` are tokens distinct
+from any value-starting token; `primary`'s six arms start with the disjoint
+tokens `number` / `string` / `template` / `ident` / `|` / `{` (and `(` for
+`paren`); `paren`'s body splits on `.` (record) versus everything else
 (collection), and an expression never starts with `.`; `stmt` splits on the
 reserved idents `let` / `assert` versus any other expression-starting token.
 
@@ -504,10 +546,10 @@ points and their checks:
 
 | nullable / optional | FIRST(optional part) | FOLLOW (what ends it) | disjoint? |
 | --- | --- | --- | --- |
-| `cmp_expr` tail `[ cmp_op add_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
+| `cmp_expr` tail `[ cmp_op tack_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
 | `pow_expr` tail `[ "^" unary_expr ]` | `^` | everything looser than `^` | yes (`^` is not in FOLLOW) |
-| each loop `{ op operand }` (`\|>`, `or`, `and`, `+ -`, `* /`) | that level's operator token(s) | the next looser operator or a terminator | yes (operators are partitioned by level) |
-| `app_expr = postfix { postfix }` | `number string ident( non-reserved ) ( \| {` | any operator, `\|>`, `) , then else ; }` | yes (no operator or terminator starts a `postfix`) |
+| each loop `{ op operand }` (`\|>`, `or`, `and`, `<< >> <: :>`, `+ -`, `* /`) | that level's operator token(s) | the next looser operator or a terminator | yes (operators are partitioned by level) |
+| `app_expr = card_expr { card_expr }` | `number string template ident( non-reserved ) ( \| { #` | any infix operator, `\|>`, `) , then else ; }` | yes (no infix operator or terminator starts a `card_expr`) |
 | `lambda` params `[ ident { "," ident } ]` | `ident` | `\|` (closing bar) | yes |
 | return / field / let ascription `[ ":" type ]` | `:` | lambda body start, `=`, `}` | yes (`:` is distinct) |
 | `collection_body = [ expr { "," expr } ]` | `FIRST(expr)` | `)` | yes (`expr` never starts with `)`) |

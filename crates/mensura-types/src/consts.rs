@@ -574,6 +574,49 @@ impl<'a> Evaluator<'a> {
                 magnitude: x.powf(y),
                 dim,
             }),
+            // The tacks (ADR 0031, Decision 6): `a <: b` is `a`, `a :> b` is
+            // `b`, at any one domain.  No domain check beyond the checker's,
+            // which has already required both operands to agree.
+            (BinOp::KeepLeft, a, _) => Some(a),
+            (BinOp::KeepRight, _, b) => Some(b),
+            // `<<`/`>>` (binary minimum and maximum) at the orderable const
+            // domains.  Two `real`s must agree on their dimension, as for
+            // `+`: the earlier of two dates is not expressible at const time
+            // (there are no const dates), so `int` and `real` are the cases.
+            (BinOp::Min | BinOp::Max, Int(x), Int(y)) => {
+                Some(Int(if op == BinOp::Min { x.min(y) } else { x.max(y) }))
+            }
+            (
+                BinOp::Min | BinOp::Max,
+                Real {
+                    magnitude: x,
+                    dim: dx,
+                },
+                Real {
+                    magnitude: y,
+                    dim: dy,
+                },
+            ) => {
+                if dx != dy {
+                    return self.fail(
+                        format!(
+                            "cannot take the {} of `{}` and `{}`: the dimensions differ",
+                            if op == BinOp::Min {
+                                "minimum"
+                            } else {
+                                "maximum"
+                            },
+                            dx.applied_name(),
+                            dy.applied_name(),
+                        ),
+                        lspan,
+                    );
+                }
+                Some(Real {
+                    magnitude: if op == BinOp::Min { x.min(y) } else { x.max(y) },
+                    dim: dx,
+                })
+            }
             (op, a, b) => self.fail(
                 format!(
                     "`{}` is not defined on `{}` and `{}` in a const expression",
@@ -613,6 +656,10 @@ fn op_name(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Pow => "^",
+        BinOp::Min => "<<",
+        BinOp::Max => ">>",
+        BinOp::KeepLeft => "<:",
+        BinOp::KeepRight => ":>",
         _ => "operator",
     }
 }

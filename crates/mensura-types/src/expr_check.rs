@@ -637,6 +637,39 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
             )?;
             Ok(Ty::Bool)
         }
+        // `<<`/`>>` (binary minimum and maximum, ADR 0031 Decision 6) take
+        // both operands of *one* orderable domain, dimension included, and
+        // return that domain: the earlier of two dates and the smaller of two
+        // temperatures both work.  Same operand rule as the comparisons; only
+        // the result differs (the domain, not `bool`).
+        BinOp::Min | BinOp::Max => {
+            let domain = matching_operands(
+                ctx,
+                lhs,
+                rhs,
+                ColumnType::is_orderable,
+                "a minimum or maximum",
+                "an orderable value (int, real, or date)",
+            )?;
+            Ok(total(domain))
+        }
+        // `<:`/`:>` (keep-left and keep-right) take both operands of one
+        // domain and return it.  They demand no property *of* the domain,
+        // only that the two agree: the operation discards a value rather than
+        // inspecting it, so there is nothing to require.  In particular
+        // `real` is admissible here though it is not equatable (ADR 0014),
+        // since keeping a value never compares it.
+        BinOp::KeepLeft | BinOp::KeepRight => {
+            let domain = matching_operands(
+                ctx,
+                lhs,
+                rhs,
+                |_| true,
+                "keep-left or keep-right",
+                "a value",
+            )?;
+            Ok(total(domain))
+        }
         BinOp::Eq | BinOp::Ne => type_equality(ctx, lhs, rhs),
         BinOp::And | BinOp::Or => {
             let mut errs = require_bool(ctx, lhs, "a boolean operator");
@@ -912,6 +945,18 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr) -> Result<Ty, Vec<TypeErr
                 Err(errs)
             }
         }
+        // `#` (cardinality, ADR 0031 Decision 9): `#e == fold `+` (|_| 1) e`,
+        // so it consumes a bag and yields an `int`.  Unlike the value
+        // reductions it does *not* require a total bag: the mapper discards
+        // the element, so a missing value still counts its row.  Backed by
+        // Stage 1 (`Mensura.foldBag`, the additive-monoid instance).
+        UnOp::Card => match type_expr(ctx, operand)? {
+            Ty::Bag { .. } => Ok(total(ColumnType::Int)),
+            other => Err(vec![TypeError::new(
+                format!("`#` counts a bag, found {}", describe_ty(&other)),
+                operand.span,
+            )]),
+        },
     }
 }
 
