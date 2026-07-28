@@ -10,9 +10,12 @@ Revised in part by `docs/decisions/0031-fold-and-scan-primitives.md`,
 written after ADR 0030 landed const functions: `fold` and `scan` become
 curried builtins taking their bag explicitly (so they pipe and partially
 apply), the bag lambda's `b` becomes a bag of rows with the columnar view
-as projection sugar, the six aggregates and every window operation become
-const bindings in a bundled prelude, and the sorted map (Decision 9) is
-dissolved because its hosts are scan-derived.  The model content here (the
+as projection sugar, the aggregates and window operations become const
+bindings in qualified bundled libraries (`bag`, `series`) with `count`
+replaced by the `#` operator, every combiner becomes a surface operator
+(`<<`/`>>` binary min/max, `<:`/`:>` the tacks), and the sorted map
+(Decision 9) is dissolved because its hosts are scan-derived.  The model
+content here (the
 closed combiner table, the open mapper, the accumulator identity,
 short-circuiting, local ordering, the tie tiers) is unchanged.  Decisions
 2, 3, 6, 9, 10, and 11 carry inline notes; four open questions are settled
@@ -213,7 +216,9 @@ syntax; nothing a user has written changes.
 
 (*Revised by ADR 0031*: ADR 0030's partial application upgrades the
 spellings to genuine const bindings, `let sum { fold `+` (|v| v) }`,
-shipped in a bundled prelude; their surface syntax still does not change.)
+shipped in qualified bundled libraries, so the surface *does* change:
+`bag.sum b.x` after an `import bag`, and `count` becomes the `#`
+operator.)
 
 ### 3.  The combiner table carries a (mapper, combiner, identity) triple
 
@@ -240,9 +245,10 @@ not a physical quantity, which is exactly the discipline ADR 0026 imposes on
 dimensioned values.  Decision 4 resolves this without inventing one.
 
 (*Revised by ADR 0031*: the mapper column's `|r| r.x` defaults become
-identity mappers over projected bags, `sum b.x` being
-`fold `+` (|v| v) b.x`; the combiner and identity columns are unchanged
-and remain the load-bearing content of this table.)
+identity mappers over projected bags, `bag.sum b.x` being
+`fold `+` (|v| v) b.x`; the `min`/`max` rows are spelled by the new
+binary operators `<<`/`>>`; the combiner and identity columns are
+otherwise unchanged and remain the load-bearing content of this table.)
 
 ### 4.  The identity lives in the accumulator, not in the value domain
 
@@ -307,9 +313,9 @@ element equals the corresponding fold.
 ordinary argument rather than a `by` clause, since a clause is not
 partially applicable and the derived operations must be const bindings;
 tuple-valued keys order lexicographically, subsuming chained keys.  Scan
-gains an exclusive form (position i carries the fold of 1..i-1), and the
-coherence obligation extends to it.  Decisions 7 and 8 carry over
-verbatim to the key argument.)
+gains an exclusive form, `prescan` (position i carries the fold of
+1..i-1), and the coherence obligation extends to it.  Decisions 7 and 8
+carry over verbatim to the key argument.)
 
 ### 7.  `by g` is an open key extractor, because its obligation is decidable
 
@@ -385,12 +391,13 @@ structure.
 (*Revised by ADR 0031*: the sorted map is dissolved as a primitive.  Its
 three hosts are scan-derived: `rank` is the ones-scan
 (`scan `+` (|_| 1)`, a running count, tie-free under Decision 11's total
-order), `lag` is the exclusive scan with `last`, and `lead` is its dual
-with `first` over the reversed order.  The family's third builtin is
-`map`, which is projection rather than a reduction.  This section's
-argument that `rank` "cannot be obtained from any monoid on row values"
-stands for *inclusive* folds of the values; the position information it
-needs comes from the ones-mapper, not from a positional primitive.)
+order), `lag` is the keep-right `prescan` (`prescan `:>` (|v| v)`), and
+`lead` is its dual with keep-left over the reversed order.  The family's
+third builtin is `map`, which is projection rather than a reduction.
+This section's argument that `rank` "cannot be obtained from any monoid
+on row values" stands for *inclusive* folds of the values; the position
+information it needs comes from the ones-mapper, not from a positional
+primitive.)
 
 ### 10.  The table may carry associative-only rows for the ordered variants
 
@@ -411,9 +418,9 @@ algebra this table does not describe.  Saying so is better than stretching
 the table to cover it.
 
 (*Revised by ADR 0031*: this column is now load-bearing rather than
-prospective.  `first` and `last` are the rows that make `lag` and `lead`
-scan-derivable, which is what lets the sorted map dissolve; see the
-Decision 9 note.)
+prospective.  Keep-left and keep-right, spelled as the tack operators
+`<:` and `:>`, are the rows that make `lag` and `lead` scan-derivable,
+which is what lets the sorted map dissolve; see the Decision 9 note.)
 
 ### 11.  Ties are made explicit, not made impossible
 
@@ -688,9 +695,9 @@ separate document.
 - **Where the combiner token lives grammatically**: an operator section, a
   reserved word, or a name resolved from the closed table, and how that
   interacts with the keyword-free lexer.  *Settled:* ADR 0031, a backticked
-  operator name (`` `+` ``, `` `min` ``) resolved against the closed table;
-  backticks already lex, and `` `or` ``/`` `and` `` bypass the reserved
-  words.
+  operator (`` `+` ``, `` `<<` ``) resolved against the closed table, every
+  row of which is a surface operator; backticks already lex, and
+  `` `or` ``/`` `and` `` bypass the reserved words.
 - **Whether the six sugar spellings keep their exact signatures**, in
   particular whether `any` and `all` become predicate-taking.  The docs
   (`docs/language/06-expressions.md`) show a predicate form, while ADR 0014
@@ -702,8 +709,8 @@ separate document.
 - **Where `mean` lands and when**, contingent on ADR 0027 gaining function
   exports, and whether `stats` is the right module.  *Settled in part:*
   ADR 0030's const functions make `mean` expressible as a binding
-  (`|b| sum b / to_real (count b)`, ADR 0031); whether it joins the bundled
-  prelude or waits for `stats` is open there.
+  (`|b| bag.sum b / to_real (#b)`, ADR 0031); whether it joins `bag` or
+  waits for `stats` is open there.
 - **Whether the dependency qualifier ever demands anything at `scan`**, or is
   only ever the optimization Decision 8 asserts.
 

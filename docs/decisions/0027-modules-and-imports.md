@@ -112,11 +112,13 @@ named derived units) is an ordinary import, not ambient.  So `9.8 * meter / seco
 type-checks with no import, while the terse `9.8 * si.m / si.s^2` (or, with an
 `exposing` refinement, `9.8 * m / s^2`) requires `import si`.
 
-(*Revised by ADR 0031*: the aggregate combinators this decision names as
-intrinsics are now *defined* by a bundled prelude source, compiled like
-`si` and loaded into the initial environment unqualified and without an
-`import`.  What is in scope does not change; how it is defined does.
-Explicit imports remain qualified-only.)
+(*Revised by ADR 0031*: the aggregate combinators **leave the initial
+environment**.  They become const bindings in qualified bundled
+libraries (`bag`, `series`), imported like `si`, and cardinality becomes
+the `#` operator; the intrinsic environment shrinks to the base units,
+`fold`/`scan`/`map`, `to_real`, and the pipeline operations.  This
+decision's no-implicit-prelude rule thereby holds without the aggregate
+exception it used to carry.)
 
 ### 5.  Identity/provenance/location split
 

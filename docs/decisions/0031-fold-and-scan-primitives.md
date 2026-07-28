@@ -25,10 +25,14 @@ Relation to earlier decisions:
   identity (Decision 4), short-circuiting (Decision 5), local ordering
   (Decision 8), and the tie tiers (Decision 11) all carry over.  It also
   settles four of 0029's open questions; the notes live in 0029.
-- **Refines `docs/decisions/0027-modules-and-imports.md` Decision 4**: the
-  aggregate combinators that decision names as intrinsics of the initial
-  environment are now *defined* by a bundled prelude source rather than
-  hardcoded.  What is in scope does not change; how it is defined does.
+- **Amends `docs/decisions/0027-modules-and-imports.md` Decision 4**: the
+  aggregate combinators that decision named as intrinsics **leave the
+  initial environment**.  They become const bindings in qualified bundled
+  libraries imported like `si` (Decision 8), and cardinality becomes the
+  `#` operator (Decision 9).  The intrinsic environment shrinks to the
+  base units, `fold`/`scan`/`map`, `to_real`, and the pipeline
+  operations; Decision 4's "no implicit prelude" rule now holds without
+  the aggregate exception it used to carry.
 - **Builds on `docs/decisions/0030-const-functions.md`** (curried
   builtins, partial application, beta-reducing lowering) and
   **`docs/decisions/0018-application-piping-equivalence.md`** (the
@@ -40,7 +44,7 @@ unchanged.  Per ADR 0021, `fold`'s checker rules wait on Stage 1
 completion), and `scan` plus every scan-derived binding waits on Stage 2
 (the arranged structure, blueprint node `def:arranged`), whose demanded
 content this ADR *grows*: the exclusive scan, its coherence with the
-inclusive one, and the derivation lemmas that make the prelude's
+inclusive one, and the derivation lemmas that make the libraries'
 definitions theorems.  Notably, one piece of Stage 0 work disappears: the
 fiber-as-rows model (Decision 1) needs nothing from `formal/`, because the
 fiber already *is* `Multiset (Row H σ)` there; it is the surface that
@@ -49,7 +53,8 @@ catches up.
 It deliberately does **not** include:
 
 - any implementation (the builtin function kind, the rows type, the
-  combiner literal, and the prelude module are named as the follow-on);
+  combiner literal, the `#` token, the `bag`/`series` modules, and the
+  call-site migration are named as the follow-on);
 - **measure semantics** (the M5 item; the combiner table remains the
   object it will gate);
 - **nested collections**: the rows type is dedicated, and `bag` keeps its
@@ -104,13 +109,15 @@ transpose the surface seemed to need is the identity in the model.
 With `b` as rows and functions first-class, the family collapses:
 
 - `rank` is the running count: a scan of ones.
-- `lag` is the previous row's value: an *exclusive* scan with the `last`
-  combiner (each position receives the proper prefix's last element).
-- `lead` is `lag` over the reversed order, with `first`.
+- `lag` is the previous row's value: an *exclusive* scan (`prescan`,
+  Decision 7) with keep-right, each position receiving the proper
+  prefix's last element.
+- `lead` is `lag` over the reversed order, with keep-left.
 
-`first` and `last` are associative but not commutative, which is exactly
-the ordered-only table column 0029's Decision 10 reserved; it is now
-load-bearing.  The sorted map (0029 Decision 9) existed to host `rank`,
+Keep-left and keep-right (the tacks `<:` and `:>`, Decision 6) are
+associative but not commutative, which is exactly the ordered-only table
+column 0029's Decision 10 reserved; it is now load-bearing.  The sorted
+map (0029 Decision 9) existed to host `rank`,
 `lag`, and `lead`; with all three scan-derived, it dissolves.  `fold` is
 not scan-derivable (it works over unordered bags with no key), so the
 primitive set is exactly two, plus `map` standing apart as projection,
@@ -127,9 +134,9 @@ the model.  `k` is unchanged: a record of the key columns as total
 values.
 
 Two things fall out immediately.  A row-mapper fold applies to `b`
-directly (`fold `+` (|r| r.mass / r.height ^ 2) b`), and `count b` is
-the natural row count of the group, where today one writes `count b.x`
-and arbitrarily picks a column.
+directly (`fold `+` (|r| r.mass / r.height ^ 2) b`), and `#b`
+(Decision 9) is the natural row count of the group, where today one
+writes `count b.x` and arbitrarily picks a column.
 
 Bare `b` in a scalar position was a type error before (a record is not a
 value) and remains one (a bag of rows is not a value), so no existing
@@ -194,28 +201,57 @@ restated here unchanged.
 Reaffirming 0029 Alternative 3 against the tempting
 `fold start op` shape: a seed is counted once per shard under partial
 folding, so it is redundant when it equals the combiner's identity and
-unsound otherwise, and `min`/`max` have no identity in the domain to
-write.  The identity comes from the combiner table; the absent-identity
-rows fold through the accumulator `Option` of 0029 Decision 4, which is
-unchanged, as is the surface-totality rule derived from identity and
-emptiness.
+unsound otherwise, and `<<`/`>>` (binary minimum and maximum, Decision 6)
+have no identity in the domain to write.  The identity comes from the
+combiner table; the absent-identity rows fold through the accumulator
+`Option` of 0029 Decision 4, which is unchanged, as is the
+surface-totality rule derived from identity and emptiness.
 
-### 6.  The combiner is a backticked operator from the closed table
+### 6.  Every combiner is a surface operator, quoted by backticks
 
-The combiner argument is written as a backticked operator name:
-`` `+` ``, `` `*` ``, `` `min` ``, `` `max` ``, `` `or` ``, `` `and` ``,
-and for scan only, `` `first` `` and `` `last` `` (Decision 7).  This
-settles 0029's open question on where the combiner token lives.
+The combiner argument is a backticked **operator**:
 
-The spelling is nearly free: a backticked name already lexes
-(`lex_template` produces a `Template` token whose `{}`-free content is a
-single literal), and because `` `or` `` and `` `and` `` are `Template`
-tokens rather than words, the reserved-operator collision that made bare
-combiner names impossible never arises.  What the implementation owes is
-an expression-position parse arm and a highlight class; the token is
-resolved against the closed table, and an unknown combiner is an error
-naming the table.  The set extends by ADR, never by a user assertion
-(0029 Alternative 1 stands).
+| operator | scalar meaning | algebra | identity | admitted under |
+| --- | --- | --- | --- | --- |
+| `+`, `*` | arithmetic | commutative monoid | `0`, `1` | `fold` and `scan` |
+| `<<`, `>>` | binary minimum, maximum | commutative semigroup | none | `fold` and `scan` |
+| `or`, `and` | boolean | commutative monoid, absorbing | `false`, `true` | `fold` and `scan` |
+| `<:`, `:>` | keep-left, keep-right | semigroup (not commutative) | none | `scan` only |
+
+Two operator families are new, introduced here so that the table is
+operators **uniformly**, with no wordy residents:
+
+- **`a << b` and `a >> b`** are the binary minimum and maximum: both
+  operands of one orderable domain (dimension included, so the earlier
+  of two dates and the smaller of two temperatures both work), the
+  result of that domain.  They bind looser than `+ -` and tighter than
+  the comparisons, so `a + b << c` is `(a + b) << c` and `a << b < c`
+  is `(a << b) < c`.  Independently useful at the surface (clamping,
+  earlier-of-two-dates); in the table they are the rows the aggregate
+  `min`/`max` derive from.
+- **`a <: b` and `a :> b`** are keep-left and keep-right, APL's tacks:
+  `a <: b` is `a`, `a :> b` is `b`, both operands of one domain.  Their
+  algebra is compiler-owned and two lines deep: associative (left- and
+  right-zero semigroups), not commutative, no identity.  Their scalar
+  use is trivial by design; their habitat is the backticked combiner
+  slot, where they are what make `first_value`, `lag`, and `lead`
+  scan-derivable (Decision 8).  Being non-commutative they are admitted
+  under `scan` only; under `fold` they are an error.
+
+This settles 0029's open question on where the combiner token lives, and
+closes it without residue: a backtick always quotes an operator, and the
+words `min`, `max`, `first`, `last` never enter the table.  The spelling
+is nearly free: a backticked name already lexes (`lex_template` produces
+a `Template` token whose `{}`-free content is a single literal), and
+because `` `or` `` and `` `and` `` are `Template` tokens rather than
+words, the reserved-operator collision that made bare combiner names
+impossible never arises.  What the implementation owes is the four new
+operator tokens (`<<`, `>>`, `<:`, `:>` collide with nothing: the lexer
+has no shift tokens, and `:` followed by `>` occurs in no existing
+production), an expression-position parse arm for the backticked form,
+and a highlight class; the token is resolved against the closed table,
+and an unknown combiner is an error naming the table.  The set extends
+by ADR, never by a user assertion (0029 Alternative 1 stands).
 
 ### 7.  `scan` is the second primitive; the order key is an argument
 
@@ -240,61 +276,105 @@ goal:
   unchanged; only the spelling of tier 2 moves.
 
 Scan-only combiner rows need associativity but **not commutativity**,
-since the key supplies the order a bag lacks: `` `first` `` and
-`` `last` `` join the table for scan, realizing 0029 Decision 10's
+since the key supplies the order a bag lacks: the tacks `` `<:` `` and
+`` `:>` `` join the table for scan, realizing 0029 Decision 10's
 ordered-only column.  Applying them under `fold` remains an error.
 
-**Scan has an inclusive and an exclusive form.**  The inclusive form's
-position i carries the fold of elements 1..i; the exclusive form carries
-1..i-1, so its first output is the combiner's identity, or a missing
-value for the identity-free rows, by the same identity-and-emptiness
-rule that governs empty windows.  The exclusive form is not decoration:
-it is what makes `lag` derivable (Decision 8).  Its surface name is an
-open question; this ADR fixes its existence and semantics.
+**Scan has an inclusive form (`scan`) and an exclusive form
+(`prescan`)**, after Blelloch's naming.  `scan`'s position i carries the
+fold of elements 1..i; `prescan`'s carries 1..i-1, so its first output
+is the combiner's identity, or a missing value for the identity-free
+rows, by the same identity-and-emptiness rule that governs empty
+windows.  The exclusive form is not decoration: `lag` is
+`prescan `:>``, each position receiving the proper prefix's keep-right,
+that is, the previous element, with the first row correctly missing
+because keep-right has no identity.  The missingness of `lag`'s first
+row is not designed; it falls out of the rule.
 
-### 8.  The derived operations are const bindings in a bundled prelude
+### 8.  The derived operations are const bindings in qualified libraries
 
 Every aggregate and window operation the documents have ever promised is
-a **definition**, written in the language, shipped as a bundled source
+a **definition**, written in the language, shipped as bundled sources
 compiled at build time exactly like `stdlib/si.mensura` (parsed, const
-evaluated, oracle-tested in CI):
+evaluated, oracle-tested in CI), and **imported and qualified like `si`**.
+The organization follows the derivation structure, which is also the
+proof-stage structure: one module per primitive, gated by that
+primitive's Lean stage.
 
 ```mensura
-let sum    { fold `+`   (|v| v) }
-let count  { fold `+`   (|_| 1) }
-let min    { fold `min` (|v| v) }
-let max    { fold `max` (|v| v) }
-let any    { fold `or`  (|v| v) }
-let all    { fold `and` (|v| v) }
-
-let cumsum { scan `+` (|v| v) }
-let rank   { scan `+` (|_| 1) }          // the running count
-// lag: the exclusive scan with `last`; lead: dually, with `first`
-// over the reversed order.  Spelled once the exclusive form's surface
-// name is fixed (Open questions).
+// stdlib/bag.mensura -- the fold-derived reductions (Stage 1)
+let sum { fold `+`  (|v| v) }
+let min { fold `<<` (|v| v) }
+let max { fold `>>` (|v| v) }
+let any { fold `or`  (|v| v) }
+let all { fold `and` (|v| v) }
 ```
+
+```mensura
+// stdlib/series.mensura -- the scan-derived windows (Stage 2)
+let cumsum      { scan `+`  (|v| v) }
+let rank        { scan `+`  (|_| 1) }    // the running count
+let running_min { scan `<<` (|v| v) }
+let running_max { scan `>>` (|v| v) }
+let first_value { scan `<:` (|v| v) }    // every row sees the group's
+                                         // first value under the order
+let lag         { prescan `:>` (|v| v) } // the previous row's value;
+                                         // the first row is missing
+// lead: lag over the reversed order; spelled once the descending-key
+// story is fixed (Open questions).
+```
+
+A view writes `import bag` and `bag.max b.temperature`.  There is **no
+implicit prelude and no unqualified loading**: with `fold` and `scan` as
+builtins there is no reason to keep so many *names* in the language, and
+ADR 0027 Decision 4's rule ("nothing else is in scope that you did not
+import") now applies to the aggregate vocabulary too.  This is a genuine
+amendment to that decision, which had named the aggregate combinators as
+intrinsics; the intrinsic initial environment shrinks to the base units,
+`fold`/`scan`/`map`, `to_real` (pending a `math` module; Open
+questions), and the pipeline operations.  A corollary: the names `sum`,
+`min`, `max`, `any`, `all`, and `count` return to users, and the
+redeclaration protection shrinks with the intrinsics.
 
 `any` and `all` keep `bag<bool> -> bool`, settling 0029's open question
 on the six's signatures: the predicate-taking form needs no second
 signature because it is written directly, `fold `or` p b`.  `rank` is
 the ones-scan because Decision 11's total-order requirement means there
 are no ties to break.  `mean` becomes *expressible*
-(`|b| sum b / to_real (count b)`); whether it ships here or in a `stats`
-module stays open.
+(`|b| bag.sum b / to_real (#b)`); whether it joins `bag` or waits for a
+`stats` module stays open.  Note `count` appears in neither module: it
+is the `#` operator (Decision 9).
 
-**Unlike `si`, the prelude loads into the initial environment
-unqualified and without an `import`.**  This refines ADR 0027 Decision
-4, which already names the aggregate combinators as intrinsics of the
-initial environment ("these are *language*, always in scope"): what is
-in scope does not change, and no implicit prelude beyond the initial
-environment appears; what changes is that the initial environment's
-aggregate vocabulary is now *defined* by a source file rather than
-hardcoded in the checker.  Every existing `sum b.x` keeps working at
-every site.  Explicit imports remain qualified-only, and the
-redeclaration protection ("`sum` is an ambient builtin and cannot be
-redeclared") becomes a collision with a prelude binding.
+The migration is real and named: every bare-aggregate call site in the
+corpus, the examples, and the book gains an `import` and a qualifier
+(or `#`), in the implementation's reconciliation pull request.  The
+corpus is young and CI-gated, so the change is mechanical and cannot
+rot.
 
-### 9.  The type model gains a dedicated rows type
+### 9.  `#` is the cardinality operator
+
+`count` is the most frequent aggregate, and cardinality has an
+established notation.  The word leaves the language; the operator
+arrives:
+
+```
+#e  ==  fold `+` (|_| 1) e
+```
+
+`#b` is the group's row count and `#b.x` counts a projected bag (the
+prefix binds looser than member access, so `#b.x` is `#(b.x)`, and
+tighter than the comparisons, so `#b > 3` reads as expected).  The
+meaning is fixed by the sugar equation, exactly like Decision 2's
+projection sugar, so the everything-derives-from-`fold`-and-`scan`
+claim survives: only the *spelling* is language.
+
+The cost is one lexer token (`#` is free today; comments are `//`), one
+prefix production with an LL(1) note in `04-grammar.md`, and a highlight
+class.  The division of labour is deliberate: **operators are language,
+words are library**, and count crosses the frequency threshold that
+earns an operator where the rest of the vocabulary does not.
+
+### 10.  The type model gains a dedicated rows type
 
 The checker's `bag` type keeps its scalar element.  `b` types at a new,
 dedicated rows type (the group's fields with their domains and
@@ -306,7 +386,7 @@ groups are.
 This type outlives fold: it is the substrate `scan`'s key orders, so
 Stage 2 inherits it rather than inventing one.
 
-### 10.  Builtin function values join closure values
+### 11.  Builtin function values join closure values
 
 `fold`, `scan`, and `map` have function types but no lambda bodies: the
 language deliberately has no recursion and cannot express bag iteration,
@@ -324,19 +404,21 @@ Nothing new for the rows model: the fiber already is
 at a projection, a one-line lemma if ever wanted.  The surface is
 catching up to the formalization, not the reverse.
 
-Stage 1 (gates `fold` and the fold-derived prelude bindings) is exactly
-ADR 0029's: `foldBag` over a commutative monoid, the shard lemma over
+Stage 1 (gates `fold`, `#`, and the `bag` module) is exactly ADR
+0029's: `foldBag` over a commutative monoid, the shard lemma over
 arbitrary shards, the `Option` completion with its presence lemma, and
 `aggregate` derived as the monoid-fold `fiberMap`.
 
-Stage 2 (gates `scan` and every scan-derived binding) keeps ADR 0029's
+Stage 2 (gates `scan` and the `series` module) keeps ADR 0029's
 demands (the `arrange` operation, `scanBag`, the fold-coherence theorem,
 the prefix decomposition) and **grows** by:
 
-- the exclusive scan and its coherence with the inclusive one (drop the
-  last element of the inclusive scan, prepend the identity);
-- the derivation lemmas, so the prelude is theorems rather than slogans:
-  `rank` is the ones-scan, and `lag` is the exclusive `last`-scan.
+- the exclusive scan (`prescan`) and its coherence with the inclusive
+  one (drop the last element of the inclusive scan, prepend the
+  identity);
+- the derivation lemmas, so the libraries are theorems rather than
+  slogans: `rank` is the ones-scan, and `lag` is the keep-right
+  `prescan`.
 
 Same blueprint node (`def:arranged`); nothing may be named
 `Mensura.Arranged` before Stage 2 lands, per the stale-marker check.
@@ -346,27 +428,41 @@ Same blueprint node (`def:arranged`); nothing may be named
 **Positive.**  Two primitives instead of three, and the third's hosts
 are now definitions anyone can read: the whole aggregate and window
 vocabulary is greppable `.mensura` source, oracle-tested, with each
-operation's combiner named at its definition.  The surface finally
-matches `formal/` (the fiber is a bag of rows in both).  `fold` pipes
-ordinarily, fixing 0029's no-piped-input corner.  The six are genuine
-library instances, which is what 0029 Decision 2 promised and could not
-yet deliver.  `count b` and row-mapper folds fall out of Decision 1.
-`mean` is expressible.  The rows type is Stage 2's substrate, decided
-once.
+operation's combiner named at its definition.  The language itself
+shrinks: with `fold` and `scan` as builtins there is no reason to keep
+so many names in the initial environment, and ADR 0027 Decision 4's
+no-implicit-prelude rule now holds without exceptions.  The names `sum`,
+`min`, `max`, `any`, `all`, and `count` return to users.  The surface
+finally matches `formal/` (the fiber is a bag of rows in both).  `fold`
+pipes ordinarily, fixing 0029's no-piped-input corner.  The six are
+genuine library instances, which is what 0029 Decision 2 promised and
+could not yet deliver.  `#b` and row-mapper folds fall out of Decisions
+1 and 9.  `mean` is expressible.  The rows type is Stage 2's substrate,
+decided once.
 
-**Negative.**  A builtin function kind in `ConstValue` and the checker's
-function type (mechanical after ADR 0030, but real).  A new rows variant
-in the checker's type with the usual exhaustive-match sweep.  The
-exclusive scan is new design surface with an unresolved name.  Scan's
-key-as-argument diverges from 0029's `by` clause: stated here as a
-revision with its reason (partial applicability), not slipped in.  The
-prelude is a second bundled module, so the module loader's single-module
-assumptions (diagnostic text, oracle-test shape) generalize.
+**Negative.**  **Every bare-aggregate call site breaks**: the corpus,
+the examples, and the book gain an `import` and a qualifier (or `#`).
+The corpus is young and CI-gated, so the migration is a mechanical,
+one-time reconciliation pull request, but it is the largest surface
+change since the pipeline algebra landed and the book's first examples
+now carry an `import` line.  A builtin function kind in `ConstValue` and
+the checker's function type (mechanical after ADR 0030, but real).  A
+new rows variant in the checker's type with the usual exhaustive-match
+sweep.  Five new operator tokens (`#`, `<<`, `>>`, `<:`, `:>`) with
+their grammar notes.  `prescan` is new design surface (its coherence
+theorem joins Stage 2, and `lead` still waits on the descending-key
+story).  Scan's key-as-argument
+diverges from 0029's `by` clause: stated here as a revision with its
+reason (partial applicability), not slipped in.  `bag` and `series` are
+the second and third bundled modules, so the module loader's
+single-module assumptions (diagnostic text, oracle-test shape)
+generalize.
 
-**Neutral.**  Every existing aggregate call site is unchanged.  The
-runtime may keep columnar group storage; rows is a type-level notion,
-and the executor already holds the member indices it needs for row
-iteration.
+**Neutral.**  The runtime may keep columnar group storage; rows is a
+type-level notion, and the executor already holds the member indices it
+needs for row iteration.  Qualified aggregate names read one token
+longer (`bag.max b.temperature`); the `exposing` refinement ADR 0027
+contemplates remains available if that ever grates.
 
 ## Alternatives considered
 
@@ -402,6 +498,15 @@ combiners, and those laws cannot be checked on a lambda.  The naive
 presumes an indexed order a bag does not have; that assumption is the
 bug the closed table exists to prevent.
 
+The rejection covers manifestly-correct lambdas too:
+`fold (|a, b| if a < b then a else b) (|v| v)` *is* the minimum
+semantically, but the backticked `` `<<` `` and the lambda differ
+epistemically, not semantically.  The operator's algebra is compiler
+knowledge; the lambda's would rest on trust, and admitting one lambda
+admits them all, including `|a, b| a - b` and the one-character typo
+`if a < b then a else a`.  Decision 6's operators exist precisely so
+that no combiner ever needs to be a lambda.
+
 ### 5.  A generic `zip` of bags
 
 Rejected: bags are unordered, so pairing two arbitrary bags element-wise
@@ -420,18 +525,48 @@ primitives is the stronger closure principle.
 
 Rejected on partial applicability: a clause is not an argument, so no
 scan-derived operation could be a const binding, and Decision 8's
-prelude would be impossible.  Tuple-valued keys recover the chained
+libraries would be impossible.  Tuple-valued keys recover the chained
 spelling, and Decisions 7-8 of 0029 (open key, decidable obligation,
 locally established order) carry over verbatim.
 
+### 8.  An unqualified prelude, loaded without an `import`
+
+An earlier draft of this ADR shipped the derived operations as a prelude
+merged into the initial environment, so every bare `sum b.x` kept
+working.  Rejected: it was compatibility-driven rather than principled,
+and it carved the exact exception ADR 0027 Decision 4's "nothing else is
+in scope that you did not import" exists to forbid.  With `fold` and
+`scan` as builtins there is no reason to keep so many names in the
+language; the corpus is young and CI-gated, so the migration is a
+mechanical one-time cost, and the freed names (`sum`, `min`, `max`,
+`any`, `all`, `count`) are worth more than the compatibility.
+
+### 9.  `first`/`last` as backticked words rather than operators
+
+The tacks could have stayed wordy table rows (`` `first` ``,
+`` `last` ``), leaving the convention "a backtick names a combiner-table
+row, most rows coincide with operators".  Rejected in favour of `<:` and
+`:>`: the uniform statement "a backtick quotes an operator" has no
+caveat to remember, the tacks' algebra is as compiler-ownable as `+`'s,
+and APL's tacks are precedent that keep-left and keep-right are
+respectable operators even with trivial scalar readings.
+
 ## Open questions
 
-- **The prelude's name** (`prelude`, `std`): it never appears at a use
-  site (it loads unqualified), so the choice matters for diagnostics and
-  the repository layout only.
-- **The exclusive scan's surface name** (`scan_x`, `prescan`, a flag on
-  `scan`): its existence and semantics are fixed by Decision 7; `lag`
-  and `lead`'s prelude definitions are spelled once this is.
+- **The descending-key story, which is what `lead` waits on.**  `lead`
+  is `lag` over the reversed order, and "reverse" is not expressible by
+  negating a key when the key is a date or a string.  Candidates: a
+  `desc` wrapper on the key, or a right-exclusive scan variant.  `lead`
+  joins `series` the day this is fixed.
+- **Whether the module organization is final** (`bag`, `series`): the
+  cut follows the derivation and the proof stages, but finer names
+  (`order`, `logic`) remain reachable later by re-exports if a module
+  grows enough to warrant splitting.
+- **`to_real`'s home.**  It is the one remaining word-builtin that is
+  neither `fold`, `scan`, `map`, nor a pipeline operation; by this ADR's
+  own logic it belongs in a future `math` module (with `sqrt`, `log`,
+  `abs`, and the half-exponent dimension question), and stays intrinsic
+  only until that module exists.
 - **Whether the rows type is user-writable in type position.**  Not for
   now: it is constructible only where groups are, and nothing needs to
   ascribe it.
@@ -443,7 +578,7 @@ locally established order) carry over verbatim.
   is the window shape of `map_bags`; confirm the shape rules compose
   when the docs are reconciled.
 - **`stats` timing**: `mean` and `sd` are expressible now; whether they
-  join the prelude or wait for a `stats` module (ADR 0028 Decision 4) is
+  join `bag` or wait for a `stats` module (ADR 0028 Decision 4) is
   open.
 
 ## Forward references
@@ -454,7 +589,7 @@ locally established order) carry over verbatim.
 - `docs/decisions/0027-modules-and-imports.md` Decision 4 (the initial
   environment; revised in part here) and
   `docs/decisions/0028-standard-library-si.md` (the bundled-module
-  discipline the prelude reuses).
+  discipline `bag` and `series` reuse).
 - `docs/decisions/0018-application-piping-equivalence.md` (the pipe the
   trailing-bag surface composes with) and
   `docs/decisions/0015-map-row-multiset-and-key-first-lambdas.md` (the
