@@ -2,9 +2,27 @@
 
 ## Status
 
-Accepted, design-only.  This ADR lands as a documentation-only pull
-request; the implementation follows separately and its checker rules stay
-behind the ADR 0021 proof gates exactly as ADR 0029 staged them.
+Accepted.  This ADR landed as a documentation-only pull request; the
+implementation followed separately, with its checker rules behind the ADR
+0021 proof gates exactly as ADR 0029 staged them.
+
+**Implementation status.**  The fold half is **implemented**, behind ADR
+0029's Stage 1 (`formal/Mensura/Fold.lean`, proved first): Decisions 1, 2,
+3, 4, 5, 6 (the `fold` rows), 8 (the `bag` module), 9, 10, and 11.  The
+ordered half is **not**, because ADR 0029's Stage 2 is still open: Decision
+7 (`scan`, `prescan`, `desc`), Decision 6's `scan`-only tack rows as
+*usable* combiners rather than merely rejected ones, and Decision 8's
+`series` module all wait on it.  The four new operators (`<<`, `>>`, `<:`,
+`:>`) do exist at the surface throughout, since they are ordinary operators
+needing no gate; applying a tack under `fold` is an error naming the reason.
+
+Two prerequisites this ADR does not name turned out to be load-bearing, and
+are recorded here for the next reader: **module-qualified function
+application** worked nowhere (the checker rejected a non-name application
+head, and lowering mapped module members to literals only, since `si`
+exports no function), and **`Ty::Fn` is not an arrow type** but a closure
+body, so the builtin kind of Decision 11 could not reuse it.  Decision 8's
+entire surface rests on the first.
 
 **Enabled by ADR 0030.**  ADR 0029 was written before const functions
 existed; ADR 0030 landed lambdas, explicit currying, and partial

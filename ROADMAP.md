@@ -78,7 +78,11 @@ mensura/
   (ADR 0004).
 - **Calculus.**  The data-handling algebra is mechanized in Lean 4 under
   `formal/`: split-safety and its composition, completeness, the split-safe
-  `pivotAttr` with its reversibility, and the `union` disjointness lemma.
+  `pivotAttr` with its reversibility, the `union` disjointness lemma, and
+  (ADR 0029's Stage 1) the monoid-parameterized bag fold with its shard and
+  presence lemmas, which is the gate `fold` ships behind.  Stage 2 (an
+  arranged structure over the row multiset, gating `scan`) is the next
+  formal item and is open-ended.
 - **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
   -> SQLite` is built for the "basic" subset: scalar-key units, stores with
   primitive and `enum` attributes, shapes, and named enums.  The expression
@@ -90,7 +94,14 @@ mensura/
   and the `si` standard library are implemented (ADRs 0026-0028).  Compound
   (multi-entity) units and foreign-key (`domain`) resolution are scheduled for
   M4 (where devices and cross-store ingestion first need them); precision is
-  deferred to a future library extension of `real`.
+  deferred to a future library extension of `real`.  **Const functions** (ADR
+  0030) and the **fold half of the aggregate family** (ADR 0031) are
+  implemented on top of M3's module machinery: lambdas and partial application
+  as compile-time values, `fold` and `map` as curried builtins over a closed
+  combiner table, the fiber (`b`) as a bag of rows with `b.x` as projection
+  sugar, `#` as cardinality, and the six reductions as const bindings in a
+  bundled `bag` module rather than intrinsics.  `scan` and the `series` module
+  wait on ADR 0029's Stage 2 (M5).
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): devices and `registry`; ingestion endpoints; streaming windows and
   refresh; measure semantics (M5, where the window rollups it gates are the
@@ -229,14 +240,20 @@ Output: windowed, incrementally refreshed views over device streams.
   `min` and `max` but not `+`), a property of the (column, combiner) pair
   rather than a taxonomy of columns.  That dissolves the problem of defining
   `@semiadditive` before the language has an axis notion, and it means the
-  doc is best written against ADR 0029's combiner table once `fold` is real.
+  doc is best written against ADR 0029's combiner table, which `fold` now
+  realizes (ADR 0031; the table lives in `09-typing-reference.md` section
+  5.4).
 - Per-window sampling inference (Exhaustive when the fleet is fully covered,
   Biased or Representative otherwise).
 - The temporal and dependency typing rules, and temporal referential integrity
   (the "outlives" constraint), extending `docs/language/08-lineage.md`.
-- The ordered primitives (`scan` and the sorted map) that window functions
-  need: ADR 0029, gated behind its Stage 2 `formal/` work (an arranged
-  structure over what is today a `Multiset`).
+- The ordered primitives that window functions need: **`scan` and `prescan`**,
+  gated behind ADR 0029's Stage 2 `formal/` work (an arranged structure over
+  what is today a `Multiset`).  ADR 0031 revised the shape: the sorted map is
+  dissolved, since `rank`, `lag`, and `lead` are all scan-derived, so the
+  primitive set is `fold` and `scan` plus `map`.  Landing Stage 2 also brings
+  the `desc` order marker and the bundled `series` module (`cumsum`, `rank`,
+  `running_min`, `running_max`, `first_value`, `lag`, `lead`).
 
 ## M6 - ML strategies and validation
 

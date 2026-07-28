@@ -1463,7 +1463,7 @@ fn type_membership(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<Type
     }
 }
 
-/// `is known` / `is missing` (section 5.5): apply to a value, yield `Bool`.
+/// `is known` / `is missing` (section 5.6): apply to a value, yield `Bool`.
 /// Narrowing is deferred, so `is known` does not change the value's totality.
 fn type_presence(ctx: &Context, base: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
     match type_expr(ctx, base)? {
@@ -1522,7 +1522,7 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr) -> Result<Ty, Vec<TypeErr
 
 /// `==` / `!=` (equatable, ADR 0014): both sides known values of the same
 /// equatable domain (so `real` is rejected), with the enum-vs-string-literal
-/// exception of section 5.6.
+/// exception of section 5.7.
 fn type_equality(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     let mut errs = Vec::new();
     let lt = collect_ty(type_expr(ctx, lhs), &mut errs);
@@ -1584,7 +1584,7 @@ fn collect_ty(result: Result<Ty, Vec<TypeError>>, errs: &mut Vec<TypeError>) -> 
     }
 }
 
-/// The section 5.6 exception: an enum value compared to a string literal,
+/// The section 5.7 exception: an enum value compared to a string literal,
 /// validating the literal against the variant set. `None` if `value` is not an
 /// enum or `other` is not a string literal.
 fn enum_vs_literal(value: &Ty, other: &Expr) -> Option<Result<Ty, Vec<TypeError>>> {

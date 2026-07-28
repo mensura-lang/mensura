@@ -120,13 +120,16 @@ literals of `06-expressions.md`.  There is no `filter` primitive; a named
 ### `map_bags` - per-key whole-bag transform
 
 ```
-data |> map_bags |k, b| (.total = sum b.credits)
+data |> map_bags |k, b| (.total = bag.sum b.credits)
 ```
 
-The key-first lambda receives the key and the whole bag at it, presented
-as a row whose cells are bags (so `b.credits` is the bag of `credits` across
-the rows at the key, a cardinality-many cell reduced here by `sum`).  Empty
-bags are skipped, so the lambda always sees a non-empty bag.  Content: the output columns are those of
+The key-first lambda receives the key and the **fiber** `b`, the bag of rows
+at that key (ADR 0031).  Member access on it is projection, defined by
+`b.x == map (|r| r.x) b`, so `b.credits` is the bag of `credits` across the
+rows at the key, reduced here by `bag.sum`; `#b` is the group's row count, and
+a reduction's mapper over `b` itself sees a whole row.  Empty
+bags are skipped, so the lambda always sees a non-empty bag.  Content: the
+output columns are those of
 the return.  Cardinality: **inferred from the return** - returning a single
 record yields `singletons` (one row per key, the `aggregate` shape, and it is
 what later lets `pivot` satisfy its `singletons` precondition); returning a
@@ -306,7 +309,7 @@ established in one of three ways:
   enrollments
   |> completeness_check { assert row_count open_offerings == 0 }
   |> demote course
-  |> map_bags |k, b| (.total_credits = sum b.credits)
+  |> map_bags |k, b| (.total_credits = bag.sum b.credits)
   ```
 
 - **`@complete_over(col)`** on a source store, establishing the fact globally so
@@ -326,11 +329,13 @@ Two orthogonal qualifiers are threaded by every operation above:
 `bag`) and **totality** (column-scoped: whether a value is known or may be
 missing, `Cell = Option`).
 The rules that consume them are stated in `06-expressions.md`: a scalar
-operator requires a **single known value** (`card 1` and not missing), the bag
-combinators (`sum`, `min`, `max`, `count`, `any`, `all`, `in`; `mean` is
-derived, `sum(x) / to_real(count(x))`, ADR 0014) bring a many-row bag
-down to one value, and a missing value is made known by a default, an
-aggregate, or an `is known` narrowing.  At the pipeline level `pivot` is
+operator requires a **single known value** (`card 1` and not missing);
+reduction brings a many-row bag down to one value (`fold` is the primitive,
+`#` counts, `in` tests membership, and the named reductions are `bag` module
+bindings such as `bag.sum`, with `mean` derived as
+`bag.sum b.x / to_real (#b.x)`; ADR 0031); and a missing value is made known
+by a default, a reduction, or an `is known` narrowing.  At the pipeline
+level `pivot` is
 admitted only at `singletons` (at most one row per key).
 ADR 0010 settles the total/optional axis and its `?` marker; how
 `singletons` / `bag` (and the derived `exhaustive`) are written in a type
@@ -359,7 +364,7 @@ is.  A pipeline is a description of a table; the hosting site
 ```
 readings
 |> promote machine
-|> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
+|> map_bags |k, b| (.temp_mean = bag.sum b.temperature / to_real (#b.temperature), .temp_max = bag.max b.temperature)
 ```
 
 `promote` adds `machine` to the key (content: key grows; cardinality and
@@ -373,7 +378,7 @@ safely; it type-checks.
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }
 |> demote course
-|> map_bags |k, b| (.total_credits = sum b.credits)
+|> map_bags |k, b| (.total_credits = bag.sum b.credits)
 ```
 
 The check **establishes** the fact; `demote course` **propagates** it to

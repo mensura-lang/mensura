@@ -131,8 +131,10 @@ for units.
 A lambda is an anonymous function written `|x| e`, with parameters
 between bars and the body after, following Rust.  Multiple parameters
 are comma-separated: `|a, b| a + b`.  Lambdas are the explicit way to
-give an operation a per-element computation, for example a quantifier body
-`|x| x > 30`.  Pipeline lambdas are **key-first**, binding the key before the
+give an operation a per-element computation, for example a reduction's
+mapper `|v| v * v`, or a predicate folded with `` `or` `` to quantify
+(`fold `or` (|v| v > 30) b.readings`).  Pipeline lambdas are **key-first**,
+binding the key before the
 value: `flat_map`/join `|k, r|`, `map_bags |k, b|`, `split |k|` (ADR 0015, and
 `07-pipelines.md`).  `|_, r|` ignores the key.
 
@@ -248,15 +250,18 @@ bridges either gap:
   `/` is `real`-only, `==`/`!=` is not defined on `real`, and ordering
   (`< <= > >=`) and `min`/`max` apply to the orderable domains (`int`,
   `real`, `date`).
-- **Bag combinators** are the explicit way to consume a bag.  Membership
-  `v in b.tags` tests it; `count`, `any`, and `all` summarize it; the
-  aggregates `sum`, `min`, `max` reduce it to one value (`mean` is
-  derived, `sum(x) / to_real(count(x))`; ADR 0014).  These return a
-  single value.  A literal is a single value.
+- **Reduction** is the explicit way to consume a bag.  `fold` is the
+  primitive (`fold `+` (|v| v) b.credits`), `#` counts (`#b.credits`), and
+  membership `v in b.tags` tests.  The named reductions (`bag.sum`,
+  `bag.min`, `bag.max`, `bag.any`, `bag.all`, and `bag.prod`) are const
+  bindings in the `bag` module rather than builtins, so they are imported
+  (ADR 0031, `12-modules-and-imports.md`); `mean` is derived,
+  `bag.sum b.x / to_real (#b.x)`.  Each returns a single value.  A literal
+  is a single value.
 
 So a bag is always collapsed deliberately, by reduction
-(`max b.readings > 30.0`) or by quantification (`any (|x| x > 30)
-b.readings`), and never by accident.  A possibly missing value is
+(`bag.max b.readings > 30.0`, or `fold `>>` (|v| v) b.readings` written
+out) and never by accident.  A possibly missing value is
 eliminated just as deliberately, by a default or coalesce, by an
 aggregate defined over missingness, or by narrowing (below); it never
 silently propagates.  Values are **total** (always known) by default; an
@@ -353,7 +358,7 @@ is the bag of readings across the key, so a scalar comparison on it would be
 a type error and `max` collapses it first):
 
 ```
-|_, b| max b.readings > 30.0
+|_, b| bag.max b.readings > 30.0
 ```
 
 A membership test over such a bag:
@@ -386,18 +391,20 @@ empty collection `()` drops a row, the value row `r` keeps it; ADR 0015):
   catalogued in the pipeline document.  Filtering is not a primitive: it is
   `flat_map |k, r| if c then r else ()` (ADR 0015).  `|>` appears in the precedence table here because it is one
   language, but its consumers live there.
-- **Row cardinality.**  `#row` (and possibly a general cardinality
-  operator `#x`) is reserved for a later round; for now only value-level
-  `is known` / `is missing` exist.
-- **The builtin catalogue per context.**  Exactly which ambient names
-  and aggregates each site admits (`now`, `env`, `lookup`, `prev`,
-  `next`, `sum`, `min`, `max`, `count`, `any`, `all`, `to_real`, ...) is
-  fixed per site as those sites are specified, not by this document.
-  The seven intrinsic base units (`second`, `meter`, `kilogram`,
-  `ampere`, `kelvin`, `mole`, `candela`) are ambient value bindings in
-  every expression context, and top-level `let` bindings and imported
+- **The builtin catalogue per context.**  Exactly which ambient names each
+  site admits (`now`, `env`, `lookup`, `prev`, `next`, ...) is fixed per site
+  as those sites are specified, not by this document.  What is settled is the
+  **initial environment**, which ADR 0031 Decision 8 made small: the seven
+  intrinsic base units (`second`, `meter`, `kilogram`, `ampere`, `kelvin`,
+  `mole`, `candela`), the reduction primitives `fold` and `map`, `to_real`,
+  and the pipeline operations.  Nothing else, and in particular no aggregate
+  vocabulary: those are const bindings in the `bag` module and must be
+  imported, so ADR 0027 Decision 4's "nothing else is in scope that you did
+  not import" holds without exception.  Top-level `let` bindings and imported
   module members join the context the same way
-  (`11-physical-units.md`, `12-modules-and-imports.md`).
+  (`11-physical-units.md`, `12-modules-and-imports.md`).  `to_real` is the one
+  remaining word-builtin that is neither a primitive nor a pipeline
+  operation; by the same logic it belongs in a future `math` module.
 - **ADR follow-up.**  The authorization examples in
   `docs/decisions/0005-identity-and-authorization.md`, written today as
   `lookup(principal)` and `@auto(auth.id)`, are still to be re-spelled to
