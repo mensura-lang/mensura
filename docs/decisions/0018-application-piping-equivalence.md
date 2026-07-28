@@ -126,4 +126,8 @@ Neutral:
 - **General application in the value layer.**  `expr_check` types only a
   fixed set of builtins today; the shared application path presumes a
   general application rule, whose surface (user-defined functions, partial
-  application outside table context) is not yet specified.
+  application outside table context) is not yet specified.  *Settled:*
+  `docs/decisions/0030-const-functions.md`: const bindings may be lambdas,
+  multi-parameter lambdas are tupled (currying is written explicitly), and
+  every application is saturated or an error, so partial binding is
+  ordinary application of a curried function.

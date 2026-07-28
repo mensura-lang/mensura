@@ -363,6 +363,30 @@ is a type error.  The conditional is an ordinary value, valid in a field value
 (`if c then r else ()`); it is the introduction site for the deferred `is
 known` narrowing.
 
+### 5.8  Const functions (ADR 0030)
+
+A top-level const binding may be a **function**: a lambda evaluated at
+compile time to a closure (`12-modules-and-imports.md`).  Its type is a
+function value carrying the closure itself; parameters are unannotated, so
+no signature is inferred at the definition.  A **saturated application** is
+typed by substituting the argument expressions into the body and typing the
+result in the caller's context, which is exact per call site: `add1 1` is
+`int`, `add1 r.temp` is `temperature[real]`.
+
+Two rules fix the surface.  A multi-parameter lambda is **tupled**
+(`|a, b| e` binds one 2-tuple parameter; the pipeline lambdas `|k, r|` /
+`|k, b|` read the same way), so currying is written explicitly as nested
+lambdas.  And **every application is saturated or an error**: partial
+binding is ordinary application of a curried function (`add 1` where
+`add` is `|a| |b| a + b`), never an arity-tracking mechanism.
+
+A function value never enters a column (a function-valued record field is
+rejected), cannot be ascribed (the type grammar has no arrow), and cannot
+be *created* in a view body, where lambdas remain pipeline-operation
+arguments; a view body may *use* a const function by name.  Recursion is a
+compile error.  This realizes section 5.2's "partial application is an
+ordinary value" for user functions and settles ADR 0018's open question 2.
+
 ## 6.  Pipeline primitive rules
 
 Consolidates `07-pipelines.md`.  A pipeline is an ordinary expression of table

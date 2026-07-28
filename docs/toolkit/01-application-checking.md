@@ -92,11 +92,14 @@ The checker routes the two forms onto one path; it does **not** rewrite
 ## What this does not add
 
 This realizes the equivalence for the operations the checker already knows.
-It does **not** introduce general application: user-defined functions,
-partial application held as a value, or application of anything outside the
-built-in operation sets.  That surface is ADR 0018's open question 2 and
-stays open.  The practical consequence is the saturation guard above: peeling
-the trailing argument as the input is sound only for a saturated stage, so an
+When first written, it did **not** introduce general application:
+user-defined functions and partial application held as a value were ADR
+0018's open question 2.  That question is now settled by
+`docs/decisions/0030-const-functions.md`: a const binding may be a lambda,
+and the value layer applies it by the saturated-or-error rule (a curried
+function makes partial binding ordinary application).  The pipeline side is
+unchanged: the saturation guard above still holds, since peeling the
+trailing argument as the input is sound only for a saturated stage, so an
 unsaturated bare form such as `promote cols` with no table reports "a
 pipeline operation needs an input" rather than being typed as a partial
-application.
+application.  Pipeline operations remain builtins, not const functions.
