@@ -1,3 +1,5 @@
+import bag
+
 unit Machine {
   id: string
 }
@@ -8,5 +10,5 @@ store readings {
 view hottest {
   readings
   |> assume { complete }
-  |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+  |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin)
 }

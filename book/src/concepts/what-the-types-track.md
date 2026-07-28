@@ -101,10 +101,12 @@ completeness is *established* upstream, *propagated* by the rekey, and
 *consumed* by the reduction:
 
 ```mensura,ignore
+import bag
+
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }  // establish
-|> demote course                                    // propagate to the coarser key
-|> map_bags |k, b| (.total_credits = sum b.credits) // consume
+|> demote course                                        // propagate to the coarser key
+|> map_bags |k, b| (.total = bag.sum b.credits)         // consume
 ```
 
 One case discharges for free: a reduction over a default store's own key

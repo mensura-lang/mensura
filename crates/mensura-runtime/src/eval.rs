@@ -623,8 +623,14 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
     })
 }
 
-/// The statically known domain of a `map_bags` field: a window copies its
-/// column, the aggregates have fixed or copied domains.
+/// The statically known domain of a `map_bags` field, used to name the output
+/// column when no row is available to infer it from.  A window copies its
+/// column; `#` is always an `int`; `to_real` is always a `real`.
+///
+/// The six aggregates used to have entries here.  They are `bag` module
+/// bindings now (ADR 0031, Decision 8), so by the time this runs they have
+/// already beta-reduced to a `fold` spine, whose domain depends on the
+/// mapper and is left to the data.
 fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<ColumnType> {
     let member_domain = |e: &Expr| match &e.kind {
         ExprKind::Member(base, field) => match &base.kind {
@@ -637,17 +643,9 @@ fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<Co
         },
         _ => None,
     };
-    let applied = |head: &Expr, arg: &Expr| {
-        let ExprKind::Name(name) = &head.kind else {
-            return None;
-        };
-        match name.as_str() {
-            "count" => Some(ColumnType::Int),
-            "any" | "all" => Some(ColumnType::Bool),
-            "to_real" => Some(ColumnType::Real),
-            "sum" | "min" | "max" => member_domain(arg),
-            _ => None,
-        }
+    let applied = |head: &Expr| match &head.kind {
+        ExprKind::Name(name) if name == "to_real" => Some(ColumnType::Real),
+        _ => None,
     };
     match &expr.kind {
         ExprKind::Member(..) => member_domain(expr),
@@ -656,11 +654,11 @@ fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<Co
         ExprKind::App(..) => {
             let (head, args) = flatten_app(expr);
             match args[..] {
-                [arg] => applied(head, arg),
+                [_] => applied(head),
                 _ => None,
             }
         }
-        ExprKind::Binary(BinOp::Pipe, lhs, rhs) => applied(rhs, lhs),
+        ExprKind::Binary(BinOp::Pipe, _, rhs) => applied(rhs),
         _ => None,
     }
 }
@@ -1120,8 +1118,11 @@ fn combine(op: &str, a: Value, b: Value) -> Result<Value, EvalError> {
     }
 }
 
-/// The value-level builtins: `fold`, `map`, `to_real`, and the bag aggregates
-/// (`x |> op` and `op x` converge here, ADR 0018).
+/// The value-level builtins: the reduction primitives `fold` and `map`, and
+/// `to_real` (`x |> op` and `op x` converge here, ADR 0018).  The derived
+/// reductions are gone from here: `bag.sum` and friends beta-reduce to a
+/// `fold` spine at lowering, so the runtime only ever sees the primitive
+/// (ADR 0031, Decision 8).
 fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, EvalError> {
     let ExprKind::Name(name) = &head.kind else {
         return internal("application of a non-name");
@@ -1157,46 +1158,7 @@ fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, E
                 })
                 .collect::<Result<_, _>>()?,
         )),
-        (agg, RtVal::Bag(vs)) => Ok(RtVal::V(aggregate(agg, &vs)?)),
         _ => internal(format!("`{name}` applied to an unsupported value")),
-    }
-}
-
-/// A bag aggregate (section 5.4, ADR 0014).  Groups are never empty (they
-/// arise from rows), and the checker requires a total bag, so elements are
-/// never missing.
-fn aggregate(name: &str, values: &[Value]) -> Result<Value, EvalError> {
-    let [first, rest @ ..] = values else {
-        return internal(format!("`{name}` over an empty bag"));
-    };
-    match name {
-        "count" => Ok(Value::Int(values.len() as i64)),
-        "sum" => rest.iter().try_fold(first.clone(), |acc, v| {
-            arithmetic(BinOp::Add, acc, v.clone())
-        }),
-        "min" | "max" => {
-            let mut best = first.clone();
-            for v in rest {
-                let ord = compare(v, &best)?;
-                if (name == "min" && ord.is_lt()) || (name == "max" && ord.is_gt()) {
-                    best = v.clone();
-                }
-            }
-            Ok(best)
-        }
-        "any" | "all" => {
-            let mut acc = name == "all";
-            for v in values {
-                let Value::Bool(b) = v else {
-                    return internal(format!("`{name}` on a non-boolean bag"));
-                };
-                acc = if name == "any" { acc || *b } else { acc && *b };
-            }
-            Ok(Value::Bool(acc))
-        }
-        other => err(format!(
-            "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
-        )),
     }
 }
 
@@ -1443,6 +1405,7 @@ mod tests {
     }
 
     const MACHINES: &str = r#"
+        import bag
         unit Machine { id: string }
         enum MachineStatus { "operational" "degraded" "failure" }
         store machines {
@@ -1607,7 +1570,7 @@ mod tests {
         let rows = eval(
             r#"view stats {
                  let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
-                 doubled |> map_bags |_, b| (.total = sum b.hours, .n = count b.hours, .worst = max b.hours)
+                 doubled |> map_bags |_, b| (.total = bag.sum b.hours, .n = #b.hours, .worst = bag.max b.hours)
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
@@ -1655,7 +1618,7 @@ mod tests {
         // the checker applies it through a `Member` head, lowering
         // beta-reduces the qualified call, and the runtime folds.
         let rows = eval_over(
-            &format!("import bag\n{MACHINES}"),
+            MACHINES,
             r#"view summary {
                  let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
                  doubled |> map_bags |_, b| (.hottest = bag.max b.hours, .total = bag.sum b.hours)
@@ -1734,7 +1697,7 @@ mod tests {
     #[test]
     fn cardinality_of_the_fiber_counts_the_groups_rows() {
         // ADR 0031, Decision 1's headline: `#b` is the group's row count,
-        // where today one writes `count b.x` and arbitrarily picks a column.
+        // where today one writes `#b.x` and arbitrarily picks a column.
         // It agrees with every projection, since projection preserves
         // cardinality.
         let rows = eval(

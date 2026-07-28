@@ -45,7 +45,7 @@ operations a value of that type admits.
   Arithmetic is strict: both operands must be the *same* numeric type, with no
   silent `int`-to-`real` conversion, and `/` (which can produce a fraction) is
   defined on `real` only.  Convert explicitly with `to_real` when you need to,
-  for example `sum(g.x) / to_real(count(g.x))`.
+  for example `bag.sum b.x / to_real (#b.x)`.
 - **enumerable** types have a finite, listable set of values.  Only `enum`
   qualifies; this is what lets a reshape spread the values across column names.
 

@@ -2,6 +2,8 @@
 // not carry.  `HasMin` demands `temp_min: real`, but the pipeline produces only
 // `temp_max`, so the `: Shape` conformance check fails
 // (docs/language/10-views.md, "Constraining a view with a shape").
+import bag
+
 unit Machine {
   id: string
 }
@@ -16,5 +18,5 @@ store readings {
 }
 
 view machine_summary : HasMin {
-  readings |> map_bags |k, b| (.temp_max = max b.temperature)
+  readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
 }

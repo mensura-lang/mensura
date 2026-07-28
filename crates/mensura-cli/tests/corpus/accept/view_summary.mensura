@@ -1,5 +1,7 @@
 // Accepted: a view that summarizes a store with a Tier A pipeline
 // (docs/language/10-views.md).
+import bag
+
 unit Machine {
   id: string
 }
@@ -10,5 +12,5 @@ store readings {
 }
 
 view machine_summary {
-  readings |> map_bags |k, b| (.temp_max = max b.temperature)
+  readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
 }

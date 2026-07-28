@@ -269,12 +269,11 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         // Decision 4) and join the collision rule: now that a binding can
         // be a function (ADR 0030), `let sum { |x| x }` would otherwise
         // silently shadow the aggregate in application head position.
-        // `fold` and `map` join the list as the ADR 0031 primitives; the six
-        // aggregates leave it when the `bag` module lands and their names
-        // return to users (ADR 0031, Decision 8).
-        const EXPR_BUILTINS: [&str; 9] = [
-            "sum", "min", "max", "count", "any", "all", "to_real", "fold", "map",
-        ];
+        // The six aggregates have left (ADR 0031, Decision 8): they are const
+        // bindings in `bag` now, so `sum`, `min`, `max`, `any`, `all`, and
+        // `count` are ordinary names a user may declare.  The protection
+        // shrinks with the intrinsics, and covers only what is still ambient.
+        const EXPR_BUILTINS: [&str; 3] = ["to_real", "fold", "map"];
         if EXPR_BUILTINS.contains(&name.name.as_str()) {
             errors.push(ResolveError::new(
                 format!(
@@ -2548,9 +2547,10 @@ mod tests {
     #[test]
     fn view_body_is_type_checked() {
         let ok = r#"
+            import bag
             unit Machine { id: string }
             store readings { unit { Machine } attr { temperature: real } }
-            view machine_summary { readings |> map_bags |k, b| (.temp_max = max b.temperature) }
+            view machine_summary { readings |> map_bags |k, b| (.temp_max = bag.max b.temperature) }
         "#;
         resolve_str(ok).expect("a valid view resolves");
 
@@ -2566,6 +2566,7 @@ mod tests {
     // A summarizing view whose output key is `Machine`'s key and whose one
     // non-key column is `temp_max: real` (`docs/language/10-views.md`).
     const SUMMARY_VIEW: &str = r#"
+        import bag
         unit Machine { id: string }
         store readings { unit { Machine } attr { temperature: real } }
     "#;
@@ -2578,7 +2579,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view machine_summary : Tabular[Machine] {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying Machine's key conforms");
@@ -2593,7 +2594,7 @@ mod tests {
             unit Site {{ code: string }}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view v : Tabular[Site] {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2612,7 +2613,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: real }} }}
             view machine_summary : HasMax {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying temp_max conforms");
@@ -2624,7 +2625,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMin {{ attr {{ temp_min: real }} }}
             view v : HasMin {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2640,7 +2641,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: string }} }}
             view v : HasMax {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2654,6 +2655,7 @@ mod tests {
 
     // A bag store: the machine is the entity, its readings recur.
     const BAG_READINGS: &str = r#"
+        import bag
         unit Machine { id: string }
         store readings {
           unit { Machine }
@@ -2715,7 +2717,7 @@ mod tests {
         // fact) discharges it.
         let bad = format!(
             "{BAG_READINGS}
-            view stats {{ readings |> map_bags |k, b| (.max_kelvin = max b.kelvin) }}"
+            view stats {{ readings |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin) }}"
         );
         let errs = errors(&bad);
         assert!(
@@ -2728,7 +2730,7 @@ mod tests {
             "{BAG_READINGS}
             view stats {{
               readings |> assume {{ complete }}
-                       |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+                       |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin)
             }}"
         );
         let program = resolve_program(&ok).expect("assume discharges the reducer");
@@ -2983,6 +2985,7 @@ mod tests {
         // intrinsics type inside view bodies.
         let program = resolve_program(
             r#"
+            import bag
             unit Machine { id: string }
             store readings {
               unit { Machine }
@@ -2990,7 +2993,7 @@ mod tests {
             }
             view hottest {
               readings |> assume { complete }
-                       |> map_bags |_, b| (.max_temperature = max b.temperature)
+                       |> map_bags |_, b| (.max_temperature = bag.max b.temperature)
             }
         "#,
         )
@@ -3513,19 +3516,30 @@ mod tests {
 
     #[test]
     fn expression_builtins_cannot_be_redeclared() {
-        // Now that a binding can be a function (ADR 0030), `let sum ...`
-        // would shadow the aggregate in head position; the resolver's
-        // collision rule forbids it (ADR 0027, Decision 3).
-        let errs = errors("let sum { |x| x }");
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`sum` is an ambient builtin"))
-        );
-        let errs = errors("let to_real { 1.0 }");
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`to_real` is an ambient builtin"))
-        );
+        // A binding that would shadow an ambient builtin in head position is
+        // an error (ADR 0027, Decision 3).  The protection covers exactly
+        // what is still ambient, which after ADR 0031 Decision 8 is the
+        // primitives and `to_real`.
+        for name in ["to_real", "fold", "map"] {
+            let errs = errors(&format!("let {name} {{ |x| x }}"));
+            assert!(
+                errs.iter().any(|e| e
+                    .message
+                    .contains(&format!("`{name}` is an ambient builtin"))),
+                "`{name}` should still be protected"
+            );
+        }
+        // And the six aggregates are *not* protected any more: they left the
+        // initial environment with the `bag` module, so their names returned
+        // to users (ADR 0031, Decision 8, and its "Positive" consequence).
+        // `docs/language/03-shapes.md`'s `let count = ...` example is legal
+        // again because of exactly this.
+        for name in ["sum", "min", "max", "count", "any", "all"] {
+            assert!(
+                resolve_str(&format!("let {name} {{ |x| x }}")).is_ok(),
+                "`{name}` should be an ordinary name now"
+            );
+        }
     }
 
     #[test]

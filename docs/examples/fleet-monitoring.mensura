@@ -14,6 +14,8 @@
 // The SI unit library: symbols, prefixes, and named derived units as
 // ordinary dimensioned constants (ADR 0028).  A bare import is bundled with
 // the toolchain; members are qualified (`si.km`).
+import bag
+
 import si
 
 // A dimensioned threshold constant: `kelvin` is an intrinsic base unit, so
@@ -93,7 +95,7 @@ store readings {
 // `max_temperature` is `temperature[real]` too.
 view machine_temperature : Tabular[Machine] {
   readings |> assume { complete }
-           |> map_bags |k, b| (.max_temperature = max b.temperature)
+           |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 }
 
 // Dimensional arithmetic in a view body: the comparison type-checks because

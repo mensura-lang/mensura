@@ -6,11 +6,15 @@
 //! on the first. Operators are gated by the scalar domain's properties
 //! (equatable / orderable / numeric); typing is strict, with no `int`/`real`
 //! coercion. The `|>` pipe routes to the same application path as juxtaposition
-//! (ADR 0018, `docs/toolkit/01-application-checking.md`), over the built-in
-//! operations (`to_real`, the aggregates) and const functions (ADR 0030): a
-//! name of function type applies by the saturated-or-error rule, its body
-//! re-typed at each call site.  Lambdas as *values in view bodies*,
-//! record/tuple literals, and `is known` narrowing remain deferred.
+//! (ADR 0018, `docs/toolkit/01-application-checking.md`), over the intrinsics
+//! (`fold` and `map`, the reduction primitives of ADR 0031; `to_real`) and
+//! const functions (ADR 0030), whether named bare or qualified by a module: a
+//! function value applies by the saturated-or-error rule, and a const
+//! function's body re-types at each call site.  The derived reduction
+//! vocabulary (`sum`, `min`, ...) is *not* here: it is const bindings in the
+//! bundled `bag` module, imported like any other (ADR 0031, Decision 8).
+//! Lambdas as *values in view bodies*, record/tuple literals, and `is known`
+//! narrowing remain deferred.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -339,18 +343,6 @@ impl TypeError {
     }
 }
 
-/// The bag aggregate builtins in scope (section 5.4). `mean` is not a primitive
-/// (ADR 0014): it is `sum(x) / to_real(count(x))`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Agg {
-    Sum,
-    Min,
-    Max,
-    Count,
-    Any,
-    All,
-}
-
 /// The ambient value environment (`12-modules-and-imports.md`): names in
 /// scope at every expression site before a lambda binds its parameters.
 /// It holds the seven intrinsic base units ([`intrinsics`]), and the
@@ -400,7 +392,6 @@ pub fn intrinsics() -> Ambient {
 /// collision rule is the resolver's, not this layer's).
 pub struct Context {
     names: BTreeMap<String, Ty>,
-    aggregates: BTreeMap<String, Agg>,
     /// The pristine ambient (intrinsics, top-level bindings, modules),
     /// before any lambda parameters.  A const function's body types
     /// against this, never against the caller's lambda scope: the
@@ -424,7 +415,6 @@ impl Context {
                 rname,
                 value_record(table),
             ),
-            aggregates: builtin_aggregates(),
             ambient: ambient.clone(),
             fn_depth: 0,
         }
@@ -442,7 +432,6 @@ impl Context {
     pub fn bag(ambient: &Ambient, kname: &str, bname: &str, table: &TableType) -> Context {
         Context {
             names: bind2(ambient, kname, key_record(table), bname, fiber(table)),
-            aggregates: builtin_aggregates(),
             ambient: ambient.clone(),
             fn_depth: 0,
         }
@@ -453,7 +442,6 @@ impl Context {
     pub fn key(ambient: &Ambient, param: &str, table: &TableType) -> Context {
         Context {
             names: bind(ambient, param, key_record(table)),
-            aggregates: builtin_aggregates(),
             ambient: ambient.clone(),
             fn_depth: 0,
         }
@@ -461,10 +449,6 @@ impl Context {
 
     pub fn lookup(&self, name: &str) -> Option<&Ty> {
         self.names.get(name)
-    }
-
-    pub fn aggregate(&self, name: &str) -> Option<Agg> {
-        self.aggregates.get(name).copied()
     }
 
     /// The context a const function's body types in: the pristine ambient,
@@ -482,7 +466,6 @@ impl Context {
         }
         Context {
             names,
-            aggregates: builtin_aggregates(),
             ambient: self.ambient.clone(),
             fn_depth: self.fn_depth + 1,
         }
@@ -506,20 +489,6 @@ fn bind2(ambient: &Ambient, a: &str, aty: Ty, b: &str, bty: Ty) -> BTreeMap<Stri
         names.insert(b.to_string(), bty);
     }
     names
-}
-
-fn builtin_aggregates() -> BTreeMap<String, Agg> {
-    [
-        ("sum", Agg::Sum),
-        ("min", Agg::Min),
-        ("max", Agg::Max),
-        ("count", Agg::Count),
-        ("any", Agg::Any),
-        ("all", Agg::All),
-    ]
-    .into_iter()
-    .map(|(name, agg)| (name.to_string(), agg))
-    .collect()
 }
 
 /// The value row `r` of a table (ADR 0015): the non-key columns as single
@@ -692,9 +661,12 @@ fn flatten_app(expr: &Expr) -> (&Expr, Vec<&Expr>) {
 /// `|>` (`piped` is `Some`) or as a trailing argument in a bare application
 /// `op arg` (`piped` is `None`). Both spellings converge here, so `x |> op` and
 /// `op x` are checked identically (ADR 0018,
-/// `docs/toolkit/01-application-checking.md`). The applicable operations are the
-/// `to_real` conversion and the aggregates (section 5.4, ADR 0014), all 1-ary;
-/// general application (user-defined functions, partial application) is deferred.
+/// `docs/toolkit/01-application-checking.md`).
+///
+/// The head may be a const function, a reduction primitive (`fold`, `map`), or
+/// `to_real`, and may be spelled bare or qualified by a module (`bag.max`,
+/// ADR 0031 Decision 8).  Only `to_real` is still 1-ary: the primitives are
+/// curried, so a partial application is an ordinary value.
 fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty, Vec<TypeError>> {
     let (head, mut args) = flatten_app(op_expr);
     if let Some(input) = piped {
@@ -749,13 +721,30 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
     if name == "to_real" {
         return type_to_real(ctx, arg);
     }
-    match ctx.aggregate(name) {
-        Some(agg) => type_aggregate(ctx, agg, name, arg),
-        None => Err(vec![TypeError::new(
-            "unsupported in this increment",
-            head.span,
-        )]),
-    }
+    let _ = arg;
+    Err(vec![TypeError::new(
+        retired_aggregate_hint(name).unwrap_or_else(|| "unsupported in this increment".to_string()),
+        head.span,
+    )])
+}
+
+/// The six aggregates left the initial environment (ADR 0031, Decision 8):
+/// with `fold` a builtin there is no reason to keep so many *names* in the
+/// language, and ADR 0027 Decision 4's "nothing else is in scope that you did
+/// not import" now holds without the exception it used to carry.  The names
+/// are ordinary again, so `unknown name` is the honest diagnostic; this hint
+/// exists because an unqualified `sum b.x` is the single most likely thing an
+/// existing program says.
+fn retired_aggregate_hint(name: &str) -> Option<String> {
+    let replacement = match name {
+        "sum" | "min" | "max" | "any" | "all" => format!("`bag.{name}` after `import bag`"),
+        "count" => "`#` (as in `#b` or `#b.column`)".to_string(),
+        "mean" => "`bag.sum b.x / to_real (#b.x)`".to_string(),
+        _ => return None,
+    };
+    Some(format!(
+        "`{name}` is no longer a builtin: it is {replacement} (ADR 0031)"
+    ))
 }
 
 /// Type an application head that is a member access (`bag.max`).  Separate
@@ -1174,54 +1163,6 @@ fn type_to_real(ctx: &Context, arg: &Expr) -> Result<Ty, Vec<TypeError>> {
     }
 }
 
-/// A bag aggregate (section 5.4). Requires a total bag; the result domain is
-/// per the aggregate (ADR 0014): `count -> int`; `sum` preserves a numeric
-/// domain; `min`/`max` preserve an orderable domain; `any`/`all -> bool`.
-fn type_aggregate(ctx: &Context, agg: Agg, name: &str, arg: &Expr) -> Result<Ty, Vec<TypeError>> {
-    let (domain, opt) = match type_expr(ctx, arg)? {
-        Ty::Bag { domain, opt } => (domain, opt),
-        _ => {
-            return Err(vec![TypeError::new(
-                format!("`{name}` expects a bag"),
-                arg.span,
-            )]);
-        }
-    };
-    if opt == Optionality::Optional {
-        return Err(vec![TypeError::new(
-            format!("`{name}` requires a total bag; this column may be missing values"),
-            arg.span,
-        )]);
-    }
-    match agg {
-        Agg::Count => Ok(total(ColumnType::Int)),
-        Agg::Sum if domain.is_numeric() => Ok(total(domain)),
-        Agg::Sum => Err(vec![TypeError::new(
-            format!(
-                "`sum` expects a numeric bag, found a bag of {}",
-                domain_name(&domain)
-            ),
-            arg.span,
-        )]),
-        Agg::Min | Agg::Max if domain.is_orderable() => Ok(total(domain)),
-        Agg::Min | Agg::Max => Err(vec![TypeError::new(
-            format!(
-                "`{name}` expects an orderable bag (int, real, or date), found a bag of {}",
-                domain_name(&domain)
-            ),
-            arg.span,
-        )]),
-        Agg::Any | Agg::All if domain == ColumnType::Bool => Ok(total(ColumnType::Bool)),
-        Agg::Any | Agg::All => Err(vec![TypeError::new(
-            format!(
-                "`{name}` expects a bag of booleans, found a bag of {}",
-                domain_name(&domain)
-            ),
-            arg.span,
-        )]),
-    }
-}
-
 fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     match op {
         // `+`/`-` require *equal* domains, dimension included (ADR 0026):
@@ -1567,7 +1508,7 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr) -> Result<Ty, Vec<TypeErr
         //
         // Both bag shapes count.  `#b.x` counts a projected bag, and `#b`
         // counts the fiber itself, which is the group's row count and the
-        // point of Decision 1: today one writes `count b.x` and arbitrarily
+        // point of Decision 1: today one writes `#b.x` and arbitrarily
         // picks a column.  They agree, since projection preserves cardinality.
         UnOp::Card => match type_expr(ctx, operand)? {
             Ty::Bag { .. } | Ty::Rows(_) => Ok(total(ColumnType::Int)),
@@ -1873,11 +1814,30 @@ mod tests {
     }
 
     fn row_ctx() -> Context {
-        Context::row(&intrinsics(), "k", "r", &sample_table())
+        Context::row(&test_ambient(), "k", "r", &sample_table())
     }
 
     fn bag_ctx() -> Context {
-        Context::bag(&intrinsics(), "k", "b", &sample_table())
+        Context::bag(&test_ambient(), "k", "b", &sample_table())
+    }
+
+    /// The ambient a program gets from `import bag` (ADR 0031, Decision 8).
+    /// These tests type bare expressions, so there is no `import` item to
+    /// resolve; injecting the module's env is the equivalent, and keeps the
+    /// fixtures reading as a user would write them.
+    fn test_ambient() -> Ambient {
+        let mut ambient = intrinsics();
+        let env = crate::modules::bundled("bag")
+            .expect("bag is bundled")
+            .as_ref()
+            .expect("bag resolves cleanly");
+        let members = env
+            .values
+            .iter()
+            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+            .collect();
+        ambient.insert("bag".to_string(), Ty::Record(members));
+        ambient
     }
 
     #[test]
@@ -1992,21 +1952,21 @@ mod tests {
     #[test]
     fn aggregates_have_per_domain_signatures() {
         let ctx = bag_ctx();
-        assert_eq!(ty_of(&ctx, "count b.size"), Ok(total(ColumnType::Int)));
-        assert_eq!(ty_of(&ctx, "sum b.size"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "#b.size"), Ok(total(ColumnType::Int)));
+        assert_eq!(ty_of(&ctx, "bag.sum b.size"), Ok(total(ColumnType::Int)));
         assert_eq!(
-            ty_of(&ctx, "sum b.temperature"),
+            ty_of(&ctx, "bag.sum b.temperature"),
             Ok(total(ColumnType::Real))
         );
-        assert_eq!(ty_of(&ctx, "min b.at"), Ok(total(ColumnType::Date))); // date is orderable
+        assert_eq!(ty_of(&ctx, "bag.min b.at"), Ok(total(ColumnType::Date))); // date is orderable
         assert_eq!(
-            ty_of(&ctx, "max b.temperature"),
+            ty_of(&ctx, "bag.max b.temperature"),
             Ok(total(ColumnType::Real))
         );
-        assert_eq!(ty_of(&ctx, "any b.flag"), Ok(total(ColumnType::Bool)));
+        assert_eq!(ty_of(&ctx, "bag.any b.flag"), Ok(total(ColumnType::Bool)));
         // sum on a non-numeric bag, min on a non-orderable bag.
-        assert!(ty_of(&ctx, "sum b.note").is_err());
-        assert!(ty_of(&ctx, "min b.note").is_err());
+        assert!(ty_of(&ctx, "bag.sum b.note").is_err());
+        assert!(ty_of(&ctx, "bag.min b.note").is_err());
     }
 
     #[test]
@@ -2015,7 +1975,7 @@ mod tests {
         // `mean` is gone; it is recovered from sum/count/to_real.
         assert!(ty_of(&ctx, "mean b.temperature").is_err());
         assert_eq!(
-            ty_of(&ctx, "sum b.temperature / to_real (count b.temperature)"),
+            ty_of(&ctx, "bag.sum b.temperature / to_real (#b.temperature)"),
             Ok(total(ColumnType::Real))
         );
     }
@@ -2023,7 +1983,7 @@ mod tests {
     #[test]
     fn aggregates_require_a_total_bag() {
         let ctx = bag_ctx();
-        let errs = ty_of(&ctx, "sum b.peak").expect_err("optional bag");
+        let errs = ty_of(&ctx, "bag.sum b.peak").expect_err("optional bag");
         assert!(errs[0].message.contains("total bag"));
     }
 
@@ -2232,10 +2192,17 @@ mod tests {
 
     #[test]
     fn application_equals_pipe_for_aggregate() {
+        // ADR 0018 holds for a *qualified* head too: the module member is the
+        // operation and the piped input is its trailing argument.
         let ctx = bag_ctx();
         assert_eq!(
-            ty_of(&ctx, "sum b.temperature"),
-            ty_of(&ctx, "b.temperature |> sum"),
+            ty_of(&ctx, "bag.sum b.temperature"),
+            ty_of(&ctx, "b.temperature |> bag.sum"),
+        );
+        // And for the primitive it is derived from.
+        assert_eq!(
+            ty_of(&ctx, "fold `+` (|v| v) b.temperature"),
+            ty_of(&ctx, "b.temperature |> fold `+` (|v| v)"),
         );
     }
 
@@ -2330,22 +2297,19 @@ mod tests {
     fn aggregates_preserve_the_dimension() {
         let ctx = bag_ctx();
         assert_eq!(
-            ty_of(&ctx, "max b.kelvin_reading"),
+            ty_of(&ctx, "bag.max b.kelvin_reading"),
             Ok(total(quantity("temperature")))
         );
         assert_eq!(
-            ty_of(&ctx, "sum b.kelvin_reading"),
+            ty_of(&ctx, "bag.sum b.kelvin_reading"),
             Ok(total(quantity("temperature")))
         );
-        assert_eq!(
-            ty_of(&ctx, "count b.kelvin_reading"),
-            Ok(total(ColumnType::Int))
-        );
+        assert_eq!(ty_of(&ctx, "#b.kelvin_reading"), Ok(total(ColumnType::Int)));
         // A mean-style ratio: dimensioned sum over a dimensionless count.
         assert_eq!(
             ty_of(
                 &ctx,
-                "sum b.kelvin_reading / to_real (count b.kelvin_reading)"
+                "bag.sum b.kelvin_reading / to_real (#b.kelvin_reading)"
             ),
             Ok(total(quantity("temperature")))
         );
