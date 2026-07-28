@@ -1,0 +1,5 @@
+// Reject (resolve): applying a non-function (ADR 0030, Decision 3).  The
+// spine `addt (1, 2) 3` saturates the tupled function and then applies its
+// scalar result, which is not a function.
+let addt { |a, b| a + b }
+let bad { addt (1, 2) 3 }

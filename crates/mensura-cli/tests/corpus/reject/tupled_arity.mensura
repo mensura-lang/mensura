@@ -1,0 +1,6 @@
+// Reject (resolve): partial binding of a tupled function (ADR 0030,
+// Decision 2).  `|a, b|` binds one 2-tuple parameter, so `addt 1` is a
+// shape error, not a partial application; currying is written explicitly
+// as `|a| |b| ...`.
+let addt { |a, b| a + b }
+let bad { addt 1 }

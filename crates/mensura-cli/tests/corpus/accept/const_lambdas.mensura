@@ -1,0 +1,16 @@
+// Accept: const functions with explicit currying (ADR 0030).  A lambda is
+// a const value; partial binding is ordinary application of a curried
+// function; a multi-parameter lambda is tupled and applied to a tuple.
+let add { |a| |b| a + b }
+let add1 { add 1 }
+let three { add1 2 }
+
+let addt { |a, b| a + b }
+let add1t { |a| addt (1, a) }
+let threet { add1t 2 }
+
+// Closures capture their block's locals by value and see top-level
+// bindings on demand.
+let scale { 10 }
+let f { let base = 3; |x| x * scale + base }
+let fifty_three { f 5 }

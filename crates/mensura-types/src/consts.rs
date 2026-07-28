@@ -9,6 +9,7 @@
 //! (ADR 0026, Decision 7).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mensura_syntax::{BinOp, Block, Expr, ExprKind, Ident, Span, Stmt, TypeExpr, UnOp};
 
@@ -20,43 +21,85 @@ use crate::units::Dimension;
 
 /// A compile-time constant value.  A real carries its magnitude normalized
 /// to base units together with its dimension; bare reals carry the group
-/// identity.
+/// identity.  A closure is a const function (ADR 0030): first-class in the
+/// checker, beta-reduced at lowering, never seen by the runtime.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConstValue {
     Int(i64),
     Bool(bool),
     Str(String),
     Real { magnitude: f64, dim: Dimension },
+    Closure(Arc<Closure>),
+}
+
+/// A const function value (ADR 0030).  The body is owned (cloned out of the
+/// AST) because a `ConstValue` outlives the borrowed `Program`: it is
+/// returned by value from [`eval_const_bindings`] and, for a bundled
+/// module, stored behind a `&'static ModuleEnv`.  The environment is
+/// captured **by value** at the point the lambda evaluates, since a
+/// closure may escape the block whose local `let`s it references.
+///
+/// Equality is structural and alpha-sensitive (`|a| a != |b| b`).  No
+/// language construct observes const equality; the derive exists for
+/// tests.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Closure {
+    /// The parameter list: one name, or n names for the tupled form
+    /// `|a, b| e`, which binds a single n-tuple parameter (ADR 0030,
+    /// Decision 2).
+    pub params: Vec<Ident>,
+    pub body: Expr,
+    /// The captured locals, innermost last; bound arguments are appended,
+    /// so a parameter shadows a captured local (the `Name` lookup searches
+    /// innermost-first).
+    pub env: Vec<(String, ConstValue)>,
 }
 
 impl ConstValue {
-    /// The scalar domain of this constant.
-    pub fn domain(&self) -> ColumnType {
+    /// The scalar domain of this constant; `None` for a function, which
+    /// has no `ColumnType` (functions never enter storage).
+    pub fn domain(&self) -> Option<ColumnType> {
         match self {
-            ConstValue::Int(_) => ColumnType::Int,
-            ConstValue::Bool(_) => ColumnType::Bool,
-            ConstValue::Str(_) => ColumnType::String,
-            ConstValue::Real { dim, .. } => dim.applied(),
+            ConstValue::Int(_) => Some(ColumnType::Int),
+            ConstValue::Bool(_) => Some(ColumnType::Bool),
+            ConstValue::Str(_) => Some(ColumnType::String),
+            ConstValue::Real { dim, .. } => Some(dim.applied()),
+            ConstValue::Closure(_) => None,
         }
     }
 
-    /// The expression type of this constant: a total single value.
-    pub fn ty(&self) -> Ty {
-        Ty::Value {
-            domain: self.domain(),
-            opt: Optionality::Total,
+    /// A short name for diagnostics: the domain's type name for a scalar,
+    /// `function` for a closure.
+    pub fn describe(&self) -> String {
+        match self.domain() {
+            Some(d) => crate::resolve::type_name(&d),
+            None => "function".to_string(),
         }
+    }
+
+    /// The expression type of this constant: a total single value for a
+    /// scalar.  `None` for a function until the checker's function type
+    /// lands (ADR 0030); a view body referencing a function binding is an
+    /// unknown name meanwhile.
+    pub fn ty(&self) -> Option<Ty> {
+        Some(Ty::Value {
+            domain: self.domain()?,
+            opt: Optionality::Total,
+        })
     }
 
     /// The literal expression node this constant folds to
     /// (`docs/language/12-modules-and-imports.md`: const names are
     /// constant-folded before evaluation, so the runtime never sees them).
-    pub fn literal(&self) -> ExprKind {
+    /// `None` for a function, which has no literal: a function application
+    /// is beta-reduced at lowering instead (ADR 0030, Decision 5).
+    pub fn literal(&self) -> Option<ExprKind> {
         match self {
-            ConstValue::Int(n) => ExprKind::Int(*n),
-            ConstValue::Bool(b) => ExprKind::Bool(*b),
-            ConstValue::Str(s) => ExprKind::Str(s.clone()),
-            ConstValue::Real { magnitude, .. } => ExprKind::Float(*magnitude),
+            ConstValue::Int(n) => Some(ExprKind::Int(*n)),
+            ConstValue::Bool(b) => Some(ExprKind::Bool(*b)),
+            ConstValue::Str(s) => Some(ExprKind::Str(s.clone())),
+            ConstValue::Real { magnitude, .. } => Some(ExprKind::Float(*magnitude)),
+            ConstValue::Closure(_) => None,
         }
     }
 }
@@ -87,22 +130,36 @@ pub(crate) fn eval_const_bindings(
         modules,
         done: BTreeMap::new(),
         in_progress: Vec::new(),
+        depth: 0,
         errors: Vec::new(),
     };
     for decl in decls {
         let Some(value) = ev.value_of(&decl.name.name, decl.name.span) else {
             continue;
         };
-        // Check the optional ascription against the evaluated domain.
+        // Check the optional ascription against the evaluated domain.  A
+        // function binding cannot carry one: the type grammar has no
+        // function type to ascribe (ADR 0030).
         if let Some(ty) = decl.ty {
+            let Some(domain) = value.domain() else {
+                ev.errors.push(ResolveError::new(
+                    format!(
+                        "`{}` is a function binding and cannot carry a `: type` \
+                         ascription (the type grammar has no function type)",
+                        decl.name.name,
+                    ),
+                    ty.span(),
+                ));
+                continue;
+            };
             match resolve_ascription(ty) {
-                Ok(declared) if declared == value.domain() => {}
+                Ok(declared) if declared == domain => {}
                 Ok(declared) => ev.errors.push(ResolveError::new(
                     format!(
                         "`{}` is declared `{}` but its value is `{}`",
                         decl.name.name,
                         crate::resolve::type_name(&declared),
-                        crate::resolve::type_name(&value.domain())
+                        crate::resolve::type_name(&domain)
                     ),
                     ty.span(),
                 )),
@@ -113,11 +170,23 @@ pub(crate) fn eval_const_bindings(
     (ev.done, ev.errors)
 }
 
+/// The maximum function-application nesting depth.  The definitional cycle
+/// detector cannot catch dynamic recursion (`let f { |x| f x }` evaluates
+/// to a closure without touching `f`), and the language has no loop
+/// construct, so every const divergence is application-depth divergence.
+/// A depth guard is therefore sufficient, and unlike a large step budget
+/// it is stack-safe: recursive applications nest `eval_expr` frames, so a
+/// budget big enough to be useful would overflow the Rust stack before it
+/// fired (ADR 0030, Decision 6).
+const MAX_APPLY_DEPTH: u32 = 256;
+
 struct Evaluator<'a> {
     decls: BTreeMap<&'a str, &'a ConstDecl<'a>>,
     modules: &'a BTreeMap<String, &'static ModuleEnv>,
     done: BTreeMap<String, ConstValue>,
     in_progress: Vec<String>,
+    /// Current function-application nesting depth; see [`MAX_APPLY_DEPTH`].
+    depth: u32,
     errors: Vec<ResolveError>,
 }
 
@@ -245,11 +314,107 @@ impl<'a> Evaluator<'a> {
                 let b = self.eval_expr(rhs, locals);
                 self.arith(*op, a?, b?, lhs.span, rhs.span)
             }
+            ExprKind::Lambda { params, ret, body } => {
+                if ret.is_some() {
+                    return self.fail(
+                        "a return-type ascription on a const lambda is not \
+                         supported (the type grammar has no function type)",
+                        e.span,
+                    );
+                }
+                if params.is_empty() {
+                    return self.fail("a const lambda takes at least one parameter", e.span);
+                }
+                for (i, p) in params.iter().enumerate() {
+                    if params[..i].iter().any(|q| q.name == p.name) {
+                        return self
+                            .fail(format!("duplicate lambda parameter `{}`", p.name), p.span);
+                    }
+                }
+                Some(ConstValue::Closure(Arc::new(Closure {
+                    params: params.clone(),
+                    body: (**body).clone(),
+                    env: locals.clone(),
+                })))
+            }
+            ExprKind::App(..) => {
+                let (head, args) = flatten_app(e);
+                let mut f = self.eval_expr(head, locals)?;
+                for arg in args {
+                    f = self.apply_one(f, arg, head.span, locals)?;
+                }
+                Some(f)
+            }
             _ => self.fail(
-                "not a const expression (a literal, a name, or arithmetic over them)",
+                "not a const expression (a literal, a name, a lambda, or \
+                 arithmetic and application over them)",
                 e.span,
             ),
         }
+    }
+
+    /// Apply one argument to a const function (ADR 0030, Decision 3): the
+    /// application is saturated or an error.  A one-parameter closure binds
+    /// any value; a tupled closure of n parameters requires a syntactic
+    /// n-tuple.  The body evaluates in the *captured* environment plus the
+    /// bound parameters, never in the caller's locals (lexical scoping).
+    fn apply_one(
+        &mut self,
+        f: ConstValue,
+        arg: &Expr,
+        head_span: Span,
+        locals: &mut Vec<(String, ConstValue)>,
+    ) -> Option<ConstValue> {
+        let ConstValue::Closure(c) = f else {
+            return self.fail(
+                format!(
+                    "cannot apply a value of type `{}`: it is not a function",
+                    f.describe()
+                ),
+                head_span,
+            );
+        };
+        let mut env = c.env.clone();
+        match c.params.len() {
+            1 => {
+                let v = self.eval_expr(arg, locals)?;
+                env.push((c.params[0].name.clone(), v));
+            }
+            n => match &arg.kind {
+                ExprKind::Tuple(items) if items.len() == n => {
+                    for (p, item) in c.params.iter().zip(items) {
+                        let v = self.eval_expr(item, locals)?;
+                        env.push((p.name.clone(), v));
+                    }
+                }
+                ExprKind::Tuple(items) => {
+                    return self.fail(
+                        format!("expects a tuple of {n} values, found {}", items.len()),
+                        arg.span,
+                    );
+                }
+                _ => {
+                    return self.fail(
+                        format!(
+                            "expects a tuple of {n} values (a multi-parameter \
+                             lambda is tupled; currying is written `|a| |b| ...`)"
+                        ),
+                        arg.span,
+                    );
+                }
+            },
+        }
+        if self.depth >= MAX_APPLY_DEPTH {
+            return self.fail(
+                "const evaluation exceeded the application depth limit: \
+                 a const function may be recursive",
+                head_span,
+            );
+        }
+        self.depth += 1;
+        let result = self.eval_expr(&c.body, &mut env);
+        self.depth -= 1;
+        result
     }
 
     /// `module.member`: the only member access a const expression admits.
@@ -401,8 +566,8 @@ impl<'a> Evaluator<'a> {
                 format!(
                     "`{}` is not defined on `{}` and `{}` in a const expression",
                     op_name(op),
-                    crate::resolve::type_name(&a.domain()),
-                    crate::resolve::type_name(&b.domain()),
+                    a.describe(),
+                    b.describe(),
                 ),
                 lspan,
             ),
@@ -413,6 +578,20 @@ impl<'a> Evaluator<'a> {
         self.errors.push(ResolveError::new(message, span));
         None
     }
+}
+
+/// Flatten an application spine: `f x y` yields `(f, [x, y])`.  A local
+/// mirror of the checker's; the const evaluator and the checker stay
+/// decoupled (`docs/toolkit/01-application-checking.md`).
+fn flatten_app(e: &Expr) -> (&Expr, Vec<&Expr>) {
+    let mut args = Vec::new();
+    let mut cur = e;
+    while let ExprKind::App(f, a) = &cur.kind {
+        args.push(a.as_ref());
+        cur = f.as_ref();
+    }
+    args.reverse();
+    (cur, args)
 }
 
 fn op_name(op: BinOp) -> &'static str {

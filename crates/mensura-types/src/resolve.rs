@@ -320,13 +320,18 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     // (`si.km` then types through ordinary member access).
     let mut ambient = crate::expr_check::intrinsics();
     for (name, value) in &const_values {
-        ambient.insert(name.clone(), value.ty());
+        // A function binding has no expression type yet (ADR 0030): it is
+        // skipped, so a view referencing it reports an unknown name until
+        // the checker's function type lands.
+        if let Some(ty) = value.ty() {
+            ambient.insert(name.clone(), ty);
+        }
     }
     for (name, env) in &modules {
         let members = env
             .values
             .iter()
-            .map(|(n, v)| (n.clone(), v.ty()))
+            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
             .collect();
         ambient.insert(name.clone(), crate::expr_check::Ty::Record(members));
     }
@@ -3098,6 +3103,205 @@ mod tests {
     fn const_dimension_mismatch_is_an_error() {
         let errs = errors("let nonsense { meter + second }");
         assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
+    }
+
+    #[test]
+    fn const_lambdas_apply_and_curry() {
+        // The ADR 0030 motivating program: currying is explicit, partial
+        // binding is ordinary application, `three` folds to 3.
+        let program = resolve_program(
+            r#"
+            let add { |a| |b| a + b }
+            let add1 { add 1 }
+            let three { add1 2 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > three then r else ()
+            }
+        "#,
+        )
+        .expect("const lambdas evaluate");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(body.contains("Int(3)"), "three folds to 3: {body}");
+        // A two-argument spine on a curried function is two ordinary
+        // applications, no over-application mechanism.
+        resolve_program("let add { |a| |b| a + b }\nlet v { add 1 2 }")
+            .expect("a curried spine saturates one step at a time");
+    }
+
+    #[test]
+    fn tupled_lambdas_take_exactly_their_tuple() {
+        // `|a, b|` binds one 2-tuple parameter (ADR 0030, Decision 2).
+        resolve_program(
+            "let addt { |a, b| a + b }
+             let add1t { |a| addt (1, a) }
+             let threet { add1t 2 }",
+        )
+        .expect("a tupled application saturates");
+        // Partial binding of a tupled function is an error, with the
+        // currying hint.
+        let errs = errors("let addt { |a, b| a + b }\nlet bad { addt 1 }");
+        assert!(errs.iter().any(|e| {
+            e.message.contains("expects a tuple of 2 values")
+                && e.message.contains("currying is written")
+        }));
+        // A tuple of the wrong width names both sides.
+        let errs = errors("let addt { |a, b| a + b }\nlet bad { addt (1, 2, 3) }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("expects a tuple of 2 values, found 3"))
+        );
+    }
+
+    #[test]
+    fn applying_a_non_function_is_an_error() {
+        let errs = errors("let x { 1 }\nlet y { x 2 }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("cannot apply a value of type `int`: it is not a function")
+        }));
+        // Over-applying a saturated tupled call applies its scalar result.
+        let errs = errors("let addt { |a, b| a + b }\nlet bad { addt (1, 2) 3 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("cannot apply a value of type `int`"))
+        );
+    }
+
+    #[test]
+    fn closures_capture_by_value_and_shadow_lexically() {
+        // A closure escaping its block keeps the block's locals.
+        let program = resolve_program(
+            r#"
+            let f { let y = 1; |x| x + y }
+            let v { f 2 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > v then r else ()
+            }
+        "#,
+        )
+        .expect("capture by value");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(body.contains("Int(3)"), "v folds to 3: {body}");
+        // A parameter shadows a captured local of the same name...
+        resolve_program("let f { let x = 10; |x| x }\nlet v { f 2 }")
+            .expect("parameter shadows a captured local");
+        // ...and a top-level binding; the body still reaches unshadowed
+        // top-level names on demand.
+        resolve_program(
+            "let c { 5 }
+             let f { |c| c + 0 }
+             let g { |x| x + c }
+             let v { f 1 + g 1 }",
+        )
+        .expect("parameter shadows a top-level binding");
+    }
+
+    #[test]
+    fn dimensions_flow_through_const_functions() {
+        // The ascription checks the *result* of applying the function.
+        resolve_program(
+            "let vel[T] { (length / time)[T] }
+             let per_s { |x| x / second }
+             let speed: vel[real] { per_s (100.0 * meter) }",
+        )
+        .expect("a dimensioned result type-checks its ascription");
+        let errs = errors(
+            "let per_s { |x| x / second }
+             let bad { per_s (100.0 * meter) + 1.0 }",
+        );
+        assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
+    }
+
+    #[test]
+    fn recursive_const_functions_hit_the_depth_limit() {
+        // Dynamic recursion escapes the definitional cycle detector (a
+        // lambda defers the reference), so the depth guard catches it.
+        let errs = errors("let f { |x| f x }\nlet v { f 1 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("application depth limit"))
+        );
+    }
+
+    #[test]
+    fn const_lambda_shape_errors() {
+        // Zero parameters: nothing to apply.
+        let errs = errors("let f { || 1 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("at least one parameter"))
+        );
+        // Duplicate parameter names.
+        let errs = errors("let f { |a, a| a }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("duplicate lambda parameter `a`"))
+        );
+        // A `: type` ascription on a function binding.
+        let errs = errors("let f: real { |x| x }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("cannot carry a `: type` ascription"))
+        );
+        // Arithmetic on a function names it in the diagnostic.
+        let errs = errors("let f { |x| x }\nlet bad { f + 1 }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("`+` is not defined on `function` and `int`")
+        }));
+    }
+
+    #[test]
+    fn a_function_binding_is_not_visible_to_view_bodies_yet() {
+        // Until the checker's function type lands (ADR 0030), a function
+        // binding is skipped from the ambient environment, so a view
+        // referencing it reports an unknown name.
+        let errs = errors(
+            r#"
+            let add { |a| |b| a + b }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add then r else ()
+            }
+        "#,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown name `add`"))
+        );
+        // An application spine `add 1 2` dies earlier, at the checker's
+        // one-argument application gate, with its generic message.
+        let errs = errors(
+            r#"
+            let add { |a| |b| a + b }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add 1 2 then r else ()
+            }
+        "#,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported in this increment"))
+        );
     }
 
     #[test]

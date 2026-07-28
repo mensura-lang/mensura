@@ -34,7 +34,14 @@ impl Subst {
             .iter()
             .map(|u| (u.to_string(), ExprKind::Float(1.0)))
             .collect();
-        all_consts.extend(consts.iter().map(|(n, v)| (n.clone(), v.literal())));
+        // A function binding has no literal (ADR 0030): it is skipped here
+        // and beta-reduced at its application sites once lowering learns
+        // closures; until then a function name survives lowering unchanged.
+        all_consts.extend(
+            consts
+                .iter()
+                .filter_map(|(n, v)| Some((n.clone(), v.literal()?))),
+        );
         Subst {
             consts: all_consts,
             modules: modules
@@ -43,7 +50,7 @@ impl Subst {
                     let members = env
                         .values
                         .iter()
-                        .map(|(n, v)| (n.clone(), v.literal()))
+                        .filter_map(|(n, v)| Some((n.clone(), v.literal()?)))
                         .collect();
                     (name.clone(), members)
                 })
