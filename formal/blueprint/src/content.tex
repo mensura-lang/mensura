@@ -593,6 +593,123 @@
   It is a strict fiber flatMap.
 \end{proof}
 
+\section{The monoid-parameterized fold}
+
+This section is ADR 0029's Stage 1, the gate on the surface \texttt{fold}
+(ADR 0031).  Its subject is the \emph{subclass} of \ref{def:aggregate}
+whose combiner is associative and commutative: those two laws are what make
+the result independent of the bag's arbitrary order, and they are laws no
+checker can verify on a user-supplied lambda, which is why the surface draws
+its combiner from a closed table whose rows are exactly the instances
+admitted here.
+
+\begin{definition}[Bag fold over a commutative monoid]
+  \label{def:foldbag}\lean{Mensura.foldBag}\uses{def:table}\leanok
+  Fold a bag with an associative-commutative operation from an identity
+  accumulator.  The multiset quotient makes this well defined without
+  choosing an order: associativity and commutativity are precisely the
+  hypotheses the fold demands.
+\end{definition}
+
+\begin{theorem}[The shard lemma]
+  \label{thm:foldbag-shards}\lean{Mensura.foldBag_shards}\uses{def:foldbag}\leanok
+  Folding each shard and then folding the partial results equals folding
+  the union, for arbitrarily many shards including empty ones, provided
+  the accumulator is the combiner's identity.  This is what licenses
+  partial and parallel folding.
+\end{theorem}
+\begin{proof}\leanok
+  Induction on the shard multiset, with the two-shard case
+  (\texttt{foldBag\_add}) as the step; an empty shard contributes the
+  identity, which is why it is harmless.
+\end{proof}
+
+\begin{theorem}[A non-identity seed breaks the shard lemma]
+  \label{thm:foldbag-seed-counterexample}
+  \lean{Mensura.foldBag_add_seed_counterexample}\uses{thm:foldbag-shards}\leanok
+  A user-supplied seed that is not the combiner's identity is counted once
+  per shard, so the shard lemma fails: witnessed on addition with seed one
+  over two empty shards.  This is why the identity lives in the
+  accumulator and the surface has no seed argument (ADR 0029
+  Alternative 3).
+\end{theorem}
+\begin{proof}\leanok
+  Evaluate both sides.
+\end{proof}
+
+\begin{definition}[The optional completion]
+  \label{def:optionlift}\lean{Mensura.optionLift}\leanok
+  Extend a binary operation to \texttt{Option}, letting the absent value
+  act as an identity the domain itself does not contain.  It is
+  associative and commutative whenever the operation is, so it feeds the
+  same fold.
+\end{definition}
+
+\begin{definition}[Bag fold over a commutative semigroup]
+  \label{def:foldbag-opt}\lean{Mensura.foldBagOpt}\leanok
+  \uses{def:foldbag, def:optionlift}
+  The fold for a combiner with \emph{no} identity in its own domain
+  (binary minimum and maximum): the empty bag folds to the absent value.
+  There is no smallest element of nothing, so the absence is the honest
+  answer rather than a fabricated sentinel.
+\end{definition}
+
+\begin{theorem}[The presence lemma]
+  \label{thm:foldbag-opt-issome}\lean{Mensura.foldBagOpt_isSome_of_ne_zero}\leanok
+  \uses{def:foldbag-opt}
+  A non-empty bag folds to a present value, and (conversely) only the
+  empty bag folds to the absent one.  This licenses the total surface type
+  of the identity-free reductions wherever the checker has proved the
+  fiber present: the option is an artefact of the empty case and never a
+  data-dependent surprise.
+\end{theorem}
+\begin{proof}\leanok
+  Induction on the bag, splitting on whether the tail is empty.
+\end{proof}
+
+\begin{definition}[The fold as a fiber action]
+  \label{def:foldfiber}\lean{Mensura.foldFiber}\leanok
+  \uses{def:foldbag, def:fibermap}
+  Read each row with the mapper, fold the results with the combiner, and
+  write the answer into the single output row.  An absent fiber stays
+  absent.
+\end{definition}
+
+\begin{theorem}[A monoid fold is an aggregation]
+  \label{thm:foldfiber-eq-aggregate}\lean{Mensura.foldFiber_eq_aggregate}\leanok
+  \uses{def:foldfiber, def:aggregate}
+  The parameterized fold is the well-behaved subclass of the algebra's
+  whole-bag operation, not a new operation.  Since \ref{def:aggregate}
+  takes an \emph{arbitrary} whole-bag function, this carves out a
+  subclass rather than generalizing.
+\end{theorem}
+\begin{proof}\leanok
+  Both sides compute the same bag at each key.
+\end{proof}
+
+\begin{theorem}[A monoid fold is split-safe]
+  \label{thm:foldfiber-splitsafe}\lean{Mensura.foldFiber_splitSafe}\leanok
+  \uses{def:foldfiber, thm:fibermap-splitsafe}
+  Hence it composes into pipelines that stay split-invariant.  A split
+  routes a key's \emph{whole} bag to one side (\ref{def:split}), so the
+  bag a fold sees is never torn, which is why the reducing group
+  transform is safe (ADR 0023).
+\end{theorem}
+\begin{proof}\leanok
+  It is a strict fiber flatMap.
+\end{proof}
+
+\begin{theorem}[A monoid fold preserves the rectangle]
+  \label{thm:foldfiber-exhaustive}\lean{Mensura.foldFiber_exhaustive}\leanok
+  \uses{def:foldfiber, thm:fibermap-exhaustive}
+  A present fiber folds to exactly one row, so no fiber loses its
+  presence.
+\end{theorem}
+\begin{proof}\leanok
+  The no-emptying hypothesis of \ref{thm:fibermap-exhaustive} holds by
+  construction.
+\end{proof}
+
 \chapter{Physical dimensions}
 
 This chapter is standalone: it backs ADR 0026's dimensional-unit model and

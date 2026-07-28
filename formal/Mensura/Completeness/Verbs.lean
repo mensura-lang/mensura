@@ -37,6 +37,25 @@ so nothing in the practical verb set is missing.  Each verb below is defined
 purely in terms of the core operations, with its split-safety machine-checked
 when it holds: the practical dataframe/SQL verb set lives inside the algebra,
 and the leakage-safe verbs are exactly the `SplitSafe` ones.
+
+## The reduction row is wider than the literal `Σ` generator
+
+The table's fold row names the *additive* fold, because that is bag-NRC's
+literal generator.  The surface's reduction family is wider: `min`, `max`,
+`or`, and `and` are folds over commutative monoids (or semigroups) that are
+not addition, so they sit outside the literal generator even though they are
+ordinary `aggregate`s here.
+
+This costs the completeness argument nothing, in either direction.
+`aggregate` takes an *arbitrary* whole-bag function, so every one of them was
+already expressible; and `Mensura.Fold` (ADR 0029 Stage 1) proves the
+converse containment, that a monoid fold *is* an `aggregate`
+(`foldFiber_eq_aggregate`), so the wider family is a subclass of a generator
+rather than a new one.  Read the row as "commutative-monoid fold", with `Σ`
+its additive instance: the widening is conservative, and the reference
+model's meta-theory (Libkin-Wong for bags with aggregates) is stated for
+aggregate families of exactly this shape.  ADR 0029 surfaced this gap rather
+than creating it; the theorem above is what closes it.
 -/
 
 import Mathlib.Data.Multiset.Dedup
