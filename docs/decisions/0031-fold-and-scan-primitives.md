@@ -30,7 +30,7 @@ Relation to earlier decisions:
   initial environment**.  They become const bindings in qualified bundled
   libraries imported like `si` (Decision 8), and cardinality becomes the
   `#` operator (Decision 9).  The intrinsic environment shrinks to the
-  base units, `fold`/`scan`/`map`, `to_real`, and the pipeline
+  base units, `fold`/`scan`/`map`, `desc`, `to_real`, and the pipeline
   operations; Decision 4's "no implicit prelude" rule now holds without
   the aggregate exception it used to carry.
 - **Builds on `docs/decisions/0030-const-functions.md`** (curried
@@ -112,7 +112,8 @@ With `b` as rows and functions first-class, the family collapses:
 - `lag` is the previous row's value: an *exclusive* scan (`prescan`,
   Decision 7) with keep-right, each position receiving the proper
   prefix's last element.
-- `lead` is `lag` over the reversed order, with keep-left.
+- `lead` is `lag` over the dual order: the same keep-right `prescan`,
+  with the key marked descending (`desc`, Decision 7).
 
 Keep-left and keep-right (the tacks `<:` and `:>`, Decision 6) are
 associative but not commutative, which is exactly the ordered-only table
@@ -305,6 +306,24 @@ goal:
   spelled as `by g then h`.  The three-tier totality model itself is
   unchanged; only the spelling of tier 2 moves.
 
+**Descending order is an intrinsic word, `desc`, marking key values.**
+`desc e` wraps an orderable value in its order dual: orderable in,
+orderable out, never storable and never ascribable (checker-internal,
+like the rows type).  Because the marker sits on *values*, direction is
+**per-component**: `|r| (r.date, desc r.priority)` is SQL's
+`ORDER BY date ASC, priority DESC`, which no global reverse flag could
+express, and `desc` of a whole tuple distributes to its components.  The
+tie tiers are untouched (the dual of a total order is total, and `desc`
+of an injective column is injective).  A direction marker rather than a
+comparator is forced by the same epistemics as the combiners: a
+comparator's obligation is a law (a strict total order), unverifiable on
+a lambda, so keys stay values in orderable domains and direction stays a
+marker.  In `formal/` the marker is Mathlib's `OrderDual`, instances
+included, so Stage 2's `arrange` absorbs it at no proof cost.  `desc`
+joins the intrinsic words (`fold`, `scan`, `map`, `to_real`): it is an
+order constructor the libraries are written *with*, not an operation
+derivable from them.
+
 Scan-only combiner rows need associativity but **not commutativity**,
 since the key supplies the order a bag lacks: the tacks `` `<:` `` and
 `` `:>` `` join the table for scan, realizing 0029 Decision 10's
@@ -351,9 +370,13 @@ let first_value { scan `<:` (|v| v) }    // every row sees the group's
                                          // first value under the order
 let lag         { prescan `:>` (|v| v) } // the previous row's value;
                                          // the first row is missing
-// lead: lag over the reversed order; spelled once the descending-key
-// story is fixed (Open questions).
+let lead        { |key| prescan `:>` (|v| v) (|r| desc (key r)) }
+                                         // lag over the dual order:
+                                         // the next row's value
 ```
+
+A descending `rank` needs no binding of its own: it is the ones-scan
+over a `desc` key at the call site.
 
 A view writes `import bag` and `bag.max b.temperature`.  There is **no
 implicit prelude and no unqualified loading**: with `fold` and `scan` as
@@ -362,8 +385,9 @@ ADR 0027 Decision 4's rule ("nothing else is in scope that you did not
 import") now applies to the aggregate vocabulary too.  This is a genuine
 amendment to that decision, which had named the aggregate combinators as
 intrinsics; the intrinsic initial environment shrinks to the base units,
-`fold`/`scan`/`map`, `to_real` (pending a `math` module; Open
-questions), and the pipeline operations.  A corollary: the names `sum`,
+`fold`/`scan`/`map`, `desc` (Decision 7), `to_real` (pending a `math`
+module; Open questions), and the pipeline operations.  A corollary: the
+names `sum`,
 `min`, `max`, `any`, `all`, and `count` return to users, and the
 redeclaration protection shrinks with the intrinsics.
 
@@ -448,8 +472,9 @@ the prefix decomposition) and **grows** by:
   one (drop the last element of the inclusive scan, prepend the
   identity);
 - the derivation lemmas, so the libraries are theorems rather than
-  slogans: `rank` is the ones-scan, and `lag` is the keep-right
-  `prescan`.
+  slogans: `rank` is the ones-scan, `lag` is the keep-right `prescan`,
+  and `lead` is `lag` at the dual key (`desc` is Mathlib's `OrderDual`,
+  so `arrange` absorbs it with no new structure).
 
 Same blueprint node (`def:arranged`); nothing may be named
 `Mensura.Arranged` before Stage 2 lands, per the stale-marker check.
@@ -480,9 +505,9 @@ now carry an `import` line.  A builtin function kind in `ConstValue` and
 the checker's function type (mechanical after ADR 0030, but real).  A
 new rows variant in the checker's type with the usual exhaustive-match
 sweep.  Five new operator tokens (`#`, `<<`, `>>`, `<:`, `:>`) with
-their grammar notes.  `prescan` is new design surface (its coherence
-theorem joins Stage 2, and `lead` still waits on the descending-key
-story).  Scan's key-as-argument
+their grammar notes, plus the intrinsic word `desc` and its
+checker-internal order-dual wrapper.  `prescan` is new design surface
+(its coherence theorem joins Stage 2).  Scan's key-as-argument
 diverges from 0029's `by` clause: stated here as a revision with its
 reason (partial applicability), not slipped in.  `bag` and `series` are
 the second and third bundled modules, so the module loader's
@@ -582,13 +607,24 @@ caveat to remember, the tacks' algebra is as compiler-ownable as `+`'s,
 and APL's tacks are precedent that keep-left and keep-right are
 respectable operators even with trivial scalar readings.
 
+### 10.  Other descending-order designs
+
+Three rejected in favour of Decision 7's `desc` marker.  **Comparator
+lambdas** (`|a, b| ...` deciding the order): a comparator's obligation
+is a law, a strict total order, unverifiable on a lambda; a broken one
+makes `arrange` nondeterministic, the combiner epistemics one level up.
+**Suffix-scan variants** (a backward `scan`/`prescan` pair): solves
+`lead` but doubles the scan builtins, reverses only globally (the
+mixed-direction key `date` ascending, `priority` descending stays
+unexpressible), and everything a suffix scan computes, `scan` over a
+`desc` key already does, since reversal just swaps the tacks.  **Other
+spellings** of the marker: an operator (`~e`) does not clear the
+frequency bar that `#` cleared and the tilde reads as "approximately";
+`series.desc` would demand an `import` to state a key direction for the
+builtin `scan`, which needs none.
+
 ## Open questions
 
-- **The descending-key story, which is what `lead` waits on.**  `lead`
-  is `lag` over the reversed order, and "reverse" is not expressible by
-  negating a key when the key is a date or a string.  Candidates: a
-  `desc` wrapper on the key, or a right-exclusive scan variant.  `lead`
-  joins `series` the day this is fixed.
 - **Whether the module organization is final** (`bag`, `series`): the
   cut follows the derivation and the proof stages, but finer names
   (`order`, `logic`) remain reachable later by re-exports if a module

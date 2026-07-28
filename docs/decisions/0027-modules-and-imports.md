@@ -116,7 +116,7 @@ type-checks with no import, while the terse `9.8 * si.m / si.s^2` (or, with an
 environment**.  They become const bindings in qualified bundled
 libraries (`bag`, `series`), imported like `si`, and cardinality becomes
 the `#` operator; the intrinsic environment shrinks to the base units,
-`fold`/`scan`/`map`, `to_real`, and the pipeline operations.  This
+`fold`/`scan`/`map`/`desc`, `to_real`, and the pipeline operations.  This
 decision's no-implicit-prelude rule thereby holds without the aggregate
 exception it used to carry.)
 

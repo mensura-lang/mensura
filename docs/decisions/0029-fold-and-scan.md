@@ -392,7 +392,8 @@ structure.
 three hosts are scan-derived: `rank` is the ones-scan
 (`scan `+` (|_| 1)`, a running count, tie-free under Decision 11's total
 order), `lag` is the keep-right `prescan` (`prescan `:>` (|v| v)`), and
-`lead` is its dual with keep-left over the reversed order.  The family's
+`lead` is the same keep-right `prescan` over the dual order (the key
+wrapped by ADR 0031's intrinsic `desc`).  The family's
 third builtin is `map`, which is projection rather than a reduction.
 This section's argument that `rank` "cannot be obtained from any monoid
 on row values" stands for *inclusive* folds of the values; the position
