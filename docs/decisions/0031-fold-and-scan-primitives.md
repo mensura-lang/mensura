@@ -211,12 +211,42 @@ surface-totality rule derived from identity and emptiness.
 
 The combiner argument is a backticked **operator**:
 
-| operator | scalar meaning | algebra | identity | admitted under |
-| --- | --- | --- | --- | --- |
-| `+`, `*` | arithmetic | commutative monoid | `0`, `1` | `fold` and `scan` |
-| `<<`, `>>` | binary minimum, maximum | commutative semigroup | none | `fold` and `scan` |
-| `or`, `and` | boolean | commutative monoid, absorbing | `false`, `true` | `fold` and `scan` |
-| `<:`, `:>` | keep-left, keep-right | semigroup (not commutative) | none | `scan` only |
+| operator | scalar meaning | algebra | identity | absorber | admitted under |
+| --- | --- | --- | --- | --- | --- |
+| `+` | addition | commutative monoid | `0` | none | `fold` and `scan` |
+| `*` | multiplication | commutative monoid | `1` | `0` | `fold` and `scan` |
+| `<<`, `>>` | binary minimum, maximum | commutative semigroup | none | none | `fold` and `scan` |
+| `or`, `and` | boolean | commutative monoid | `false`, `true` | `true`, `false` | `fold` and `scan` |
+| `<:`, `:>` | keep-left, keep-right | semigroup (not commutative) | none | none | `scan` only |
+
+The identity and absorber columns are not symmetric decorations; they
+play opposite roles.  An **absorber is read**: the executor merely
+recognizes it in the data and may stop early (0029 Decision 5's
+licensed short-circuit), so an absorber need only be a value that can
+legitimately occur, which is why `*`'s `0` and `or`'s `true` qualify.
+An **identity is written**: the machinery fabricates it into results,
+as the empty window's answer, `prescan`'s first output, and the
+parallel shard's base, so an identity must be the *genuinely true
+answer of the empty case*, storable and arithmetic-safe as data.  `0`
+is the true sum of nothing; there is no true minimum of nothing, which
+is what "none" in the `<<`/`>>` row means.  IEEE `+Inf` would fill that
+cell only by extending the domain, and the extension fails citizenship
+three ways: `inf - inf` mints `NaN`, which destroys the total order the
+row's admission rests on; ADR 0026 already bans dimensioned infinities;
+and a fabricated `+Inf` is a sentinel where `0`-for-`sum` is an honest
+value.  Extending `real` to `[-Inf, +Inf]` is recorded as an open
+question, not an inconsistency: on the extended domain the lattice
+closes uniformly, and the finite domain is a *choice*.
+
+One row carries a domain restriction the others do not.  A fold's
+accumulator type must be invariant, so a combiner is admitted only
+where it is type-preserving, `T -> T -> T`.  Dimensioned `*` is not: it
+*adds* exponent vectors (ADR 0026), so folding it would give a product
+whose dimension depends on the bag's cardinality, which no static type
+can carry.  The `*` row is therefore admitted at the **dimensionless**
+numeric domains only (`int`, bare `real`); `prod` over a
+`temperature[real]` bag is a type error, while `sum` (whose `+`
+requires equal dimensions and preserves them) works at every dimension.
 
 Two operator families are new, introduced here so that the table is
 operators **uniformly**, with no wordy residents:
@@ -303,11 +333,12 @@ primitive's Lean stage.
 
 ```mensura
 // stdlib/bag.mensura -- the fold-derived reductions (Stage 1)
-let sum { fold `+`  (|v| v) }
-let min { fold `<<` (|v| v) }
-let max { fold `>>` (|v| v) }
-let any { fold `or`  (|v| v) }
-let all { fold `and` (|v| v) }
+let sum  { fold `+`  (|v| v) }
+let prod { fold `*`  (|v| v) }
+let min  { fold `<<` (|v| v) }
+let max  { fold `>>` (|v| v) }
+let any  { fold `or`  (|v| v) }
+let all  { fold `and` (|v| v) }
 ```
 
 ```mensura
@@ -580,6 +611,19 @@ respectable operators even with trivial scalar readings.
 - **`stats` timing**: `mean` and `sd` are expressible now; whether they
   join `bag` or wait for a `stats` module (ADR 0028 Decision 4) is
   open.
+- **Extending `real` to `[-Inf, +Inf]`.**  On the extended domain the
+  order rows close into a bounded lattice: `<<` gains identity `+Inf`
+  and absorber `-Inf`, dually for `>>`, and the table becomes uniform
+  with the boolean rows (which *are* `<<`/`>>` on `false < true`).
+  This ADR chooses the finite domain because the extension currently
+  fails citizenship three ways (Decision 6): `inf - inf` mints `NaN`,
+  which breaks the total order; ADR 0026 bans dimensioned infinities;
+  and empty reductions would fabricate `+Inf` where data semantics
+  wants *missing*.  Related and unspecified either way: the
+  implementation can already mint `+Inf` today (`1.0 / 0.0` divides
+  unguarded in the const evaluator and the runtime), so
+  division-by-zero semantics must be fixed regardless; under the finite
+  stance it becomes a diagnostic or a missing result.
 
 ## Forward references
 
