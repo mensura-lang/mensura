@@ -6,12 +6,14 @@
 //! on the first. Operators are gated by the scalar domain's properties
 //! (equatable / orderable / numeric); typing is strict, with no `int`/`real`
 //! coercion. The `|>` pipe routes to the same application path as juxtaposition
-//! (ADR 0018, `docs/toolkit/01-application-checking.md`), but only over the
-//! built-in operations (`to_real`, the aggregates): general application
-//! (user-defined functions, partial application) is deferred, as are lambdas,
-//! record/tuple literals, and `is known` narrowing.
+//! (ADR 0018, `docs/toolkit/01-application-checking.md`), over the built-in
+//! operations (`to_real`, the aggregates) and const functions (ADR 0030): a
+//! name of function type applies by the saturated-or-error rule, its body
+//! re-typed at each call site.  Lambdas as *values in view bodies*,
+//! record/tuple literals, and `is known` narrowing remain deferred.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mensura_syntax::{BinOp, Expr, ExprKind, Ident, Span, UnOp};
 
@@ -45,6 +47,27 @@ pub enum Ty {
     Bool,
     /// A row (fields are `Value`) or a group (fields are `Bag`).
     Record(BTreeMap<String, Ty>),
+    /// A const function (ADR 0030).  It carries its closure, so a saturated
+    /// application is typed by binding the parameters to the arguments'
+    /// types and re-typing the body at each call site: exact, per-site, no
+    /// inference.  A function never enters a column and cannot be ascribed.
+    Fn(Arc<TyClosure>),
+}
+
+/// The checker's view of a closure (ADR 0030): the lambda plus the
+/// definition-site name environment, at the type level.  `names` holds the
+/// bindings *local* to the definition (captured block locals, enclosing
+/// lambda parameters); free top-level names resolve through the pristine
+/// ambient at application time instead, which is what keeps top-level
+/// bindings order-independent (`add1`'s body may reference `add` declared
+/// later).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TyClosure {
+    /// One name, or n names for the tupled form `|a, b| e`, which binds a
+    /// single n-tuple parameter (ADR 0030, Decision 2).
+    pub params: Vec<Ident>,
+    pub body: Expr,
+    pub names: BTreeMap<String, Ty>,
 }
 
 impl Ty {
@@ -124,6 +147,14 @@ pub fn intrinsics() -> Ambient {
 pub struct Context {
     names: BTreeMap<String, Ty>,
     aggregates: BTreeMap<String, Agg>,
+    /// The pristine ambient (intrinsics, top-level bindings, modules),
+    /// before any lambda parameters.  A const function's body types
+    /// against this, never against the caller's lambda scope: the
+    /// closure's free names are its captures and the top level, by
+    /// lexical scoping (ADR 0030).
+    ambient: BTreeMap<String, Ty>,
+    /// Function-application nesting depth; see [`MAX_FN_DEPTH`].
+    fn_depth: u32,
 }
 
 impl Context {
@@ -140,6 +171,8 @@ impl Context {
                 value_record(table),
             ),
             aggregates: builtin_aggregates(),
+            ambient: ambient.clone(),
+            fn_depth: 0,
         }
     }
 
@@ -156,6 +189,8 @@ impl Context {
                 bag_value_record(table),
             ),
             aggregates: builtin_aggregates(),
+            ambient: ambient.clone(),
+            fn_depth: 0,
         }
     }
 
@@ -165,6 +200,8 @@ impl Context {
         Context {
             names: bind(ambient, param, key_record(table)),
             aggregates: builtin_aggregates(),
+            ambient: ambient.clone(),
+            fn_depth: 0,
         }
     }
 
@@ -174,6 +211,27 @@ impl Context {
 
     pub fn aggregate(&self, name: &str) -> Option<Agg> {
         self.aggregates.get(name).copied()
+    }
+
+    /// The context a const function's body types in: the pristine ambient,
+    /// the closure's definition-site names, then the bound parameters,
+    /// innermost last (a parameter shadows a capture, both shadow the top
+    /// level).  The caller's lambda scope is deliberately absent
+    /// (ADR 0030): a body cannot read the caller's `r`.
+    fn for_closure_body(&self, closure: &TyClosure, bound: Vec<(String, Ty)>) -> Context {
+        let mut names = self.ambient.clone();
+        for (name, ty) in &closure.names {
+            names.insert(name.clone(), ty.clone());
+        }
+        for (name, ty) in bound {
+            names.insert(name, ty);
+        }
+        Context {
+            names,
+            aggregates: builtin_aggregates(),
+            ambient: self.ambient.clone(),
+            fn_depth: self.fn_depth + 1,
+        }
     }
 }
 
@@ -287,6 +345,26 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::App(..) => apply_value(ctx, expr, None),
         ExprKind::Presence(base, _) => type_presence(ctx, base, expr.span),
         ExprKind::If { cond, then, els } => type_if(ctx, cond, then, els, expr.span),
+        // A lambda types as a function value closing over the current
+        // names (ADR 0030).  This is what lets a *curried* const function
+        // type: applying `|a| |b| a + b` types its body, which is this
+        // lambda.  A lambda cannot reach a column (`column_of`) and only a
+        // `Name` head applies, so a view body still cannot make use of one
+        // it creates.
+        ExprKind::Lambda { params, ret, body } => {
+            if ret.is_some() {
+                return Err(vec![TypeError::new(
+                    "a return-type ascription on a lambda is not supported \
+                     (the type grammar has no function type)",
+                    expr.span,
+                )]);
+            }
+            Ok(Ty::Fn(Arc::new(TyClosure {
+                params: params.clone(),
+                body: (**body).clone(),
+                names: ctx.names.clone(),
+            })))
+        }
         _ => Err(vec![TypeError::new(
             "unsupported in this increment",
             expr.span,
@@ -350,6 +428,12 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
             head.span,
         )]);
     };
+    // A name of function type takes the general application path
+    // (ADR 0030).  The resolver forbids a binding that collides with a
+    // builtin, so this cannot shadow `to_real` or an aggregate.
+    if let Some(Ty::Fn(closure)) = ctx.lookup(name) {
+        return apply_closure(ctx, name, closure.clone(), &args, head.span);
+    }
     let [arg] = args[..] else {
         return Err(vec![TypeError::new(
             "unsupported in this increment",
@@ -365,6 +449,89 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
             "unsupported in this increment",
             head.span,
         )]),
+    }
+}
+
+/// The maximum function-application nesting depth while typing.  Mutual
+/// recursion between const functions escapes the const evaluator's own
+/// guard (each body types fine in isolation) and would otherwise recurse
+/// the checker; see the evaluator's `MAX_APPLY_DEPTH` for the rationale.
+const MAX_FN_DEPTH: u32 = 64;
+
+/// Apply a const function (ADR 0030, Decision 3): every application is
+/// saturated or an error.  Arguments type in the caller's context; the
+/// body re-types per call site in the function's own environment
+/// ([`Context::for_closure_body`]), which is what makes the checking exact
+/// with no inference.  Body diagnostics carry definition-site spans, so a
+/// call-site note is appended to them (ADR 0030, Consequences).
+fn apply_closure(
+    ctx: &Context,
+    name: &str,
+    closure: Arc<TyClosure>,
+    args: &[&Expr],
+    head_span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let mut ty = Ty::Fn(closure);
+    for arg in args {
+        let Ty::Fn(c) = ty else {
+            return Err(vec![TypeError::new(
+                format!(
+                    "cannot apply a value of type `{}`: it is not a function",
+                    ty_name(&ty)
+                ),
+                arg.span,
+            )]);
+        };
+        // Bind the parameters to the arguments' types: a one-parameter
+        // function binds any value; a tupled function requires its tuple.
+        let mut bound = Vec::new();
+        match c.params.len() {
+            1 => bound.push((c.params[0].name.clone(), type_expr(ctx, arg)?)),
+            n => match &arg.kind {
+                ExprKind::Tuple(items) if items.len() == n => {
+                    for (param, item) in c.params.iter().zip(items) {
+                        bound.push((param.name.clone(), type_expr(ctx, item)?));
+                    }
+                }
+                _ => {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "`{name}` expects a tuple of {n} values (a \
+                             multi-parameter lambda is tupled; currying is \
+                             written `|a| |b| ...`)"
+                        ),
+                        arg.span,
+                    )]);
+                }
+            },
+        }
+        if ctx.fn_depth >= MAX_FN_DEPTH {
+            return Err(vec![TypeError::new(
+                "const function applications nest too deeply: a const \
+                 function may be recursive",
+                head_span,
+            )]);
+        }
+        let body_ctx = ctx.for_closure_body(&c, bound);
+        ty = type_expr(&body_ctx, &c.body).map_err(|mut errs| {
+            errs.push(TypeError::new(
+                format!("while applying `{name}` here"),
+                head_span,
+            ));
+            errs
+        })?;
+    }
+    Ok(ty)
+}
+
+/// A short name for a `Ty` in diagnostics.
+fn ty_name(ty: &Ty) -> String {
+    match ty {
+        Ty::Value { domain, .. } => domain_name(domain),
+        Ty::Bag { domain, .. } => format!("bag of {}", domain_name(domain)),
+        Ty::Bool => "bool".to_string(),
+        Ty::Record(_) => "record".to_string(),
+        Ty::Fn(_) => "function".to_string(),
     }
 }
 
@@ -863,6 +1030,10 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
             format!("{what} expects a value, found a row"),
             span,
         )]),
+        Ty::Fn(_) => Err(vec![TypeError::new(
+            format!("{what} expects a value, found a function (apply it)"),
+            span,
+        )]),
     }
 }
 
@@ -935,6 +1106,7 @@ fn describe_ty(ty: &Ty) -> String {
         Ty::Bag { domain, .. } => format!("a bag of {}", domain_name(domain)),
         Ty::Bool => "a bool".to_string(),
         Ty::Record(_) => "a record".to_string(),
+        Ty::Fn(_) => "a function".to_string(),
     }
 }
 

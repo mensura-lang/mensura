@@ -265,6 +265,21 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
             ));
             continue;
         }
+        // The expression-level builtins are ambient intrinsics (ADR 0027,
+        // Decision 4) and join the collision rule: now that a binding can
+        // be a function (ADR 0030), `let sum { |x| x }` would otherwise
+        // silently shadow the aggregate in application head position.
+        const EXPR_BUILTINS: [&str; 7] = ["sum", "min", "max", "count", "any", "all", "to_real"];
+        if EXPR_BUILTINS.contains(&name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "`{}` is an ambient builtin and cannot be redeclared",
+                    name.name
+                ),
+                name.span,
+            ));
+            continue;
+        }
         if !value_names.insert(&name.name) {
             errors.push(ResolveError::new(
                 format!("duplicate {what} `{}`", name.name),
@@ -3262,10 +3277,24 @@ mod tests {
     }
 
     #[test]
-    fn a_function_binding_is_not_visible_to_view_bodies_yet() {
-        // Until the checker's function type lands (ADR 0030), a function
-        // binding is skipped from the ambient environment, so a view
-        // referencing it reports an unknown name.
+    fn const_functions_type_in_view_bodies() {
+        // A view body applies a const function (ADR 0030): the body
+        // re-types per call site, so `add 1 2` is an `int` here.
+        resolve_program(
+            r#"
+            let add { |a| |b| a + b }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add 1 2 then r else ()
+            }
+        "#,
+        )
+        .expect("a const function application types in a view body");
+        // A bare (unapplied) function in scalar position is an error.
         let errs = errors(
             r#"
             let add { |a| |b| a + b }
@@ -3281,26 +3310,90 @@ mod tests {
         );
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("unknown name `add`"))
+                .any(|e| e.message.contains("found a function (apply it)"))
         );
-        // An application spine `add 1 2` dies earlier, at the checker's
-        // one-argument application gate, with its generic message.
+    }
+
+    #[test]
+    fn const_function_bodies_retype_per_call_site() {
+        // Exact per-site checking: the same function serves a dimensioned
+        // column, and a domain error inside the body reports with the
+        // call-site note appended (ADR 0030, Consequences).
+        resolve_program(
+            r#"
+            let warmer { |x| x + 1.0 * kelvin }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { temperature: temperature[real] }
+            }
+            view hot {
+              readings |> flat_map |_, r|
+                if warmer r.temperature > 300.0 * kelvin then r else ()
+            }
+        "#,
+        )
+        .expect("the body types at the call site's dimension");
         let errs = errors(
             r#"
-            let add { |a| |b| a + b }
+            let warmer { |x| x + 1.0 * kelvin }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view hot {
+              readings |> flat_map |_, r| if warmer r.size > 2 then r else ()
+            }
+        "#,
+        );
+        // The body diagnostic (definition-site span) plus the call note.
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("operands of the same type, found int and temperature[real]")
+        }));
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("while applying `warmer` here"))
+        );
+    }
+
+    #[test]
+    fn mutually_recursive_functions_hit_the_checker_depth_guard() {
+        // Each binding evaluates fine in isolation (a lambda defers the
+        // reference), so the recursion only manifests while typing an
+        // application in a view body.
+        let errs = errors(
+            r#"
+            let f { |x| g x }
+            let g { |x| f x }
             unit Machine { id: string }
             store readings {
               unit { Machine }
               attr* { size: int }
             }
             view sized {
-              readings |> flat_map |_, r| if r.size > add 1 2 then r else ()
+              readings |> flat_map |_, r| if r.size > f 1 then r else ()
             }
         "#,
         );
+        assert!(errs.iter().any(|e| e.message.contains("nest too deeply")));
+    }
+
+    #[test]
+    fn expression_builtins_cannot_be_redeclared() {
+        // Now that a binding can be a function (ADR 0030), `let sum ...`
+        // would shadow the aggregate in head position; the resolver's
+        // collision rule forbids it (ADR 0027, Decision 3).
+        let errs = errors("let sum { |x| x }");
         assert!(
             errs.iter()
-                .any(|e| e.message.contains("unsupported in this increment"))
+                .any(|e| e.message.contains("`sum` is an ambient builtin"))
+        );
+        let errs = errors("let to_real { 1.0 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`to_real` is an ambient builtin"))
         );
     }
 

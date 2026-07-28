@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use mensura_syntax::{BinOp, Block, Expr, ExprKind, Ident, Span, Stmt, TypeExpr, UnOp};
 
-use crate::expr_check::{Optionality, Ty};
+use crate::expr_check::{Optionality, Ty, TyClosure};
 use crate::model::ColumnType;
 use crate::modules::ModuleEnv;
 use crate::resolve::ResolveError;
@@ -78,14 +78,26 @@ impl ConstValue {
     }
 
     /// The expression type of this constant: a total single value for a
-    /// scalar.  `None` for a function until the checker's function type
-    /// lands (ADR 0030); a view body referencing a function binding is an
-    /// unknown name meanwhile.
+    /// scalar, the function type for a closure (ADR 0030).  The captured
+    /// values lift to their types; free top-level names in the body stay
+    /// unresolved here and resolve through the ambient at application
+    /// time, preserving order-independence.
     pub fn ty(&self) -> Option<Ty> {
-        Some(Ty::Value {
-            domain: self.domain()?,
-            opt: Optionality::Total,
-        })
+        match self {
+            ConstValue::Closure(c) => Some(Ty::Fn(std::sync::Arc::new(TyClosure {
+                params: c.params.clone(),
+                body: c.body.clone(),
+                names: c
+                    .env
+                    .iter()
+                    .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+                    .collect(),
+            }))),
+            _ => Some(Ty::Value {
+                domain: self.domain()?,
+                opt: Optionality::Total,
+            }),
+        }
     }
 
     /// The literal expression node this constant folds to
