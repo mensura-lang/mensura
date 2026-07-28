@@ -265,6 +265,21 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
             ));
             continue;
         }
+        // The expression-level builtins are ambient intrinsics (ADR 0027,
+        // Decision 4) and join the collision rule: now that a binding can
+        // be a function (ADR 0030), `let sum { |x| x }` would otherwise
+        // silently shadow the aggregate in application head position.
+        const EXPR_BUILTINS: [&str; 7] = ["sum", "min", "max", "count", "any", "all", "to_real"];
+        if EXPR_BUILTINS.contains(&name.name.as_str()) {
+            errors.push(ResolveError::new(
+                format!(
+                    "`{}` is an ambient builtin and cannot be redeclared",
+                    name.name
+                ),
+                name.span,
+            ));
+            continue;
+        }
         if !value_names.insert(&name.name) {
             errors.push(ResolveError::new(
                 format!("duplicate {what} `{}`", name.name),
@@ -320,13 +335,18 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     // (`si.km` then types through ordinary member access).
     let mut ambient = crate::expr_check::intrinsics();
     for (name, value) in &const_values {
-        ambient.insert(name.clone(), value.ty());
+        // A function binding has no expression type yet (ADR 0030): it is
+        // skipped, so a view referencing it reports an unknown name until
+        // the checker's function type lands.
+        if let Some(ty) = value.ty() {
+            ambient.insert(name.clone(), ty);
+        }
     }
     for (name, env) in &modules {
         let members = env
             .values
             .iter()
-            .map(|(n, v)| (n.clone(), v.ty()))
+            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
             .collect();
         ambient.insert(name.clone(), crate::expr_check::Ty::Record(members));
     }
@@ -3098,6 +3118,365 @@ mod tests {
     fn const_dimension_mismatch_is_an_error() {
         let errs = errors("let nonsense { meter + second }");
         assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
+    }
+
+    #[test]
+    fn const_lambdas_apply_and_curry() {
+        // The ADR 0030 motivating program: currying is explicit, partial
+        // binding is ordinary application, `three` folds to 3.
+        let program = resolve_program(
+            r#"
+            let add { |a| |b| a + b }
+            let add1 { add 1 }
+            let three { add1 2 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > three then r else ()
+            }
+        "#,
+        )
+        .expect("const lambdas evaluate");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(body.contains("Int(3)"), "three folds to 3: {body}");
+        // A two-argument spine on a curried function is two ordinary
+        // applications, no over-application mechanism.
+        resolve_program("let add { |a| |b| a + b }\nlet v { add 1 2 }")
+            .expect("a curried spine saturates one step at a time");
+    }
+
+    #[test]
+    fn tupled_lambdas_take_exactly_their_tuple() {
+        // `|a, b|` binds one 2-tuple parameter (ADR 0030, Decision 2).
+        resolve_program(
+            "let addt { |a, b| a + b }
+             let add1t { |a| addt (1, a) }
+             let threet { add1t 2 }",
+        )
+        .expect("a tupled application saturates");
+        // Partial binding of a tupled function is an error, with the
+        // currying hint.
+        let errs = errors("let addt { |a, b| a + b }\nlet bad { addt 1 }");
+        assert!(errs.iter().any(|e| {
+            e.message.contains("expects a tuple of 2 values")
+                && e.message.contains("currying is written")
+        }));
+        // A tuple of the wrong width names both sides.
+        let errs = errors("let addt { |a, b| a + b }\nlet bad { addt (1, 2, 3) }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("expects a tuple of 2 values, found 3"))
+        );
+    }
+
+    #[test]
+    fn applying_a_non_function_is_an_error() {
+        let errs = errors("let x { 1 }\nlet y { x 2 }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("cannot apply a value of type `int`: it is not a function")
+        }));
+        // Over-applying a saturated tupled call applies its scalar result.
+        let errs = errors("let addt { |a, b| a + b }\nlet bad { addt (1, 2) 3 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("cannot apply a value of type `int`"))
+        );
+    }
+
+    #[test]
+    fn closures_capture_by_value_and_shadow_lexically() {
+        // A closure escaping its block keeps the block's locals.
+        let program = resolve_program(
+            r#"
+            let f { let y = 1; |x| x + y }
+            let v { f 2 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > v then r else ()
+            }
+        "#,
+        )
+        .expect("capture by value");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(body.contains("Int(3)"), "v folds to 3: {body}");
+        // A parameter shadows a captured local of the same name...
+        resolve_program("let f { let x = 10; |x| x }\nlet v { f 2 }")
+            .expect("parameter shadows a captured local");
+        // ...and a top-level binding; the body still reaches unshadowed
+        // top-level names on demand.
+        resolve_program(
+            "let c { 5 }
+             let f { |c| c + 0 }
+             let g { |x| x + c }
+             let v { f 1 + g 1 }",
+        )
+        .expect("parameter shadows a top-level binding");
+    }
+
+    #[test]
+    fn dimensions_flow_through_const_functions() {
+        // The ascription checks the *result* of applying the function.
+        resolve_program(
+            "let vel[T] { (length / time)[T] }
+             let per_s { |x| x / second }
+             let speed: vel[real] { per_s (100.0 * meter) }",
+        )
+        .expect("a dimensioned result type-checks its ascription");
+        let errs = errors(
+            "let per_s { |x| x / second }
+             let bad { per_s (100.0 * meter) + 1.0 }",
+        );
+        assert!(errs.iter().any(|e| e.message.contains("dimensions differ")));
+    }
+
+    #[test]
+    fn recursive_const_functions_hit_the_depth_limit() {
+        // Dynamic recursion escapes the definitional cycle detector (a
+        // lambda defers the reference), so the depth guard catches it.
+        let errs = errors("let f { |x| f x }\nlet v { f 1 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("application depth limit"))
+        );
+    }
+
+    #[test]
+    fn const_lambda_shape_errors() {
+        // Zero parameters: nothing to apply.
+        let errs = errors("let f { || 1 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("at least one parameter"))
+        );
+        // Duplicate parameter names.
+        let errs = errors("let f { |a, a| a }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("duplicate lambda parameter `a`"))
+        );
+        // A `: type` ascription on a function binding.
+        let errs = errors("let f: real { |x| x }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("cannot carry a `: type` ascription"))
+        );
+        // Arithmetic on a function names it in the diagnostic.
+        let errs = errors("let f { |x| x }\nlet bad { f + 1 }");
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("`+` is not defined on `function` and `int`")
+        }));
+    }
+
+    #[test]
+    fn const_functions_type_in_view_bodies() {
+        // A view body applies a const function (ADR 0030): the body
+        // re-types per call site, so `add 1 2` is an `int` here.
+        resolve_program(
+            r#"
+            let add { |a| |b| a + b }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add 1 2 then r else ()
+            }
+        "#,
+        )
+        .expect("a const function application types in a view body");
+        // A bare (unapplied) function in scalar position is an error.
+        let errs = errors(
+            r#"
+            let add { |a| |b| a + b }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add then r else ()
+            }
+        "#,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("found a function (apply it)"))
+        );
+    }
+
+    #[test]
+    fn const_function_bodies_retype_per_call_site() {
+        // Exact per-site checking: the same function serves a dimensioned
+        // column, and a domain error inside the body reports with the
+        // call-site note appended (ADR 0030, Consequences).
+        resolve_program(
+            r#"
+            let warmer { |x| x + 1.0 * kelvin }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { temperature: temperature[real] }
+            }
+            view hot {
+              readings |> flat_map |_, r|
+                if warmer r.temperature > 300.0 * kelvin then r else ()
+            }
+        "#,
+        )
+        .expect("the body types at the call site's dimension");
+        let errs = errors(
+            r#"
+            let warmer { |x| x + 1.0 * kelvin }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view hot {
+              readings |> flat_map |_, r| if warmer r.size > 2 then r else ()
+            }
+        "#,
+        );
+        // The body diagnostic (definition-site span) plus the call note.
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("operands of the same type, found int and temperature[real]")
+        }));
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("while applying `warmer` here"))
+        );
+    }
+
+    #[test]
+    fn const_function_applications_beta_reduce_at_lowering() {
+        // ADR 0030, Decision 5: `add1 r.size` reaches the runtime as
+        // `1 + r.size`; no function name and no residual lambda beyond the
+        // pipeline op's own remain in the lowered body.
+        let program = resolve_program(
+            r#"
+            let add { |a| |b| a + b }
+            let add1 { add 1 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > add1 r.size then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(
+            !body.contains("add1"),
+            "no function reference remains: {body}"
+        );
+        assert!(
+            body.contains("Int(1)") && body.contains("Add"),
+            "the substituted body is inline arithmetic: {body}"
+        );
+        // A value-level pipe into a const function reduces the same way.
+        let program = resolve_program(
+            r#"
+            let add1 { |b| b + 1 }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if (r.size |> add1) > 0 then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(!body.contains("add1"), "the piped function reduces: {body}");
+    }
+
+    #[test]
+    fn beta_reduction_avoids_capturing_the_callers_names() {
+        // Substituting `r.size` under the function's own `|r|` binder must
+        // not capture the caller's `r`: the binder alpha-renames, and full
+        // application then eliminates the renamed parameter entirely.
+        let program = resolve_program(
+            r#"
+            let pick { |x| |r| r + x }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if (pick r.size 2) > 0 then r else ()
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(
+            body.contains("Int(2)") && body.contains("size"),
+            "reduced to `2 + r.size`-shaped arithmetic: {body}"
+        );
+        assert!(
+            !body.contains("__1"),
+            "the renamed binder is fully applied away: {body}"
+        );
+        assert!(
+            !body.contains("pick"),
+            "no function reference remains: {body}"
+        );
+    }
+
+    #[test]
+    fn mutually_recursive_functions_hit_the_checker_depth_guard() {
+        // Each binding evaluates fine in isolation (a lambda defers the
+        // reference), so the recursion only manifests while typing an
+        // application in a view body.
+        let errs = errors(
+            r#"
+            let f { |x| g x }
+            let g { |x| f x }
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr* { size: int }
+            }
+            view sized {
+              readings |> flat_map |_, r| if r.size > f 1 then r else ()
+            }
+        "#,
+        );
+        assert!(errs.iter().any(|e| e.message.contains("nest too deeply")));
+    }
+
+    #[test]
+    fn expression_builtins_cannot_be_redeclared() {
+        // Now that a binding can be a function (ADR 0030), `let sum ...`
+        // would shadow the aggregate in head position; the resolver's
+        // collision rule forbids it (ADR 0027, Decision 3).
+        let errs = errors("let sum { |x| x }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`sum` is an ambient builtin"))
+        );
+        let errs = errors("let to_real { 1.0 }");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("`to_real` is an ambient builtin"))
+        );
     }
 
     #[test]

@@ -20,6 +20,12 @@ import si
 // `overheat` is a `temperature[real]` value, usable in any view body.
 let overheat { 350.0 * kelvin }
 
+// A const function (ADR 0030): a lambda is an ordinary const value, and a
+// view body applies it like any name.  The body re-types at each call
+// site, so `too_hot` demands a `temperature[real]` argument here, and the
+// application is beta-reduced at lowering, so the runtime never sees it.
+let too_hot { |t| t > overheat }
+
 unit Machine {
   id: string
 }
@@ -95,5 +101,5 @@ view machine_temperature : Tabular[Machine] {
 // a duration) would be a compile error.  No shape claim: the output is a
 // filtered bag of readings, not a `singletons` table.
 view overheating {
-  readings |> flat_map |_, r| if r.temperature > overheat then r else ()
+  readings |> flat_map |_, r| if too_hot r.temperature then r else ()
 }

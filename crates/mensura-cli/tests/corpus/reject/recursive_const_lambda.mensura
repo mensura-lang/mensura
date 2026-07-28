@@ -1,0 +1,7 @@
+// Reject (resolve): dynamic recursion in a const function (ADR 0030,
+// Decision 6).  The lambda evaluates to a closure without touching `f`,
+// so the definitional cycle detector passes; the recursion only manifests
+// on application, where the depth guard reports it instead of blowing the
+// stack.
+let f { |x| f x }
+let v { f 1 }

@@ -858,13 +858,14 @@ fn lambda_params<'a>(
     ))
 }
 
-/// The column domain and totality a value type contributes, or `None` for a bag
-/// or nested record (window/nested returns are deferred).
+/// The column domain and totality a value type contributes, or `None` for a
+/// bag, a nested record (window/nested returns are deferred), or a function
+/// (which never enters a column, ADR 0030).
 fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
         Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
-        Ty::Bag { .. } | Ty::Record(_) => None,
+        Ty::Bag { .. } | Ty::Record(_) | Ty::Fn(_) => None,
     }
 }
 

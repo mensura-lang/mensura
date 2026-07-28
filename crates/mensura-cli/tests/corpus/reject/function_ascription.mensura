@@ -1,0 +1,3 @@
+// Reject (resolve): a `: type` ascription on a function binding
+// (ADR 0030).  The type grammar has no function type to ascribe.
+let f: real { |x| x }

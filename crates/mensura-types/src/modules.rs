@@ -32,6 +32,15 @@ pub struct ModuleEnv {
     pub values: BTreeMap<String, ConstValue>,
 }
 
+// A bundled module is reached as `&'static` through a `OnceLock`, which is
+// only `Sync` if its contents are.  `ConstValue::Closure` holds an `Arc`
+// (never `Rc`) exactly so this holds; the assertion keeps it from
+// regressing silently (ADR 0030).
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<ModuleEnv>()
+};
+
 /// The `si` standard library (ADR 0028), embedded at compile time.  The
 /// oracle test in `stdlib_si` pins each binding's resolved dimension and
 /// magnitude.
