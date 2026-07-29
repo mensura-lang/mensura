@@ -68,6 +68,23 @@ pub enum Ty {
     /// types and re-typing the body at each call site: exact, per-site, no
     /// inference.  A function never enters a column and cannot be ascribed.
     Fn(Arc<TyClosure>),
+    /// An orderable value marked **descending** (ADR 0031, Decision 7): the
+    /// order dual, `desc e`.  Orderable in, orderable out.
+    ///
+    /// A variant rather than a flag on [`Ty::Value`], for the same reason
+    /// [`Ty::Rows`] is one: a descending marker must never reach a column, and
+    /// making it a distinct inhabitant gets that exclusion *by construction*,
+    /// since `column_of` is the only door to storage and matches exhaustively.
+    /// A flag would instead be silently *accepted* everywhere a `Ty::Value` is
+    /// destructured, which is the wrong default for a checker-internal notion.
+    /// It is not a `ColumnType` either: that is the storable vocabulary, and
+    /// this is precisely a thing that cannot be stored.
+    ///
+    /// Never ascribable, and that falls out free: `desc` has no spelling in
+    /// type position.  Because the marker sits on *values*, direction is
+    /// per-component, which is what lets `|r| (r.date, desc r.priority)` mean
+    /// `ORDER BY date ASC, priority DESC` (once tuple keys exist).
+    Desc(Box<Ty>),
     /// A **builtin** function value (ADR 0031, Decision 11).  `fold`, `scan`,
     /// and `map` have function types but no lambda bodies: the language has no
     /// recursion and cannot express bag iteration, so they are primitives
@@ -92,6 +109,31 @@ pub enum Builtin {
     /// (ADR 0031, Decision 4).  Gated by ADR 0029's Stage 1, proved in
     /// `formal/Mensura/Fold.lean`.
     Fold,
+    /// `scan : combiner -> (row -> value) -> (row -> key) -> rows -> bag`
+    /// (ADR 0031, Decision 7).  The ordered sibling: same combiner table, same
+    /// mapper, plus an order key, emitting every intermediate where `fold`
+    /// keeps the last.
+    ///
+    /// Both lambdas take a **row**, and the trailing argument is the fiber
+    /// rather than a projected bag.  That is forced rather than chosen: sorting
+    /// values by a sibling column requires seeing the row that carries both, so
+    /// a projected bag (a bag of bare scalars) has nothing left to order by.
+    /// ADR 0031 Decision 8 writes the derived bindings with a `(|v| v)` mapper,
+    /// which cannot typecheck for this reason; the value extractor comes from
+    /// the call site instead.  Gated by ADR 0029's Stage 2, proved in
+    /// `formal/Mensura/Arranged.lean`.
+    ///
+    /// The key is an ordinary *argument* rather than a `by` clause, because a
+    /// clause cannot be partially applied and the derived vocabulary is
+    /// partial applications (`let cumsum { scan `+` (|v| v) }`).
+    Scan,
+    /// `prescan`, the exclusive scan (Blelloch's naming): position `i` carries
+    /// the fold of the proper prefix `1..i-1`, so its first output is the
+    /// combiner's identity, or *missing* for an identity-free row.  That is
+    /// where `lag`'s missing first row comes from, and it falls out of the
+    /// identity-and-emptiness rule rather than being designed
+    /// (`Mensura.prescanBag`).
+    Prescan,
     /// `map : (element -> value) -> bag -> bag` (ADR 0031, Decision 3): the
     /// projection functor, the explicit form of `b.x`.  Order-free, so it is
     /// not derivable from `fold` or `scan`.
@@ -103,6 +145,8 @@ impl Builtin {
     pub fn name(self) -> &'static str {
         match self {
             Builtin::Fold => "fold",
+            Builtin::Scan => "scan",
+            Builtin::Prescan => "prescan",
             Builtin::Map => "map",
         }
     }
@@ -112,15 +156,36 @@ impl Builtin {
         match self {
             // combiner, mapper, bag
             Builtin::Fold => 3,
+            // combiner, mapper, key, rows.  The bag stays last so a scan pipes
+            // (ADR 0018) and so the derived bindings are partial applications.
+            Builtin::Scan | Builtin::Prescan => 4,
             // mapper, bag
             Builtin::Map => 2,
         }
     }
 
+    /// Which slot takes a backticked combiner rather than a value, if any.
+    ///
+    /// It is the first slot for every primitive that has one, but asking the
+    /// question per primitive (rather than testing `applied.is_empty()` at the
+    /// call site) keeps the slot layout beside [`Builtin::arity`], where a
+    /// reader adding a primitive looks, so the two cannot drift.
+    pub fn combiner_slot(self) -> Option<usize> {
+        match self {
+            Builtin::Fold | Builtin::Scan | Builtin::Prescan => Some(0),
+            Builtin::Map => None,
+        }
+    }
+
+    /// Whether this primitive orders its bag, hence takes a key.
+    pub fn is_ordered(self) -> bool {
+        matches!(self, Builtin::Scan | Builtin::Prescan)
+    }
+
     /// The primitive a name denotes, if any.  The set is closed, so this is
     /// also the test for "is this an intrinsic reduction".
     pub fn from_name(name: &str) -> Option<Builtin> {
-        [Builtin::Fold, Builtin::Map]
+        [Builtin::Fold, Builtin::Scan, Builtin::Prescan, Builtin::Map]
             .into_iter()
             .find(|b| b.name() == name)
     }
@@ -213,9 +278,20 @@ struct CombinerRow {
     op: BinOp,
     /// Spelled as the surface writes it inside backticks.
     spelling: &'static str,
-    /// Commutative combiners are admitted under `fold`; the rest are
-    /// `scan`-only, since a key supplies the order a bag lacks.
-    commutative: bool,
+    /// Whether `fold` admits this row.  A fold reduces an *unordered* bag, so
+    /// it needs commutativity as well as associativity: without it the answer
+    /// would depend on how the executor happened to shard the bag.  Stated as
+    /// an admission rather than derived from a `commutative` flag, because the
+    /// call site's question is "does this row admit this primitive", which is
+    /// what `09-typing-reference.md` section 5.4's "admitted under" column
+    /// answers, and because the algebra behind an admission is this table's
+    /// knowledge rather than a fact to be re-derived per use.
+    folds: bool,
+    /// Whether `scan` admits this row.  Every row does: a scan's key supplies
+    /// the order a bag lacks, so associativity alone suffices, and that is
+    /// what lets the tacks be combiners at all (ADR 0029 Decision 10's
+    /// ordered-only column, ADR 0031 Decision 6).
+    scans: bool,
     /// Whether the domain carries an identity for this operator, i.e. whether
     /// the empty bag has a true answer.  `<<`/`>>` have none ("there is no
     /// smallest element of nothing"), which is what the `Option` completion of
@@ -249,60 +325,83 @@ const COMBINERS: [CombinerRow; 8] = [
     CombinerRow {
         op: BinOp::Add,
         spelling: "+",
-        commutative: true,
+        folds: true,
+        scans: true,
         has_identity: true,
         domain: CombinerDomain::Numeric,
     },
     CombinerRow {
         op: BinOp::Mul,
         spelling: "*",
-        commutative: true,
+        folds: true,
+        scans: true,
         has_identity: true,
         domain: CombinerDomain::DimensionlessNumeric,
     },
     CombinerRow {
         op: BinOp::Min,
         spelling: "<<",
-        commutative: true,
+        folds: true,
+        scans: true,
         has_identity: false,
         domain: CombinerDomain::Orderable,
     },
     CombinerRow {
         op: BinOp::Max,
         spelling: ">>",
-        commutative: true,
+        folds: true,
+        scans: true,
         has_identity: false,
         domain: CombinerDomain::Orderable,
     },
     CombinerRow {
         op: BinOp::Or,
         spelling: "or",
-        commutative: true,
+        folds: true,
+        scans: true,
         has_identity: true,
         domain: CombinerDomain::Boolean,
     },
     CombinerRow {
         op: BinOp::And,
         spelling: "and",
-        commutative: true,
+        folds: true,
+        scans: true,
         has_identity: true,
         domain: CombinerDomain::Boolean,
     },
     CombinerRow {
         op: BinOp::KeepLeft,
         spelling: "<:",
-        commutative: false,
+        folds: false,
+        scans: true,
         has_identity: false,
         domain: CombinerDomain::Any,
     },
     CombinerRow {
         op: BinOp::KeepRight,
         spelling: ":>",
-        commutative: false,
+        folds: false,
+        scans: true,
         has_identity: false,
         domain: CombinerDomain::Any,
     },
 ];
+
+impl CombinerRow {
+    /// Whether this row admits `which`.  The call site asks the admission
+    /// question directly rather than re-deriving it from an algebraic
+    /// property, so the reason a row is refused lives in the table (with the
+    /// documented column it mirrors) instead of at each use.
+    fn admits(&self, which: Builtin) -> bool {
+        match which {
+            Builtin::Fold => self.folds,
+            Builtin::Scan | Builtin::Prescan => self.scans,
+            // `map` has no combiner slot, so the question does not arise.
+            Builtin::Map => false,
+        }
+    }
+}
 
 fn combiner_row(op: BinOp) -> Option<&'static CombinerRow> {
     COMBINERS.iter().find(|row| row.op == op)
@@ -373,7 +472,7 @@ pub fn intrinsics() -> Ambient {
     // bundled module bind their partial applications by name.  The derived
     // vocabulary (`sum`, `min`, ...) is deliberately absent: it lives in the
     // `bag` and `series` modules and is imported (Decision 8).
-    for which in [Builtin::Fold, Builtin::Map] {
+    for which in [Builtin::Fold, Builtin::Scan, Builtin::Prescan, Builtin::Map] {
         env.insert(
             which.name().to_string(),
             Ty::Builtin(Arc::new(PartialBuiltin {
@@ -718,6 +817,12 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
     if name == "to_real" {
         return type_to_real(ctx, arg);
     }
+    // `desc` is 1-ary and has no slots, so it shares `to_real`'s shape rather
+    // than becoming a `Builtin` (whose contract is a curried primitive with a
+    // per-slot rule).
+    if name == "desc" {
+        return type_desc(ctx, arg);
+    }
     let _ = arg;
     Err(vec![TypeError::new(
         retired_aggregate_hint(name).unwrap_or_else(|| "unsupported in this increment".to_string()),
@@ -863,7 +968,7 @@ fn apply_builtin(
         }
         // The combiner slot takes a backticked operator, never a value: a
         // combiner's algebra is compiler knowledge, so it cannot be computed.
-        if which == Builtin::Fold && applied.is_empty() {
+        if which.combiner_slot() == Some(applied.len()) {
             let ExprKind::Combiner(raw) = &arg.kind else {
                 return Err(vec![TypeError::new(
                     format!(
@@ -876,9 +981,10 @@ fn apply_builtin(
             };
             let op = resolve_combiner(raw, arg.span)?;
             let row = combiner_row(op).expect("resolved from the table");
-            // Non-commutative rows are `scan`-only: a fold over an unordered
-            // bag has no order for the tacks to respect (Decision 6).
-            if !row.commutative {
+            // Admission is the table's own column (Decision 6).  Only `fold`
+            // refuses a row today: it reduces an *unordered* bag, so it needs
+            // commutativity, while a scan's key supplies the order a bag lacks.
+            if !row.admits(which) {
                 return Err(vec![TypeError::new(
                     format!(
                         "`` `{}` `` is not commutative, so it is admitted under \
@@ -922,6 +1028,25 @@ fn saturated_builtin(
                 )]);
             };
             type_fold(ctx, *op, mapper, bag, head_span)
+        }
+        Builtin::Scan | Builtin::Prescan => {
+            let [
+                BuiltinArg::Combiner(op),
+                BuiltinArg::Ty(mapper),
+                BuiltinArg::Ty(key),
+                BuiltinArg::Ty(bag),
+            ] = applied
+            else {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "`{}` expects a combiner, a mapper, an order key, and \
+                         a bag",
+                        which.name()
+                    ),
+                    head_span,
+                )]);
+            };
+            type_scan(ctx, which, *op, mapper, key, bag, head_span)
         }
         Builtin::Map => {
             let [BuiltinArg::Ty(mapper), BuiltinArg::Ty(bag)] = applied else {
@@ -1025,16 +1150,52 @@ fn type_fold(
     let element = element_of(bag, "`fold`", span)?;
     let mapped = apply_mapper(ctx, mapper, element, "`fold`", span)?;
     let row = combiner_row(op).expect("resolved from the table");
-    // The mapper's result is what the combiner folds, so the accumulator's
-    // domain is that result's domain.  A fold's accumulator type must be
-    // invariant, which is what the per-row domain restriction enforces.
-    let (domain, opt) = match &mapped {
+    let domain = accumulator_domain(&mapped, "`fold`", span)?;
+    require_combiner_domain(row, &domain, span)?;
+    // The result is total either way, but for two different reasons, and the
+    // distinction is the whole content of ADR 0029 Decision 4:
+    //
+    // - A combiner *with* an identity has a true answer for the empty bag
+    //   (`0` is the sum of nothing), so the fold is total unconditionally.
+    // - A combiner *without* one has none ("there is no smallest element of
+    //   nothing"), so it folds through the `Option` completion and is total
+    //   only on a non-empty bag.  A group arises from rows and is never
+    //   empty, which is exactly the hypothesis
+    //   `Mensura.foldBagOpt_isSome_of_ne_zero` discharges.
+    //
+    // Both land on `total` here because a bag in this position is always a
+    // group.  When a possibly-empty bag becomes expressible, the identity-free
+    // rows must yield an optional value, and this is the branch that changes.
+    //
+    // The assertion below is deliberately *fold-local*: it holds because a
+    // fold only ever sees the six commutative rows, among which exactly the
+    // orderable pair lacks an identity.  It is not true of the table as a
+    // whole, since the tacks are identity-free too and `scan` reaches them
+    // (`type_scan`).  Do not lift it.
+    debug_assert!(
+        row.has_identity || matches!(row.domain, CombinerDomain::Orderable),
+        "only the orderable rows (`<<`, `>>`) lack an identity among the \
+         fold-admitted six"
+    );
+    Ok(total(domain))
+}
+
+/// The accumulator's domain: the mapper's result is what the combiner folds, so
+/// a fold's (and a scan's) accumulator type is that result's domain.  The type
+/// must be invariant under the combiner, which is what the per-row domain
+/// restriction of [`require_combiner_domain`] enforces.
+///
+/// A mapper that may produce a missing value is rejected here: a reduction over
+/// a bag with holes has no defined answer, and the fix is upstream (filter, or
+/// coalesce the mapper).
+fn accumulator_domain(mapped: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<TypeError>> {
+    let (domain, opt) = match mapped {
         Ty::Value { domain, opt } => (domain.clone(), *opt),
         Ty::Bool => (ColumnType::Bool, Optionality::Total),
         other => {
             return Err(vec![TypeError::new(
                 format!(
-                    "`fold`'s mapper must produce a value, found {}",
+                    "{what}'s mapper must produce a value, found {}",
                     describe_ty(other)
                 ),
                 span,
@@ -1043,12 +1204,23 @@ fn type_fold(
     };
     if opt == Optionality::Optional {
         return Err(vec![TypeError::new(
-            "`fold` requires a total bag; this mapper may produce a missing \
-             value"
-                .to_string(),
+            format!("{what} requires a total bag; this mapper may produce a missing value"),
             span,
         )]);
     }
+    Ok(domain)
+}
+
+/// Check the combiner row's domain restriction against the accumulator's
+/// domain.  Shared by `fold` and `scan` so the two primitives cannot drift on
+/// it: the restrictions are properties of the *combiner*, not of the direction
+/// the bag is reduced in.
+fn require_combiner_domain(
+    row: &'static CombinerRow,
+    domain: &ColumnType,
+    span: Span,
+) -> Result<(), Vec<TypeError>> {
+    let domain = domain.clone();
     let ok = match row.domain {
         CombinerDomain::Numeric => domain.is_numeric(),
         CombinerDomain::DimensionlessNumeric => {
@@ -1081,25 +1253,123 @@ fn type_fold(
             span,
         )]);
     }
-    // The result is total either way, but for two different reasons, and the
-    // distinction is the whole content of ADR 0029 Decision 4:
-    //
-    // - A combiner *with* an identity has a true answer for the empty bag
-    //   (`0` is the sum of nothing), so the fold is total unconditionally.
-    // - A combiner *without* one has none ("there is no smallest element of
-    //   nothing"), so it folds through the `Option` completion and is total
-    //   only on a non-empty bag.  A group arises from rows and is never
-    //   empty, which is exactly the hypothesis
-    //   `Mensura.foldBagOpt_isSome_of_ne_zero` discharges.
-    //
-    // Both land on `total` here because a bag in this position is always a
-    // group.  When a possibly-empty bag becomes expressible, the identity-free
-    // rows must yield an optional value, and this is the branch that changes.
-    debug_assert!(
-        row.has_identity || matches!(row.domain, CombinerDomain::Orderable),
-        "only the orderable rows (`<<`, `>>`) lack an identity"
-    );
-    Ok(total(domain))
+    Ok(())
+}
+
+/// `scan`/`prescan : combiner -> (row -> value) -> (row -> key) -> rows ->
+/// bag` (ADR 0031, Decision 7).  Backed by ADR 0029's Stage 2, proved in
+/// `formal/Mensura/Arranged.lean`: `IsArrangement` with its existence and
+/// Tier 1 uniqueness theorems, `scanBag`/`prescanBag` as two slices of one
+/// `List.scanl`, the coherence theorem that a scan's last element is the
+/// corresponding fold, and `scanFiber_splitSafe`.
+///
+/// The result is a **bag**, not a value: a scan emits one row per input row, so
+/// it is the window shape of `map_bags` rather than the reducing one, and it
+/// therefore demands no completeness fact (`07-pipelines.md`).
+///
+/// # Optionality
+///
+/// | | identity (`+ * or and`) | identity-free (`<< >> <: :>`) |
+/// | --- | --- | --- |
+/// | `scan` | total | total |
+/// | `prescan` | total | **optional** |
+///
+/// An inclusive scan is total at every row because position `i` folds elements
+/// `1..i`, which is never empty, so the identity is never consulted.  An
+/// exclusive scan's first position folds the *empty* prefix, so an
+/// identity-free combiner has no answer there and the result carries a missing
+/// value.  That is where `lag`'s missing first row comes from: it falls out of
+/// the row's `has_identity` being false, not from any rule about `lag`.
+///
+/// `type_fold`'s comment on its own totality branch anticipated this change and
+/// named a possibly-empty bag as the trigger.  `prescan` is a *second* trigger
+/// it did not name: the bag is non-empty, but a proper prefix of it can be.
+fn type_scan(
+    ctx: &Context,
+    which: Builtin,
+    op: BinOp,
+    mapper: &Ty,
+    key: &Ty,
+    bag: &Ty,
+    span: Span,
+) -> Result<Ty, Vec<TypeError>> {
+    let what = format!("`{}`", which.name());
+    let element = element_of(bag, &what, span)?;
+    let mapped = apply_mapper(ctx, mapper, element.clone(), &what, span)?;
+    let row = combiner_row(op).expect("resolved from the table");
+    let domain = accumulator_domain(&mapped, &what, span)?;
+    require_combiner_domain(row, &domain, span)?;
+    // The key orders the fiber, so its obligation is decidable (an orderable
+    // domain) and it contributes nothing to the result type.
+    let key_ty = apply_mapper(ctx, key, element, &format!("{what}'s order key"), span)?;
+    require_orderable_key(&key_ty, &what, span)?;
+    let opt = if which == Builtin::Prescan && !row.has_identity {
+        Optionality::Optional
+    } else {
+        Optionality::Total
+    };
+    Ok(Ty::Bag { domain, opt })
+}
+
+/// The order key's obligation: a single value in an orderable domain, present
+/// at every row.
+///
+/// Totality is required for a reason the ADR does not name: a missing key has
+/// no position in the order, so there is no arrangement to scan over.  The fix
+/// is upstream, which the diagnostic says.
+///
+/// A `desc`-marked key is accepted and its direction discarded here: direction
+/// changes the arrangement, not the obligation, since the dual of a total order
+/// is total (`Mensura.arrangeList` at `OrderDual`).
+fn require_orderable_key(key_ty: &Ty, what: &str, span: Span) -> Result<(), Vec<TypeError>> {
+    let inner = match key_ty {
+        Ty::Desc(inner) => inner.as_ref(),
+        other => other,
+    };
+    match inner {
+        Ty::Value { domain, opt } => {
+            if *opt == Optionality::Optional {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "{what}'s order key may produce a missing value, which \
+                         has no position in the order; filter the bag or \
+                         coalesce the key first"
+                    ),
+                    span,
+                )]);
+            }
+            if !domain.is_orderable() {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "{what}'s order key must land in an orderable domain \
+                         (`int`, `real`, a dimensioned real, or `date`), found \
+                         {}",
+                        domain_name(domain)
+                    ),
+                    span,
+                )]);
+            }
+            Ok(())
+        }
+        // A tuple key would order lexicographically (ADR 0031, Decision 7's
+        // tier 2), but a value tuple has no type yet, so say that rather than
+        // reporting a generic "unsupported" from the tuple itself.
+        Ty::Record(_) => Err(vec![TypeError::new(
+            format!(
+                "{what}'s order key must be a single orderable value; \
+                 lexicographic tuple keys are not yet supported (ADR 0031, \
+                 Decision 7)"
+            ),
+            span,
+        )]),
+        other => Err(vec![TypeError::new(
+            format!(
+                "{what}'s order key must produce an orderable value, found {}",
+                describe_ty(other)
+            ),
+            span,
+        )]),
+    }
 }
 
 /// `map : (element -> value) -> bag -> bag` (ADR 0031, Decision 3): the
@@ -1131,7 +1401,49 @@ fn ty_name(ty: &Ty) -> String {
         Ty::Bool => "bool".to_string(),
         Ty::Rows(_) => "bag of rows".to_string(),
         Ty::Record(_) => "record".to_string(),
+        Ty::Desc(inner) => format!("descending {}", ty_name(inner)),
         Ty::Fn(_) | Ty::Builtin(_) => "function".to_string(),
+    }
+}
+
+/// `desc` (ADR 0031, Decision 7): wrap an orderable value in its order dual.
+/// Orderable in, orderable out, never storable and never ascribable.
+///
+/// A direction *marker* rather than a comparator, forced by the same epistemics
+/// as the combiner table: a comparator's obligation is a law (a strict total
+/// order), unverifiable on a user lambda, so keys stay values in orderable
+/// domains and direction stays a marker.  In `formal/` the marker is Mathlib's
+/// `OrderDual`, so `Mensura.arrangeList` absorbs it with no new structure and
+/// Tier 1 survives it (the dual of a total order is total, and the dual of an
+/// injective key is injective).
+fn type_desc(ctx: &Context, arg: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let span = arg.span;
+    match type_expr(ctx, arg)? {
+        Ty::Value { domain, opt } if domain.is_orderable() => {
+            Ok(Ty::Desc(Box::new(Ty::Value { domain, opt })))
+        }
+        Ty::Value { domain, .. } => Err(vec![TypeError::new(
+            format!(
+                "`desc` orders an orderable domain (`int`, `real`, a \
+                 dimensioned real, or `date`), found {}",
+                domain_name(&domain)
+            ),
+            span,
+        )]),
+        // The dual of the dual is the original order, so a double marker is
+        // always a mistake rather than a no-op worth accepting silently.
+        Ty::Desc(_) => Err(vec![TypeError::new(
+            "`desc` is already applied here; the dual of the dual is the \
+             original order",
+            span,
+        )]),
+        other => Err(vec![TypeError::new(
+            format!(
+                "`desc` marks a single orderable value as descending, found {}",
+                describe_ty(&other)
+            ),
+            span,
+        )]),
     }
 }
 
@@ -1640,6 +1952,15 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
             format!("{what} expects a value, found a row"),
             span,
         )]),
+        // A descending marker orders a key; it is not itself a value one can
+        // compute with or store (ADR 0031, Decision 7).
+        Ty::Desc(_) => Err(vec![TypeError::new(
+            format!(
+                "{what} expects a value, found a descending marker; `desc` \
+                 belongs in a scan's order key, not in a value position"
+            ),
+            span,
+        )]),
         Ty::Fn(_) | Ty::Builtin(_) => Err(vec![TypeError::new(
             format!("{what} expects a value, found a function (apply it)"),
             span,
@@ -1717,6 +2038,7 @@ fn describe_ty(ty: &Ty) -> String {
         Ty::Bool => "a bool".to_string(),
         Ty::Rows(_) => "a bag of rows".to_string(),
         Ty::Record(_) => "a record".to_string(),
+        Ty::Desc(inner) => format!("a descending {}", ty_name(inner)),
         Ty::Fn(_) | Ty::Builtin(_) => "a function".to_string(),
     }
 }
@@ -2123,6 +2445,150 @@ mod tests {
         // The combiner slot takes an operator, never a computed function.
         let errs = ty_of(&ctx, "fold (|a| a) (|v| v) b.size").expect_err("needs a combiner");
         assert!(errs[0].message.contains("backticked combiner"));
+    }
+
+    /// The table's admission column mirrors `09-typing-reference.md` section
+    /// 5.4 row by row.  Pinned as data rather than derived from `commutative`,
+    /// so a future row cannot drift from the documented table silently, and so
+    /// the doc and the code fail together (the spirit of the module oracles).
+    #[test]
+    fn the_admission_column_mirrors_the_documented_table() {
+        // (spelling, admitted under `fold`, admitted under `scan`)
+        let documented = [
+            ("+", true, true),
+            ("*", true, true),
+            ("<<", true, true),
+            (">>", true, true),
+            ("or", true, true),
+            ("and", true, true),
+            // The ordered-only column: associative but not commutative, so a
+            // key must supply the order a bag lacks.
+            ("<:", false, true),
+            (":>", false, true),
+        ];
+        assert_eq!(
+            documented.len(),
+            COMBINERS.len(),
+            "the table gained or lost a row without the doc column following"
+        );
+        for (spelling, folds, scans) in documented {
+            let row = COMBINERS
+                .iter()
+                .find(|r| r.spelling == spelling)
+                .unwrap_or_else(|| panic!("no row spelled `{spelling}`"));
+            assert_eq!(row.folds, folds, "`{spelling}`'s `fold` admission");
+            assert_eq!(row.scans, scans, "`{spelling}`'s `scan` admission");
+        }
+        // Every row is scan-admitted, which is what makes the tacks combiners
+        // at all; the fold-admitted set is strictly smaller.
+        assert!(COMBINERS.iter().all(|r| r.scans));
+        assert!(COMBINERS.iter().filter(|r| r.folds).count() < COMBINERS.len());
+    }
+
+    /// The optionality matrix of ADR 0031 Decision 7, all four cells.  An
+    /// inclusive scan is total at every row because position `i` folds a
+    /// non-empty prefix; an exclusive scan's first position folds the *empty*
+    /// prefix, so an identity-free combiner has no answer there.
+    #[test]
+    fn the_scan_optionality_matrix() {
+        let ctx = bag_ctx();
+        let bag = |domain, opt| Ty::Bag { domain, opt };
+        // scan, identity row: total.
+        assert_eq!(
+            ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b"),
+            Ok(bag(ColumnType::Real, Optionality::Total))
+        );
+        // scan, identity-free row: still total, because no prefix is empty.
+        assert_eq!(
+            ty_of(&ctx, "scan `>>` (|r| r.temperature) (|r| r.at) b"),
+            Ok(bag(ColumnType::Real, Optionality::Total))
+        );
+        // prescan, identity row: total, the identity answers the empty prefix.
+        assert_eq!(
+            ty_of(&ctx, "prescan `+` (|r| r.temperature) (|r| r.at) b"),
+            Ok(bag(ColumnType::Real, Optionality::Total))
+        );
+        // prescan, identity-free row: OPTIONAL.  This is `lag`'s missing first
+        // row, and it falls out of the row's `has_identity` rather than from
+        // any rule about `lag` (ADR 0031, Decision 7).
+        assert_eq!(
+            ty_of(&ctx, "prescan `:>` (|r| r.temperature) (|r| r.at) b"),
+            Ok(bag(ColumnType::Real, Optionality::Optional))
+        );
+    }
+
+    #[test]
+    fn a_scan_admits_the_tacks_but_a_fold_still_does_not() {
+        let ctx = bag_ctx();
+        // The ordered-only column is now reachable: a key supplies the order a
+        // bag lacks, so associativity alone suffices.
+        assert!(ty_of(&ctx, "scan `<:` (|r| r.temperature) (|r| r.at) b").is_ok());
+        assert!(ty_of(&ctx, "scan `:>` (|r| r.temperature) (|r| r.at) b").is_ok());
+        // A fold over an unordered bag still refuses them.
+        let errs = ty_of(&ctx, "fold `<:` (|v| v) b.temperature").expect_err("scan only");
+        assert!(errs[0].message.contains("not commutative"));
+    }
+
+    #[test]
+    fn a_scans_order_key_must_be_orderable_and_total() {
+        let ctx = bag_ctx();
+        // An enum is equatable but not orderable, so it cannot order a scan.
+        let errs =
+            ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.status) b").expect_err("not ordered");
+        assert!(
+            errs[0].message.contains("orderable domain"),
+            "unexpected: {}",
+            errs[0].message
+        );
+        // A missing key has no position in the order.
+        let errs =
+            ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.peak) b").expect_err("optional key");
+        assert!(
+            errs[0].message.contains("no position in the order"),
+            "unexpected: {}",
+            errs[0].message
+        );
+        // A dimensioned real is orderable, so it may order a scan.
+        assert!(ty_of(&ctx, "scan `+` (|r| r.size) (|r| r.kelvin_reading) b").is_ok());
+    }
+
+    #[test]
+    fn desc_marks_a_key_and_is_not_a_value() {
+        let ctx = bag_ctx();
+        // A descending key orders the dual, and the obligation is unchanged:
+        // the dual of a total order is total.
+        assert!(ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| desc r.at) b").is_ok());
+        // `desc` of a non-orderable domain is an error naming the set.
+        let errs = ty_of(&ctx, "desc \"x\"").expect_err("not orderable");
+        assert!(errs[0].message.contains("orderable domain"));
+        // The dual of the dual is the original order, so a double marker is a
+        // mistake rather than a silent no-op.
+        let errs = ty_of(&ctx, "desc (desc 1)").expect_err("already descending");
+        assert!(errs[0].message.contains("already applied"));
+        // A descending marker is not a value: it cannot be computed with.
+        let errs = ty_of(&ctx, "desc 1 + 2").expect_err("not a value");
+        assert!(!errs.is_empty());
+    }
+
+    #[test]
+    fn a_scan_is_curried_like_a_fold() {
+        let ctx = bag_ctx();
+        // Short of saturation each step is an ordinary value, which is what
+        // lets `series` bind partial applications by name (Decision 8).
+        for src in [
+            "scan `+`",
+            "scan `+` (|r| r.temperature)",
+            "scan `+` (|r| r.temperature) (|r| r.at)",
+        ] {
+            assert!(
+                matches!(ty_of(&ctx, src), Ok(Ty::Builtin(_))),
+                "`{src}` should still be a function value"
+            );
+        }
+        // Over-application names the arity.
+        let errs =
+            ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b b.size").expect_err("saturated");
+        assert!(errs[0].message.contains("already saturated"));
     }
 
     #[test]

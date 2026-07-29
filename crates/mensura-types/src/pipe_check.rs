@@ -871,16 +871,21 @@ fn lambda_params<'a>(
 
 /// The column domain and totality a value type contributes, or `None` for a
 /// bag, a bag of rows (the fiber is a type-level notion, ADR 0031 Decision
-/// 10), a nested record (window/nested returns are deferred), or a function
-/// (which never enters a column, ADR 0030).
+/// 10), a nested record (window/nested returns are deferred), a descending
+/// marker (an order annotation, not a value, ADR 0031 Decision 7), or a
+/// function (which never enters a column, ADR 0030).
 ///
 /// This is the storage boundary: returning `None` for the fiber is what keeps
-/// nested collections out of a column, so the rows type cannot smuggle one in.
+/// nested collections out of a column, so the rows type cannot smuggle one in,
+/// and returning `None` for `Ty::Desc` is what makes "never storable" hold by
+/// construction rather than by a rule someone must remember to write.
 fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
         Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
-        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Fn(_) | Ty::Builtin(_) => None,
+        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Desc(_) | Ty::Fn(_) | Ty::Builtin(_) => {
+            None
+        }
     }
 }
 

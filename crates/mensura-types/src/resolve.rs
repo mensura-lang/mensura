@@ -273,7 +273,10 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         // bindings in `bag` now, so `sum`, `min`, `max`, `any`, `all`, and
         // `count` are ordinary names a user may declare.  The protection
         // shrinks with the intrinsics, and covers only what is still ambient.
-        const EXPR_BUILTINS: [&str; 3] = ["to_real", "fold", "map"];
+        // ADR 0031 Decision 7 adds the ordered primitives and the `desc` order
+        // marker; the derived window vocabulary (`cumsum`, `lag`, ...) stays out,
+        // since it lives in the bundled `series` module.
+        const EXPR_BUILTINS: [&str; 6] = ["to_real", "fold", "map", "scan", "prescan", "desc"];
         if EXPR_BUILTINS.contains(&name.name.as_str()) {
             errors.push(ResolveError::new(
                 format!(
