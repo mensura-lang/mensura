@@ -271,18 +271,23 @@ as a property of a table rather than of a bare bag. -/
 def KeyInjOn [LinearOrder ω] (key : K → Row H σ → ω) (T : Table K H σ) : Prop :=
   ∀ k, Set.InjOn (key k) {r | r ∈ T.rows k}
 
-/-- A bag of at most one row has no two distinct members, so any function is
-injective on it. -/
-theorem injOn_of_card_le_one {m : Multiset α} (hm : Multiset.card m ≤ 1)
-    (f : α → ω) : Set.InjOn f {a | a ∈ m} := by
-  intro a ha b hb _
+/-- In a bag of at most one row, any two members are the same row.  The
+underlying fact both Tier 1 discharges rest on. -/
+theorem eq_of_mem_card_le_one {m : Multiset α} (hm : Multiset.card m ≤ 1)
+    {a b : α} (ha : a ∈ m) (hb : b ∈ m) : a = b := by
   -- `card <= 1` leaves only the empty bag and a singleton; the empty case
   -- contradicts membership, and in a singleton both members are its element.
   interval_cases h : Multiset.card m
   · exact absurd (Multiset.card_eq_zero.mp h ▸ ha) (by simp)
   · obtain ⟨c, rfl⟩ := Multiset.card_eq_one.mp h
-    simp only [Set.mem_setOf_eq, Multiset.mem_singleton] at ha hb
+    rw [Multiset.mem_singleton] at ha hb
     rw [ha, hb]
+
+/-- A bag of at most one row has no two distinct members, so any function is
+injective on it. -/
+theorem injOn_of_card_le_one {m : Multiset α} (hm : Multiset.card m ≤ 1)
+    (f : α → ω) : Set.InjOn f {a | a ∈ m} := fun _ ha _ hb _ =>
+  eq_of_mem_card_le_one hm ha hb
 
 /-- `Functional` discharges Tier 1, vacuously: a functional table's fibers hold
 at most one row, so no key can tie.  Useful as a compatibility bridge (a
@@ -291,6 +296,48 @@ a scan over a real bag is deterministic. -/
 theorem keyInjOn_of_functional [LinearOrder ω] (key : K → Row H σ → ω)
     {T : Table K H σ} (hT : Functional T) : KeyInjOn key T :=
   fun k => injOn_of_card_le_one (hT k) (key k)
+
+/-! ### The substantive discharge: a demoted key component is injective
+
+The vacuous bridge above is not what a real window rests on.  The load-bearing
+fact is this: `demote` merges the rows of every key `(k, d)` into the single
+output key `k`, tagging each with its own `d` (`Mensura.demote`).  So if the
+input was `Functional` -- at most one row per `(k, d)` -- then each output fiber
+holds at most one row per tag value, and **the tag column is injective on the
+fiber** even though the fiber itself is a genuine multi-row bag.
+
+That is the common shape of a window: a history keyed by `(entity, time)`,
+demoted to `entity`, scanned in time order.  The surface tracks exactly this
+fact as a *grading* (ADR 0024): a column set over which the table is known
+functional, carried unchanged through `demote` because it is a fact about the
+flat table rather than about the current key.  So the checker can discharge
+Tier 1 by looking up a grading, and this theorem is what licenses that.
+
+Stated on the tag column `Sum.inr ()`, which is where `demote` puts the
+demoted component. -/
+
+/-- **A demoted key component is injective on every fiber.**  The substantive
+Tier 1 discharge, and the theorem behind the checker's grading rule: a window
+over `demote`d content may be arranged by the demoted column with no assumption,
+because two rows of one output fiber that agreed on the tag would have been two
+rows of one *input* key, which `Functional` forbids.
+
+Unlike `keyInjOn_of_functional` this is not vacuous: the fiber may hold many
+rows, and what is bounded is how many share a tag. -/
+theorem keyInjOn_demote_tag [Fintype D] [LinearOrder D] [Inhabited D]
+    {T : Table (K × D) H σ} (hT : Functional T) :
+    KeyInjOn (K := K) (ω := D)
+      (fun _ r => (r (Sum.inr ()) : Cell D).getD default) (demote T) := by
+  intro k a ha b hb hab
+  simp only [Set.mem_setOf_eq, demote, Multiset.mem_sum, Multiset.mem_map] at ha hb
+  obtain ⟨da, -, ra, hra, rfl⟩ := ha
+  obtain ⟨db, -, rb, hrb, rfl⟩ := hb
+  -- Each row carries its own tag, so the keys agreeing means the tags agree.
+  simp only [Row.elim_inr, Option.getD_some] at hab
+  subst hab
+  -- Now both rows live at the *same* input key, which holds at most one row,
+  -- so they are the same row and their elim-images agree.
+  rw [eq_of_mem_card_le_one (hT (k, da)) hra hrb]
 
 /-! ## The bridge to the algebra: an arranged verb is a safe fiber action
 

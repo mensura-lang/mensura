@@ -868,10 +868,32 @@ the same elements.
   \emph{vacuous}, since a one-row fiber makes any scan a one-element list.
   So it is a compatibility bridge (a singleton-cardinality store needs no
   tie ceremony), not evidence that a scan over a real bag is deterministic.
-  The substantive hypothesis is per-fiber injectivity of the order key.
+  The substantive hypothesis is \ref{thm:keyinjon-demote-tag}.
 \end{theorem}
 \begin{proof}\leanok
   At cardinality at most one there are no two distinct members.
+\end{proof}
+
+\begin{theorem}[A projected key component is injective on every fiber]
+  \label{thm:keyinjon-demote-tag}\lean{Mensura.keyInjOn_demote_tag}\leanok
+  \uses{thm:arrange-unique, def:demote, def:functional}
+  The \emph{substantive} tier 1 discharge, and the theorem a checker rule may
+  cite.  \ref{def:demote} merges the rows of every key $(k,d)$ into the single
+  output key $k$, tagging each with its own $d$.  So if the input is
+  functional, at most one row per $(k,d)$, then each output fiber holds at most
+  one row per tag value, and the tag column is injective on the fiber.
+
+  Unlike \ref{thm:keyinjon-of-functional} this is not vacuous: the fiber may
+  hold many rows, and what is bounded is how many share a tag.  It is also the
+  common shape of a window (a history keyed by entity and time, projected to
+  the entity, scanned in time order), and the surface tracks exactly this fact
+  as a grading over the flat table, carried unchanged through the projection
+  because a grading does not depend on which columns currently form the key
+  (ADR 0024).
+\end{theorem}
+\begin{proof}\leanok
+  Two rows of one output fiber agreeing on the tag came from one input key,
+  which holds at most one row, so they are the same row.
 \end{proof}
 
 \chapter{Physical dimensions}
