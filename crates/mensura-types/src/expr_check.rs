@@ -680,12 +680,9 @@ fn apply_value(ctx: &Context, op_expr: &Expr, piped: Option<&Expr>) -> Result<Ty
     // "unsupported in this increment".
     let head_ty = match &head.kind {
         ExprKind::Name(name) => ctx.lookup(name).cloned(),
-        ExprKind::Member(..) => match type_member_head(ctx, head) {
-            Ok(ty) => Some(ty),
-            // A malformed qualified head reports its own diagnostic (unknown
-            // module, unknown member) rather than the generic complaint.
-            Err(errs) => return Err(errs),
-        },
+        // A malformed qualified head propagates its own diagnostic (unknown
+        // module, unknown member) rather than the generic complaint below.
+        ExprKind::Member(..) => Some(type_member_head(ctx, head)?),
         _ => {
             return Err(vec![TypeError::new(
                 "unsupported in this increment",
