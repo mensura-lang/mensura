@@ -1,0 +1,38 @@
+// Accepted: `desc` marks a key value as ordered by its dual (ADR 0031,
+// Decision 7).  Because the marker sits on *values* rather than on the
+// operator, direction is per-component, which is what a global reverse flag
+// could not express.
+//
+// In `formal/` the marker is Mathlib's `OrderDual`, so the arrangement absorbs
+// it at no proof cost and Tier 1 survives it: the dual of a total order is
+// total, and the dual of an injective key is injective.
+//
+// `series.lead` is the one binding written as a real lambda rather than a
+// partial application, precisely because it wraps the caller's key in `desc`:
+// the next row's value is the previous row's value under the dual order.
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    taken_at: date
+  }
+}
+
+view ranked {
+  readings
+    |> map_bags |k, b| (
+      // A descending `rank` needs no binding of its own: it is the ones-scan
+      // over a `desc` key at the call site (Decision 8).
+      .hottest_first = series.rank (|r| desc r.temperature) b,
+      // `lead` is `lag` at the dual key.
+      .next_reading = series.lead (|r| r.temperature) (|r| r.taken_at) b,
+      // The marker composes with a plain scan too.
+      .peak_desc = scan `>>` (|r| r.temperature) (|r| desc r.taken_at) b
+    )
+}

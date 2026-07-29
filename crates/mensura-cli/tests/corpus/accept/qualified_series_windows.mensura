@@ -1,0 +1,48 @@
+// Accepted: the window operations are const bindings in a bundled `series`
+// module, imported and qualified like `bag` (ADR 0031, Decision 8).  Each is a
+// partial application of `scan` or `prescan` at one row of the closed combiner
+// table, gated by ADR 0029's Stage 2 (`formal/Mensura/Arranged.lean`).
+//
+// A window is the *other* `map_bags` shape: one output row per input row, so
+// unlike a reduction it needs no completeness fact.  A reduction over a
+// partial bag is silently wrong; a window over one is faithful.
+//
+// Both lambdas take a row.  One extracts the value to accumulate, the other
+// the key to order by, because sorting values by a sibling column requires
+// seeing the row that carries both, and the trailing argument is the fiber
+// rather than a projected bag.
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    taken_at: date
+  }
+}
+
+view trend {
+  readings
+    |> map_bags |k, b| (
+      .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
+      .cumulative = series.cumsum (|r| r.temperature) (|r| r.taken_at) b,
+      // Every row sees the group's first value under the order: keep-left
+      // discards each later operand.
+      .opening = series.first_value (|r| r.temperature) (|r| r.taken_at) b,
+      // The ones-scan (Decision 8): its mapper ignores the row.
+      .position = series.rank (|r| r.taken_at) b
+    )
+}
+
+// `scan` is also usable directly, without the module: the module holds
+// definitions, not privileges.
+view direct {
+  readings
+    |> map_bags |k, b| (
+      .peak = scan `>>` (|r| r.temperature) (|r| r.taken_at) b
+    )
+}

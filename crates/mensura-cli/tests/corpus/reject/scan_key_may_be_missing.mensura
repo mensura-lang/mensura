@@ -1,0 +1,23 @@
+// Rejected at resolve (typing): a scan's order key must be *total*.  A missing
+// key has no position in the order, so there is no arrangement to scan over.
+//
+// This rule is forced by the implementation rather than stated in ADR 0031, and
+// it is the ordered analogue of `fold` refusing a mapper that may produce a
+// missing value.  The fix is upstream: filter the bag, or coalesce the key.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    // Optional (ADR 0010), so it cannot order anything.
+    taken_at: date?
+  }
+}
+
+view bad {
+  readings
+    |> map_bags |k, b| (.run = scan `+` (|r| r.temperature) (|r| r.taken_at) b)
+}

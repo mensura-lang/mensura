@@ -117,6 +117,8 @@ view reading_trend {
   readings |> map_bags |k, b| (
     .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
     .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
+    // `lead` is `lag` at the dual key, so the last reading is the missing one.
+    .next         = series.lead        (|r| r.temperature) (|r| r.taken_at) b,
     // Descending order is per-component, marked on the key value itself, so
     // this ranks each machine's hottest reading first.
     .rank_hottest = series.rank        (|r| desc r.temperature) b

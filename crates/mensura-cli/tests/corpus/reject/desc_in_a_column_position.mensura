@@ -1,0 +1,19 @@
+// Rejected at resolve (typing): a descending marker orders a scan's key and is
+// never stored (ADR 0031, Decision 7).  `desc` is checker-internal, like the
+// rows type: it has no spelling in type position and it cannot reach a column.
+//
+// The exclusion holds by construction rather than by a rule: the marker is its
+// own type, and the storage boundary (`column_of`) admits only values, so there
+// is no path from a marker to a column for anyone to forget to block.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* { temperature: real }
+}
+
+view bad {
+  readings |> map_bags |k, b| (.d = desc 1)
+}

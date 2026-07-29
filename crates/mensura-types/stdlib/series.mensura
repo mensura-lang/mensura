@@ -51,7 +51,11 @@ let lag { prescan `:>` }
 // The next row's value: `lag` over the dual order.  This is the one binding
 // that is a genuine lambda rather than a partial application, because the key
 // must be wrapped before it is passed on.
-let lead { |value, key| prescan `:>` value (|r| desc (key r)) }
+//
+// Curried explicitly (`|value| |key| ...`), not tupled: a multi-parameter
+// lambda binds a single n-tuple (ADR 0030, Decision 2), which would make
+// `series.lead f g` an arity error rather than two applications.
+let lead { |value| |key| prescan `:>` value (|r| desc (key r)) }
 
 // A descending `rank` needs no binding of its own: it is the ones-scan over a
 // `desc` key at the call site.  Note `rank` itself is the ones-scan,

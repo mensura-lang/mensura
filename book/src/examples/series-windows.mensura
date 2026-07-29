@@ -1,0 +1,21 @@
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    taken_at: date
+  }
+}
+
+view reading_trend {
+  readings |> map_bags |k, b| (
+    .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
+    .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
+    .hottest_rank = series.rank        (|r| desc r.temperature) b
+  )
+}

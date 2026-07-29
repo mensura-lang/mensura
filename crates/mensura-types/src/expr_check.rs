@@ -891,7 +891,14 @@ fn apply_closure(
     head_span: Span,
 ) -> Result<Ty, Vec<TypeError>> {
     let mut ty = Ty::Fn(closure);
-    for arg in args {
+    for (i, arg) in args.iter().enumerate() {
+        // A closure whose body is a partially applied primitive returns a
+        // builtin value, not another closure, so the remaining arguments belong
+        // to the primitive's slot rules.  `series.lead value key b` is the case
+        // that needs this: the outer lambda yields a 3-slot `prescan`.
+        if let Ty::Builtin(partial) = &ty {
+            return apply_builtin(ctx, partial.clone(), &args[i..], head_span);
+        }
         let Ty::Fn(c) = ty else {
             return Err(vec![TypeError::new(
                 format!(
@@ -2146,16 +2153,18 @@ mod tests {
     /// fixtures reading as a user would write them.
     fn test_ambient() -> Ambient {
         let mut ambient = intrinsics();
-        let env = crate::modules::bundled("bag")
-            .expect("bag is bundled")
-            .as_ref()
-            .expect("bag resolves cleanly");
-        let members = env
-            .values
-            .iter()
-            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
-            .collect();
-        ambient.insert("bag".to_string(), Ty::Record(members));
+        for name in ["bag", "series"] {
+            let env = crate::modules::bundled(name)
+                .expect("bundled")
+                .as_ref()
+                .expect("resolves cleanly");
+            let members = env
+                .values
+                .iter()
+                .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+                .collect();
+            ambient.insert(name.to_string(), Ty::Record(members));
+        }
         ambient
     }
 
@@ -2589,6 +2598,44 @@ mod tests {
         let errs =
             ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b b.size").expect_err("saturated");
         assert!(errs[0].message.contains("already saturated"));
+    }
+
+    /// A const function whose body is a *partially applied primitive* returns a
+    /// builtin value rather than another closure, so the remaining arguments
+    /// must reach the primitive's slot rules.  `series.lead` is the case that
+    /// needs it: its outer lambda yields a 3-slot `prescan`.
+    ///
+    /// This was a real gap, not a hypothetical: nothing before `series` had a
+    /// const function returning a partial builtin, so `apply_closure`'s loop
+    /// only ever followed `Ty::Fn` and reported "cannot apply a value of type
+    /// `function`" on the next argument.
+    #[test]
+    fn a_closure_returning_a_partial_builtin_keeps_applying() {
+        let ctx = bag_ctx();
+        // A local stand-in for `series.lead`'s shape: curried, and the inner
+        // body is a partial `prescan` awaiting its key and bag.
+        // One argument in, `lead` is still a function (its inner `|key|`
+        // lambda); two in, the inner body has yielded a partial `prescan`,
+        // which is a *builtin* value.  It is the third argument that used to
+        // report "cannot apply a value of type `function`".
+        assert!(matches!(
+            ty_of(&ctx, "series.lead (|r| r.temperature)"),
+            Ok(Ty::Fn(_))
+        ));
+        assert!(matches!(
+            ty_of(&ctx, "series.lead (|r| r.temperature) (|r| r.at)"),
+            Ok(Ty::Builtin(_))
+        ));
+        // Applying through the closure to saturation reaches `type_scan`, so
+        // the result is the window's bag.  `lead` is a `prescan` at keep-right,
+        // so it is optional: the *last* row under the order has no successor.
+        assert_eq!(
+            ty_of(&ctx, "series.lead (|r| r.temperature) (|r| r.at) b"),
+            Ok(Ty::Bag {
+                domain: ColumnType::Real,
+                opt: Optionality::Optional
+            })
+        );
     }
 
     #[test]

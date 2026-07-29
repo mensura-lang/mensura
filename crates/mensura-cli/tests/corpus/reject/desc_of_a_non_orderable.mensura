@@ -1,0 +1,24 @@
+// Rejected at resolve (typing): `desc` marks an *orderable* value as
+// descending, and there is no dual of an unordered domain (ADR 0031,
+// Decision 7).
+//
+// Worth knowing: `string` is not orderable in this language (ADR 0014), so
+// ordering by a name is not expressible today.  That is a real limitation
+// rather than a design intent, and it is recorded as such in
+// `09-typing-reference.md`.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    label: string
+  }
+}
+
+view bad {
+  readings
+    |> map_bags |k, b| (.run = scan `+` (|r| r.temperature) (|r| desc r.label) b)
+}
