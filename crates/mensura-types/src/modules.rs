@@ -283,7 +283,7 @@ mod tests {
             assert!(
                 rendered.contains("Name(\"fold\")"),
                 "`{name}` is not a `fold` (the ordered siblings live in \
-                 `series`, gated on Stage 2)"
+                 `series`)"
             );
         }
         for name in env.values.keys() {

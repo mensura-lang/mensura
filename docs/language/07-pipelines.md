@@ -145,9 +145,13 @@ window shape demands nothing (one output row per input row is faithful on a
 partial bag).  Tier A (`fiberMap_splitSafe`).
 
 Window-style returns (a bag, one row per input row, such as a running total or
-a rank) additionally require an **ordering** within the bag, which is a
-dependency-qualifier concern, not a property of the algebra: split-safety holds
-regardless, but `rank`/`cumsum` are well-defined only on an ordered bag.
+a rank) additionally require an **ordering** within the bag.  That ordering is
+named at the operator, by a `scan`'s key argument, and needs no qualifier fact:
+what a window orders is a single fiber, and a `split` routes a key's whole bag
+to one side, so the order is established locally
+(`Mensura.scanFiber_splitSafe`, ADR 0029 Stage 2).  Split-safety therefore
+holds regardless, and `rank`/`cumsum` are well-defined because the call site
+supplies the order rather than because the store carries one.
 
 ### `promote` / `demote` - rekeying
 
@@ -331,8 +335,9 @@ missing, `Cell = Option`).
 The rules that consume them are stated in `06-expressions.md`: a scalar
 operator requires a **single known value** (`card 1` and not missing);
 reduction brings a many-row bag down to one value (`fold` is the primitive,
-`#` counts, `in` tests membership, and the named reductions are `bag` module
-bindings such as `bag.sum`, with `mean` derived as
+`scan` is its ordered sibling, `#` counts, `in` tests membership, and the
+named reductions and windows are `bag` and `series` module
+bindings such as `bag.sum` and `series.cumsum`, with `mean` derived as
 `bag.sum b.x / to_real (#b.x)`; ADR 0031); and a missing value is made known
 by a default, a reduction, or an `is known` narrowing.  At the pipeline
 level `pivot` is
@@ -421,13 +426,16 @@ cost of dropping disjointness.  It type-checks.
   completeness, and disjointness via a lineage hierarchy) explicit in
   `Table<Qs, C>`.
 - **Named sugar.**  `filter`, `mutate`, `select`, `reduce`,
-  window functions (`rank`, `cumsum`), and
-  `tagged_union`/`tagged_split` are sugar over the primitives above and get
-  their own round.
+  and `tagged_union`/`tagged_split` are sugar over the primitives above and get
+  their own round.  The window functions have **landed** instead: `rank` and
+  `cumsum` are bindings in the bundled `series` module over the `scan`
+  primitive (ADR 0031 Decision 8).
 - **Expression features the fuller surfaces need.**  Row-dropping and
   row-expanding `flat_map` are covered by the conditionals and collection literals
-  of `06-expressions.md` (ADR 0015); bag-returning `map_bags` (windows)
-  still needs an ordering from the dependency qualifier.
+  of `06-expressions.md` (ADR 0015); bag-returning `map_bags` (windows) now
+  has its ordering, named at the operator by a `scan`'s key argument rather
+  than drawn from the dependency qualifier, since a fiber's order is
+  established locally.
 - **The cardinality-type notation.**  How `singletons` / `bag` (and the
   derived `exhaustive`) are written in a `Type` is the content/types
   document.  (The orthogonal total/optional axis and its `?` marker are

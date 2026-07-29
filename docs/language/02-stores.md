@@ -190,8 +190,11 @@ Two consequences to know about:
 
 - **Ordering.**  A `bag` store carries no row order.  When an operation
   needs one (a window such as a running sum, a rank, a lag), the order is
-  named at the operator by a `by` clause, not carried by the store; that
-  surface lands with the expression and streaming documents.
+  named at the operator, not carried by the store.  The spelling is an
+  ordinary **key argument** to `scan`, `|r| r.taken_at`, rather than the `by`
+  clause this document originally anticipated: a clause cannot be partially
+  applied, and the derived window vocabulary is partial applications
+  (`09-typing-reference.md` section 5.4, ADR 0031 Decision 7).
 - **Storage.**  A `bag` store cannot use its key columns as a primary
   key; it maps to a table with a surrogate row identifier and a non-unique
   covering index over the key columns

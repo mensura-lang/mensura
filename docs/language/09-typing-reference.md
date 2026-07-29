@@ -322,16 +322,73 @@ A `real`-backed domain carries a dimension exponent vector, with bare
 
 ### 5.4  Bag reduction: many to one
 
-A bag is consumed only deliberately.  Since ADR 0031 there is **one
-primitive** that consumes one, plus two spellings of language around it:
+A bag is consumed only deliberately.  Since ADR 0031 there are **two
+primitives** that consume one, plus two spellings of language around them:
 
 ```
-fold : combiner -> (element -> value) -> bag -> value
-map  : (element -> value) -> bag -> bag
+fold    : combiner -> (element -> value) -> bag -> value
+scan    : combiner -> (row -> value) -> (row -> key) -> rows -> bag
+prescan : combiner -> (row -> value) -> (row -> key) -> rows -> bag
+map     : (element -> value) -> bag -> bag
+desc    : orderable -> orderable
 ```
 
-`fold` reduces, `map` transforms element-wise, and both are curried, so a
-partial application is an ordinary value.  Everything else is derived.
+`fold` reduces, `scan` and `prescan` reduce *in order* (emitting every
+intermediate where `fold` keeps the last), `map` transforms element-wise, and
+all are curried, so a partial application is an ordinary value.  Everything
+else is derived.
+
+**The ordered primitives take the fiber, and both their lambdas take a row.**
+One extracts the value to accumulate, the other the key to order by.  Sorting
+values by a sibling column requires seeing the row that carries both, so the
+trailing argument is `rows` (the fiber) rather than a projected bag.  ADR 0031
+Decision 8 writes the derived bindings with a `(|v| v)` mapper, which cannot
+typecheck for that reason; the value extractor comes from the call site.
+
+**The order key's obligation is orderable *and* total.**  Orderability is a
+decidable type fact, which is why the key may be an open lambda while the
+combiner may not.  Totality is required because a missing value has no
+position in the order; the fix is upstream (filter, or coalesce the key).
+Note `string` is not orderable (ADR 0014), so ordering by a name is not
+expressible today: a real limitation rather than a design intent.
+
+**`desc` marks a key value as ordered by its dual.**  Never storable and never
+ascribable, like the rows type: it is checker-internal, so it has no spelling
+in type position and cannot reach a column.  Because the marker sits on
+*values*, direction is per-component, which no global reverse flag could
+express.  A direction marker rather than a comparator is forced by the same
+epistemics as the combiner table: a comparator's obligation is a law (a strict
+total order), unverifiable on a lambda.  In `formal/` it is Mathlib's
+`OrderDual`, so the arrangement absorbs it at no proof cost.
+
+**A scan's result is a bag, so it is the window shape**, one output row per
+input row.  Unlike the reducing shape it demands no completeness fact: a
+window is faithful on a partial bag, and only a reduction is silently wrong on
+one (section 6.2, ADR 0023).
+
+**Optionality follows the combiner's identity.**
+
+| | identity (`+ * or and`) | identity-free (`<< >> <: :>`) |
+| --- | --- | --- |
+| `scan` | total | total |
+| `prescan` | total | **optional** |
+
+An inclusive scan is total at every row because position *i* folds elements
+`1..i`, never empty, so the identity is never consulted.  An exclusive scan's
+first position folds the *empty* prefix, so an identity-free combiner has no
+answer there.  **`series.lag`'s missing first row is this rule, not a rule
+about `lag`**: it is `prescan` at keep-right, and keep-right has no identity.
+`series.lead` is the mirror, being `lag` at the dual key, so there the *last*
+row is missing.
+
+**Ties.**  A scan's arrangement is unique only when the order key is injective
+on the fiber (ADR 0029 Decision 11's tier 1,
+`Mensura.IsArrangement.unique`).  The checker cannot verify that: it is a
+property of the data, not of the type.  Tier 2 (lexicographic tuple keys) is
+not yet expressible, and tier 3's escape hatch has no surface (ADR 0031's open
+questions).  So a tied key is **accepted**, the sort is stable, and ties
+resolve to input order.  That is reproducible but it is *not* a determinism
+the type system licenses, and a storage reordering can change it.
 
 **The combiner is closed, the mapper is open.**  A fold over an *unordered*
 bag is deterministic only when the combiner is associative and commutative,
@@ -522,11 +579,12 @@ single row is the identity's whole fiber (`fiberCompleteWrt_of_functional`)
 the ordinary aggregation over a plain store needs no establishment step.
 The window shape demands nothing.  Lineage: preserved.  Tier A
 (`fiberMap_splitSafe`, `fiberMap_preservesDisjoint`; a monoid fold's case is
-`foldFiber_splitSafe`).  Window-shaped returns (`rank`, `cumsum`) additionally
-need an ordering: they are `scan`-derived and wait on ADR 0029's Stage 2
-(section 11), so only `map`-built bags are window-shaped today.
+`foldFiber_splitSafe`, and a scan's is `scanFiber_splitSafe`).  Window-shaped
+returns (`series.rank`, `series.cumsum`) additionally need an ordering, which
+the call site names by a `scan`'s key argument (section 5.4).
 Split-safety holds regardless, because a split routes a key's *whole* bag to
-one side, so the bag a reduction sees is never torn.
+one side, so neither the bag a reduction sees nor the fiber a scan arranges is
+ever torn.
 
 ### 6.3  `promote` / `demote` (rekeying)
 
@@ -865,20 +923,50 @@ behind:
   generalizing -- `aggregate` takes an arbitrary whole-bag function),
   `foldFiber_strict`, `foldFiber_splitSafe`, `foldFiber_exhaustive`.
 
-**Deferred: the ordered structure** (ADR 0029 Stage 2, ADR 0031 Decision 7).
-`scan`, `prescan`, `desc`, and the whole `series` module wait on it, so the
-window vocabulary (`cumsum`, `rank`, `lag`, `lead`, `first_value`,
-`running_min`, `running_max`) is not yet in the language.  The obstacle is
-structural rather than incidental: a table's content is a `Multiset` and
-`Core/Defs.lean` argues *for* multisets precisely because order should not be
-asserted when it is not used, so neither a scan nor a positional map is
-expressible over one.  The stage owes an `arrange` operation taking fiber
-content to a `List`, `scanBag`, the coherence theorem that a scan's last
-element equals the corresponding fold, a prefix-decomposition lemma, the
-Tier 1 determinism lemma composed with `Functional`, and (new in ADR 0031) the
-exclusive `prescan` with its coherence lemma plus the derivation lemmas that
-make `rank`, `lag`, and `lead` theorems.  It claims the blueprint's reserved
-`def:arranged` node; nothing may be named `Mensura.Arranged` before it lands.
+**The ordered structure** (`Arranged.lean`, ADR 0029 Stage 2, ADR 0031
+Decision 7) -- the gate `scan`, `prescan`, `desc`, and the `series` module ship
+behind.  The obstacle was structural rather than incidental: a table's content
+is a `Multiset` and `Core/Defs.lean` argues *for* multisets precisely because
+order should not be asserted when it is not used, so neither a scan nor a
+positional map is expressible over one.
+
+- the arrangement: `IsArrangement` (a *relation* between a bag and a list of
+  its elements in key order, claiming the blueprint's reserved `def:arranged`
+  node), `exists_isArrangement`, `arrange`, `arrangeList`.  Stated relationally
+  because existence and uniqueness have different hypotheses and a sort
+  conflates them: `Multiset.sort` wants antisymmetry as a typeclass instance,
+  which for a key-induced order is *global* key injectivity, while tier 1
+  supplies only the per-fiber fact.
+- Tier 1 determinism: `IsArrangement.unique` (a key injective on the fiber
+  arranges it uniquely), with `KeyInjOn` as the hypothesis and
+  `keyInjOn_of_functional` as the bridge to `Functional`.  ADR 0029 asked the
+  hypothesis to compose with `Functional` rather than restate it, and it does,
+  but **vacuously**: a functional table's fibers hold at most one row, so
+  nothing can tie and any scan over one is a one-element list.  The bridge is a
+  compatibility fact, not evidence about real bags.
+- the two scans: `scanBag` and `prescanBag`, the `tail` and `dropLast` of one
+  `List.scanl`.  So the inclusive/exclusive coherence ADR 0031 demanded is list
+  slicing rather than a second induction, and `lag`'s missing first row falls
+  out of `dropLast` at the `Option` completion.
+- coherence: `scanl_getLast_eq_foldBag` (a scan's last element *is* the
+  corresponding fold) and `scanl_getLast_eq_foldBagOpt` for the identity-free
+  pair.  This is what makes "same combiner, two variants" a theorem.  It needs
+  no injectivity, because a commutative-associative combiner cannot observe a
+  tie's permutation: the total is determined even when the intermediates are
+  not, which is exactly why `fold` needs no order and `scan` does.  Stated per
+  combiner class, since for the associative-only tacks no `foldBag` exists to
+  cohere with, which is the formal content of the surface rule admitting them
+  under `scan` only.
+- parallel scan: `scanl_append_decomp`, the prefix decomposition, Stage 2's
+  analogue of `foldBag_shards` (and needing no laws at all, since a list scan
+  asserts no order-independence).
+- placement in the algebra: `scanFiber` with `scanFiber_strict`,
+  `scanFiber_splitSafe`, and `scanFiber_exhaustive`.  Split-safety is inherited
+  from `fiberMap_splitSafe` unchanged, because a `split` routes a key's *whole*
+  multiset to one side, so an arranged verb sorts an intact fiber.  The
+  blueprint node's old claim that arranged verbs are "deliberately not
+  split-invariant" concerned lifting to the list monad *in general*; what stays
+  out of scope is an order *across* keys.
 
 **Physical dimensions** (`Units/Dimension.lean`, ADR 0026) -- the group
 behind the section 5.3 dimensional rules: `Dimension` (the free abelian
@@ -961,14 +1049,17 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   derived `exhaustive`) are written in a `Type` is the content/types document's
   job (`07`, "Forward references").  The total/optional `?` axis is settled
   (ADR 0010).
-- **Named sugar.**  `mutate`, `select`, `reduce`,
-  window functions (`rank`, `cumsum`), and `tagged_union`/`tagged_split` are sugar
-  over the primitives (their Tier-A proofs exist, section 11) and get their own
-  round.  `filter` is now derivable as `flat_map |k, r| if c then r else ()` (ADR
-  0015), so it too is sugar, not a primitive.
+- **Named sugar.**  `mutate`, `select`, `reduce`, and
+  `tagged_union`/`tagged_split` are sugar over the primitives (their Tier-A
+  proofs exist, section 11) and get their own round.  `filter` is now derivable
+  as `flat_map |k, r| if c then r else ()` (ADR 0015), so it too is sugar, not a
+  primitive.  The window functions have **landed** rather than remaining sugar
+  to schedule: `rank` and `cumsum` are bindings in the bundled `series` module,
+  backed by `scanFiber_splitSafe` (section 11).
 - **Expression features the fuller surfaces need.**  Row-dropping and
   row-expanding `flat_map` now land (the `( )` collection and `if`/`then`/`else`, ADR
-  0015); bag-returning `map_bags` (windows) still needs an ordering.  The
+  0015); bag-returning `map_bags` (windows) now has its ordering, named at the
+  operator by a `scan`'s key argument (section 5.4).  The
   `const`/`var` record-field marker that ADR 0015 reserved is dropped by ADR
   0019, which drops the `const`/`var` concept altogether.
 - **Annotation grammar.**  `@audited`, `@versioned`, `@auto`, `@complete_over`,

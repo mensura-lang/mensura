@@ -6,23 +6,42 @@ Accepted.  This ADR landed as a documentation-only pull request; the
 implementation followed separately, with its checker rules behind the ADR
 0021 proof gates exactly as ADR 0029 staged them.
 
-**Implementation status.**  The fold half is **implemented**, behind ADR
-0029's Stage 1 (`formal/Mensura/Fold.lean`, proved first): Decisions 1, 2,
-3, 4, 5, 6 (the `fold` rows), 8 (the `bag` module), 9, 10, and 11.  The
-ordered half is **not**, because ADR 0029's Stage 2 is still open: Decision
-7 (`scan`, `prescan`, `desc`), Decision 6's `scan`-only tack rows as
-*usable* combiners rather than merely rejected ones, and Decision 8's
-`series` module all wait on it.  The four new operators (`<<`, `>>`, `<:`,
-`:>`) do exist at the surface throughout, since they are ordinary operators
-needing no gate; applying a tack under `fold` is an error naming the reason.
+**Implementation status.**  Both halves are **implemented**.  The fold half
+landed first, behind ADR 0029's Stage 1 (`formal/Mensura/Fold.lean`):
+Decisions 1, 2, 3, 4, 5, 6 (the `fold` rows), 8 (the `bag` module), 9, 10,
+and 11.  The ordered half followed, behind Stage 2
+(`formal/Mensura/Arranged.lean`): Decision 7 (`scan`, `prescan`, `desc`),
+Decision 6's `scan`-only tack rows as *usable* combiners rather than merely
+rejected ones, and Decision 8's `series` module.  Applying a tack under
+`fold` is still an error naming the reason.
 
-Two prerequisites this ADR does not name turned out to be load-bearing, and
-are recorded here for the next reader: **module-qualified function
-application** worked nowhere (the checker rejected a non-name application
-head, and lowering mapped module members to literals only, since `si`
-exports no function), and **`Ty::Fn` is not an arrow type** but a closure
-body, so the builtin kind of Decision 11 could not reuse it.  Decision 8's
-entire surface rests on the first.
+**Two corrections this ADR needs.**  Both were found by implementing it.
+
+*Decision 8's mappers cannot typecheck as written.*  The module source
+writes `let cumsum { scan `+` (|v| v) }`, but both of a scan's lambdas read
+a **row**, not an element, and the trailing argument is the fiber rather
+than a projected bag.  That is forced, not chosen: sorting values by a
+sibling column requires seeing the row that carries both, so a projected
+bag of bare scalars has nothing left to order by.  The bindings therefore
+fix only the *combiner* and take the value extractor from the call site
+(`series.cumsum (|r| r.energy) (|r| r.taken_at) b`).  Decision 7's own
+`lead`, `|key| prescan `:>` (|v| v) (|r| desc (key r))`, already showed the
+inconsistency: its key binder is `r` and reads a row.
+
+*`lead` must curry explicitly.*  `|value, key| ...` binds a single 2-tuple
+under ADR 0030 Decision 2, so it is written `|value| |key| ...`.
+
+**Three prerequisites this ADR does not name** turned out to be
+load-bearing, and are recorded here for the next reader:
+**module-qualified function application** worked nowhere (the checker
+rejected a non-name application head, and lowering mapped module members to
+literals only, since `si` exports no function); **`Ty::Fn` is not an arrow
+type** but a closure body, so the builtin kind of Decision 11 could not
+reuse it; and **a const function returning a partially applied primitive
+could not be applied further** (the application loop followed closures only,
+so the argument after the one that saturated the closure reported "cannot
+apply a value of type `function`").  Decision 8's entire surface rests on
+the first, and `series.lead` on the third.
 
 **Enabled by ADR 0030.**  ADR 0029 was written before const functions
 existed; ADR 0030 landed lambdas, explicit currying, and partial
@@ -659,6 +678,26 @@ builtin `scan`, which needs none.
   arbitrary-tiebreak escape hatch was designed against a clause; with
   the key as an argument, the hatch needs a home (an `assume`-shaped
   wrapper on the scan, most likely).  The three-tier model is unchanged.
+
+  *What the implementation does meanwhile*, since the question is open and
+  a scan had to behave somehow: a tied key is **accepted**, the arrangement
+  is a stable sort, and ties resolve to input order.  That is reproducible,
+  but it is not a determinism the type system licenses (tier 1,
+  `Mensura.IsArrangement.unique`, is what would license it, and the checker
+  cannot verify key injectivity because it is a property of the data).  A
+  storage reordering can therefore change a tied result.  Rejecting instead
+  was not an option: tier 1 covers only key-derived keys and tier 2 is not
+  expressible, so it would have made `scan` unusable.
+- **Tuple keys need a value-tuple type, which does not exist.**  Decision 7
+  says a tuple key orders lexicographically and thereby subsumes 0029's
+  `then`-chaining, so tier 2 of the tie model rests on it.  But the checker
+  has no `Ty::Tuple`: the tuple syntax exists only to destructure a tupled
+  lambda's parameters, and adding a *value* tuple collides with ADR 0030
+  Decision 2's convention, under which `f (a, b)` binds two parameters
+  rather than passing one pair.  Resolving that is an ADR-level question,
+  not an implementation choice.  Scalar keys cover every binding in
+  `series`, so nothing shipped waits on it, and a tuple in a key position
+  reports the gap by name.
 - **`map` and the window shape.**  A bag-valued field produced by `map`
   is the window shape of `map_bags`; confirm the shape rules compose
   when the docs are reconciled.
