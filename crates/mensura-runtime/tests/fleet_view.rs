@@ -30,11 +30,14 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
              ('m1', '2020-01-01', 'operational', NULL),
              ('m2', '2021-06-15', 'degraded', '2025-12-01'),
              ('m3', '2022-03-10', 'failure', NULL);
+           -- `m1`'s two readings are inserted out of order under `taken_at`,
+           -- so a window that ignores the key would be indistinguishable from
+           -- one that honours it (ADR 0031, Decision 7).
            INSERT INTO "readings" VALUES
-             ('m1', 300.0),
-             ('m1', 302.5),
-             ('m2', 299.0),
-             ('m3', 371.5);"#,
+             ('m1', 302.5, '2025-01-02'),
+             ('m1', 300.0, '2025-01-01'),
+             ('m2', 299.0, '2025-01-01'),
+             ('m3', 371.5, '2025-01-01');"#,
     )
     .unwrap();
     db

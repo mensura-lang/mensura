@@ -16,6 +16,10 @@
 // the toolchain; members are qualified (`si.km`).
 import bag
 
+// The scan-derived window operations (ADR 0031, Decision 8).  `bag`'s ordered
+// siblings: same combiner table, plus an order key.
+import series
+
 import si
 
 // A dimensioned threshold constant: `kelvin` is an intrinsic base unit, so
@@ -85,7 +89,38 @@ store readings {
     // the SI base unit (kelvin here), and a dimension mismatch downstream
     // is a compile error.
     temperature: temperature[real]
+    // A bag store carries no row order (ADR 0022), so an operation that
+    // needs one names it at the operator.  This column is what a window's
+    // order key reads.
+    taken_at: date
   }
+}
+
+// A windowed feature view (ADR 0031, Decision 7): the ordered siblings of the
+// reductions above.  Four things worth reading off it.
+//
+// The order is named *here*, at the operator, by the key lambda `|r| r.taken_at`;
+// the store does not carry it.  Both lambdas take a row, one extracting the
+// value to accumulate and one the key to sort by, because sorting values by a
+// sibling column requires seeing the row that carries both.
+//
+// This is the *window* shape of `map_bags`: one output row per input row, so
+// unlike the reducing view above it demands no completeness fact.  A window is
+// faithful on a partial bag; only a reduction is silently wrong on one.
+//
+// `previous` is optional and the others are not.  That is not a choice made
+// here: `series.lag` is a `prescan` at keep-right, keep-right has no identity,
+// and an exclusive scan's first position folds the empty prefix, so the
+// earliest reading in each machine's group has no predecessor to report
+// (`Mensura.prescanBag`).
+view reading_trend {
+  readings |> map_bags |k, b| (
+    .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
+    .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
+    // Descending order is per-component, marked on the key value itself, so
+    // this ranks each machine's hottest reading first.
+    .rank_hottest = series.rank        (|r| desc r.temperature) b
+  )
 }
 
 // Reducing a bag folds each machine's readings, which is silently wrong on a

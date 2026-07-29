@@ -52,10 +52,17 @@ const SI_SOURCE: &str = include_str!("../stdlib/si.mensura");
 /// binding's combiner.
 const BAG_SOURCE: &str = include_str!("../stdlib/bag.mensura");
 
+/// The `series` standard library (ADR 0031, Decision 8): the scan-derived
+/// window operations, each a partial application of `scan` or `prescan` at one
+/// row of the closed combiner table.  Gated by ADR 0029's Stage 2, proved in
+/// `formal/Mensura/Arranged.lean`.  The oracle test in
+/// `series_matches_its_oracle` pins each binding's primitive and combiner.
+const SERIES_SOURCE: &str = include_str!("../stdlib/series.mensura");
+
 /// Every bundled module, for the "unknown module" diagnostic.  Kept beside
 /// [`bundled`] so a new module cannot be added without appearing in the
 /// suggestion.
-pub(crate) const BUNDLED_MODULES: [&str; 2] = ["si", "bag"];
+pub(crate) const BUNDLED_MODULES: [&str; 3] = ["si", "bag", "series"];
 
 /// Resolve a bundled module by name, memoized.  `None` means no bundled
 /// module has that name (the importer's "unknown module" case); `Err` is
@@ -63,9 +70,11 @@ pub(crate) const BUNDLED_MODULES: [&str; 2] = ["si", "bag"];
 pub(crate) fn bundled(name: &str) -> Option<&'static Result<ModuleEnv, Vec<String>>> {
     static SI: OnceLock<Result<ModuleEnv, Vec<String>>> = OnceLock::new();
     static BAG: OnceLock<Result<ModuleEnv, Vec<String>>> = OnceLock::new();
+    static SERIES: OnceLock<Result<ModuleEnv, Vec<String>>> = OnceLock::new();
     match name {
         "si" => Some(SI.get_or_init(|| load("si", SI_SOURCE))),
         "bag" => Some(BAG.get_or_init(|| load("bag", BAG_SOURCE))),
+        "series" => Some(SERIES.get_or_init(|| load("series", SERIES_SOURCE))),
         _ => None,
     }
 }
@@ -291,6 +300,109 @@ mod tests {
         // exports only scalars, so `Subst` used to assume module members had
         // literals.  `bag` is the first module to break that.
         let env = bundled("bag").expect("bundled").as_ref().expect("resolves");
+        assert!(env.values.values().all(|v| v.literal().is_none()));
+    }
+
+    /// The `series` oracle (ADR 0031, Decision 8).  Triples rather than the
+    /// pairs `bag_oracle` uses, because `series` mixes the two primitives and
+    /// that distinction carries the whole optionality story: a `prescan` at an
+    /// identity-free row is where `lag`'s missing first value comes from.
+    fn series_oracle() -> Vec<(&'static str, &'static str, &'static str)> {
+        vec![
+            ("cumsum", "scan", "+"),
+            ("running_min", "scan", "<<"),
+            ("running_max", "scan", ">>"),
+            ("first_value", "scan", "<:"),
+            ("rank", "scan", "+"),
+            ("lag", "prescan", ":>"),
+            ("lead", "prescan", ":>"),
+        ]
+    }
+
+    #[test]
+    fn series_matches_its_oracle() {
+        let env = bundled("series")
+            .expect("series is bundled")
+            .as_ref()
+            .expect("series resolves cleanly");
+        let oracle = series_oracle();
+        for (name, primitive, combiner) in &oracle {
+            let value = env
+                .values
+                .get(*name)
+                .unwrap_or_else(|| panic!("series has no binding `{name}`: stale oracle row"));
+            let ConstValue::Closure(c) = value else {
+                panic!("`{name}` is not a function binding");
+            };
+            let rendered = format!("{:?}", c.body);
+            assert!(
+                rendered.contains(&format!("Combiner(\"{combiner}\")")),
+                "`{name}` does not combine with `{combiner}`: {rendered}"
+            );
+            assert!(
+                rendered.contains(&format!("Name(\"{primitive}\")")),
+                "`{name}` is not a `{primitive}`: {rendered}"
+            );
+        }
+        for name in env.values.keys() {
+            assert!(
+                oracle.iter().any(|(n, ..)| n == name),
+                "binding `{name}` has no oracle row: add it to `series_oracle`"
+            );
+        }
+    }
+
+    /// `Name("prescan")` must not be mistaken for `Name("scan")`.  The quotes
+    /// bound the match, so the naive `contains` above is sound, but a passing
+    /// oracle that cannot fail is worse than none: pin the discrimination.
+    #[test]
+    fn the_series_oracle_discriminates_scan_from_prescan() {
+        let env = bundled("series")
+            .expect("bundled")
+            .as_ref()
+            .expect("resolves");
+        let body_of = |name: &str| {
+            let ConstValue::Closure(c) = &env.values[name] else {
+                panic!("`{name}` is not a function");
+            };
+            format!("{:?}", c.body)
+        };
+        let cumsum = body_of("cumsum");
+        let lag = body_of("lag");
+        assert!(cumsum.contains("Name(\"scan\")"));
+        assert!(!cumsum.contains("Name(\"prescan\")"));
+        assert!(lag.contains("Name(\"prescan\")"));
+        assert!(!lag.contains("Name(\"scan\")"));
+    }
+
+    #[test]
+    fn lead_is_a_lambda_over_the_dual_key() {
+        // The one binding that is a genuine lambda rather than a partial
+        // application, so it exercises the ordinary closure path instead of
+        // `eta_expand_builtin`.  Its key is wrapped in `desc`, which is what
+        // makes it `lag` over the dual order.
+        let env = bundled("series")
+            .expect("bundled")
+            .as_ref()
+            .expect("resolves");
+        let ConstValue::Closure(c) = &env.values["lead"] else {
+            panic!("`lead` is not a function");
+        };
+        let rendered = format!("{:?}", c.body);
+        assert!(
+            rendered.contains("Name(\"desc\")"),
+            "`lead` must order by the dual key: {rendered}"
+        );
+        // No eta machinery leaked: this body was written, not synthesized.
+        assert!(!rendered.contains("x__"), "unexpected eta parameter");
+    }
+
+    #[test]
+    fn series_exports_functions_not_scalars() {
+        let env = bundled("series")
+            .expect("bundled")
+            .as_ref()
+            .expect("resolves");
         assert!(env.values.values().all(|v| v.literal().is_none()));
     }
 

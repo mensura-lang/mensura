@@ -1,0 +1,60 @@
+// The `series` standard library: the scan-derived window operations (ADR
+// 0031, Decision 8).
+//
+// Every binding here is a *definition*, not a builtin: a partial application
+// of `scan` or `prescan` at one row of the closed combiner table (ADR 0031,
+// Decision 6), written in the language and readable by anyone who asks what
+// `lag` means.  That is the point of the module, and it is what makes the
+// claim "everything derives from `fold` and `scan`" checkable rather than
+// merely asserted.
+//
+// Bundled with the toolchain: a bare `import series` resolves here and only
+// here (ADR 0027, Decision 6).  The oracle test in
+// `crates/mensura-types/src/modules.rs` (`series_matches_its_oracle`) pins
+// each binding's primitive and combiner, so editing one without the other
+// fails.
+//
+// Gated by ADR 0029's Stage 2, proved in `formal/Mensura/Arranged.lean`:
+// `IsArrangement` with its existence theorem and its Tier 1 uniqueness
+// theorem, `scanBag`/`prescanBag` as two slices of one `List.scanl`, the
+// coherence theorem that a scan's last element is the corresponding fold, the
+// prefix decomposition that licenses a parallel scan, and
+// `scanFiber_splitSafe`.
+//
+// Each binding fixes only the *combiner*.  The value extractor and the order
+// key stay at the call site, because both read a row: sorting values by a
+// sibling column requires seeing the row that carries both, so there is
+// nothing a column-agnostic mapper could project.  (ADR 0031 Decision 8
+// writes these with a `(|v| v)` mapper, which cannot typecheck for that
+// reason; the surface is otherwise as the decision specifies.)  So a call
+// site reads
+//
+//     series.cumsum (|r| r.energy) (|r| r.taken_at) b
+//
+// and the trailing argument is the fiber, never a projected bag.
+
+// The running total, and the running extremes.
+let cumsum      { scan `+`  }
+let running_min { scan `<<` }
+let running_max { scan `>>` }
+
+// Every row sees the group's first value under the order: keep-left discards
+// each later operand, so the accumulator never moves off the first element.
+let first_value { scan `<:` }
+
+// The previous row's value.  The first row is **missing**, and that is not
+// designed: keep-right has no identity, so the exclusive scan's first
+// position (which folds the empty prefix) has no answer.  The rule that
+// governs empty windows governs this too.
+let lag { prescan `:>` }
+
+// The next row's value: `lag` over the dual order.  This is the one binding
+// that is a genuine lambda rather than a partial application, because the key
+// must be wrapped before it is passed on.
+let lead { |value, key| prescan `:>` value (|r| desc (key r)) }
+
+// A descending `rank` needs no binding of its own: it is the ones-scan over a
+// `desc` key at the call site.  Note `rank` itself is the ones-scan,
+// `scan `+` (|_| 1)`, whose mapper ignores the row; it is spelled with the
+// mapper fixed because that mapper is the definition rather than a choice.
+let rank { scan `+` (|_| 1) }
