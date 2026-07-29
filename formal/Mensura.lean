@@ -24,6 +24,10 @@ Module flatMap (each file imports only what it builds on):
                      subclass of `aggregate` a closed combiner table can
                      implement, with the shard and presence lemmas
                      (ADR 0029 Stage 1, ADR 0031)
+  Arranged           the arranged structure: a fiber's content lifted to a
+                     list, the inclusive and exclusive scans, their
+                     coherence with the fold, and the Tier 1 determinism
+                     hypothesis (ADR 0029 Stage 2, ADR 0031)
   Completeness/
     FiberMap         the key-preserving safe-completeness characterization
     Reindex          its key-changing generalization; gatherMap and demote
@@ -48,6 +52,7 @@ import Mensura.Laws
 import Mensura.Reshape
 import Mensura.Rectangle
 import Mensura.Fold
+import Mensura.Arranged
 import Mensura.Completeness.FiberMap
 import Mensura.Completeness.Reindex
 import Mensura.Completeness.Verbs
