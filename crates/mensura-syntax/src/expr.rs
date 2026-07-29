@@ -31,6 +31,13 @@ pub enum ExprKind {
     Bool(bool),
     /// A bare name resolved against the site's context: `machine`.
     Name(String),
+    /// A backtick-quoted combiner: `` `+` ``, `` `<<` ``, `` `:>` `` (ADR 0031,
+    /// Decision 6).  It carries the raw inner text; resolution against the
+    /// closed combiner table (and the table's per-operation admissibility
+    /// rules) is the checker's job, so the parser stays purely syntactic and
+    /// an unknown combiner gets a *typing* diagnostic naming the table rather
+    /// than a parse error.
+    Combiner(String),
     /// Member access `a.b`, the tightest-binding postfix.
     Member(Box<Expr>, Ident),
     /// Function application by juxtaposition: `f x`, left-associative.
@@ -70,6 +77,10 @@ pub enum UnOp {
     Not,
     /// unary `-`
     Neg,
+    /// `#`, cardinality (ADR 0031, Decision 9).  Its operand is a member
+    /// access, so `#b.x` is `#(b.x)`; it binds tighter than the comparisons,
+    /// so `#b > 3` reads as expected.
+    Card,
 }
 
 /// An infix operator.  Listed loosest-binding first; precedence is fixed by
@@ -96,6 +107,17 @@ pub enum BinOp {
     Ge,
     /// `in`, bag membership
     In,
+    /// `<<`, binary minimum (ADR 0031, Decision 6).  Looser than `+ -`,
+    /// tighter than the comparisons.
+    Min,
+    /// `>>`, binary maximum.
+    Max,
+    /// `<:`, keep-left: `a <: b` is `a`.  Trivial as a scalar operator by
+    /// design; its habitat is the backticked combiner slot, where it and
+    /// `:>` are what make the ordered reductions scan-derivable.
+    KeepLeft,
+    /// `:>`, keep-right: `a :> b` is `b`.
+    KeepRight,
     /// `+`
     Add,
     /// `-`

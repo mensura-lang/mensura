@@ -1,0 +1,33 @@
+// Accepted: the derived reductions are const bindings in a bundled module,
+// imported and qualified like `si` (ADR 0031, Decision 8).  Each is a partial
+// application of `fold` at one row of the closed combiner table, written in
+// the language rather than built into it.
+//
+// This is also the first bundled module to export a *function*, which is what
+// made module-qualified application reach into the checker and lowering: `si`
+// exports only scalars, so a module member used to be assumed to have a
+// literal.
+import bag
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { temperature: real }
+}
+
+view summary {
+  readings
+    |> assume { complete }
+    |> map_bags |k, b| (
+      .hottest = bag.max b.temperature,
+      .coldest = bag.min b.temperature,
+      .total = bag.sum b.temperature,
+      // The bag is the trailing argument, so the pipe composes (ADR 0018).
+      .piped = b.temperature |> bag.sum,
+      // `#` replaces `count`, which is in neither module (Decision 9).
+      .n = #b
+    )
+}

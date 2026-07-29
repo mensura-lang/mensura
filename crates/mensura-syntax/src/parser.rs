@@ -798,10 +798,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `cmp_expr = add_expr [ cmp_op add_expr | "is" presence ]`.
+    /// `cmp_expr = tack_expr [ cmp_op tack_expr | "is" presence ]`.
     /// Non-associative: at most one comparison or presence test.
     fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_add()?;
+        let lhs = self.parse_tack()?;
         if self.at_keyword("is") {
             self.bump_keyword();
             let pres = if self.at_keyword("known") {
@@ -833,11 +833,35 @@ impl<'a> Parser<'a> {
         match op {
             Some(op) => {
                 self.pos += 1;
-                let rhs = self.parse_add()?;
+                let rhs = self.parse_tack()?;
                 Ok(self.binary(op, lhs, rhs))
             }
             None => Ok(lhs),
         }
+    }
+
+    /// `tack_expr = add_expr { ("<<" | ">>" | "<:" | ":>") add_expr }`,
+    /// left-associative (ADR 0031, Decision 6).  Looser than `+ -` and
+    /// tighter than the comparisons, so `a + b << c` is `(a + b) << c` and
+    /// `a << b < c` is `(a << b) < c`.  All four share one level: they are
+    /// the same shape of operation (a binary choice between two operands of
+    /// one domain), and no mixed expression has a reading worth
+    /// distinguishing.
+    fn parse_tack(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_add()?;
+        loop {
+            let op = match self.cur_kind() {
+                TokenKind::LtLt => BinOp::Min,
+                TokenKind::GtGt => BinOp::Max,
+                TokenKind::LtColon => BinOp::KeepLeft,
+                TokenKind::ColonGt => BinOp::KeepRight,
+                _ => break,
+            };
+            self.pos += 1;
+            let rhs = self.parse_add()?;
+            lhs = self.binary(op, lhs, rhs);
+        }
+        Ok(lhs)
     }
 
     /// `add_expr = mul_expr { ("+" | "-") mul_expr }`.
@@ -901,12 +925,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `app_expr = postfix { postfix }`, application by juxtaposition,
+    /// `app_expr = card_expr { card_expr }`, application by juxtaposition,
     /// left-associative.
     fn parse_app(&mut self) -> Result<Expr, ParseError> {
-        let mut e = self.parse_postfix()?;
+        let mut e = self.parse_card()?;
         while self.at_postfix_start() {
-            let arg = self.parse_postfix()?;
+            let arg = self.parse_card()?;
             let span = Span::new(e.span.start, arg.span.end);
             e = Expr {
                 kind: ExprKind::App(Box::new(e), Box::new(arg)),
@@ -916,16 +940,44 @@ impl<'a> Parser<'a> {
         Ok(e)
     }
 
-    /// True when the current token can begin a `postfix` (a primary), so the
-    /// application spine should consume another argument.  A `|` opens a lambda
-    /// argument; `|>` (a distinct token) never does, so a pipe ends the spine.
+    /// `card_expr = "#" card_expr | postfix` (ADR 0031, Decision 9).
+    ///
+    /// The operand is a `card_expr`, not a whole `unary_expr`, which is what
+    /// makes `#` bind *looser than member access* (`#b.x` is `#(b.x)`, since
+    /// `postfix` consumes the `.x`) and *tighter than the comparisons*
+    /// (`#b > 3` is `(#b) > 3`, since the comparison level sits above).
+    /// Sitting inside the application spine also keeps `#b` usable as an
+    /// argument: `f #b` is `f (#b)`, one token of lookahead, no ambiguity.
+    fn parse_card(&mut self) -> Result<Expr, ParseError> {
+        if self.check(&TokenKind::Hash) {
+            let start = self.cur_span().start;
+            self.pos += 1;
+            let inner = self.parse_card()?;
+            let span = Span::new(start, inner.span.end);
+            Ok(Expr {
+                kind: ExprKind::Unary(UnOp::Card, Box::new(inner)),
+                span,
+            })
+        } else {
+            self.parse_postfix()
+        }
+    }
+
+    /// True when the current token can begin a `card_expr` (a `#` prefix or a
+    /// primary), so the application spine should consume another argument.  A
+    /// `|` opens a lambda argument; `|>` (a distinct token) never does, so a
+    /// pipe ends the spine.  A `Template` is a backticked combiner
+    /// (`` fold `+` (|v| v) b ``, ADR 0031 Decision 6) and a `Hash` a
+    /// cardinality operand (`f #b`).
     fn at_postfix_start(&self) -> bool {
         match self.cur_kind() {
             TokenKind::Int(_)
             | TokenKind::Float(_)
             | TokenKind::Str(_)
+            | TokenKind::Template(_)
             | TokenKind::LParen
             | TokenKind::LBrace
+            | TokenKind::Hash
             | TokenKind::Pipe => true,
             TokenKind::Ident(s) => !is_expr_reserved(s),
             _ => false,
@@ -987,6 +1039,17 @@ impl<'a> Parser<'a> {
                 };
                 self.pos += 1;
                 Ok(Expr { kind, span })
+            }
+            // A backticked combiner (ADR 0031, Decision 6).  The token already
+            // lexes as a `Template`; because `` `or` `` and `` `and` `` are
+            // templates rather than words, the reserved-operator collision that
+            // makes bare combiner names impossible never arises.
+            TokenKind::Template(raw) => {
+                self.pos += 1;
+                Ok(Expr {
+                    kind: ExprKind::Combiner(raw),
+                    span,
+                })
             }
             TokenKind::Pipe => self.parse_lambda(),
             TokenKind::LParen => self.parse_paren(),
@@ -1903,7 +1966,7 @@ mod tests {
     fn op_spans_capture_pipeline_operation_heads() {
         // Each `|>` right-hand side is a curried application; its leftmost
         // identifier is the operation, recorded for highlighting.
-        let src = "view v { readings |> promote machine |> map_bags |k, b| (.m = count b.x) }";
+        let src = "view v { readings |> promote machine |> map_bags |k, b| (.m = #b.x) }";
         let tokens = tokenize(src).expect("should lex");
         let parsed = parse_with_meta(&tokens).expect("should parse");
         let ops: Vec<&str> = parsed.op_spans.iter().map(|s| s.slice(src)).collect();
@@ -1933,12 +1996,14 @@ mod tests {
             ExprKind::Str(s) => format!("{s:?}"),
             ExprKind::Bool(b) => b.to_string(),
             ExprKind::Name(s) => s.clone(),
+            ExprKind::Combiner(s) => format!("`{s}`"),
             ExprKind::Member(b, f) => format!("(. {} {})", sexpr(b), f.name),
             ExprKind::App(f, x) => format!("(app {} {})", sexpr(f), sexpr(x)),
             ExprKind::Unary(op, x) => {
                 let op = match op {
                     UnOp::Not => "not",
                     UnOp::Neg => "neg",
+                    UnOp::Card => "#",
                 };
                 format!("({op} {})", sexpr(x))
             }
@@ -1954,6 +2019,10 @@ mod tests {
                     BinOp::Gt => ">",
                     BinOp::Ge => ">=",
                     BinOp::In => "in",
+                    BinOp::Min => "<<",
+                    BinOp::Max => ">>",
+                    BinOp::KeepLeft => "<:",
+                    BinOp::KeepRight => ":>",
                     BinOp::Add => "+",
                     BinOp::Sub => "-",
                     BinOp::Mul => "*",
@@ -2020,6 +2089,49 @@ mod tests {
         assert_eq!(sexpr(&expr("1 + 2 * 3")), "(+ 1 (* 2 3))");
         assert_eq!(sexpr(&expr("1 - 2 - 3")), "(- (- 1 2) 3)");
         assert_eq!(sexpr(&expr("a / b / c")), "(/ (/ a b) c)");
+    }
+
+    #[test]
+    fn tacks_sit_between_arithmetic_and_the_comparisons() {
+        // ADR 0031, Decision 6: looser than `+ -`, tighter than the
+        // comparisons.  Both operand slots of `parse_cmp` must route through
+        // the new level, so the right-hand assertion is as load-bearing as
+        // the left-hand one.
+        assert_eq!(sexpr(&expr("a + b << c")), "(<< (+ a b) c)");
+        assert_eq!(sexpr(&expr("a << b + c")), "(<< a (+ b c))");
+        assert_eq!(sexpr(&expr("a << b < c")), "(< (<< a b) c)");
+        assert_eq!(sexpr(&expr("a < b << c")), "(< a (<< b c))");
+        // Left-associative, and all four share the one level.
+        assert_eq!(sexpr(&expr("a << b >> c")), "(>> (<< a b) c)");
+        assert_eq!(sexpr(&expr("a <: b :> c")), "(:> (<: a b) c)");
+    }
+
+    #[test]
+    fn cardinality_binds_looser_than_member_access() {
+        // ADR 0031, Decision 9: `#b.x` is `#(b.x)`, and `#b > 3` reads as
+        // expected because `#` is tighter than the comparisons.
+        assert_eq!(sexpr(&expr("#b.x")), "(# (. b x))");
+        assert_eq!(sexpr(&expr("#b > 3")), "(> (# b) 3)");
+        assert_eq!(sexpr(&expr("#b + 1")), "(+ (# b) 1)");
+        // Inside an application spine, so `#b` is usable as an argument.
+        assert_eq!(sexpr(&expr("f #b")), "(app f (# b))");
+        // Nested, and over a parenthesized operand.
+        assert_eq!(sexpr(&expr("#(a)")), "(# a)");
+    }
+
+    #[test]
+    fn a_backticked_combiner_parses_in_expression_position() {
+        // The `fold` call shape of ADR 0031: a combiner, a mapper lambda, and
+        // the trailing bag, all one application spine.
+        assert_eq!(
+            sexpr(&expr("fold `+` (|v| v) b")),
+            "(app (app (app fold `+`) (lam [v] v)) b)"
+        );
+        // The reserved words `or` and `and` are fine inside backticks.
+        assert_eq!(
+            sexpr(&expr("fold `or` p b")),
+            "(app (app (app fold `or`) p) b)"
+        );
     }
 
     #[test]

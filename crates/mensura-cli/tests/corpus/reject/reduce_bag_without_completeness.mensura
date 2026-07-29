@@ -3,10 +3,12 @@
 // demands completeness and no establish step was written.  Shrinking a
 // column other than the promoted one keeps this a genuine reindex rather
 // than an ADR 0024 round trip (which would be the identity and accept).
+import bag
+
 unit Reading { ts: int }
 store readings { unit { Reading } attr { machine: string } attr { credits: int } }
 view bad {
   readings |> promote machine
            |> demote ts
-           |> map_bags |k, b| (.total = sum b.credits)
+           |> map_bags |k, b| (.total = bag.sum b.credits)
 }

@@ -1,0 +1,19 @@
+// Rejected at resolve (typing): the combiner table is closed (ADR 0031,
+// Decision 6).  Associativity and commutativity are laws no checker can
+// verify on a user-supplied operator, so the algebra is compiler knowledge
+// and the set extends by decision record, never by an assertion at a call
+// site.  The diagnostic names the table.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { temperature: real }
+}
+
+view bad {
+  readings
+    |> assume { complete }
+    |> map_bags |k, b| (.x = fold `%` (|v| v) b.temperature)
+}

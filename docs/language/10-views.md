@@ -46,7 +46,7 @@ conformance clause, and a **block** that hosts the pipeline:
 ```mensura
 view feature_window : Tabular[Machine] {
   let base = readings |> promote machine;
-  base |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
+  base |> map_bags |k, b| (.temp_mean = bag.sum b.temperature / to_real (#b.temperature), .temp_max = bag.max b.temperature)
 }
 ```
 
@@ -136,7 +136,7 @@ pipeline's result.
 view machine_temperature : Tabular[Machine] {
   readings
   |> promote machine
-  |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)
+  |> map_bags |k, b| (.temp_mean = bag.sum b.temperature / to_real (#b.temperature), .temp_max = bag.max b.temperature)
 }
 ```
 

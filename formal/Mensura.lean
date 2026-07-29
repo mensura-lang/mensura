@@ -20,6 +20,10 @@ Module flatMap (each file imports only what it builds on):
                      (ADR 0020)
   Rectangle          Exhaustive / Total and the rectangle propagation
                      (ADR 0020)
+  Fold               the monoid-parameterized bag fold: the well-behaved
+                     subclass of `aggregate` a closed combiner table can
+                     implement, with the shard and presence lemmas
+                     (ADR 0029 Stage 1, ADR 0031)
   Completeness/
     FiberMap         the key-preserving safe-completeness characterization
     Reindex          its key-changing generalization; gatherMap and demote
@@ -43,6 +47,7 @@ import Mensura.SplitSafety
 import Mensura.Laws
 import Mensura.Reshape
 import Mensura.Rectangle
+import Mensura.Fold
 import Mensura.Completeness.FiberMap
 import Mensura.Completeness.Reindex
 import Mensura.Completeness.Verbs

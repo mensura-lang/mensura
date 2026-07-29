@@ -128,9 +128,10 @@ removed.  When a `map_bags` lambda receives a key's whole bag (the `|k, b|`
 form), reading a column off it, `b.credits`, yields the multiset of that
 column's values across the rows in the bag.  That value multiset is itself a
 bag, of scalars rather than rows; the type system writes its type `bag<T>`,
-and the aggregate combinators (`count`, `sum`, `min`, `max`, `any`, `all`)
-collapse it to one value.  The two uses are the same idea (a multiset with no
-order) at two levels: the bag of rows is primary, and reading a column
+and a reduction collapses it to one value (`fold`, `#`, or one of the `bag`
+module's named reductions; ADR 0031).  The two uses are the same idea (a
+multiset with no order) at two levels, and the projection is *defined* by
+`b.x == map (|r| r.x) b`: the bag of rows is primary, and reading a column
 projects it to a bag of that column's values.
 
 "Bag" is the surface word for what the formal model calls a **fiber**, the
@@ -420,11 +421,12 @@ available for a column's type.
   Key-eligible types: `string`, `int`, `bool`, `date`, `enum`.  `real` is
   excluded because float equality is unreliable.
 - **Equatable**: supports `==` and `!=`.  Same set as key-eligible.
-- **Orderable**: supports `<`, `<=`, `>`, `>=`, `min`, `max`.  Types:
+- **Orderable**: supports `<`, `<=`, `>`, `>=`, and the binary minimum and
+  maximum `<<` / `>>` (hence the reductions folded with them).  Types:
   `int`, `real`, `date`.  Strings are not orderable (treated as opaque
   identifiers).  Enums are not orderable (no declared order on variants).
-- **Numeric**: supports `+`, `-`, `*`, `^`, `sum`.  Types: `int`, `real`.
-  No implicit widening between `int` and `real`.
+- **Numeric**: supports `+`, `-`, `*`, `^` (hence a fold with `` `+` ``).
+  Types: `int`, `real`.  No implicit widening between `int` and `real`.
 
 ### Naming conventions: PascalCase and snake_case
 

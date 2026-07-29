@@ -46,13 +46,26 @@ const _: () = {
 /// magnitude.
 const SI_SOURCE: &str = include_str!("../stdlib/si.mensura");
 
+/// The `bag` standard library (ADR 0031, Decision 8): the fold-derived
+/// reductions, each a partial application of `fold` at one row of the closed
+/// combiner table.  The oracle test in `bag_matches_its_oracle` pins each
+/// binding's combiner.
+const BAG_SOURCE: &str = include_str!("../stdlib/bag.mensura");
+
+/// Every bundled module, for the "unknown module" diagnostic.  Kept beside
+/// [`bundled`] so a new module cannot be added without appearing in the
+/// suggestion.
+pub(crate) const BUNDLED_MODULES: [&str; 2] = ["si", "bag"];
+
 /// Resolve a bundled module by name, memoized.  `None` means no bundled
 /// module has that name (the importer's "unknown module" case); `Err` is
 /// the module's own diagnostics, already prefixed with its name.
 pub(crate) fn bundled(name: &str) -> Option<&'static Result<ModuleEnv, Vec<String>>> {
     static SI: OnceLock<Result<ModuleEnv, Vec<String>>> = OnceLock::new();
+    static BAG: OnceLock<Result<ModuleEnv, Vec<String>>> = OnceLock::new();
     match name {
         "si" => Some(SI.get_or_init(|| load("si", SI_SOURCE))),
+        "bag" => Some(BAG.get_or_init(|| load("bag", BAG_SOURCE))),
         _ => None,
     }
 }
@@ -220,6 +233,65 @@ mod tests {
                 "binding `{name}` has no oracle row: add it to `si_oracle`"
             );
         }
+    }
+
+    /// The `bag` oracle (ADR 0031, Decision 8): each binding and the combiner
+    /// it folds with.  Editing `stdlib/bag.mensura` without editing this fails
+    /// the test in both directions, exactly as `si_oracle` does.
+    fn bag_oracle() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("sum", "+"),
+            ("prod", "*"),
+            ("min", "<<"),
+            ("max", ">>"),
+            ("any", "or"),
+            ("all", "and"),
+        ]
+    }
+
+    #[test]
+    fn bag_matches_its_oracle() {
+        let env = bundled("bag")
+            .expect("bag is bundled")
+            .as_ref()
+            .expect("bag resolves cleanly");
+        let oracle = bag_oracle();
+        for (name, combiner) in &oracle {
+            let value = env
+                .values
+                .get(*name)
+                .unwrap_or_else(|| panic!("bag has no binding `{name}`: stale oracle row"));
+            // Each binding is a partial `fold`, eta-expanded to a closure at
+            // const evaluation; the combiner is the backticked token inside.
+            let ConstValue::Closure(c) = value else {
+                panic!("`{name}` is not a function binding");
+            };
+            let rendered = format!("{:?}", c.body);
+            assert!(
+                rendered.contains(&format!("Combiner(\"{combiner}\")")),
+                "`{name}` does not fold with `{combiner}`"
+            );
+            assert!(
+                rendered.contains("Name(\"fold\")"),
+                "`{name}` is not a `fold` (the ordered siblings live in \
+                 `series`, gated on Stage 2)"
+            );
+        }
+        for name in env.values.keys() {
+            assert!(
+                oracle.iter().any(|(n, _)| n == name),
+                "binding `{name}` has no oracle row: add it to `bag_oracle`"
+            );
+        }
+    }
+
+    #[test]
+    fn bag_exports_functions_not_scalars() {
+        // The property that made ADR 0031 Decision 8 reach into lowering: `si`
+        // exports only scalars, so `Subst` used to assume module members had
+        // literals.  `bag` is the first module to break that.
+        let env = bundled("bag").expect("bundled").as_ref().expect("resolves");
+        assert!(env.values.values().all(|v| v.literal().is_none()));
     }
 
     #[test]

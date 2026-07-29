@@ -562,6 +562,15 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
             scope.insert(params[0].to_string(), record(&input.key, &key));
         }
         if params[1] != "_" {
+            // `b` *types* as the fiber, a bag of rows (ADR 0031, Decision 1),
+            // but the executor is free to keep the group columnar: the rows
+            // type is a type-level notion, and the only thing the surface can
+            // do with `b` is project (`b.x`) or count (`#b`), both of which a
+            // column-major group answers directly.  Building the bags here
+            // materializes exactly those projections, so the two
+            // representations are observationally identical.  A row-major
+            // representation becomes necessary only when a *row-mapper* fold
+            // lands, since its lambda sees one whole row at a time.
             let bags: BTreeMap<String, RtVal> = input
                 .attrs
                 .iter()
@@ -614,8 +623,14 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
     })
 }
 
-/// The statically known domain of a `map_bags` field: a window copies its
-/// column, the aggregates have fixed or copied domains.
+/// The statically known domain of a `map_bags` field, used to name the output
+/// column when no row is available to infer it from.  A window copies its
+/// column; `#` is always an `int`; `to_real` is always a `real`.
+///
+/// The six aggregates used to have entries here.  They are `bag` module
+/// bindings now (ADR 0031, Decision 8), so by the time this runs they have
+/// already beta-reduced to a `fold` spine, whose domain depends on the
+/// mapper and is left to the data.
 fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<ColumnType> {
     let member_domain = |e: &Expr| match &e.kind {
         ExprKind::Member(base, field) => match &base.kind {
@@ -628,28 +643,22 @@ fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<Co
         },
         _ => None,
     };
-    let applied = |head: &Expr, arg: &Expr| {
-        let ExprKind::Name(name) = &head.kind else {
-            return None;
-        };
-        match name.as_str() {
-            "count" => Some(ColumnType::Int),
-            "any" | "all" => Some(ColumnType::Bool),
-            "to_real" => Some(ColumnType::Real),
-            "sum" | "min" | "max" => member_domain(arg),
-            _ => None,
-        }
+    let applied = |head: &Expr| match &head.kind {
+        ExprKind::Name(name) if name == "to_real" => Some(ColumnType::Real),
+        _ => None,
     };
     match &expr.kind {
         ExprKind::Member(..) => member_domain(expr),
+        // `#` counts, so its column is an `int` whatever it counts.
+        ExprKind::Unary(UnOp::Card, _) => Some(ColumnType::Int),
         ExprKind::App(..) => {
             let (head, args) = flatten_app(expr);
             match args[..] {
-                [arg] => applied(head, arg),
+                [_] => applied(head),
                 _ => None,
             }
         }
-        ExprKind::Binary(BinOp::Pipe, lhs, rhs) => applied(rhs, lhs),
+        ExprKind::Binary(BinOp::Pipe, _, rhs) => applied(rhs),
         _ => None,
     }
 }
@@ -997,12 +1006,145 @@ fn eval_scalar(scope: &Scope, expr: &Expr) -> Result<RtVal, EvalError> {
     }
 }
 
-/// The value-level builtins: `to_real` and the bag aggregates (`x |> op`
-/// and `op x` converge here, ADR 0018).
+/// The elements a mapper is applied over, one binding per element.
+///
+/// Over a projected bag the element is a value; over the fiber itself it is a
+/// *row* (ADR 0031, Decisions 1 and 4).  The group is stored columnar, so the
+/// row case transposes here: this is the one place the two representations
+/// actually differ, and it is why `map_bags` records where a row-major
+/// executor would matter.
+fn mapper_elements(scope: &Scope, bag: &Expr) -> Result<Vec<RtVal>, EvalError> {
+    match eval_scalar(scope, bag)? {
+        RtVal::Bag(vs) => Ok(vs.into_iter().map(RtVal::V).collect()),
+        RtVal::Rec(fields) => {
+            // Every column of a group has the same length (they are the same
+            // rows), so any one gives the row count.
+            let n = fields
+                .values()
+                .find_map(|v| match v {
+                    RtVal::Bag(vs) => Some(vs.len()),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let mut rows = Vec::with_capacity(n);
+            for i in 0..n {
+                let mut row = BTreeMap::new();
+                for (name, col) in &fields {
+                    let RtVal::Bag(vs) = col else {
+                        return internal("a group column that is not a bag");
+                    };
+                    let Some(v) = vs.get(i) else {
+                        return internal("ragged group columns");
+                    };
+                    row.insert(name.clone(), RtVal::V(v.clone()));
+                }
+                rows.push(RtVal::Rec(row));
+            }
+            Ok(rows)
+        }
+        RtVal::V(_) => internal("a mapper applied to a value the checker should have rejected"),
+    }
+}
+
+/// Apply a mapper to each element, yielding the mapped values.
+fn eval_mapped(scope: &Scope, mapper: &Expr, bag: &Expr) -> Result<Vec<Value>, EvalError> {
+    let ExprKind::Lambda { params, body, .. } = &mapper.kind else {
+        return internal("a mapper that is not a lambda");
+    };
+    let [param] = &params[..] else {
+        return internal("a mapper that does not take exactly one element");
+    };
+    let mut out = Vec::new();
+    for element in mapper_elements(scope, bag)? {
+        let mut inner = scope.clone();
+        inner.insert(param.name.clone(), element);
+        match eval_scalar(&inner, body)? {
+            RtVal::V(v) => out.push(v),
+            _ => return internal("a mapper that did not produce a value"),
+        }
+    }
+    Ok(out)
+}
+
+/// `fold` (ADR 0031, Decision 4): map each element, then combine with the
+/// closed table's operator.  Backed by `formal/Mensura/Fold.lean`: the
+/// combiner is associative and commutative, so the bag's arbitrary order does
+/// not matter, and the identity lives in the accumulator rather than in a
+/// user-supplied seed.
+fn eval_fold(
+    scope: &Scope,
+    combiner: &Expr,
+    mapper: &Expr,
+    bag: &Expr,
+) -> Result<RtVal, EvalError> {
+    let ExprKind::Combiner(raw) = &combiner.kind else {
+        return internal("a `fold` combiner that is not a backticked operator");
+    };
+    let mapped = eval_mapped(scope, mapper, bag)?;
+    let Some((first, rest)) = mapped.split_first() else {
+        // The empty bag.  A group arises from rows and is never empty, so the
+        // checker's total result type holds; reaching here means the invariant
+        // broke rather than that a combiner identity is missing.
+        return internal("`fold` over an empty bag");
+    };
+    let mut acc = first.clone();
+    for v in rest {
+        acc = combine(raw, acc, v.clone())?;
+    }
+    Ok(RtVal::V(acc))
+}
+
+/// One step of a fold, dispatched on the combiner's surface spelling.  The
+/// table is closed (ADR 0031, Decision 6) and the checker has already vetted
+/// both the operator and the domain.
+fn combine(op: &str, a: Value, b: Value) -> Result<Value, EvalError> {
+    match op {
+        "+" => arithmetic(BinOp::Add, a, b),
+        "*" => arithmetic(BinOp::Mul, a, b),
+        "<<" | ">>" => {
+            let ord = compare(&a, &b)?;
+            let take_left = if op == "<<" { ord.is_le() } else { ord.is_ge() };
+            Ok(if take_left { a } else { b })
+        }
+        "or" | "and" => match (a, b) {
+            (Value::Bool(x), Value::Bool(y)) => {
+                Ok(Value::Bool(if op == "or" { x || y } else { x && y }))
+            }
+            _ => internal("a boolean combiner on non-booleans"),
+        },
+        // The tacks are `scan`-only, so the checker rejects them under `fold`.
+        "<:" | ":>" => internal("a non-commutative combiner reached `fold`"),
+        other => internal(format!("`{other}` is not a combiner")),
+    }
+}
+
+/// The value-level builtins: the reduction primitives `fold` and `map`, and
+/// `to_real` (`x |> op` and `op x` converge here, ADR 0018).  The derived
+/// reductions are gone from here: `bag.sum` and friends beta-reduce to a
+/// `fold` spine at lowering, so the runtime only ever sees the primitive
+/// (ADR 0031, Decision 8).
 fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, EvalError> {
     let ExprKind::Name(name) = &head.kind else {
         return internal("application of a non-name");
     };
+    // The reduction primitives take more than one argument (ADR 0031,
+    // Decision 11); the checker has already saturated them, so an arity
+    // mismatch here is internal.
+    match name.as_str() {
+        "fold" => {
+            let [combiner, mapper, bag] = args else {
+                return internal("`fold` expects a combiner, a mapper, and a bag");
+            };
+            return eval_fold(scope, combiner, mapper, bag);
+        }
+        "map" => {
+            let [mapper, bag] = args else {
+                return internal("`map` expects a mapper and a bag");
+            };
+            return Ok(RtVal::Bag(eval_mapped(scope, mapper, bag)?));
+        }
+        _ => {}
+    }
     let [arg] = args else {
         return internal(format!("`{name}` expects one argument"));
     };
@@ -1016,50 +1158,36 @@ fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, E
                 })
                 .collect::<Result<_, _>>()?,
         )),
-        (agg, RtVal::Bag(vs)) => Ok(RtVal::V(aggregate(agg, &vs)?)),
         _ => internal(format!("`{name}` applied to an unsupported value")),
     }
 }
 
-/// A bag aggregate (section 5.4, ADR 0014).  Groups are never empty (they
-/// arise from rows), and the checker requires a total bag, so elements are
-/// never missing.
-fn aggregate(name: &str, values: &[Value]) -> Result<Value, EvalError> {
-    let [first, rest @ ..] = values else {
-        return internal(format!("`{name}` over an empty bag"));
-    };
-    match name {
-        "count" => Ok(Value::Int(values.len() as i64)),
-        "sum" => rest.iter().try_fold(first.clone(), |acc, v| {
-            arithmetic(BinOp::Add, acc, v.clone())
-        }),
-        "min" | "max" => {
-            let mut best = first.clone();
-            for v in rest {
-                let ord = compare(v, &best)?;
-                if (name == "min" && ord.is_lt()) || (name == "max" && ord.is_gt()) {
-                    best = v.clone();
-                }
-            }
-            Ok(best)
-        }
-        "any" | "all" => {
-            let mut acc = name == "all";
-            for v in values {
-                let Value::Bool(b) = v else {
-                    return internal(format!("`{name}` on a non-boolean bag"));
-                };
-                acc = if name == "any" { acc || *b } else { acc && *b };
-            }
-            Ok(Value::Bool(acc))
-        }
-        other => err(format!(
-            "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
-        )),
-    }
-}
-
 fn eval_unary(scope: &Scope, op: UnOp, operand: &Expr) -> Result<RtVal, EvalError> {
+    // `#` (ADR 0031, Decision 9) consumes the *bag*, so it is handled before
+    // `eval_value` collapses one.  `#e == fold `+` (|_| 1) e`: the mapper
+    // discards the element, so a missing value still counts its row, and the
+    // empty bag counts zero (the additive identity, not a missing result).
+    if op == UnOp::Card {
+        return match eval_scalar(scope, operand)? {
+            RtVal::Bag(vs) => Ok(RtVal::V(Value::Int(vs.len() as i64))),
+            // `#b` counts the fiber's rows.  The group is stored columnar, so
+            // any column's length is the row count; they agree because
+            // projection preserves cardinality.  An attribute-less group has
+            // no column to measure, but also no rows to count that the key
+            // does not already determine, so zero is the honest answer.
+            RtVal::Rec(fields) => {
+                let n = fields
+                    .values()
+                    .find_map(|v| match v {
+                        RtVal::Bag(vs) => Some(vs.len()),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok(RtVal::V(Value::Int(n as i64)))
+            }
+            RtVal::V(_) => internal("`#` applied to a value the checker should have rejected"),
+        };
+    }
     let v = eval_value(scope, operand)?;
     let out = match (op, v) {
         (UnOp::Not, Value::Bool(b)) => Value::Bool(!b),
@@ -1107,6 +1235,22 @@ fn eval_binary(scope: &Scope, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<RtVal
                 _ => ord.is_ge(),
             })
         }
+        // `<<`/`>>` (binary minimum and maximum, ADR 0031 Decision 6): the
+        // same total order the comparisons use, returning the operand rather
+        // than a boolean.  A tie returns the left operand, which is
+        // unobservable since the operands are then equal.
+        BinOp::Min | BinOp::Max => {
+            let ord = compare(&a, &b)?;
+            let take_left = match op {
+                BinOp::Min => ord.is_le(),
+                _ => ord.is_ge(),
+            };
+            if take_left { a } else { b }
+        }
+        // The tacks: `a <: b` is `a`, `a :> b` is `b`.  Both operands are
+        // evaluated, so a diagnostic in the discarded one still surfaces.
+        BinOp::KeepLeft => a,
+        BinOp::KeepRight => b,
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => arithmetic(op, a, b)?,
         BinOp::In => {
             return err("`in` is not yet executable (docs/toolkit/04-processing-layer.md)");
@@ -1261,6 +1405,7 @@ mod tests {
     }
 
     const MACHINES: &str = r#"
+        import bag
         unit Machine { id: string }
         enum MachineStatus { "operational" "degraded" "failure" }
         store machines {
@@ -1425,7 +1570,7 @@ mod tests {
         let rows = eval(
             r#"view stats {
                  let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
-                 doubled |> map_bags |_, b| (.total = sum b.hours, .n = count b.hours, .worst = max b.hours)
+                 doubled |> map_bags |_, b| (.total = bag.sum b.hours, .n = #b.hours, .worst = bag.max b.hours)
                }"#,
             vec![
                 machine("m1", "operational", 10, None),
@@ -1448,6 +1593,168 @@ mod tests {
                     Value::Int(20)
                 ],
             ]
+        );
+    }
+
+    #[test]
+    fn cardinality_counts_rows() {
+        // `#` (ADR 0031, Decision 9): `#e == fold `+` (|_| 1) e`, so the
+        // expansion's two rows count two whatever the column holds.
+        let rows = eval(
+            r#"view counted {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.n = #b.hours)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(2)]]);
+    }
+
+    #[test]
+    fn a_qualified_module_reduction_runs_end_to_end() {
+        // ADR 0031, Decision 8: `bag.max` is a const binding in a bundled
+        // module, so this exercises the whole path at once -- the module's
+        // `fold `>>` (|v| v)` eta-expands to a closure at const evaluation,
+        // the checker applies it through a `Member` head, lowering
+        // beta-reduces the qualified call, and the runtime folds.
+        let rows = eval_over(
+            MACHINES,
+            r#"view summary {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.hottest = bag.max b.hours, .total = bag.sum b.hours)
+               }"#,
+            &[("machines", vec![machine("m1", "operational", 10, None)])],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(10),
+                Value::Int(20),
+            ]]
+        );
+    }
+
+    #[test]
+    fn fold_reduces_a_projected_bag() {
+        // ADR 0031, Decision 4, backed by Stage 1 (`Mensura.foldBag`).
+        let rows = eval(
+            r#"view folded {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (
+                   .total = fold `+` (|v| v) b.hours,
+                   .biggest = fold `>>` (|v| v) b.hours,
+                   .sq = fold `+` (|v| v * v) b.hours
+                 )
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(20),
+                Value::Int(10),
+                Value::Int(200),
+            ]]
+        );
+    }
+
+    #[test]
+    fn fold_over_the_fiber_sees_whole_rows() {
+        // ADR 0029's headline example: the mapper's element is a *row*, which
+        // needs the fiber transposed out of the columnar group.
+        let rows = eval(
+            r#"view folded {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.total = fold `+` (|r| r.hours * 2) b)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(40)]]);
+    }
+
+    #[test]
+    fn map_projects_and_computes() {
+        // Decision 3: `map (|r| r.x) b` is `b.x`, and a computed bag is a
+        // window value, so the result is one row per member.
+        let rows = eval(
+            r#"view mapped {
+                 let doubled = machines |> flat_map |_, r| (r, r);
+                 doubled |> map_bags |_, b| (.h = map (|r| r.hours * 3) b)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![Value::String("m1".into()), Value::Int(30)],
+                vec![Value::String("m1".into()), Value::Int(30)],
+            ]
+        );
+    }
+
+    #[test]
+    fn cardinality_of_the_fiber_counts_the_groups_rows() {
+        // ADR 0031, Decision 1's headline: `#b` is the group's row count,
+        // where today one writes `#b.x` and arbitrarily picks a column.
+        // It agrees with every projection, since projection preserves
+        // cardinality.
+        let rows = eval(
+            r#"view counted {
+                 let doubled = machines |> flat_map |_, r| (r, r) |> assume { complete };
+                 doubled |> map_bags |_, b| (.rows = #b, .via_col = #b.hours)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(2),
+                Value::Int(2)
+            ]]
+        );
+    }
+
+    #[test]
+    fn cardinality_counts_a_missing_value_row() {
+        // The mapper discards the element, so a row whose column is missing
+        // still counts.  This is the one place `#` differs from the value
+        // reductions, which demand a total bag.
+        let rows = eval(
+            r#"view counted {
+                 machines |> assume { complete } |> map_bags |_, b| (.n = #b.last_service)
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(rows, vec![vec![Value::String("m1".into()), Value::Int(1)]]);
+    }
+
+    #[test]
+    fn min_max_and_the_tacks_evaluate() {
+        // ADR 0031, Decision 6.  `<<`/`>>` return an operand under the same
+        // total order the comparisons use; the tacks return their named side.
+        let rows = eval(
+            r#"view clamped {
+                 machines |> flat_map |_, r| ((
+                   .lo = r.hours << 15,
+                   .hi = r.hours >> 15,
+                   .left = r.hours <: 99,
+                   .right = r.hours :> 99
+                 ))
+               }"#,
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(10),
+                Value::Int(15),
+                Value::Int(10),
+                Value::Int(99),
+            ]]
         );
     }
 

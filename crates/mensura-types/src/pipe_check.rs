@@ -708,6 +708,17 @@ fn bag_record_content(
                         totality.mark_optional(field.name.name.clone());
                     }
                 }
+                // The fiber gets its own wording: a bare `b` is the single
+                // most likely way to land here, and the fix (project or
+                // count) is worth naming (ADR 0031, Decision 1).
+                None if matches!(ty, Ty::Rows(_)) => errs.push(te(
+                    format!(
+                        "field `{}` is a bag of rows; project a column \
+                         (`b.name`) or count the group (`#b`)",
+                        field.name.name
+                    ),
+                    field.value.span,
+                )),
                 None => errs.push(te(
                     format!("field `{}` is not a value or a bag", field.name.name),
                     field.value.span,
@@ -859,13 +870,17 @@ fn lambda_params<'a>(
 }
 
 /// The column domain and totality a value type contributes, or `None` for a
-/// bag, a nested record (window/nested returns are deferred), or a function
+/// bag, a bag of rows (the fiber is a type-level notion, ADR 0031 Decision
+/// 10), a nested record (window/nested returns are deferred), or a function
 /// (which never enters a column, ADR 0030).
+///
+/// This is the storage boundary: returning `None` for the fiber is what keeps
+/// nested collections out of a column, so the rows type cannot smuggle one in.
 fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
         Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
-        Ty::Bag { .. } | Ty::Record(_) | Ty::Fn(_) => None,
+        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Fn(_) | Ty::Builtin(_) => None,
     }
 }
 
@@ -1478,6 +1493,27 @@ mod tests {
         Sources::new()
             .with("readings", readings)
             .with("machines", machines)
+            .with_ambient(ambient_with_bag())
+    }
+
+    /// The ambient a program gets from `import bag` (ADR 0031, Decision 8).
+    /// These tests type pipeline *expressions* rather than whole programs, so
+    /// there is no `import` item to resolve; injecting the module's env here
+    /// is the equivalent, and keeps the fixtures reading as a user would
+    /// write them.
+    fn ambient_with_bag() -> crate::expr_check::Ambient {
+        let mut ambient = crate::expr_check::intrinsics();
+        let env = crate::modules::bundled("bag")
+            .expect("bag is bundled")
+            .as_ref()
+            .expect("bag resolves cleanly");
+        let members = env
+            .values
+            .iter()
+            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+            .collect();
+        ambient.insert("bag".to_string(), crate::expr_check::Ty::Record(members));
+        ambient
     }
 
     fn pipe_ty(sources: &Sources, src: &str) -> Result<PipeTy, Vec<TypeError>> {
@@ -1652,7 +1688,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> promote machine \
-                 |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
+                 |> map_bags |k, b| (.temp_mean = bag.sum b.temperature / to_real (#b.temperature), .temp_max = bag.max b.temperature)",
             )
             .expect("ok"),
         );
@@ -1665,9 +1701,16 @@ mod tests {
     #[test]
     fn map_bags_rejects_non_numeric_aggregate() {
         let s = sample_sources();
-        let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.m = sum b.machine)")
+        let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.m = bag.sum b.machine)")
             .expect_err("non-numeric");
-        assert!(errs[0].message.contains("numeric bag"));
+        // The demand now comes from the combiner table rather than from a
+        // per-aggregate signature: `bag.sum` is `fold `+``, and the `+` row
+        // folds a numeric domain (ADR 0031, Decision 6).
+        assert!(
+            errs[0].message.contains("folds a numeric domain"),
+            "got: {}",
+            errs[0].message
+        );
     }
 
     #[test]
@@ -1690,7 +1733,7 @@ mod tests {
         let s = sample_sources();
         let errs = pipe_ty(
             &s,
-            "readings |> map_bags |k, b| (.m = sum b.temperature, .t = b.temperature)",
+            "readings |> map_bags |k, b| (.m = bag.sum b.temperature, .t = b.temperature)",
         )
         .expect_err("mixed");
         assert!(errs.iter().any(|e| e.message.contains("not a mix")));
@@ -1783,7 +1826,9 @@ mod tests {
                 scol("hi", ColumnType::Real, ColumnRole::Attr, sparse),
             ],
         );
-        Sources::new().with("wide", wide)
+        Sources::new()
+            .with("wide", wide)
+            .with_ambient(ambient_with_bag())
     }
 
     #[test]
@@ -1832,7 +1877,9 @@ mod tests {
             "Slot",
             vec![scol("ts", ColumnType::Int, ColumnRole::Key, false)],
         );
-        let s = Sources::new().with("bare", bare);
+        let s = Sources::new()
+            .with("bare", bare)
+            .with_ambient(ambient_with_bag());
         let errs = pipe_ty(&s, "bare |> unpivot metric reading").expect_err("no attributes");
         assert!(errs[0].message.contains("at least one attribute"));
     }
@@ -1866,7 +1913,9 @@ mod tests {
                 scol("tag", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
-        Sources::new().with("obs", obs)
+        Sources::new()
+            .with("obs", obs)
+            .with_ambient(ambient_with_bag())
     }
 
     #[test]
@@ -1983,7 +2032,9 @@ mod tests {
                 scol("reading", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("long", long);
+        let s = Sources::new()
+            .with("long", long)
+            .with_ambient(ambient_with_bag());
         let errs = pipe_ty(&s, "long |> pivot metric reading").expect_err("empty key");
         assert!(errs[0].message.contains("at least one key"));
     }
@@ -2036,7 +2087,7 @@ mod tests {
         let errs = pipe_ty(
             &s,
             "readings |> promote machine |> demote ts \
-             |> map_bags |k, b| (.n = count b.temperature)",
+             |> map_bags |k, b| (.n = #b.temperature)",
         )
         .expect_err("incomplete bag");
         assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
@@ -2082,7 +2133,9 @@ mod tests {
                 scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("events", events);
+        let s = Sources::new()
+            .with("events", events)
+            .with_ambient(ambient_with_bag());
         let base = table_of(pipe_ty(&s, "events").expect("ok"));
         let t = table_of(pipe_ty(&s, "events |> demote machine |> promote machine").expect("ok"));
         assert_restores(&t, &base);
@@ -2168,7 +2221,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> promote machine |> demote machine \
-                 |> map_bags |k, b| (.n = count b.temperature)",
+                 |> map_bags |k, b| (.n = #b.temperature)",
             )
             .expect("ok"),
         );
@@ -2182,9 +2235,9 @@ mod tests {
         // the reducer's demand is met (ADR 0023).
         for src in [
             "readings |> promote machine |> assume { complete } |> demote machine \
-             |> map_bags |k, b| (.n = count b.temperature)",
+             |> map_bags |k, b| (.n = #b.temperature)",
             "readings |> promote machine |> demote machine |> assume { complete } \
-             |> map_bags |k, b| (.n = count b.temperature)",
+             |> map_bags |k, b| (.n = #b.temperature)",
         ] {
             let t = table_of(pipe_ty(&s, src).expect("ok"));
             assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
@@ -2214,7 +2267,11 @@ mod tests {
         // (`fiberCompleteWrt_of_functional`), so the ordinary aggregation over
         // a plain store is ceremony-free (ADR 0023).
         let t = table_of(
-            pipe_ty(&s, "readings |> map_bags |k, b| (.m = max b.temperature)").expect("ok"),
+            pipe_ty(
+                &s,
+                "readings |> map_bags |k, b| (.m = bag.max b.temperature)",
+            )
+            .expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
     }
@@ -2314,7 +2371,9 @@ mod tests {
                 scol("reading", ColumnType::Real, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("long", long);
+        let s = Sources::new()
+            .with("long", long)
+            .with_ambient(ambient_with_bag());
         let errs = pipe_ty(&s, "long |> pivot metric reading").expect_err("collision");
         assert!(errs[0].message.contains("would duplicate column `lo`"));
     }
@@ -2363,7 +2422,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "wide |> unpivot metric reading \
-                 |> map_bags |_, b| (.reading = max b.reading)",
+                 |> map_bags |_, b| (.reading = bag.max b.reading)",
             )
             .expect("ok"),
         );
@@ -2408,7 +2467,9 @@ mod tests {
                 scol("hi", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("wide", wide);
+        let s = Sources::new()
+            .with("wide", wide)
+            .with_ambient(ambient_with_bag());
         let t =
             table_of(pipe_ty(&s, "wide |> unpivot metric reading |> promote reading").expect("ok"));
         assert!(t.qualifiers.exhaustive.is_empty());
@@ -2433,7 +2494,10 @@ mod tests {
                 scol("vendor", ColumnType::String, ColumnRole::Attr, false),
             ],
         );
-        let s = Sources::new().with("wide", wide).with("machines", machines);
+        let s = Sources::new()
+            .with("wide", wide)
+            .with("machines", machines)
+            .with_ambient(ambient_with_bag());
         // An unmatched row drops out of its fiber; `lookup` keeps it
         // (`lookup_exhaustive`), `lookup_total` does not.
         let kept = table_of(
@@ -2471,7 +2535,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> promote machine \
-                 |> map_bags |k, b| (.temp_mean = sum b.temperature / to_real (count b.temperature), .temp_max = max b.temperature)",
+                 |> map_bags |k, b| (.temp_mean = bag.sum b.temperature / to_real (#b.temperature), .temp_max = bag.max b.temperature)",
             )
             .expect("machine_temperature types"),
         );
@@ -2508,7 +2572,7 @@ mod tests {
         let s = sample_sources();
         let body = view_body(
             "view machine_temperature { readings |> promote machine \
-             |> map_bags |k, b| (.temp_max = max b.temperature) }",
+             |> map_bags |k, b| (.temp_max = bag.max b.temperature) }",
         );
         let t = type_view(&s, &body).expect("ok");
         assert!(t.content.key.iter().any(|c| c.name == "machine"));

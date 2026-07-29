@@ -1,0 +1,18 @@
+// Rejected at resolve (typing): `<<` takes both operands of *one* orderable
+// domain, dimension included (ADR 0031, Decision 6).  A `real` and a `string`
+// share no domain, so there is no order to take the minimum under.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr {
+    temperature: real
+    label: string
+  }
+}
+
+view bad {
+  readings |> flat_map |k, r| ((.m = r.temperature << r.label))
+}

@@ -1,0 +1,18 @@
+// Rejected at resolve: ADR 0027 Decision 4's rule, "nothing else is in scope
+// that you did not import", applies to the aggregate vocabulary too now that
+// it lives in a module (ADR 0031, Decision 8).  Without `import bag` the name
+// `bag` is unknown, and there is no implicit prelude to fall back on.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { temperature: real }
+}
+
+view bad {
+  readings
+    |> assume { complete }
+    |> map_bags |k, b| (.hottest = bag.max b.temperature)
+}

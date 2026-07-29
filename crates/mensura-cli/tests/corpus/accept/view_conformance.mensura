@@ -2,6 +2,8 @@
 // `Tabular[Machine]` checks the output's index structurally (the `map_bags`
 // leaves `Machine`'s `id` as the key); `HasMax` and `HasMin` check named
 // columns by type and totality (docs/language/10-views.md, ADR 0019).
+import bag
+
 unit Machine {
   id: string
 }
@@ -24,5 +26,5 @@ store readings {
 }
 
 view machine_summary : Tabular[Machine], HasMax, HasMin {
-  readings |> map_bags |k, b| (.temp_max = max b.temperature, .temp_min = min b.temperature)
+  readings |> map_bags |k, b| (.temp_max = bag.max b.temperature, .temp_min = bag.min b.temperature)
 }

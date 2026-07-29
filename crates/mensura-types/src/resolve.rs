@@ -269,7 +269,11 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         // Decision 4) and join the collision rule: now that a binding can
         // be a function (ADR 0030), `let sum { |x| x }` would otherwise
         // silently shadow the aggregate in application head position.
-        const EXPR_BUILTINS: [&str; 7] = ["sum", "min", "max", "count", "any", "all", "to_real"];
+        // The six aggregates have left (ADR 0031, Decision 8): they are const
+        // bindings in `bag` now, so `sum`, `min`, `max`, `any`, `all`, and
+        // `count` are ordinary names a user may declare.  The protection
+        // shrinks with the intrinsics, and covers only what is still ambient.
+        const EXPR_BUILTINS: [&str; 3] = ["to_real", "fold", "map"];
         if EXPR_BUILTINS.contains(&name.name.as_str()) {
             errors.push(ResolveError::new(
                 format!(
@@ -306,8 +310,13 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
             None => errors.push(ResolveError::new(
                 format!(
                     "unknown module `{}`: a bare import resolves against the \
-                     bundled modules only (`si`)",
-                    i.name.name
+                     bundled modules only ({})",
+                    i.name.name,
+                    crate::modules::BUNDLED_MODULES
+                        .iter()
+                        .map(|m| format!("`{m}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 i.name.span,
             )),
@@ -513,7 +522,12 @@ fn collect_expr(expr: &Expr, stores: &HashSet<&str>, found: &mut BTreeSet<String
                 found.insert(name.clone());
             }
         }
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) => {}
+        // A combiner names an operator from the closed table, never a store.
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Combiner(_) => {}
         ExprKind::Member(base, _) => collect_expr(base, stores, found),
         ExprKind::App(f, a) => {
             collect_expr(f, stores, found);
@@ -2533,9 +2547,10 @@ mod tests {
     #[test]
     fn view_body_is_type_checked() {
         let ok = r#"
+            import bag
             unit Machine { id: string }
             store readings { unit { Machine } attr { temperature: real } }
-            view machine_summary { readings |> map_bags |k, b| (.temp_max = max b.temperature) }
+            view machine_summary { readings |> map_bags |k, b| (.temp_max = bag.max b.temperature) }
         "#;
         resolve_str(ok).expect("a valid view resolves");
 
@@ -2551,6 +2566,7 @@ mod tests {
     // A summarizing view whose output key is `Machine`'s key and whose one
     // non-key column is `temp_max: real` (`docs/language/10-views.md`).
     const SUMMARY_VIEW: &str = r#"
+        import bag
         unit Machine { id: string }
         store readings { unit { Machine } attr { temperature: real } }
     "#;
@@ -2563,7 +2579,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view machine_summary : Tabular[Machine] {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying Machine's key conforms");
@@ -2578,7 +2594,7 @@ mod tests {
             unit Site {{ code: string }}
             shape Tabular[U: Unit] {{ unit {{ U }} }}
             view v : Tabular[Site] {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2597,7 +2613,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: real }} }}
             view machine_summary : HasMax {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         resolve_str(&src).expect("view carrying temp_max conforms");
@@ -2609,7 +2625,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMin {{ attr {{ temp_min: real }} }}
             view v : HasMin {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2625,7 +2641,7 @@ mod tests {
             "{SUMMARY_VIEW}
             shape HasMax {{ attr {{ temp_max: string }} }}
             view v : HasMax {{
-              readings |> map_bags |k, b| (.temp_max = max b.temperature)
+              readings |> map_bags |k, b| (.temp_max = bag.max b.temperature)
             }}"
         );
         let errs = errors(&src);
@@ -2639,6 +2655,7 @@ mod tests {
 
     // A bag store: the machine is the entity, its readings recur.
     const BAG_READINGS: &str = r#"
+        import bag
         unit Machine { id: string }
         store readings {
           unit { Machine }
@@ -2700,7 +2717,7 @@ mod tests {
         // fact) discharges it.
         let bad = format!(
             "{BAG_READINGS}
-            view stats {{ readings |> map_bags |k, b| (.max_kelvin = max b.kelvin) }}"
+            view stats {{ readings |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin) }}"
         );
         let errs = errors(&bad);
         assert!(
@@ -2713,7 +2730,7 @@ mod tests {
             "{BAG_READINGS}
             view stats {{
               readings |> assume {{ complete }}
-                       |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+                       |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin)
             }}"
         );
         let program = resolve_program(&ok).expect("assume discharges the reducer");
@@ -2968,6 +2985,7 @@ mod tests {
         // intrinsics type inside view bodies.
         let program = resolve_program(
             r#"
+            import bag
             unit Machine { id: string }
             store readings {
               unit { Machine }
@@ -2975,7 +2993,7 @@ mod tests {
             }
             view hottest {
               readings |> assume { complete }
-                       |> map_bags |_, b| (.max_temperature = max b.temperature)
+                       |> map_bags |_, b| (.max_temperature = bag.max b.temperature)
             }
         "#,
         )
@@ -3407,6 +3425,40 @@ mod tests {
     }
 
     #[test]
+    fn a_qualified_module_function_beta_reduces() {
+        // ADR 0031, Decision 8.  `bag.max b.x` must reach the runtime as the
+        // `fold` spine the module defines, with no residual qualified name:
+        // `si` exports only scalars, so lowering used to assume every module
+        // member had a literal, and `bag` is the first to break that.
+        let program = resolve_program(
+            r#"
+            import bag
+            unit Machine { id: string }
+            store readings {
+              unit { Machine }
+              attr { size: int }
+            }
+            view summary {
+              readings |> assume { complete } |> map_bags |_, b| (.m = bag.max b.size)
+            }
+        "#,
+        )
+        .expect("should resolve");
+        let body = format!("{:?}", program.views[0].body);
+        assert!(
+            !body.contains("\"bag\""),
+            "the qualified name is reduced away: {body}"
+        );
+        assert!(
+            body.contains("Name(\"fold\")") && body.contains("Combiner(\">>\")"),
+            "the module's definition is inlined: {body}"
+        );
+        // The eta-expansion's fresh parameter is fully applied, so none of its
+        // machinery leaks into the lowered body.
+        assert!(!body.contains("x__"), "no eta parameter remains: {body}");
+    }
+
+    #[test]
     fn beta_reduction_avoids_capturing_the_callers_names() {
         // Substituting `r.size` under the function's own `|r|` binder must
         // not capture the caller's `r`: the binder alpha-renames, and full
@@ -3464,19 +3516,30 @@ mod tests {
 
     #[test]
     fn expression_builtins_cannot_be_redeclared() {
-        // Now that a binding can be a function (ADR 0030), `let sum ...`
-        // would shadow the aggregate in head position; the resolver's
-        // collision rule forbids it (ADR 0027, Decision 3).
-        let errs = errors("let sum { |x| x }");
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`sum` is an ambient builtin"))
-        );
-        let errs = errors("let to_real { 1.0 }");
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("`to_real` is an ambient builtin"))
-        );
+        // A binding that would shadow an ambient builtin in head position is
+        // an error (ADR 0027, Decision 3).  The protection covers exactly
+        // what is still ambient, which after ADR 0031 Decision 8 is the
+        // primitives and `to_real`.
+        for name in ["to_real", "fold", "map"] {
+            let errs = errors(&format!("let {name} {{ |x| x }}"));
+            assert!(
+                errs.iter().any(|e| e
+                    .message
+                    .contains(&format!("`{name}` is an ambient builtin"))),
+                "`{name}` should still be protected"
+            );
+        }
+        // And the six aggregates are *not* protected any more: they left the
+        // initial environment with the `bag` module, so their names returned
+        // to users (ADR 0031, Decision 8, and its "Positive" consequence).
+        // `docs/language/03-shapes.md`'s `let count = ...` example is legal
+        // again because of exactly this.
+        for name in ["sum", "min", "max", "count", "any", "all"] {
+            assert!(
+                resolve_str(&format!("let {name} {{ |x| x }}")).is_ok(),
+                "`{name}` should be an ordinary name now"
+            );
+        }
     }
 
     #[test]

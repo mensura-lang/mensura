@@ -320,21 +320,94 @@ A `real`-backed domain carries a dimension exponent vector, with bare
   dimensionless operands `^` keeps the matching-domain rule
   (`real ^ real`, `int ^ int`).
 
-### 5.4  Bag combinators: many to one
+### 5.4  Bag reduction: many to one
 
-A bag is consumed only deliberately.  The **bag combinators** are the explicit
-way: `in` tests membership, `count`/`any`/`all` summarize, and the aggregates
-`sum`/`min`/`max` reduce (`mean` is not a primitive: it is
-`sum(x) / to_real(count(x))`; ADR 0014).  An aggregate requires a total bag;
-`count` yields `int`, `sum` preserves a numeric domain, `min`/`max` preserve an
-orderable domain, and `any`/`all` take a bag of `bool`.  Each returns a single
-value.  Domain preservation includes the dimension: `max` over a
-`temperature[real]` bag is `temperature[real]`, while `count` is always
-dimensionless `int` (ADR 0026).  The `b` of a bag lambda `|k, b| ...` sees the whole bag at a key (so
-`b.credits` is the bag of `credits`), and a scalar comparison on a bag is a type
-error until a combinator collapses it (`max b.readings > 30.0`).
+A bag is consumed only deliberately.  Since ADR 0031 there is **one
+primitive** that consumes one, plus two spellings of language around it:
 
-### 5.5  `is known` narrows
+```
+fold : combiner -> (element -> value) -> bag -> value
+map  : (element -> value) -> bag -> bag
+```
+
+`fold` reduces, `map` transforms element-wise, and both are curried, so a
+partial application is an ordinary value.  Everything else is derived.
+
+**The combiner is closed, the mapper is open.**  A fold over an *unordered*
+bag is deterministic only when the combiner is associative and commutative,
+and those are laws no checker can verify on a user-supplied lambda.  So the
+combiner is a backticked operator drawn from a fixed table, whose algebra is
+compiler knowledge; the mapper is any expression, because its obligation is
+merely a type check.  The table:
+
+| combiner | folds | identity | admitted under |
+| --- | --- | --- | --- |
+| `` `+` `` | a numeric domain, dimension included | `0` | `fold`, `scan` |
+| `` `*` `` | a **dimensionless** numeric domain | `1` | `fold`, `scan` |
+| `` `<<` ``, `` `>>` `` | an orderable domain, dimension included | none | `fold`, `scan` |
+| `` `or` ``, `` `and` `` | `bool` | `false`, `true` | `fold`, `scan` |
+| `` `<:` ``, `` `:>` `` | any one domain | none | `scan` only |
+
+Three rows carry a restriction worth stating outright.  `` `*` `` is
+dimensionless-only because a fold's accumulator type must be invariant, while
+dimensioned `*` *adds* exponent vectors (ADR 0026), so the product's dimension
+would depend on the bag's cardinality; `` `+` `` requires equal dimensions and
+preserves them, so `bag.sum` works at every dimension while `bag.prod` does
+not.  `` `<<` ``/`` `>>` `` have no identity, because there is no smallest
+element of nothing; a group arises from rows and is never empty, which is what
+keeps their result total (`Mensura.foldBagOpt_isSome_of_ne_zero`).  The tacks
+are associative but not commutative, so they are admitted only where a key
+supplies the order a bag lacks.  An unknown combiner is an error naming the
+table, and the table extends by decision record, never by a call site.
+
+**The derived vocabulary is a library, not language.**  `bag.sum`, `bag.prod`,
+`bag.min`, `bag.max`, `bag.any`, and `bag.all` are const bindings in the
+bundled `bag` module (`12-modules-and-imports.md`), each a partial application
+of `fold` at one row of the table, and they are imported like any other
+module.  There is no implicit prelude: `import bag` or the name is unknown.
+`mean` is expressible rather than primitive (`bag.sum b.x / to_real (#b.x)`).
+
+**`#` is cardinality**, replacing `count`: `#b` is the group's row count and
+`#b.x` a projected bag's size.  Unlike the value reductions it does not demand
+a total bag, since it never reads a value: a row whose column is missing still
+counts, and it is always a dimensionless `int`.
+
+`in` still tests membership.  The `b` of a bag lambda `|k, b| ...` is the
+**fiber**, the bag of rows at that key (section 5.5), and a scalar comparison
+on a bag is a type error until a reduction collapses it
+(`bag.max b.readings > 30.0`).
+
+Backed by ADR 0029's Stage 1 in `formal/Mensura/Fold.lean` (section 11).
+
+### 5.5  The fiber: a bag of rows
+
+The `b` of a bag lambda types at a dedicated **rows** type: the bag of rows at
+one key, matching `Table.rows : K -> Multiset (Row H σ)` in
+`formal/Mensura/Core/Defs.lean` exactly.  Member access on it is *projection
+sugar*, defined by one equation:
+
+```
+b.x  ==  map (|r| r.x) b
+```
+
+So `b.credits` is the bag of `credits` across the rows at the key, exactly as
+before; the columnar record-of-bags is now the derived presentation rather
+than the model.  Two things follow: `#b` counts the group's rows without
+naming an arbitrary column, and a fold's mapper over `b` itself receives a
+whole *row*, so `fold `+` (|r| r.mass / (r.height * r.height)) b` is
+expressible.
+
+Projection is sound because the fiber's columns are jointly indexed by the
+group's rows.  That alignment is **provenance**, not structure a type carries,
+which is why it does not generalize: there is no `zip` of two arbitrary bags,
+since bags are unordered and have no i-th element to pair.
+
+The rows type is not a `bag` of records, and nested collections do not arrive
+through it: it is the fiber's type, constructible only where groups are, it
+never enters a column, and it is not writable in type position.  Bare `b` in a
+value position is a type error, as it was when `b` was a record.
+
+### 5.6  `is known` narrows
 
 `is missing` / `is known` apply to values only and test the optional axis.  On a
 total value `is known` is always true.  `is known` **narrows**: inside a branch
@@ -346,14 +419,14 @@ default/coalesce and an aggregate defined over missingness (ADR 0010).  Testing
 a *row* for absence (`card 0`) is not an expression-level operation for now
 (`06`, "Known and missing values").
 
-### 5.6  Enumerated values
+### 5.7  Enumerated values
 
 An `enum` is declared by name; its variants are string literals.  In an
 expression an enumerated value is compared as a string (`r.status == "active"`),
 and the checker validates the literal against the variant set, so `== "activ"`
 is a compile error (`06`, "Enumerated values").
 
-### 5.7  Conditionals
+### 5.8  Conditionals
 
 `if c then a else b` (ADR 0015): the condition `c` is a known `bool`, and the
 two branches type to the same `Ty`, which is the result; if either branch is
@@ -363,7 +436,7 @@ is a type error.  The conditional is an ordinary value, valid in a field value
 (`if c then r else ()`); it is the introduction site for the deferred `is
 known` narrowing.
 
-### 5.8  Const functions (ADR 0030)
+### 5.9  Const functions (ADR 0030)
 
 A top-level const binding may be a **function**: a lambda evaluated at
 compile time to a closure (`12-modules-and-imports.md`).  Its type is a
@@ -430,11 +503,12 @@ derived), and a named `filter` may later be sugar for `if c then r else ()`.
 ### 6.2  `map_bags` (per-key whole-bag transform) -- Tier A
 
 ```
-data |> map_bags |k, b| (.total = sum b.credits)
+data |> map_bags |k, b| (.total = bag.sum b.credits)
 ```
 
 The key-first lambda receives the key `k` (a single value, constant within the
-bag) and the bag `b` (the non-key columns as bags).  Content: the output
+bag) and the **fiber** `b`, the bag of rows at that key, whose member
+access is projection sugar (section 5.5).  Content: the output
 columns are the return's.  Cardinality:
 **inferred from the return** -- a single record yields `singletons` (one row per
 key, the aggregate shape, which later lets `pivot` meet its precondition); a bag
@@ -447,9 +521,12 @@ single row is the identity's whole fiber (`fiberCompleteWrt_of_functional`)
 -- so the checker recognizes that base case from the input cardinality and
 the ordinary aggregation over a plain store needs no establishment step.
 The window shape demands nothing.  Lineage: preserved.  Tier A
-(`fiberMap_splitSafe`, `fiberMap_preservesDisjoint`).  Window-shaped returns
-(`rank`, `cumsum`) additionally need an ordering, a dependency-qualifier
-concern (deferred); split-safety holds regardless.
+(`fiberMap_splitSafe`, `fiberMap_preservesDisjoint`; a monoid fold's case is
+`foldFiber_splitSafe`).  Window-shaped returns (`rank`, `cumsum`) additionally
+need an ordering: they are `scan`-derived and wait on ADR 0029's Stage 2
+(section 11), so only `map`-built bags are window-shaped today.
+Split-safety holds regardless, because a split routes a key's *whole* bag to
+one side, so the bag a reduction sees is never torn.
 
 ### 6.3  `promote` / `demote` (rekeying)
 
@@ -631,7 +708,7 @@ it into the `exhaustive` totality upgrade of section 6.6.)
 enrollments
 |> completeness_check { assert row_count open_offerings == 0 }   // establish
 |> demote course                                             // propagate; bag over student
-|> map_bags |k, b| (.total_credits = sum b.credits)            // consume; back to singletons
+|> map_bags |k, b| (.total_credits = bag.sum b.credits)            // consume; back to singletons
 ```
 
 Remove the check (and `@complete_over`, and `assume`) and the reducing
@@ -768,6 +845,41 @@ operations, and population-relative completeness:
   `antiJoin_splitSafe`, `distinct_splitSafe` (these back named forms deferred in
   section 13, recorded here so implementers know the proofs exist).
 
+**Bag reduction** (`Fold.lean`, ADR 0029 Stage 1) -- the monoid-parameterized
+fold behind section 5.4, and the gate `fold`, `#`, and the `bag` module ship
+behind:
+
+- `foldBag` over a commutative monoid, with `foldBag_add` (two shards) and
+  `foldBag_shards` (arbitrarily many, including empty ones): the theorem that
+  licenses partial and parallel folding.  `foldBag_add_seed_counterexample`
+  witnesses why there is no user-supplied seed -- a seed that is not the
+  identity is counted once per shard.
+- the identity-free rows: `optionLift` completes a commutative semigroup, and
+  `foldBagOpt` folds through it, with `foldBagOpt_isSome_of_ne_zero` and
+  `foldBagOpt_eq_none_iff` pinning it from both sides.  The first is what
+  licenses the *total* surface type of `bag.min` / `bag.max`, since a group
+  arises from rows and is never empty; the second says a missing result is
+  exactly an absent fiber and never a data-dependent surprise.
+- placement in the algebra: `foldFiber_eq_aggregate` (a monoid fold *is* an
+  `aggregate`, so this carves out a well-behaved subclass rather than
+  generalizing -- `aggregate` takes an arbitrary whole-bag function),
+  `foldFiber_strict`, `foldFiber_splitSafe`, `foldFiber_exhaustive`.
+
+**Deferred: the ordered structure** (ADR 0029 Stage 2, ADR 0031 Decision 7).
+`scan`, `prescan`, `desc`, and the whole `series` module wait on it, so the
+window vocabulary (`cumsum`, `rank`, `lag`, `lead`, `first_value`,
+`running_min`, `running_max`) is not yet in the language.  The obstacle is
+structural rather than incidental: a table's content is a `Multiset` and
+`Core/Defs.lean` argues *for* multisets precisely because order should not be
+asserted when it is not used, so neither a scan nor a positional map is
+expressible over one.  The stage owes an `arrange` operation taking fiber
+content to a `List`, `scanBag`, the coherence theorem that a scan's last
+element equals the corresponding fold, a prefix-decomposition lemma, the
+Tier 1 determinism lemma composed with `Functional`, and (new in ADR 0031) the
+exclusive `prescan` with its coherence lemma plus the derivation lemmas that
+make `rank`, `lag`, and `lead` theorems.  It claims the blueprint's reserved
+`def:arranged` node; nothing may be named `Mensura.Arranged` before it lands.
+
 **Physical dimensions** (`Units/Dimension.lean`, ADR 0026) -- the group
 behind the section 5.3 dimensional rules: `Dimension` (the free abelian
 group over the seven `Base` dimensions) with its `CommGroup` and
@@ -796,7 +908,7 @@ suite itself is M1 work (`ROADMAP.md`, M1).
   propagates, the reducer consumes; ADR 0023).
 - Reindex only: `demote` with no downstream reducer and no establish
   step (a possibly partial bag is an honest rekey; ADR 0023).
-- Reduce a plain store: `map_bags |k, b| (.m = max b.x)` straight over a
+- Reduce a plain store: `map_bags |k, b| (.m = bag.max b.x)` straight over a
   `singletons` source, with no establish step (the trivial discharge).
 - Split and re-merge (`07`): `split |k| ...` then `(train, test) |> union`
   reconstructs the input (`union_split`); the disjoint halves keep `singletons`.

@@ -212,11 +212,11 @@ store readings {
 
 view machine_temperature {
   readings |> assume { complete }
-           |> map_bags |_, b| (.max_temperature = max b.temperature)
+           |> map_bags |_, b| (.max_temperature = bag.max b.temperature)
 }
 ```
 
-`max b.temperature` is `temperature[real]`; adding it to a duration, or
+`bag.max b.temperature` is `temperature[real]`; adding it to a duration, or
 comparing it to a bare `3.0`, is a compile error.  A threshold constant
 is written in whatever unit is convenient and normalizes automatically:
 `let limit { 350.0 * kelvin }`.

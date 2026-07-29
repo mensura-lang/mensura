@@ -63,6 +63,9 @@ pub enum TokenKind {
     Dot,
     Question,
     At,
+    /// `#`, the cardinality prefix (ADR 0031, Decision 9).  Free as a token:
+    /// comments are `//`.
+    Hash,
     Pipe,
     /// `|>`, the pipe operator.  A maximal-munch token: `|` glued to `>` is
     /// always the pipe, never a closing lambda bar followed by `>`.
@@ -81,6 +84,16 @@ pub enum TokenKind {
     Star,
     Slash,
     Caret,
+    /// `<<`, binary minimum (ADR 0031, Decision 6).  The lexer has no shift
+    /// tokens, so this collides with nothing.
+    LtLt,
+    /// `>>`, binary maximum.
+    GtGt,
+    /// `<:`, keep-left (APL's tack).
+    LtColon,
+    /// `:>`, keep-right.  Maximal-munch: `:` glued to `>` is always this
+    /// token, and no existing production puts `>` after a `:`.
+    ColonGt,
     /// `->`
     Arrow,
     /// `=>`

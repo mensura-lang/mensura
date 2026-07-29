@@ -2,6 +2,8 @@
 // identity, its readings recur (`attr*`); the `attr*` shape constrains the
 // cardinality; the reducing view discharges the ADR 0023 obligation with
 // `assume` until source-level completeness lands.
+import bag
+
 unit Machine { id: string }
 shape SensorLog { attr* { kelvin: real } }
 store readings : SensorLog {
@@ -13,5 +15,5 @@ store readings : SensorLog {
 }
 view max_kelvin {
   readings |> assume { complete }
-           |> map_bags |k, b| (.max_kelvin = max b.kelvin)
+           |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin)
 }
