@@ -679,15 +679,16 @@ builtin `scan`, which needs none.
   the key as an argument, the hatch needs a home (an `assume`-shaped
   wrapper on the scan, most likely).  The three-tier model is unchanged.
 
-  *What the implementation does meanwhile*, since the question is open and
-  a scan had to behave somehow: a tied key is **accepted**, the arrangement
-  is a stable sort, and ties resolve to input order.  That is reproducible,
-  but it is not a determinism the type system licenses (tier 1,
-  `Mensura.IsArrangement.unique`, is what would license it, and the checker
-  cannot verify key injectivity because it is a property of the data).  A
-  storage reordering can therefore change a tied result.  Rejecting instead
-  was not an option: tier 1 covers only key-derived keys and tier 2 is not
-  expressible, so it would have made `scan` unusable.
+  **Settled while implementing this ADR, and not by a new decision.**  The
+  hatch is `assume { arranged }`: ADR 0017 wrote that its block form
+  "generalizes later without a surface change", and this ADR's own Decision
+  11 already calls ties "structurally the same problem as completeness", so
+  the two decisions meeting is what fixes the spelling.  A scan now
+  *demands* tie-freedom, discharged either from a grading (tier 1, checked
+  by the rule `Mensura.keyInjOn_demote_tag` backs) or by the claim (tier 3).
+  An undischarged key is an error rather than a silent stable sort, which is
+  what makes the obligation the same shape as the reducer's completeness
+  demand.  Tier 2 remains unexpressible, below.
 - **Tuple keys need a value-tuple type, which does not exist.**  Decision 7
   says a tuple key orders lexicographically and thereby subsumes 0029's
   `then`-chaining, so tier 2 of the tie model rests on it.  But the checker
@@ -698,6 +699,17 @@ builtin `scan`, which needs none.
   not an implementation choice.  Scalar keys cover every binding in
   `series`, so nothing shipped waits on it, and a tuple in a key position
   reports the gap by name.
+
+  **When tier 2 lands, the tie rule must extend with it.**  A tuple key is
+  injective when its whole component set is, which is a grading over
+  `key + {c1, c2, ...}`, so the lookup generalizes from one column to a set
+  rather than needing a new mechanism.  Two things to get right: the
+  components' *union* is what must be graded, not each part separately (a
+  tuple can be injective when no single component is, which is the entire
+  reason tier 2 exists), and a `desc` marker on a component stays
+  transparent.  Extending the lookup and the claim in the same change is
+  what keeps a tuple key from bypassing a check its scalar counterpart has
+  to pass.
 - **`map` and the window shape.**  A bag-valued field produced by `map`
   is the window shape of `map_bags`; confirm the shape rules compose
   when the docs are reconciled.

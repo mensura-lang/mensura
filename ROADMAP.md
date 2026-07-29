@@ -261,12 +261,15 @@ Output: windowed, incrementally refreshed views over device streams.
   remains here is the *streaming* half: windowed refresh, window-closedness,
   and per-window sampling inference.
 
-  Two gaps are recorded rather than closed.  Lexicographic **tuple keys** (ADR
-  0031 Decision 7's tier 2) need a value-tuple type the checker does not have,
-  and adding one collides with ADR 0030 Decision 2's tupled-lambda convention;
-  scalar keys cover the whole shipped vocabulary.  Tier 3's arbitrary-tiebreak
-  hatch still has no surface, so a tied order key is accepted with a stable
-  sort, which is reproducible but not a determinism the type system licenses.
+  The tie model's **tier 1 and tier 3 are enforced**: a scan demands a
+  tie-free order key, discharged from a grading where the shape allows it (a
+  key projected out of the key, ADR 0024's fact surviving `demote`) and by
+  `assume { arranged }` otherwise, the way a reducing `map_bags` demands
+  completeness.  One gap is recorded rather than closed: lexicographic
+  **tuple keys** (tier 2) need a value-tuple type the checker does not have,
+  and adding one collides with ADR 0030 Decision 2's tupled-lambda
+  convention; scalar keys cover the whole shipped vocabulary, and when tier 2
+  lands the grading lookup must extend to a tuple's whole component set.
 
 ## M6 - ML strategies and validation
 

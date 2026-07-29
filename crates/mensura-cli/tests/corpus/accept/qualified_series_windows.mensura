@@ -13,20 +13,19 @@
 // rather than a projected bag.
 import series
 
-unit Machine {
-  id: string
+unit Sample {
+  machine: string
+  taken_at: date
 }
 
-store readings {
-  unit { Machine }
-  attr* {
-    temperature: real
-    taken_at: date
-  }
+store history {
+  unit { Sample }
+  attr { temperature: real }
 }
 
 view trend {
-  readings
+  history
+    |> demote taken_at
     |> map_bags |k, b| (
       .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
       .cumulative = series.cumsum (|r| r.temperature) (|r| r.taken_at) b,
@@ -41,7 +40,8 @@ view trend {
 // `scan` is also usable directly, without the module: the module holds
 // definitions, not privileges.
 view direct {
-  readings
+  history
+    |> demote taken_at
     |> map_bags |k, b| (
       .peak = scan `>>` (|r| r.temperature) (|r| r.taken_at) b
     )

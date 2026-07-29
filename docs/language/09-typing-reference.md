@@ -381,14 +381,40 @@ about `lag`**: it is `prescan` at keep-right, and keep-right has no identity.
 `series.lead` is the mirror, being `lag` at the dual key, so there the *last*
 row is missing.
 
-**Ties.**  A scan's arrangement is unique only when the order key is injective
-on the fiber (ADR 0029 Decision 11's tier 1,
-`Mensura.IsArrangement.unique`).  The checker cannot verify that: it is a
-property of the data, not of the type.  Tier 2 (lexicographic tuple keys) is
-not yet expressible, and tier 3's escape hatch has no surface (ADR 0031's open
-questions).  So a tied key is **accepted**, the sort is stable, and ties
-resolve to input order.  That is reproducible but it is *not* a determinism
-the type system licenses, and a storage reordering can change it.
+**The order key must be tie-free, and a scan demands it.**  A scan's
+arrangement is unique only when the key is injective on each fiber (ADR 0029
+Decision 11's tier 1, `Mensura.IsArrangement.unique`); with ties the
+intermediate values depend on how the rows happened to be stored, so the same
+input can give different output.  That is the ordered counterpart of the
+reducing shape's completeness demand, and the same *kind* of obligation: a
+property of the data, undecidable in general, established upstream or admitted
+by fiat.  ADR 0029 Decision 11 already says ties are "structurally the same
+problem as completeness"; the checker enforces it that way.
+
+Two ways to discharge it:
+
+- **A grading (tier 1), checked.**  A projection key `|r| r.c` is tie-free when
+  `key + {c}` contains a grading (section 3, ADR 0024), because two rows of one
+  fiber agreeing on `c` then agreed on a whole grading and are the same row.
+  `Mensura.keyInjOn_demote_tag` is that argument.  This makes the common window
+  shape ceremony-free: a history keyed by `(entity, time)` and `demote`d to
+  `entity` carries the grading through the key move unchanged, so the time is
+  unique within each group by construction.  A `desc` marker is transparent to
+  the question, since the dual of an injective key is injective.
+- **`assume { arranged }` (tier 3), claimed.**  For an ungraded column or a
+  computed key, the obligation is admitted locally and visibly, exactly as
+  `assume { complete }` admits completeness (section 8).  This is the home ADR
+  0029 Decision 11 left open for its arbitrary-tiebreak hatch; ADR 0017's block
+  form was written to generalize this way, so it needs no new surface.
+
+A key the checker can neither prove nor see claimed is an **error**, not a
+silent stable sort.  Tier 2 (lexicographic tuple keys) is still not
+expressible, and when it lands the grading lookup must extend to the tuple's
+whole component set, since a tuple can be injective when no single component
+is.  Where ties are genuinely unresolvable the arrangement is still a stable
+sort, so a claimed-but-false key gives a reproducible answer rather than a
+nondeterministic one; that is a courtesy of the implementation, not a
+guarantee the type carries.
 
 **The combiner is closed, the mapper is open.**  A fold over an *unordered*
 bag is deterministic only when the combiner is associative and commutative,
@@ -822,9 +848,26 @@ two tables are structurally disjoint, asserted, or assumed.
 symbolic key-predicate region of `08-lineage.md` (and any decision procedure
 over it, such as the linear-arithmetic fragment) is **deferred to M6**, where
 `fit`/`evaluate` become the first operations to consume disjointness; until
-then nothing consumes it, so the predicate fragment buys nothing.  In M1
-`assume` is therefore exercised only for the Tier B completeness obligation
-(`assume { complete }`, ADR 0017).
+then nothing consumes it, so the predicate fragment buys nothing.
+
+`assume` therefore carries **two** claims, and both are obligations something
+downstream consumes:
+
+| claim | admits | consumed by |
+| --- | --- | --- |
+| `complete` | every key's bag is whole | a reducing `map_bags` (ADR 0023) |
+| `arranged` | a scan's order keys are tie-free | `scan` / `prescan` (section 5.4) |
+
+`arranged` is the second claim ADR 0017 anticipated when it wrote that "the
+block form generalizes later without a surface change", and it is the home ADR
+0029 Decision 11 left open for its tier 3 hatch.  Neither claim is a fifth
+qualifier axis in spirit: each records an assertion about the data, not a
+derived fact, and each is scoped to the pipeline stage that makes it.
+
+Prefer deriving over claiming where the shape allows it.  A tie-free order key
+projected out of the key needs no claim at all (section 5.4,
+`Mensura.keyInjOn_demote_tag`), and `assume { arranged }` is for orders that are
+genuinely ambiguous rather than a line to paste.
 
 ## 10.  Consolidated effect matrix
 
@@ -938,12 +981,15 @@ positional map is expressible over one.
   which for a key-induced order is *global* key injectivity, while tier 1
   supplies only the per-fiber fact.
 - Tier 1 determinism: `IsArrangement.unique` (a key injective on the fiber
-  arranges it uniquely), with `KeyInjOn` as the hypothesis and
-  `keyInjOn_of_functional` as the bridge to `Functional`.  ADR 0029 asked the
-  hypothesis to compose with `Functional` rather than restate it, and it does,
+  arranges it uniquely), with `KeyInjOn` as the hypothesis.
+  `keyInjOn_of_functional` bridges to `Functional`, which ADR 0029 asked for,
   but **vacuously**: a functional table's fibers hold at most one row, so
-  nothing can tie and any scan over one is a one-element list.  The bridge is a
-  compatibility fact, not evidence about real bags.
+  nothing can tie and any scan over one is a one-element list.  The
+  *substantive* discharge is `keyInjOn_demote_tag`: `demote` merges the rows of
+  every key `(k, d)` into one output key, tagging each with its own `d`, so a
+  functional input yields fibers holding at most one row per tag and the tag
+  column is injective on a genuinely multi-row bag.  That is the theorem the
+  checker's grading rule cites (section 5.4).
 - the two scans: `scanBag` and `prescanBag`, the `tail` and `dropLast` of one
   `List.scanl`.  So the inclusive/exclusive coherence ADR 0031 demanded is list
   slicing rather than a second induction, and `lag`'s missing first row falls

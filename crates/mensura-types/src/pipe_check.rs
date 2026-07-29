@@ -17,8 +17,8 @@ use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
-    Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage, Qualifiers,
-    SplitId, TableType, Totality,
+    Arranged, Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage,
+    Qualifiers, SplitId, TableType, Totality,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -328,6 +328,7 @@ fn op_join(
                 JoinKind::Inner => Exhaustive::new(),
             },
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: left.qualifiers.lineage,
         },
     }))
@@ -380,6 +381,7 @@ fn op_flat_map(
             completeness: table.qualifiers.completeness,
             exhaustive,
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -658,6 +660,7 @@ fn op_map_bags(
             completeness: table.qualifiers.completeness,
             exhaustive: table.qualifiers.exhaustive,
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -831,6 +834,7 @@ fn op_union(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             completeness,
             exhaustive,
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
     }))
@@ -847,6 +851,7 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
             completeness: table.qualifiers.completeness,
             exhaustive: Exhaustive::new(),
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage,
         },
     }
@@ -1313,7 +1318,18 @@ fn op_assume(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
                 ExprKind::Name(claim) if claim == "complete" => {
                     table.qualifiers.completeness = Completeness::Complete;
                 }
-                _ => errs.push(te("`assume` accepts only the claim `complete`", e.span)),
+                // The second claim ADR 0017 anticipated ("the block form
+                // generalizes later without a surface change"): tie-freedom of a
+                // scan's order key, ADR 0029 Decision 11's tier 3.  Needed
+                // because the ordered primitives demand what no grading covers
+                // for a computed or ungraded key.
+                ExprKind::Name(claim) if claim == "arranged" => {
+                    table.qualifiers.arranged = Arranged::Assumed;
+                }
+                _ => errs.push(te(
+                    "`assume` accepts the claims `complete` and `arranged`",
+                    e.span,
+                )),
             },
             Stmt::Let { value, .. } => {
                 errs.push(te(

@@ -1,21 +1,20 @@
 import series
 
-unit Machine {
-  id: string
+// The reading time is part of the identity, so at most one row exists per
+// `(machine, taken_at)`.  That is what makes the window below provable.
+unit Sample {
+  machine: string
+  taken_at: date
 }
 
-store readings {
-  unit { Machine }
-  attr* {
-    temperature: real
-    taken_at: date
-  }
+store history {
+  unit { Sample }
+  attr { temperature: real }
 }
 
 view reading_trend {
-  readings |> map_bags |k, b| (
+  history |> demote taken_at |> map_bags |k, b| (
     .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
-    .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
-    .hottest_rank = series.rank        (|r| desc r.temperature) b
+    .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b
   )
 }

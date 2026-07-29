@@ -16,13 +16,13 @@
 //! Lambdas as *values in view bodies*, record/tuple literals, and `is known`
 //! narrowing remain deferred.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mensura_syntax::{BinOp, Expr, ExprKind, Ident, Span, UnOp};
 
 use crate::model::ColumnType;
-use crate::table::TableType;
+use crate::table::{Arranged, TableType};
 use crate::units::{BASE_UNITS, Dimension};
 
 /// The optional axis of a single value (`09` section 3.3 / 5.3). Distinct from
@@ -499,6 +499,48 @@ pub struct Context {
     ambient: BTreeMap<String, Ty>,
     /// Function-application nesting depth; see [`MAX_FN_DEPTH`].
     fn_depth: u32,
+    /// What the enclosing table knows about tie-freedom, for a scan's order key
+    /// (ADR 0029 Decision 11's tier 1).  `None` outside a group lambda, since
+    /// only there is a fiber in scope to arrange.
+    tie_facts: Option<TieFacts>,
+}
+
+/// The evidence a scan's order key can be discharged against.
+///
+/// A scan is deterministic only when its key is injective *on each fiber*
+/// (`Mensura.IsArrangement.unique`).  That is a property of the data, so the
+/// checker cannot decide it in general; what it can do is look up the fact the
+/// table already carries.
+///
+/// The tracked fact is a **grading** (ADR 0024): a column set over which the
+/// flat table is known functional.  A projection key `|r| r.c` is injective on
+/// the fiber exactly when `key + {c}` contains a grading, because then two rows
+/// of one fiber agreeing on `c` agreed on a full grading and are the same row.
+/// `Mensura.keyInjOn_demote_tag` is that argument, and it is why the common
+/// window shape (a history keyed by entity and time, projected to the entity)
+/// needs no ceremony: `demote` carries gradings unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TieFacts {
+    /// The current key's column names.
+    pub key: BTreeSet<String>,
+    /// The column sets over which the flat table is known functional.
+    pub gradings: BTreeSet<BTreeSet<String>>,
+    /// Whether the pipeline claimed tie-freedom by fiat, for keys no grading
+    /// covers (`assume { arranged }`).  The escape hatch of ADR 0029
+    /// Decision 11's tier 3, which had no home until this rule needed one.
+    pub assumed: bool,
+}
+
+impl TieFacts {
+    /// Whether adding `column` to the key completes a grading, i.e. whether a
+    /// projection key on it is injective within each fiber.
+    fn grades(&self, column: &str) -> bool {
+        let mut with = self.key.clone();
+        with.insert(column.to_string());
+        // Functionality is monotone upward: a grading inside `key + {c}` means
+        // grouping by that superset is also at most one row.
+        self.gradings.iter().any(|g| g.is_subset(&with))
+    }
 }
 
 impl Context {
@@ -516,6 +558,7 @@ impl Context {
             ),
             ambient: ambient.clone(),
             fn_depth: 0,
+            tie_facts: None,
         }
     }
 
@@ -533,6 +576,11 @@ impl Context {
             names: bind2(ambient, kname, key_record(table), bname, fiber(table)),
             ambient: ambient.clone(),
             fn_depth: 0,
+            tie_facts: Some(TieFacts {
+                key: table.key_names(),
+                gradings: table.qualifiers.functional.clone(),
+                assumed: table.qualifiers.arranged == Arranged::Assumed,
+            }),
         }
     }
 
@@ -543,6 +591,7 @@ impl Context {
             names: bind(ambient, param, key_record(table)),
             ambient: ambient.clone(),
             fn_depth: 0,
+            tie_facts: None,
         }
     }
 
@@ -567,6 +616,11 @@ impl Context {
             names,
             ambient: self.ambient.clone(),
             fn_depth: self.fn_depth + 1,
+            // Tie facts describe the *enclosing table*, not the name scope, so
+            // they survive into a closure body: `series.cumsum f k b` applies
+            // the module's lambda, and the key `k` it forwards must still be
+            // checked against the fiber it will arrange.
+            tie_facts: self.tie_facts.clone(),
         }
     }
 }
@@ -1310,6 +1364,7 @@ fn type_scan(
     // domain) and it contributes nothing to the result type.
     let key_ty = apply_mapper(ctx, key, element, &format!("{what}'s order key"), span)?;
     require_orderable_key(&key_ty, &what, span)?;
+    require_tie_free_key(ctx, key, &what, span)?;
     let opt = if which == Builtin::Prescan && !row.has_identity {
         Optionality::Optional
     } else {
@@ -1376,6 +1431,115 @@ fn require_orderable_key(key_ty: &Ty, what: &str, span: Span) -> Result<(), Vec<
             ),
             span,
         )]),
+    }
+}
+
+/// **The Tier 1 obligation**: a scan's order key must be tie-free on each fiber,
+/// because otherwise the arrangement is not unique and the intermediate values
+/// are not determined (`Mensura.IsArrangement.unique`).
+///
+/// This is the ordered counterpart of the reducing shape's completeness demand
+/// (ADR 0023), and it is the same *kind* of obligation: a property of the data,
+/// undecidable in general, decidable in a tracked special case, established
+/// upstream or admitted by fiat.  ADR 0029 Decision 11 already says ties are
+/// "structurally the same problem as completeness"; this is that, enforced.
+///
+/// Two ways to discharge it:
+///
+/// 1. **A grading.**  A projection key `|r| r.c` is injective on the fiber when
+///    `key + {c}` contains a grading (ADR 0024), because two rows of one fiber
+///    agreeing on `c` then agreed on a whole grading and are the same row.  This
+///    is `Mensura.keyInjOn_demote_tag`, and it makes the common window shape
+///    ceremony-free: a history keyed by `(entity, time)` and projected to
+///    `entity` carries the grading through `demote` unchanged.
+/// 2. **`assume { arranged }`**, for a computed key or an ungraded column: the
+///    claim ADR 0029 Decision 11 calls tier 3, admitted locally and visibly the
+///    way `assume { complete }` admits completeness (ADR 0017, whose block form
+///    was written to generalize this way).
+///
+/// A `desc` marker is transparent: the dual of an injective key is injective.
+fn require_tie_free_key(
+    ctx: &Context,
+    key: &Ty,
+    what: &str,
+    span: Span,
+) -> Result<(), Vec<TypeError>> {
+    let Some(facts) = &ctx.tie_facts else {
+        // No fiber in scope, so nothing to arrange.  Unreachable through
+        // `type_scan` (its bag argument came from a group lambda), but the
+        // conservative branch is to demand nothing rather than to invent a fact.
+        return Ok(());
+    };
+    if facts.assumed {
+        return Ok(());
+    }
+    match key_projection(key) {
+        Some(column) if facts.grades(&column) => Ok(()),
+        Some(column) => Err(vec![TypeError::new(
+            format!(
+                "{what}'s order key `{column}` may have ties, so the \
+                 arrangement is not determined: nothing says at most one row \
+                 per key shares it.  Order by a column projected out of the \
+                 key (`demote` carries that fact), or claim it with \
+                 `assume {{ arranged }}`"
+            ),
+            span,
+        )]),
+        None => Err(vec![TypeError::new(
+            format!(
+                "{what}'s order key is computed, so the checker cannot tell \
+                 whether it has ties; claim it with `assume {{ arranged }}` or \
+                 order by a column whose uniqueness is tracked"
+            ),
+            span,
+        )]),
+    }
+}
+
+/// The column a key lambda projects, if it is a bare projection (`|r| r.c`,
+/// possibly under `desc`).  `None` for a computed key, whose injectivity is not
+/// a question the checker can answer.
+fn key_projection(key: &Ty) -> Option<String> {
+    let Ty::Fn(c) = key else {
+        return None;
+    };
+    projected_column(&c.body, &c.names)
+}
+
+/// The column an order-key body projects, looking through `desc` and through a
+/// lambda applied to the row.
+///
+/// The second case is not an edge case: `series.lead` is defined as
+/// `|value| |key| prescan `:>` value (|r| desc (key r))`, so once the caller's
+/// key is substituted the body reads `desc ((|r| r.taken_at) r)`.  Refusing to
+/// look through that application would make `lead` permanently unprovable while
+/// `lag` at the same column is fine, which would be an artefact of how the
+/// library happens to be written rather than a fact about the data.
+fn projected_column(body: &Expr, env: &BTreeMap<String, Ty>) -> Option<String> {
+    match &body.kind {
+        // `desc` is transparent: the dual of an injective key is injective.
+        ExprKind::App(head, arg) if matches!(&head.kind, ExprKind::Name(n) if n == "desc") => {
+            projected_column(arg, env)
+        }
+        ExprKind::App(head, _) => match &head.kind {
+            // A lambda applied to the row: its parameter is the row either way,
+            // so the projection is the same column.
+            ExprKind::Lambda { params, body, .. } if params.len() == 1 => {
+                projected_column(body, env)
+            }
+            // A *captured* function applied to the row.  This is the `lead`
+            // case: the caller's key arrives in the closure's environment rather
+            // than inlined in the body, so follow it there.
+            ExprKind::Name(n) => match env.get(n) {
+                Some(Ty::Fn(inner)) => projected_column(&inner.body, &inner.names),
+                _ => None,
+            },
+            _ => None,
+        },
+        ExprKind::Member(base, field) if matches!(&base.kind, ExprKind::Name(_)) => {
+            Some(field.name.clone())
+        }
+        _ => None,
     }
 }
 
@@ -2636,6 +2800,73 @@ mod tests {
                 opt: Optionality::Optional
             })
         );
+    }
+
+    /// A bag-cardinality fiber whose only grading is `{machine, at}`: the shape
+    /// `demote` leaves behind, and the one a real window has.
+    fn bag_ctx_graded_by(gradings: &[&[&str]]) -> Context {
+        let mut table = sample_table();
+        table.qualifiers.cardinality = crate::table::Cardinality::Bag;
+        table.qualifiers.functional = gradings
+            .iter()
+            .map(|g| g.iter().map(|c| c.to_string()).collect())
+            .collect();
+        Context::bag(&test_ambient(), "k", "b", &table)
+    }
+
+    /// **The Tier 1 obligation.**  A scan's order key must be tie-free, and the
+    /// checker discharges that from a grading: `key + {c}` containing one means
+    /// two rows of a fiber agreeing on `c` agreed on a whole grading and are the
+    /// same row (`Mensura.keyInjOn_demote_tag`).
+    #[test]
+    fn a_graded_order_key_needs_no_claim() {
+        // `machine` is the key, so the grading `{machine, at}` says at most one
+        // row per machine shares an `at`: exactly the demoted-key shape.
+        let ctx = bag_ctx_graded_by(&[&["machine", "at"]]);
+        assert!(ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b").is_ok());
+        // `desc` is transparent: the dual of an injective key is injective.
+        assert!(ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| desc r.at) b").is_ok());
+        // A *different* column is not covered by that grading.
+        let errs = ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.size) b")
+            .expect_err("size is not graded");
+        assert!(
+            errs[0].message.contains("may have ties"),
+            "unexpected: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn an_ungraded_or_computed_order_key_is_rejected() {
+        let ctx = bag_ctx_graded_by(&[]);
+        // Nothing says `at` is unique per machine.
+        let errs =
+            ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b").expect_err("no grading");
+        assert!(errs[0].message.contains("may have ties"));
+        // The diagnostic names both fixes.
+        assert!(errs[0].message.contains("demote"));
+        assert!(errs[0].message.contains("assume { arranged }"));
+        // A computed key cannot be analysed at all, so it says so instead.
+        let errs = ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.size + 1) b")
+            .expect_err("computed key");
+        assert!(
+            errs[0].message.contains("is computed"),
+            "unexpected: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn assume_arranged_discharges_the_tie_obligation() {
+        let mut table = sample_table();
+        table.qualifiers.cardinality = crate::table::Cardinality::Bag;
+        table.qualifiers.functional = crate::table::Functional::new();
+        table.qualifiers.arranged = Arranged::Assumed;
+        let ctx = Context::bag(&test_ambient(), "k", "b", &table);
+        // The claim covers what no grading could, including a computed key: it
+        // is an assertion about the data, not about the expression's shape.
+        assert!(ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b").is_ok());
+        assert!(ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.size + 1) b").is_ok());
     }
 
     #[test]

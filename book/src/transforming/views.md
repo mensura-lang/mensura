@@ -87,6 +87,32 @@ maximum is still the running maximum *of the readings you have*.  A fold is
 what goes silently wrong on a partial bag, so only a fold has to consume the
 claim.
 
+**But a window demands something a fold does not: the order must be
+unambiguous.**  If two readings share a `taken_at`, there is no single right
+way to arrange them, and a running total would depend on which one the storage
+happened to hand over first.  So a scan asks the same kind of question the
+reducer asks about completeness, and gets an answer the same two ways.
+
+The example above answers it by *construction*.  `taken_at` is part of the
+identity, so at most one reading exists per `(machine, taken_at)`; `demote`
+moves the time out of the key while keeping that fact, and within each
+machine's group the time is unique.  Nothing is claimed, because nothing needs
+to be.  This is the shape worth reaching for, and it is also just honest
+modelling: a reading really is identified by when it was taken.
+
+When the order genuinely can tie, say so:
+
+```mensura,ignore
+readings
+  |> assume { arranged }
+  |> map_bags |k, b| (.hottest = series.rank (|r| desc r.temperature) b)
+```
+
+Ranking by temperature is ambiguous on purpose here, so the claim is the
+honest thing to write, exactly as `assume { complete }` is when a bag's
+wholeness cannot be checked.  An order the compiler can neither prove nor see
+claimed is an error, not a guess.
+
 **`previous` is optional and the others are not.**  Nobody wrote a rule for
 that.  `series.lag` is an *exclusive* scan: each row sees the fold of the rows
 strictly before it, and the earliest row in each group has nothing before it.

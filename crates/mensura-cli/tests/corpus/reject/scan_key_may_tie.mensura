@@ -1,0 +1,39 @@
+// Rejected at resolve (typing): a scan's order key must be tie-free, and here
+// nothing says it is (ADR 0029 Decision 11's tier 1; the theorem is
+// `Mensura.IsArrangement.unique`).
+//
+// `taken_at` is an ordinary attribute of a bag store, so several readings of one
+// machine may share it.  With ties there is no canonical arrangement, so the
+// scan's intermediate values depend on how the rows happened to be stored: same
+// input, different output across runs, which is exactly the class of bug the
+// type system exists to prevent.
+//
+// This is the ordered counterpart of `reduce_bag_without_completeness.mensura`.
+// Both are properties of the *data*, undecidable in general, and both are
+// established upstream or admitted by fiat.  Two ways to fix this file:
+//
+//   - make the time part of the identity and `demote` it, so the fact is
+//     *derived* (`Mensura.keyInjOn_demote_tag`); see
+//     `accept/qualified_series_windows.mensura`;
+//   - claim it with `assume { arranged }`; see
+//     `accept/scan_with_a_descending_key.mensura`.
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    taken_at: date
+  }
+}
+
+view bad {
+  readings
+    |> map_bags |k, b| (
+      .peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b
+    )
+}

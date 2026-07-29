@@ -130,8 +130,8 @@ fn reading_trend_scans_each_machine_in_key_order() {
     let rows = db.scan(&view.shape()).unwrap();
     assert_eq!(rows.len(), 4, "one output row per input reading");
 
-    // Columns, in checker order: id, running_peak, previous, next,
-    // rank_hottest.
+    // Columns, in the record's declaration order: id, running_peak, previous,
+    // next.
     // `m1` at 2025-01-01 is the earlier reading (300.0) even though it was
     // inserted second, so it is the one whose `previous` is missing and whose
     // running peak is its own value.
@@ -165,10 +165,6 @@ fn reading_trend_scans_each_machine_in_key_order() {
     // coded anywhere; it falls out of `lead` reusing `prescan` at `desc`.
     assert_eq!(earlier[3], Value::Real(302.5));
     assert_eq!(later[3], Value::Missing);
-    // And the descending ones-scan ranks the hotter reading first, which is
-    // the *later* one here: direction is per-component, on the key value.
-    assert_eq!(later[4], Value::Int(1));
-    assert_eq!(earlier[4], Value::Int(2));
 
     // A single-reading machine: its only row is also its first, so `previous`
     // is missing and the running peak is its own value.
@@ -181,8 +177,6 @@ fn reading_trend_scans_each_machine_in_key_order() {
     // neighbours are absent.
     assert_eq!(m3[2], Value::Missing);
     assert_eq!(m3[3], Value::Missing);
-    // The ones-scan over a descending key ranks the hottest reading first.
-    assert_eq!(m3[4], Value::Int(1));
 }
 
 #[test]

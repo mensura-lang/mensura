@@ -7,9 +7,20 @@
 // it at no proof cost and Tier 1 survives it: the dual of a total order is
 // total, and the dual of an injective key is injective.
 //
-// `series.lead` is the one binding written as a real lambda rather than a
-// partial application, precisely because it wraps the caller's key in `desc`:
-// the next row's value is the previous row's value under the dual order.
+// This file is also where `assume { arranged }` earns its keep.  Ranking by
+// temperature is a genuinely tie-prone order: two readings of one machine may
+// well agree to the stored precision, and then no arrangement is canonical, so
+// the ranks of the tied rows depend on how the rows happened to be stored.  The
+// checker cannot rule that out (injectivity is a property of the data), and no
+// grading covers `temperature`, so the claim is admitted here locally and
+// visibly, exactly as `assume { complete }` admits completeness (ADR 0017,
+// whose block form was written to generalize this way; ADR 0029 Decision 11's
+// tier 3).
+//
+// Contrast `qualified_series_windows.mensura`, where the order key is a
+// projected key component and needs no claim at all
+// (`Mensura.keyInjOn_demote_tag`).  Preferring that shape is the point: the
+// claim is for orders that really are ambiguous, not a line to paste.
 import series
 
 unit Machine {
@@ -18,21 +29,17 @@ unit Machine {
 
 store readings {
   unit { Machine }
-  attr* {
-    temperature: real
-    taken_at: date
-  }
+  attr* { temperature: real }
 }
 
 view ranked {
   readings
+    |> assume { arranged }
     |> map_bags |k, b| (
       // A descending `rank` needs no binding of its own: it is the ones-scan
       // over a `desc` key at the call site (Decision 8).
       .hottest_first = series.rank (|r| desc r.temperature) b,
-      // `lead` is `lag` at the dual key.
-      .next_reading = series.lead (|r| r.temperature) (|r| r.taken_at) b,
       // The marker composes with a plain scan too.
-      .peak_desc = scan `>>` (|r| r.temperature) (|r| desc r.taken_at) b
+      .peak_desc = scan `>>` (|r| r.temperature) (|r| desc r.temperature) b
     )
 }
