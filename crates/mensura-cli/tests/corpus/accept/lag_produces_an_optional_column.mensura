@@ -25,7 +25,18 @@ store history {
   attr { temperature: real }
 }
 
-view deltas {
+// The claim that pins both columns: conformance checks type *and* totality
+// (ADR 0019), so this shape fails if `lag` were to come back total or
+// `running_max` optional.  `attr*` because a window keeps one row per input
+// row, so the demoted bag stays a bag (ADR 0022).
+shape Lagged {
+  attr* {
+    previous:     real?
+    running_peak: real
+  }
+}
+
+view deltas : Lagged {
   history
     |> demote taken_at
     |> map_bags |k, b| (
