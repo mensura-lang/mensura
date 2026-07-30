@@ -19,8 +19,8 @@ mathematically and, more to the point, about the mistakes they make
 
 > The pipeline algebra of this chapter type-checks and runs today: `flat_map`,
 > `map_bags`, `promote`/`demote`, the lookups, `split`/`union`, and
-> `pivot`/`unpivot` all compile with `mensura check`, and all but
-> `demote` (not yet executable) materialize with `mensura run` (see the
+> `pivot`/`unpivot` all compile with `mensura check` and materialize with
+> `mensura run` (see the
 > [Transforming data](../transforming/views.md) chapters).  Two things remain
 > design previews and are marked as such below:
 > the learning operations `fit`/`evaluate` that *consume* disjointness, and the

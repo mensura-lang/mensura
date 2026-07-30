@@ -1,6 +1,6 @@
 // Fleet monitoring: the machine registry for a streaming
 // predictive-maintenance example.  This file grows as the language does; today
-// it holds what the current implementation compiles (scalar-key units, named
+// it holds what the current implementation compiles (scalar-field units, named
 // enums, shapes, basic stores, views, and M3's dimensional units: dimensioned
 // sensor columns, `import si`, and const bindings).
 //
@@ -33,7 +33,7 @@ let overheat { 350.0 * kelvin }
 let too_hot { |t| t > overheat }
 
 unit Machine {
-  id: string
+  machine_id: string
 }
 
 enum MachineStatus {
@@ -75,53 +75,54 @@ view attention_needed : Tabular[Machine] {
   machines |> flat_map |_, r| if r.status == "degraded" then r else ()
 }
 
-// Recurring observations are an entity-keyed bag store (ADR 0022): the
-// machine is the identity and its readings recur, so the attributes are
-// declared `attr*` (many observations per key).  Keying by the entity keeps
-// a `split` routing whole machines, so tracked disjointness coincides with
-// the leakage boundary; a per-machine constant (its location, say) would
-// live in a companion `singletons` store such as `machines`, not in the bag.
+// Recurring observations keyed by identity plus time: each reading's time is
+// part of its identity, so at most one row exists per
+// `(machine_id, taken_at)`.  That uniqueness is a *grading* seeded by the
+// singletons store (ADR 0024), and it is what lets the windowed view below
+// order by `taken_at` with no claim.  The alternative shape is an
+// entity-keyed bag store (`attr*`, ADR 0022), which trades that derivation
+// for `assume { arranged }` at every window; `book/src/examples/` shows it.
+unit Reading {
+  machine_id: string
+  taken_at: date
+}
+
 store readings {
-  unit { Machine }
-  attr* {
+  unit { Reading }
+  attr {
     // A dimensioned column (ADR 0026, `11-physical-units.md`): the type
     // carries the physical dimension, magnitudes are stored normalized to
     // the SI base unit (kelvin here), and a dimension mismatch downstream
     // is a compile error.
     temperature: temperature[real]
-    // A bag store carries no row order (ADR 0022), so an operation that needs
-    // one names it at the operator.  This column is what a window's order key
-    // reads.
-    taken_at: date
   }
 }
 
 // A windowed feature view (ADR 0031, Decision 7): the ordered siblings of the
-// reductions above.  Four things worth reading off it.
+// reduction below.  `demote taken_at` moves the time out of the key
+// (ADR 0024), leaving a bag of readings per machine, and the order is named
+// at the operator by the key lambda `|r| r.taken_at`.  Both lambdas take a
+// row, one extracting the value to accumulate and one the key to sort by,
+// because sorting values by a sibling column requires seeing the row that
+// carries both.
 //
-// The order is named *here*, at the operator, by the key lambda `|r| r.taken_at`;
-// the store does not carry a row order.  Both lambdas take a row, one extracting
-// the value to accumulate and one the key to sort by, because sorting values by
-// a sibling column requires seeing the row that carries both.
+// **A scan's order key must be tie-free, and here the fact is derived, not
+// claimed.**  A scan's intermediate values are determined only when at most
+// one row per group shares the key (`Mensura.IsArrangement.unique`).  The
+// grading `{machine_id, taken_at}` seeded by the store survives the key
+// move, so within one machine's bag the times are unique and the checker
+// discharges the obligation with no ceremony
+// (`Mensura.keyInjOn_demote_tag`).  A source that is genuinely a bag has no
+// such grading and claims the fact with `assume { arranged }` instead,
+// locally and visibly (ADR 0017's block form).
 //
-// **A scan's order key must be tie-free, and this one is claimed rather than
-// proved.**  A scan's intermediate values are determined only when at most one
-// row per group shares the key (`Mensura.IsArrangement.unique`); with ties the
-// answer would depend on how the rows happened to be stored.  `taken_at` is an
-// ordinary attribute here, so nothing rules that out and the claim is admitted
-// locally and visibly, exactly as `machine_temperature` above admits
-// completeness (ADR 0017's block form, generalized as it was written to be).
-//
-// The stronger alternative is to *derive* the fact: make the time part of the
-// identity, keying a history by `(machine, taken_at)`, and `demote` it.  The
-// grading then survives the key move and the checker discharges the obligation
-// with no claim at all (`Mensura.keyInjOn_demote_tag`); `book/src/examples/`
-// shows that shape.  It is not used here only because `demote` is not yet
-// executable, and this file is materialized end to end by the runtime tests.
+// `demote` is Tier B: the branch lineage over the finer key falls out of
+// scope (ADR 0024).  That is inert here, because nothing downstream
+// re-joins a `split`.
 //
 // This is the *window* shape of `map_bags`: one output row per input row, so
-// unlike the reducing view above it demands no completeness fact.  A window is
-// faithful on a partial bag; only a reduction is silently wrong on one.
+// unlike the reducing view below it demands no completeness fact.  A window
+// is faithful on a partial bag; only a reduction is silently wrong on one.
 //
 // `previous` is optional and the others are not.  That is not a choice made
 // here: `series.lag` is a `prescan` at keep-right, keep-right has no identity,
@@ -129,7 +130,7 @@ store readings {
 // earliest reading in each machine's group has no predecessor to report
 // (`Mensura.prescanBag`).
 view reading_trend {
-  readings |> assume { arranged } |> map_bags |k, b| (
+  readings |> demote taken_at |> map_bags |k, b| (
     .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
     .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
     // `lead` is `lag` at the dual key, so the last reading is the missing one.
@@ -137,20 +138,25 @@ view reading_trend {
   )
 }
 
-// Reducing a bag folds each machine's readings, which is silently wrong on a
+// Reducing folds each machine's readings, which is silently wrong on a
 // partial bag, so the reducing `map_bags` demands completeness (ADR 0023).
 // Until ingestion (M4) establishes the fact at the source by mechanism, the
-// view assumes it, locally and visibly.  `max` preserves the dimension, so
-// `max_temperature` is `temperature[real]` too.
+// view assumes it there, locally and visibly; `demote` then *propagates* the
+// fact to the coarser key rather than consuming it
+// (`Mensura.demote_completeWrt`).  `demote taken_at` also restores the
+// `Machine` key structurally, which is what the `Tabular[Machine]` claim
+// checks.  `max` preserves the dimension, so `max_temperature` is
+// `temperature[real]` too.
 view machine_temperature : Tabular[Machine] {
   readings |> assume { complete }
+           |> demote taken_at
            |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 }
 
 // Dimensional arithmetic in a view body: the comparison type-checks because
 // both sides are `temperature[real]`; comparing against a bare `350.0` (or
-// a duration) would be a compile error.  No shape claim: the output is a
-// filtered bag of readings, not a `singletons` table.
+// a duration) would be a compile error.  No shape claim: the output keeps
+// the reading identity `(machine_id, taken_at)`, not a `Machine` tabulation.
 view overheating {
   readings |> flat_map |_, r| if too_hot r.temperature then r else ()
 }

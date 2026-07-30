@@ -16,13 +16,13 @@ a table.
 
 - **Views over stores.**  Sources in a view body resolve to stores, exactly
   as the resolver presents them today.  View-on-view sources are deferred.
-- **No runtime obligations.**  Views host Tier A pipelines plus `pivot`
-  in this round.  `pivot` is Tier B only for its lineage effect (ADR 0020:
-  it demands nothing and upgrades totality under `exhaustive`, all
-  compile-time facts), so batch evaluation is unaffected.  `demote`,
-  whose completeness propagation and the reducer's discharge (ADR 0023) are
-  also compile-time facts, stays non-executable in this slice; when it
-  lands, the runtime trusts the checker.
+- **No runtime obligations.**  Views host Tier A pipelines plus the Tier B
+  stages `pivot` and `demote`.  Both are Tier B only for compile-time
+  effects (`pivot` for its lineage effect and the `exhaustive` totality
+  upgrade, ADR 0020; `demote` for its lineage drop, completeness
+  propagation, and the reducer's discharge, ADR 0023/0024), so batch
+  evaluation is unaffected: the runtime trusts the checker and only
+  rekeys.
 - **One-shot batch recompute.**  A view is recomputed from its sources'
   current state every `mensura run`.  Until ingestion lands (M4) a store
   changes only between runs, so recompute-at-run is a complete semantics,
@@ -217,4 +217,4 @@ database.
   `00-storage-backend.md`, forward references).
 - Incremental refresh: the DBSP engine replacing the batch evaluator behind
   the same boundary, with `on_change` and windows (M5).
-- View-on-view sources, and Tier B trusted at runtime once views host it.
+- View-on-view sources.
