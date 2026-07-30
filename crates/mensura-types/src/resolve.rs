@@ -689,8 +689,8 @@ fn flatten_unit<'a>(
     ok
 }
 
-fn resolve_store<'a>(
-    s: &'a StoreDecl,
+fn resolve_store(
+    s: &StoreDecl,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
     aliases: &DimAliases,
