@@ -1,0 +1,38 @@
+// Rejected at resolve (typing): `promote` followed by `demote` does not make a
+// tie-prone key tie-free.  The scan is still undetermined
+// (`Mensura.IsArrangement.unique`, ADR 0029 Decision 11).
+//
+// The reason is the inverse-pair property itself (ADR 0024): a key move derives
+// cardinality from the gradings and never invents one, so `demote (promote T)`
+// is a no-op on the facts as well as on the content.  It would be unsound for
+// it to be otherwise, since moving a tie-prone column through the key cannot
+// make two rows that share a timestamp stop sharing it.
+//
+// What licenses the scan is a *reduction* between the two moves, whose
+// `singletons` output records the finer key as a grading; that is the sibling
+// `accept/aggregation_establishes_a_tie_free_key.mensura`.  Deleting the
+// reduction from that file gives this one.  The other fix is
+// `assume { arranged }`, tier 3, as in
+// `accept/scan_with_a_descending_key.mensura`.
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    taken_at: date
+    temperature: real
+  }
+}
+
+view bad {
+  readings
+    |> promote taken_at
+    |> demote taken_at
+    |> map_bags |k, b| (
+      .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b
+    )
+}

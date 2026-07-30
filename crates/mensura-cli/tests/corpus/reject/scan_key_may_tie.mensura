@@ -10,11 +10,14 @@
 //
 // This is the ordered counterpart of `reduce_bag_without_completeness.mensura`.
 // Both are properties of the *data*, undecidable in general, and both are
-// established upstream or admitted by fiat.  Two ways to fix this file:
+// established upstream or admitted by fiat.  Three ways to fix this file:
 //
 //   - make the time part of the identity and `demote` it, so the fact is
 //     *derived* (`Mensura.keyInjOn_demote_tag`); see
 //     `accept/qualified_series_windows.mensura`;
+//   - aggregate the ties away, promoting the time and reducing at that key, so
+//     the fact is *established* by the pipeline; see
+//     `accept/aggregation_establishes_a_tie_free_key.mensura`;
 //   - claim it with `assume { arranged }`; see
 //     `accept/scan_with_a_descending_key.mensura`.
 import series
