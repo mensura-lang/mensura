@@ -13,6 +13,12 @@ store also declares its cardinality through the `attr` / `attr*` block
 form, placing that tabulation concern here alongside attributes and
 change control.
 
+Extended by
+`docs/decisions/0032-compound-keys-flatten-to-dotted-columns`: the
+representation of flattened compound keys, the foreign-key metadata,
+the unit-graph acyclicity check, and the singletons-only rule for
+`domain` targets are decided there.
+
 ## Context
 
 `0001` decided that a `unit` carries identity and nothing else.  Something

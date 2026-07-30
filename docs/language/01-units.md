@@ -147,6 +147,13 @@ hierarchical key gives a flat tuple of scalars, and the algebra
 operates on the flat form.  The hierarchy is presentation, not a new
 mathematical object, and the chapter's typing rules apply unchanged.
 
+For the key tree to be finite, the key-reference graph over units must
+be **acyclic**: a unit whose key references itself, directly or through
+other units, has no flat form, and is a compile error
+(`docs/decisions/0032-compound-keys-flatten-to-dotted-columns.md`).
+This is independent of the store dependency graph's acyclicity
+(`02-stores.md`), which constrains `domain` edges between stores.
+
 ## Naming convention
 
 A unit is a type, so its name is **PascalCase**: `Person`, `Course`,
