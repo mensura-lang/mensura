@@ -1,0 +1,13 @@
+unit Person {
+  id: string
+}
+
+unit Course {
+  name: string
+  year: int
+}
+
+unit Enrollment {
+  student: Person
+  course: Course
+}

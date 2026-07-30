@@ -3050,7 +3050,27 @@ mod tests {
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let schemas = resolve_str(&src).expect("example should resolve");
-        assert_eq!(schemas.len(), 3);
+        assert_eq!(schemas.len(), 5);
+
+        // The compound store flattens its key to dotted columns and
+        // resolves both unit-reference fields (ADR 0032).
+        let grades = schemas
+            .iter()
+            .find(|s| s.store == "student_grades")
+            .expect("the example declares student_grades");
+        let names: Vec<&str> = grades.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "student.id",
+                "course.department.code",
+                "course.name",
+                "course.year",
+                "class_id",
+                "grade",
+            ]
+        );
+        assert_eq!(grades.foreign_keys.len(), 2);
     }
 
     #[test]

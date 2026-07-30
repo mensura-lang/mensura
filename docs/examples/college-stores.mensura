@@ -1,11 +1,11 @@
-// College stores: the basic, fully-resolving subset of
+// College stores: the worked example of docs/language/01-units.md and
 // docs/language/02-stores.md, plus shapes from docs/language/03-shapes.md
 // (unit-agnostic, and parameterised by a `string` field name).
 //
-// Compound units (units whose fields reference other units) and `domain`
-// blocks are deferred, so the compound `Course`/`Enrollment` stores from that
-// document are intentionally omitted here.  Everything below parses and
-// resolves under the current `unit` + basic `store` + `shape` feature.
+// The compound units (`Course`, whose key references `Department`, and
+// `Enrollment`, which references `Person` and `Course`) flatten to dotted
+// key columns, and each store of a compound unit resolves its
+// unit-reference fields in a `domain` block (ADR 0032).
 
 unit Person {
   id: string
@@ -13,6 +13,17 @@ unit Person {
 
 unit Department {
   code: string
+}
+
+unit Course {
+  department: Department
+  name: string
+  year: int
+}
+
+unit Enrollment {
+  student: Person
+  course: Course
 }
 
 // Unit-agnostic: no unit clause, so any store carrying a `name: string`
@@ -53,5 +64,31 @@ store students {
   attr {
     admission: date
     status: Status
+  }
+}
+
+// A store of a compound unit: `Course.department` resolves into
+// `departments`, so a course's key carries the flattened
+// `department.code` column (02-stores.md).
+store courses {
+  unit { Course }
+  domain { department: departments }
+  attr {
+    credits: int
+  }
+}
+
+// Two levels deep: `student` resolves into `students` and `course` into
+// `courses`; how `Course.department` resolves is `courses`'s own concern
+// (resolution is one level deep, transitivity follows the store graph).
+store student_grades {
+  unit { Enrollment }
+  domain {
+    student: students
+    course:  courses
+  }
+  attr {
+    class_id: string
+    grade:    real
   }
 }

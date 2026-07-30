@@ -11,10 +11,10 @@ On the way, roughly in order:
 - **Lineage and leak-free validation.**  The property that motivates the whole
   language: the type system proving that a training set and a test set share no
   entities, so a split cannot leak.
-- **Physical units and precision.**  Dimensioned attribute types (temperature,
+- **Physical units.**  Dimensioned attribute types (temperature,
   vibration) with unit mismatches as compile errors.
-- **Ingestion and serving.**  Declaring devices that feed observations into
-  stores, and running a program as a service.
+- **Ingestion and serving.**  Typed ingestion feeding observations into
+  stores and registries, and running a program as a service.
 - **Run and deploy configurations.**  Targeting backends other than the
   bundled SQLite without changing a program's source.
 

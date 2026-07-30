@@ -66,6 +66,25 @@ A `status` value must be one of the three variants; anything else is a type
 error.  When the store is created, the column is stored as text constrained to
 those values.
 
-Attribute types today are the primitives (`string`, `int`, `real`, `bool`, `date`)
-and named enums.  Physical units and precision on attributes are a later
-feature; see [What's next](../whats-next.md).
+## Stores of compound units
+
+When a unit's key references other units (a [compound unit](units.md)), a
+store of it must say where each referenced unit's observations live.  The
+`domain` block resolves each unit-reference field into a store of that
+unit:
+
+```mensura
+{{#include ../examples/compound-store.mensura}}
+```
+
+Rows of `student_grades` are constrained to `student` values observed in
+`students` and `course` values observed in `courses`.  Which store a
+reference resolves into is a per-store choice: a `student` resolved into an
+alumni store would mean something else, and that difference is now visible
+in the declaration.  The target must be a default (at-most-one-row-per-key)
+store, not a bag store.
+
+Attribute types today are the primitives (`string`, `int`, `real`, `bool`,
+`date`), named enums, and unit references resolved through `domain`.
+Dimensioned physical-unit attributes get their own chapter later; see
+[What's next](../whats-next.md).

@@ -33,7 +33,22 @@ they may change, or how observations enter the system.  Those belong to a
 tabulated by several stores that carry different attributes and policies but
 agree on what the entity is.
 
-Key field types are the key-eligible primitives (`string`, `int`, `bool`, `date`) and named enums; a continuous `real` measurement cannot be a key (ADR 0014).
-Indices whose fields reference other units (compound units) are a later
-feature; see [What's next](../whats-next.md).  The full design lives in
+Key field types are the key-eligible primitives (`string`, `int`, `bool`,
+`date`) and named enums; a continuous `real` measurement cannot be a key
+(ADR 0014).
+
+## Compound units
+
+A key field's type may also be another unit.  The field's value is then the
+key of an observation of that unit, instead of a string foreign key:
+
+```mensura
+{{#include ../examples/unit-enrollment.mensura}}
+```
+
+An `Enrollment` is identified by *which student* and *which course*, and a
+`Course` is itself identified by `(name, year)`.  A unit with a
+unit-reference field is **compound**; a store of a compound unit must say
+where each referenced unit's observations live, which is the `domain`
+block of [stores](stores.md).  The full design lives in
 `docs/language/01-units.md`.

@@ -1111,6 +1111,12 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
 - **Annotation grammar.**  `@audited`, `@versioned`, `@auto`, `@complete_over`,
   `@disjoint_partition` are named here but their surface lands with the
   annotation family.
+- **Compound keys.**  A compound unit's key flattens to dotted scalar
+  columns before typing (`01-units.md`, ADR 0032), so every rule in this
+  reference applies unchanged to the flat form; the hierarchy is
+  presentation only.  Key moves (`promote`/`demote`) and reshape selectors
+  naming a flattened component or a unit-reference group are deferred
+  (ADR 0032).
 - **Streaming.**  `sliding_window`, `latest`, window-closedness, and `on_change`
   refresh extend these rules (M5).
 - **Precision and measure semantics.**  Dimensional units are now
