@@ -355,10 +355,14 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         }
     }
     for (name, env) in &modules {
+        // `from_module` marks a member function's body as belonging to another
+        // file, so a diagnostic from inside it reports at the call site rather
+        // than at an offset into the module's source (spans have no file
+        // identity yet, as the import diagnostics above also work around).
         let members = env
             .values
             .iter()
-            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+            .filter_map(|(n, v)| Some((n.clone(), v.ty()?.from_module())))
             .collect();
         ambient.insert(name.clone(), crate::expr_check::Ty::Record(members));
     }

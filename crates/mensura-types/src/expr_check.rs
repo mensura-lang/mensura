@@ -226,9 +226,36 @@ pub struct TyClosure {
     pub params: Vec<Ident>,
     pub body: Expr,
     pub names: BTreeMap<String, Ty>,
+    /// Whether the body was parsed from a **bundled module**'s source rather
+    /// than from the file being checked (`crate::modules`).  Spans carry no
+    /// file identity yet, so a body diagnostic from such a closure cannot be
+    /// rendered against the importing file: it is re-anchored at the call site
+    /// by [`apply_closure`].  Set where the module's members enter the ambient
+    /// ([`Ty::from_module`]), the one place that knows the provenance.
+    pub foreign: bool,
 }
 
 impl Ty {
+    /// This type as it enters the ambient from a **bundled module**: a function
+    /// is marked foreign, everything else is unchanged.
+    ///
+    /// A module's source is a different file, and spans carry no file identity
+    /// yet (`crate::modules`), so a diagnostic from inside `bag.sum`'s or
+    /// `series.lag`'s body would otherwise report at an offset into the
+    /// *module*: a nonsense location in the importing file, and out of bounds
+    /// whenever that file is the shorter of the two.  The importer already
+    /// anchors a module's *load* diagnostics at the `import` item for the same
+    /// reason; this is the same policy for the ones raised at a call.
+    pub fn from_module(self) -> Ty {
+        match self {
+            Ty::Fn(c) => Ty::Fn(Arc::new(TyClosure {
+                foreign: true,
+                ..(*c).clone()
+            })),
+            other => other,
+        }
+    }
+
     /// Project a field out of the fiber: the sugar equation of ADR 0031,
     /// Decision 2, stated once.
     ///
@@ -503,6 +530,11 @@ pub struct Context {
     /// (ADR 0029 Decision 11's tier 1).  `None` outside a group lambda, since
     /// only there is a fiber in scope to arrange.
     tie_facts: Option<TieFacts>,
+    /// Whether the expression being typed came from a bundled module's source
+    /// rather than the file being checked; see [`TyClosure::foreign`].  Set
+    /// while typing a foreign closure's body, so a lambda that body creates
+    /// inherits the provenance and a curried module binding stays anchored.
+    foreign: bool,
 }
 
 /// The evidence a scan's order key can be discharged against.
@@ -559,6 +591,7 @@ impl Context {
             ambient: ambient.clone(),
             fn_depth: 0,
             tie_facts: None,
+            foreign: false,
         }
     }
 
@@ -581,6 +614,7 @@ impl Context {
                 gradings: table.qualifiers.functional.clone(),
                 assumed: table.qualifiers.arranged == Arranged::Assumed,
             }),
+            foreign: false,
         }
     }
 
@@ -592,6 +626,7 @@ impl Context {
             ambient: ambient.clone(),
             fn_depth: 0,
             tie_facts: None,
+            foreign: false,
         }
     }
 
@@ -621,6 +656,8 @@ impl Context {
             // the module's lambda, and the key `k` it forwards must still be
             // checked against the fiber it will arrange.
             tie_facts: self.tie_facts.clone(),
+            // A module's body stays foreign however deeply it curries.
+            foreign: self.foreign || closure.foreign,
         }
     }
 }
@@ -741,6 +778,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
                 params: params.clone(),
                 body: (**body).clone(),
                 names: ctx.names.clone(),
+                foreign: ctx.foreign,
             })))
         }
         // A combiner is not a value: it names an operator whose *algebra* is
@@ -937,6 +975,14 @@ const MAX_FN_DEPTH: u32 = 64;
 /// ([`Context::for_closure_body`]), which is what makes the checking exact
 /// with no inference.  Body diagnostics carry definition-site spans, so a
 /// call-site note is appended to them (ADR 0030, Consequences).
+///
+/// **Unless the definition site is another file.**  A bundled module's body
+/// spans do not address the file being checked ([`TyClosure::foreign`]), so
+/// those diagnostics are *re-anchored* at the call site rather than merely
+/// annotated.  Without this, `series.running_max`'s tie demand reports at an
+/// offset into `stdlib/series.mensura`: a nonsense line in the user's file, and
+/// out of bounds whenever the user's file is the shorter of the two, which the
+/// language server cannot render at all.
 fn apply_closure(
     ctx: &Context,
     name: &str,
@@ -993,7 +1039,13 @@ fn apply_closure(
             )]);
         }
         let body_ctx = ctx.for_closure_body(&c, bound);
+        let foreign = c.foreign;
         ty = type_expr(&body_ctx, &c.body).map_err(|mut errs| {
+            if foreign {
+                for err in &mut errs {
+                    err.span = head_span;
+                }
+            }
             errs.push(TypeError::new(
                 format!("while applying `{name}` here"),
                 head_span,
@@ -2325,7 +2377,7 @@ mod tests {
             let members = env
                 .values
                 .iter()
-                .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+                .filter_map(|(n, v)| Some((n.clone(), v.ty()?.from_module())))
                 .collect();
             ambient.insert(name.to_string(), Ty::Record(members));
         }
@@ -2854,6 +2906,35 @@ mod tests {
             "unexpected: {}",
             errs[0].message
         );
+    }
+
+    #[test]
+    fn a_module_binding_reports_at_the_call_site() {
+        // A `series` binding's body lives in `stdlib/series.mensura`, whose spans
+        // do not address the file being checked.  Every diagnostic from inside
+        // one is re-anchored at the call site, so no offset can escape the
+        // source: unrendered, such a span crashed the language server's line
+        // index, and printed a nonsense line in the CLI.
+        let mut table = sample_table();
+        table.qualifiers.cardinality = crate::table::Cardinality::Bag;
+        table.qualifiers.functional = crate::table::Functional::new();
+        let ctx = Context::bag(&test_ambient(), "k", "b", &table);
+        let src = "series.running_max (|r| r.temperature) (|r| r.at) b";
+        let errs = ty_of(&ctx, src).expect_err("no grading covers `at`");
+        assert!(errs[0].message.contains("may have ties"));
+        for err in &errs {
+            assert!(
+                err.span.end <= src.len(),
+                "span {:?} escapes the source: {}",
+                err.span,
+                err.message
+            );
+        }
+        // The note still names the binding the demand arrived through.
+        assert!(errs.iter().any(|e| {
+            e.message
+                .contains("while applying `series.running_max` here")
+        }));
     }
 
     #[test]

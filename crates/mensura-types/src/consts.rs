@@ -87,6 +87,10 @@ impl ConstValue {
             ConstValue::Closure(c) => Some(Ty::Fn(std::sync::Arc::new(TyClosure {
                 params: c.params.clone(),
                 body: c.body.clone(),
+                // A const declared in the file being checked; a module's
+                // members are marked foreign as they enter the ambient
+                // (`Ty::from_module`).
+                foreign: false,
                 names: c
                     .env
                     .iter()
