@@ -321,12 +321,58 @@ fn row_scope(table: &SourceTable, kname: &str, rname: &str, row: &Row) -> Scope 
 }
 
 fn record(cols: &[Col], values: &[Value]) -> RtVal {
-    RtVal::Rec(
-        cols.iter()
-            .map(|c| c.name.clone())
-            .zip(values.iter().cloned().map(RtVal::V))
-            .collect(),
-    )
+    let mut fields = BTreeMap::new();
+    for (c, v) in cols.iter().zip(values.iter().cloned()) {
+        nest_insert(&mut fields, &c.name, RtVal::V(v));
+    }
+    RtVal::Rec(fields)
+}
+
+/// Insert a flat dotted column into a nested record (ADR 0032), mirroring
+/// the checker's presentation: `course.department.code` lands as `course`
+/// holding `department` holding `code`, so a member chain resolves one step
+/// at a time.  The resolver reserves a group's prefix, so a scalar column
+/// never collides with a group name.
+fn nest_insert(map: &mut BTreeMap<String, RtVal>, name: &str, v: RtVal) {
+    match name.split_once('.') {
+        None => {
+            map.insert(name.to_string(), v);
+        }
+        Some((head, rest)) => {
+            let entry = map
+                .entry(head.to_string())
+                .or_insert_with(|| RtVal::Rec(BTreeMap::new()));
+            let RtVal::Rec(sub) = entry else {
+                // Unreachable: the resolver reserves group prefixes.
+                return;
+            };
+            nest_insert(sub, rest, v);
+        }
+    }
+}
+
+/// Flatten a (possibly nested) row record back to dotted named values
+/// (ADR 0032).  Recursing in map order yields the flat names already
+/// sorted, because `.` orders below every identifier character; this is
+/// the order the checker's whole-row rule uses.
+fn flatten_rec(
+    prefix: &str,
+    fields: BTreeMap<String, RtVal>,
+    out: &mut Vec<(String, Value)>,
+) -> Result<(), EvalError> {
+    for (name, v) in fields {
+        let full = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match v {
+            RtVal::V(v) => out.push((full, v)),
+            RtVal::Rec(sub) => flatten_rec(&full, sub, out)?,
+            RtVal::Bag(_) => return internal("a row field that is not a single value"),
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -512,13 +558,13 @@ fn eval_row(scope: &Scope, expr: &Expr) -> Result<NamedRow, EvalError> {
             Ok(row)
         }
         _ => match eval_scalar(scope, expr)? {
-            RtVal::Rec(fields) => fields
-                .into_iter()
-                .map(|(name, v)| match v {
-                    RtVal::V(v) => Ok((name, v)),
-                    _ => internal("a row field that is not a single value"),
-                })
-                .collect(),
+            RtVal::Rec(fields) => {
+                // A unit-reference group forwarded whole flattens back to
+                // its dotted columns (ADR 0032).
+                let mut row = Vec::new();
+                flatten_rec("", fields, &mut row)?;
+                Ok(row)
+            }
             _ => internal("a `flat_map` body row is not a record"),
         },
     }
@@ -570,18 +616,16 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
             // representations are observationally identical.  A row-major
             // representation becomes necessary only when a *row-mapper* fold
             // lands, since its lambda sees one whole row at a time.
-            let bags: BTreeMap<String, RtVal> = input
-                .attrs
-                .iter()
-                .enumerate()
-                .map(|(a, c)| {
-                    let column: Vec<Value> = members
-                        .iter()
-                        .map(|&i| input.rows[i][nkeys + a].clone())
-                        .collect();
-                    (c.name.clone(), RtVal::Bag(column))
-                })
-                .collect();
+            let mut bags: BTreeMap<String, RtVal> = BTreeMap::new();
+            for (a, c) in input.attrs.iter().enumerate() {
+                let column: Vec<Value> = members
+                    .iter()
+                    .map(|&i| input.rows[i][nkeys + a].clone())
+                    .collect();
+                // A unit-reference group nests here too (ADR 0032), so
+                // `b.course.name` stays a projection.
+                nest_insert(&mut bags, &c.name, RtVal::Bag(column));
+            }
             scope.insert(params[1].to_string(), RtVal::Rec(bags));
         }
 
@@ -1056,31 +1100,48 @@ fn mapper_elements(scope: &Scope, bag: &Expr) -> Result<Vec<RtVal>, EvalError> {
         RtVal::Rec(fields) => {
             // Every column of a group has the same length (they are the same
             // rows), so any one gives the row count.
-            let n = fields
-                .values()
-                .find_map(|v| match v {
-                    RtVal::Bag(vs) => Some(vs.len()),
-                    _ => None,
-                })
-                .unwrap_or(0);
+            let n = group_len(&fields).unwrap_or(0);
             let mut rows = Vec::with_capacity(n);
             for i in 0..n {
-                let mut row = BTreeMap::new();
-                for (name, col) in &fields {
-                    let RtVal::Bag(vs) = col else {
-                        return internal("a group column that is not a bag");
-                    };
-                    let Some(v) = vs.get(i) else {
-                        return internal("ragged group columns");
-                    };
-                    row.insert(name.clone(), RtVal::V(v.clone()));
-                }
-                rows.push(RtVal::Rec(row));
+                rows.push(group_row(&fields, i)?);
             }
             Ok(rows)
         }
         RtVal::V(_) => internal("a mapper applied to a value the checker should have rejected"),
     }
+}
+
+/// The row count of a fiber's columnar record: any column's bag length,
+/// searched through nested unit-reference groups (ADR 0032).  `None` for a
+/// record with no bag column at any depth.
+fn group_len(fields: &BTreeMap<String, RtVal>) -> Option<usize> {
+    fields.values().find_map(|v| match v {
+        RtVal::Bag(vs) => Some(vs.len()),
+        RtVal::Rec(sub) => group_len(sub),
+        RtVal::V(_) => None,
+    })
+}
+
+/// The `i`-th row of a fiber's columnar record, following nested
+/// unit-reference groups (ADR 0032): each bag contributes its `i`-th value,
+/// each group recurses.
+fn group_row(fields: &BTreeMap<String, RtVal>, i: usize) -> Result<RtVal, EvalError> {
+    let mut row = BTreeMap::new();
+    for (name, col) in fields {
+        match col {
+            RtVal::Bag(vs) => {
+                let Some(v) = vs.get(i) else {
+                    return internal("ragged group columns");
+                };
+                row.insert(name.clone(), RtVal::V(v.clone()));
+            }
+            RtVal::Rec(sub) => {
+                row.insert(name.clone(), group_row(sub, i)?);
+            }
+            RtVal::V(_) => return internal("a group column that is not a bag"),
+        }
+    }
+    Ok(RtVal::Rec(row))
 }
 
 /// Apply a mapper to each element, yielding the mapped values.
@@ -1398,13 +1459,7 @@ fn eval_unary(scope: &Scope, op: UnOp, operand: &Expr) -> Result<RtVal, EvalErro
             // no column to measure, but also no rows to count that the key
             // does not already determine, so zero is the honest answer.
             RtVal::Rec(fields) => {
-                let n = fields
-                    .values()
-                    .find_map(|v| match v {
-                        RtVal::Bag(vs) => Some(vs.len()),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
+                let n = group_len(&fields).unwrap_or(0);
                 Ok(RtVal::V(Value::Int(n as i64)))
             }
             RtVal::V(_) => internal("`#` applied to a value the checker should have rejected"),
