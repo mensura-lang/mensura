@@ -1,0 +1,25 @@
+// Rejected at resolve: the `domain` block resolves `student` twice; each
+// unit-reference field takes exactly one entry (ADR 0032).
+unit Person {
+  id: string
+}
+
+unit Enrollment {
+  student: Person
+}
+
+store students {
+  unit { Person }
+}
+
+store alumni {
+  unit { Person }
+}
+
+store grades {
+  unit { Enrollment }
+  domain {
+    student: students
+    student: alumni
+  }
+}

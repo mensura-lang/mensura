@@ -1,0 +1,19 @@
+// Rejected at resolve: `Enrollment.student` is a unit-reference field, so
+// the store must say where it resolves; the `domain` block has no entry
+// for it (`02-stores.md`, ADR 0032).
+unit Person {
+  id: string
+}
+
+unit Enrollment {
+  student: Person
+}
+
+store students {
+  unit { Person }
+}
+
+store grades {
+  unit { Enrollment }
+  attr { grade: real }
+}

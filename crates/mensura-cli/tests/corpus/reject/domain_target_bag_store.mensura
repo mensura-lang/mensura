@@ -1,0 +1,20 @@
+// Rejected at resolve: a `domain` target must be a `singletons` store;
+// `readings` is a `bag` store, where an entity's presence is incidental to
+// its observations (`02-stores.md`, ADR 0032).
+unit Machine {
+  serial: string
+}
+
+unit Alert {
+  machine: Machine
+}
+
+store readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+
+store alerts {
+  unit { Alert }
+  domain { machine: readings }
+}

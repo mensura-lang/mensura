@@ -507,6 +507,7 @@ mod tests {
             name: "v".into(),
             columns: schema(PERSONS, "persons").columns,
             keyed: true,
+            foreign_keys: Vec::new(),
         };
         let mut db = SqliteBackend::open_in_memory().unwrap();
 

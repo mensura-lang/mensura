@@ -1,0 +1,49 @@
+// Accepted: nested key access over a compound store (ADR 0032).  The
+// flattened column `course.department.code` presents to expressions as the
+// nested groups `k.course.department.code`, and forwarding `r` whole works
+// over a compound store like any other.
+unit Person {
+  id: string
+}
+
+unit Department {
+  code: string
+}
+
+unit Course {
+  department: Department
+  name: string
+  year: int
+}
+
+unit Enrollment {
+  student: Person
+  course: Course
+}
+
+store students {
+  unit { Person }
+}
+
+store departments {
+  unit { Department }
+}
+
+store courses {
+  unit { Course }
+  domain { department: departments }
+}
+
+store student_grades {
+  unit { Enrollment }
+  domain {
+    student: students
+    course:  courses
+  }
+  attr { grade: real }
+}
+
+view cs_grades {
+  student_grades
+    |> flat_map |k, r| if k.course.department.code == "cs" then r else ()
+}

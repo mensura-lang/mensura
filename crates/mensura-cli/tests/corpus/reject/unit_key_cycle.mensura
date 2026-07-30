@@ -1,0 +1,14 @@
+// Rejected at resolve: a unit whose key references itself through another
+// unit has no finite key tree, so it cannot flatten (ADR 0032,
+// `01-units.md`).
+unit A {
+  b: B
+}
+
+unit B {
+  a: A
+}
+
+store things {
+  unit { A }
+}

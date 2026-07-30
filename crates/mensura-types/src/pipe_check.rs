@@ -538,18 +538,45 @@ fn single_row_schema(
             }
         }
         _ => match type_expr(ctx, expr)? {
-            Ty::Record(fields) => Ok(fields
-                .into_iter()
-                .filter_map(|(name, ty)| {
-                    column_of(&ty).map(|(domain, opt)| RowColumn { name, domain, opt })
-                })
-                .collect()),
+            Ty::Record(fields) => {
+                let mut schema = Vec::new();
+                flatten_row_fields(String::new(), fields, &mut schema);
+                Ok(schema)
+            }
             _ => Err(error(
                 "a `flat_map` body must yield rows: a record `(.a = ...)`, the value \
                  row `r`, `( )` to drop, or `(a, b)` to expand",
                 expr.span,
             )),
         },
+    }
+}
+
+/// Flatten a (possibly nested) row record back into dotted row columns
+/// (ADR 0032): a unit-reference group forwarded whole becomes its flattened
+/// columns again.  Recursing in map order yields the flat names already
+/// sorted, because `.` orders below every identifier character; this is the
+/// order the evaluator's whole-row rule uses.  Fields that are not single
+/// values (and not groups) are dropped, as the flat arm always did.
+fn flatten_row_fields(prefix: String, fields: BTreeMap<String, Ty>, out: &mut Vec<RowColumn>) {
+    for (name, ty) in fields {
+        let full = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match ty {
+            Ty::Record(sub) => flatten_row_fields(full, sub, out),
+            other => {
+                if let Some((domain, opt)) = column_of(&other) {
+                    out.push(RowColumn {
+                        name: full,
+                        domain,
+                        opt,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -952,11 +979,30 @@ fn op_promote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
     Ok(PipeTy::Table(table))
 }
 
+/// Whether `name` is a unit-reference group prefix among `cols` (ADR 0032):
+/// some flattened column continues it past a `.`.
+fn is_group_prefix(cols: &[Column], name: &str) -> bool {
+    cols.iter().any(|c| {
+        c.name.len() > name.len()
+            && c.name.starts_with(name)
+            && c.name.as_bytes()[name.len()] == b'.'
+    })
+}
+
 fn promote_to_key(table: &mut TableType, col: &str, span: Span) -> Result<(), TypeError> {
     if table.content.key.iter().any(|c| c.name == col) {
         return Err(te(format!("`{col}` is already in the key"), span));
     }
     let Some(pos) = table.content.columns.iter().position(|c| c.name == col) else {
+        if is_group_prefix(&table.content.columns, col) {
+            return Err(te(
+                format!(
+                    "`{col}` is a unit-reference group; key moves on its \
+                     components are not yet supported (ADR 0032)"
+                ),
+                span,
+            ));
+        }
         return Err(te(format!("unknown column `{col}`"), span));
     };
     if !table.content.columns[pos].domain.is_key_eligible() {
@@ -1005,7 +1051,17 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
             continue;
         };
         if !table.content.key.iter().any(|c| &c.name == col) {
-            errs.push(te(format!("not an key column `{col}`"), arg.span));
+            if is_group_prefix(&table.content.key, col) {
+                errs.push(te(
+                    format!(
+                        "`{col}` is a unit-reference group; key moves on its \
+                         components are not yet supported (ADR 0032)"
+                    ),
+                    arg.span,
+                ));
+            } else {
+                errs.push(te(format!("not an key column `{col}`"), arg.span));
+            }
             continue;
         }
         if to_drop.contains(col) {
@@ -1498,6 +1554,7 @@ mod tests {
             unit: unit.to_string(),
             columns,
             cardinality: Cardinality::Singletons,
+            foreign_keys: Vec::new(),
             span: Span::new(0, 0),
         })
     }

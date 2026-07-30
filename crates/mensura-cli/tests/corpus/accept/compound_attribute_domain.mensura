@@ -1,0 +1,24 @@
+// Accepted: a unit-reference *attribute* resolved through `domain`
+// (`02-stores.md`, the `programs`/`coordinator` example).  The attribute
+// flattens to `coordinator.id`, an attribute column referencing `persons`.
+unit Person {
+  id: string
+}
+
+unit Program {
+  code: string
+}
+
+store persons {
+  unit { Person }
+  attr { birthdate: date }
+}
+
+store programs {
+  unit { Program }
+  domain { coordinator: persons }
+  attr {
+    name:        string
+    coordinator: Person
+  }
+}

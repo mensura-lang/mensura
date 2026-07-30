@@ -1,0 +1,23 @@
+// Rejected at resolve: `Enrollment.student` references `Person`, but the
+// `domain` entry points it at `machines`, which tabulates `Machine`
+// (ADR 0032).
+unit Person {
+  id: string
+}
+
+unit Machine {
+  serial: string
+}
+
+unit Enrollment {
+  student: Person
+}
+
+store machines {
+  unit { Machine }
+}
+
+store grades {
+  unit { Enrollment }
+  domain { student: machines }
+}

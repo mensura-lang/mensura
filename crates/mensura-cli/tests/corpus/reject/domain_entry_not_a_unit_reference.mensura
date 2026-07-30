@@ -1,5 +1,6 @@
-// Rejected at resolve: compound stores (a `domain` block) are not yet
-// supported in the basic scope.
+// Rejected at resolve: the `domain` entry names `student`, but `Enrollment`
+// has no unit-reference field of that name (its key is the scalar `id`), so
+// there is nothing to resolve (ADR 0032).
 unit Person {
   id: string
 }

@@ -455,6 +455,7 @@ mod tests {
                 col("note", ColumnType::String, ColumnRole::Attr, true),
             ],
             cardinality: Cardinality::Singletons,
+            foreign_keys: Vec::new(),
             span: Span::new(0, 0),
         };
 
@@ -488,6 +489,7 @@ mod tests {
                 col("kelvin", ColumnType::Real, ColumnRole::Attr, false),
             ],
             cardinality: Cardinality::Bag,
+            foreign_keys: Vec::new(),
             span: Span::new(0, 0),
         };
         let t = TableType::from_store(&schema);
