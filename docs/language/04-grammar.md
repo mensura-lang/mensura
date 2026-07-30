@@ -417,6 +417,14 @@ closed and resolved by the checker, not the grammar, so an unknown combiner
 is a typing diagnostic naming the table rather than a parse error
 (ADR 0031, Decision 6).
 
+The ordered primitives added no grammar either.  `scan`, `prescan`, and
+`desc` are ordinary `ident`s applied by juxtaposition, exactly like `fold`,
+`map`, and `to_real`, so none of them is a reserved word and the M0 freeze
+surface (the reserved list below, and the FIRST/FOLLOW table) is untouched.
+ADR 0031 Decision 7's choice to make a scan's order key an *argument* rather
+than a `by` clause is what buys that: a clause would have needed a
+production, a reserved word, and a lookahead argument.
+
 Punctuation (`== != < <= > >= + - * / ^ . | ( ) { } [ ] : ; ,`) the lexer
 already emits, so the records, blocks, and ascriptions here need no new
 tokens.  ADR 0031 adds five: `#` (free, since comments are `//`) plus

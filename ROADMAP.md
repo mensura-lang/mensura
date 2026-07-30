@@ -80,9 +80,13 @@ mensura/
   `formal/`: split-safety and its composition, completeness, the split-safe
   `pivotAttr` with its reversibility, the `union` disjointness lemma, and
   (ADR 0029's Stage 1) the monoid-parameterized bag fold with its shard and
-  presence lemmas, which is the gate `fold` ships behind.  Stage 2 (an
-  arranged structure over the row multiset, gating `scan`) is the next
-  formal item and is open-ended.
+  presence lemmas, which is the gate `fold` ships behind, and (Stage 2) the
+  arranged structure over the row multiset, which is the gate `scan`,
+  `prescan`, `desc`, and the `series` module ship behind: an arrangement stated
+  as a relation (so existence needs no hypothesis and uniqueness is the tier 1
+  determinism theorem), the two scans as slices of one list scan, their
+  coherence with the fold, the prefix decomposition, and split-safety
+  inherited from the fiber transform.
 - **Implementation.**  The pipeline `source -> tokens -> AST -> resolved Schema
   -> SQLite` is built for the "basic" subset: scalar-key units, stores with
   primitive and `enum` attributes, shapes, and named enums.  The expression
@@ -100,8 +104,11 @@ mensura/
   as compile-time values, `fold` and `map` as curried builtins over a closed
   combiner table, the fiber (`b`) as a bag of rows with `b.x` as projection
   sugar, `#` as cardinality, and the six reductions as const bindings in a
-  bundled `bag` module rather than intrinsics.  `scan` and the `series` module
-  wait on ADR 0029's Stage 2 (M5).
+  bundled `bag` module rather than intrinsics.  The **ordered half** landed on
+  the same footing: `scan` and `prescan` as curried builtins over the same
+  combiner table (its ordered-only rows now reachable), the `desc` order
+  marker, and the window vocabulary as const bindings in a bundled `series`
+  module, behind ADR 0029's Stage 2.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): devices and `registry`; ingestion endpoints; streaming windows and
   refresh; measure semantics (M5, where the window rollups it gates are the
@@ -247,13 +254,22 @@ Output: windowed, incrementally refreshed views over device streams.
   Biased or Representative otherwise).
 - The temporal and dependency typing rules, and temporal referential integrity
   (the "outlives" constraint), extending `docs/language/08-lineage.md`.
-- The ordered primitives that window functions need: **`scan` and `prescan`**,
-  gated behind ADR 0029's Stage 2 `formal/` work (an arranged structure over
-  what is today a `Multiset`).  ADR 0031 revised the shape: the sorted map is
-  dissolved, since `rank`, `lag`, and `lead` are all scan-derived, so the
-  primitive set is `fold` and `scan` plus `map`.  Landing Stage 2 also brings
-  the `desc` order marker and the bundled `series` module (`cumsum`, `rank`,
-  `running_min`, `running_max`, `first_value`, `lag`, `lead`).
+- The ordered primitives that window functions need (**`scan` and `prescan`**,
+  the `desc` marker, and the bundled `series` module) have **landed early**,
+  with ADR 0029's Stage 2 `formal/` work, since M5's window rollups and the
+  measure-semantics document both need something concrete to refer to.  What
+  remains here is the *streaming* half: windowed refresh, window-closedness,
+  and per-window sampling inference.
+
+  The tie model's **tier 1 and tier 3 are enforced**: a scan demands a
+  tie-free order key, discharged from a grading where the shape allows it (a
+  key projected out of the key, ADR 0024's fact surviving `demote`) and by
+  `assume { arranged }` otherwise, the way a reducing `map_bags` demands
+  completeness.  One gap is recorded rather than closed: lexicographic
+  **tuple keys** (tier 2) need a value-tuple type the checker does not have,
+  and adding one collides with ADR 0030 Decision 2's tupled-lambda
+  convention; scalar keys cover the whole shipped vocabulary, and when tier 2
+  lands the grading lookup must extend to a tuple's whole component set.
 
 ## M6 - ML strategies and validation
 

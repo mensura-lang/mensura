@@ -185,6 +185,26 @@ pub enum Completeness {
     Incomplete,
 }
 
+/// Whether tie-freedom of a scan's order key has been claimed by fiat
+/// (ADR 0029 Decision 11's tier 3, `assume { arranged }`).
+///
+/// A scan is deterministic only when its order key is injective on each fiber
+/// (`Mensura.IsArrangement.unique`).  The checker discharges that from a
+/// grading where it can (`Mensura.keyInjOn_demote_tag`); where it cannot, the
+/// obligation is admitted locally and visibly, exactly as `assume { complete }`
+/// admits completeness (ADR 0017, whose block form was written to generalize
+/// this way).
+///
+/// Not a fifth qualifier axis in spirit: it records a *claim*, not a derived
+/// fact, and it is consumed by the ordered primitives only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arranged {
+    /// No claim: an order key must be discharged by a grading.
+    Unclaimed,
+    /// The pipeline claimed its keys are tie-free.
+    Assumed,
+}
+
 /// The domain-relative grade of the completeness entry (`09` section 3.4,
 /// ADR 0020), not a fifth qualifier axis: the enum-domained key columns `A`
 /// for which every residual key present in the table carries its `(k, v)` row
@@ -235,6 +255,8 @@ pub struct Qualifiers {
     pub exhaustive: Exhaustive,
     /// The key-graded cardinality facts (ADR 0024); see [`Functional`].
     pub functional: Functional,
+    /// Whether tie-freedom was claimed by fiat; see [`Arranged`].
+    pub arranged: Arranged,
     pub lineage: Lineage,
 }
 
@@ -280,6 +302,7 @@ impl TableType {
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
                 functional: Functional::new(),
+                arranged: Arranged::Unclaimed,
                 lineage: Lineage::root(),
             },
         };
@@ -292,7 +315,7 @@ impl TableType {
 
     /// The current key as a name set, the right-hand side of the grading
     /// subset check (ADR 0024).
-    fn key_names(&self) -> BTreeSet<String> {
+    pub fn key_names(&self) -> BTreeSet<String> {
         self.content.key.iter().map(|c| c.name.clone()).collect()
     }
 
@@ -399,6 +422,7 @@ mod tests {
                 completeness: Completeness::Incomplete,
                 exhaustive: Exhaustive::new(),
                 functional: Functional::new(),
+                arranged: Arranged::Unclaimed,
                 lineage: Lineage::root(),
             },
         };

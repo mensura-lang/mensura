@@ -61,6 +61,75 @@ leaves holes in its bag), so completeness is a claim you make, not a given.
 over a default store's own key needs no such discharge: with at most one row
 per key, a present bag is already whole.)
 
+## Windows: the other shape of `map_bags`
+
+A reduction collapses each bag to one row.  The other thing you can do with a
+bag is walk it *in order*, emitting one row per input row: a running maximum,
+the previous reading, a rank.  Those are windows, and they are the same
+`map_bags` with a different return.
+
+```mensura
+{{#include ../examples/series-windows.mensura}}
+```
+
+Three things are worth reading off that.
+
+**The order is named at the operator, not carried by the store.**  A bag store
+has no row order, so a window says which order it means, here `|r| r.taken_at`.
+Both lambdas take a row: one pulls out the value to accumulate, the other the
+key to sort by.  You need both from the same row, which is why the trailing
+argument is the bag of rows `b` rather than a single projected column.
+
+**A window demands no completeness fact.**  This is the reverse of the
+reduction above, and for a reason worth stating: one output row per input row
+is faithful on a partial bag.  If a machine's readings have gaps, its running
+maximum is still the running maximum *of the readings you have*.  A fold is
+what goes silently wrong on a partial bag, so only a fold has to consume the
+claim.
+
+**But a window demands something a fold does not: the order must be
+unambiguous.**  If two readings share a `taken_at`, there is no single right
+way to arrange them, and a running total would depend on which one the storage
+happened to hand over first.  So a scan asks the same kind of question the
+reducer asks about completeness, and gets an answer the same two ways.
+
+The example above answers it by *construction*.  `taken_at` is part of the
+identity, so at most one reading exists per `(machine, taken_at)`; `demote`
+moves the time out of the key while keeping that fact, and within each
+machine's group the time is unique.  Nothing is claimed, because nothing needs
+to be.  This is the shape worth reaching for, and it is also just honest
+modelling: a reading really is identified by when it was taken.
+
+When the order genuinely can tie, say so:
+
+```mensura,ignore
+readings
+  |> assume { arranged }
+  |> map_bags |k, b| (.hottest = series.rank (|r| desc r.temperature) b)
+```
+
+Ranking by temperature is ambiguous on purpose here, so the claim is the
+honest thing to write, exactly as `assume { complete }` is when a bag's
+wholeness cannot be checked.  An order the compiler can neither prove nor see
+claimed is an error, not a guess.
+
+**`previous` is optional and the others are not.**  Nobody wrote a rule for
+that.  `series.lag` is an *exclusive* scan: each row sees the fold of the rows
+strictly before it, and the earliest row in each group has nothing before it.
+The value it would report has no answer, so the column carries a missing value
+and the type says so.  Its inclusive sibling `running_max` has no such hole,
+because every row sees at least itself.  `series.lead` is the mirror image: it
+is `lag` under the reversed order, so there the *last* row is the missing one.
+
+Descending order is marked on the key value (`desc r.temperature`), not on the
+operator, so each part of a key can go its own way.
+
+The window vocabulary is a library, not language: `cumsum`, `rank`, `lag`,
+`lead`, `first_value`, `running_min`, and `running_max` are ordinary definitions
+in the bundled `series` module, each one a `scan` or a `prescan` at a chosen
+combiner.  You can read them, and the reason `lag`'s first row is missing is
+visible in its definition rather than buried in the compiler.
+
 ## Coarsening a composite key
 
 Time sometimes belongs in the key: keying a history by `(machine, ts)` is

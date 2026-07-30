@@ -1,0 +1,45 @@
+// Accepted: `desc` marks a key value as ordered by its dual (ADR 0031,
+// Decision 7).  Because the marker sits on *values* rather than on the
+// operator, direction is per-component, which is what a global reverse flag
+// could not express.
+//
+// In `formal/` the marker is Mathlib's `OrderDual`, so the arrangement absorbs
+// it at no proof cost and Tier 1 survives it: the dual of a total order is
+// total, and the dual of an injective key is injective.
+//
+// This file is also where `assume { arranged }` earns its keep.  Ranking by
+// temperature is a genuinely tie-prone order: two readings of one machine may
+// well agree to the stored precision, and then no arrangement is canonical, so
+// the ranks of the tied rows depend on how the rows happened to be stored.  The
+// checker cannot rule that out (injectivity is a property of the data), and no
+// grading covers `temperature`, so the claim is admitted here locally and
+// visibly, exactly as `assume { complete }` admits completeness (ADR 0017,
+// whose block form was written to generalize this way; ADR 0029 Decision 11's
+// tier 3).
+//
+// Contrast `qualified_series_windows.mensura`, where the order key is a
+// projected key component and needs no claim at all
+// (`Mensura.keyInjOn_demote_tag`).  Preferring that shape is the point: the
+// claim is for orders that really are ambiguous, not a line to paste.
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* { temperature: real }
+}
+
+view ranked {
+  readings
+    |> assume { arranged }
+    |> map_bags |k, b| (
+      // A descending `rank` needs no binding of its own: it is the ones-scan
+      // over a `desc` key at the call site (Decision 8).
+      .hottest_first = series.rank (|r| desc r.temperature) b,
+      // The marker composes with a plain scan too.
+      .peak_desc = scan `>>` (|r| r.temperature) (|r| desc r.temperature) b
+    )
+}

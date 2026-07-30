@@ -1,0 +1,60 @@
+// Accepted: a tie-free order key *established* rather than claimed, by
+// aggregating the ties away (ADR 0029 Decision 11's tier 1).
+//
+// `taken_at` starts as an ordinary attribute of a bag store, so several samples
+// of one machine may share it.  That is `reject/scan_key_may_tie.mensura`
+// verbatim, and a scan there is an error.  Here the pipeline earns the fact:
+// promote the timestamp into the key, reduce at that finer key, and the
+// reduction's `singletons` output makes `(id, taken_at)` a grading, because at
+// most one row per key *is* functionality over that key (ADR 0024).  `demote`
+// derives cardinality from the gradings and never touches them, so the grading
+// survives the key move and covers the scan's key.
+// `Mensura.keyInjOn_demote_tag` is the step from there to injectivity on each
+// fiber, which is what `Mensura.IsArrangement.unique` needs.
+//
+// Nothing here asserts a property of the data.  The pipeline *changes* the data
+// so that the fact holds, which is the difference from tier 3: after the
+// reduction there really is one row per timestamp.  Nor is the reduction a
+// workaround.  A running maximum over duplicated timestamps had no determined
+// answer to begin with, so resampling to a unique time grid and then windowing
+// is the correct reading of the intent.
+//
+// Two things the shape depends on.  The reduction must sit at the *finer* key:
+// reduce at `id` instead and the whole history collapses to one row, leaving
+// nothing to scan.  And the key moves alone establish nothing, which is the
+// sibling `reject/key_moves_alone_do_not_break_ties.mensura`.
+//
+// The `assume { complete }` is the reduction's own obligation (ADR 0023), not
+// the tie obligation; `completeness_check` establishes it instead, and a
+// `collect` source will do so by mechanism (M4).
+import bag
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    taken_at: date
+    temperature: real
+  }
+}
+
+view daily_peak_trend {
+  readings
+    // The key is now `(id, taken_at)`, and the table is still a bag: the key
+    // move re-runs the subset check and finds no grading to fit.
+    |> promote taken_at
+    |> assume { complete }
+    // One row per `(id, taken_at)`: the ties are gone, and the grading is
+    // recorded.
+    |> map_bags |k, b| (.peak = bag.max b.temperature)
+    // Back to a bag keyed by the machine, with the timestamp as the tag.
+    |> demote taken_at
+    |> map_bags |k, b| (
+      // No `assume { arranged }`: the grading covers `taken_at`.
+      .running_peak = series.running_max (|r| r.peak) (|r| r.taken_at) b
+    )
+}

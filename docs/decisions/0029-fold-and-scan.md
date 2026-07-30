@@ -6,6 +6,20 @@ Accepted, design-only.  This ADR lands as a documentation-only pull request:
 it fixes the model and the surface intent, and no code, no Lean, and no
 language-doc reconciliation ship with it.
 
+**Both proof stages are now discharged.**  Stage 1 is
+`formal/Mensura/Fold.lean` and Stage 2 is `formal/Mensura/Arranged.lean`;
+the surface they gate is implemented as revised by ADR 0031.  One demand of
+Stage 2 was met differently than this document anticipated, and the reason
+is worth carrying: the arrangement is a **relation** rather than a chosen
+sort, because `Multiset.sort` requires antisymmetry as a typeclass instance,
+which for a key-induced order is *global* key injectivity, while the tier 1
+hypothesis below is per-fiber.  Stating it relationally separates existence
+(no hypothesis) from uniqueness (tier 1), which is the honest shape of the
+surface obligation.  Relatedly, this document's hope that tier 1 would
+"compose with the existing `Mensura.Functional` rather than restate it" holds
+only vacuously: `Functional` bounds a fiber at one row, so nothing can tie.
+The substantive predicate is `KeyInjOn`.
+
 Revised in part by `docs/decisions/0031-fold-and-scan-primitives.md`,
 written after ADR 0030 landed const functions: `fold` and `scan` become
 curried builtins taking their bag explicitly (so they pipe and partially

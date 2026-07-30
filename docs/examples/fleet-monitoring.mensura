@@ -16,6 +16,10 @@
 // the toolchain; members are qualified (`si.km`).
 import bag
 
+// The scan-derived window operations (ADR 0031, Decision 8).  `bag`'s ordered
+// siblings: same combiner table, plus an order key.
+import series
+
 import si
 
 // A dimensioned threshold constant: `kelvin` is an intrinsic base unit, so
@@ -85,7 +89,52 @@ store readings {
     // the SI base unit (kelvin here), and a dimension mismatch downstream
     // is a compile error.
     temperature: temperature[real]
+    // A bag store carries no row order (ADR 0022), so an operation that needs
+    // one names it at the operator.  This column is what a window's order key
+    // reads.
+    taken_at: date
   }
+}
+
+// A windowed feature view (ADR 0031, Decision 7): the ordered siblings of the
+// reductions above.  Four things worth reading off it.
+//
+// The order is named *here*, at the operator, by the key lambda `|r| r.taken_at`;
+// the store does not carry a row order.  Both lambdas take a row, one extracting
+// the value to accumulate and one the key to sort by, because sorting values by
+// a sibling column requires seeing the row that carries both.
+//
+// **A scan's order key must be tie-free, and this one is claimed rather than
+// proved.**  A scan's intermediate values are determined only when at most one
+// row per group shares the key (`Mensura.IsArrangement.unique`); with ties the
+// answer would depend on how the rows happened to be stored.  `taken_at` is an
+// ordinary attribute here, so nothing rules that out and the claim is admitted
+// locally and visibly, exactly as `machine_temperature` above admits
+// completeness (ADR 0017's block form, generalized as it was written to be).
+//
+// The stronger alternative is to *derive* the fact: make the time part of the
+// identity, keying a history by `(machine, taken_at)`, and `demote` it.  The
+// grading then survives the key move and the checker discharges the obligation
+// with no claim at all (`Mensura.keyInjOn_demote_tag`); `book/src/examples/`
+// shows that shape.  It is not used here only because `demote` is not yet
+// executable, and this file is materialized end to end by the runtime tests.
+//
+// This is the *window* shape of `map_bags`: one output row per input row, so
+// unlike the reducing view above it demands no completeness fact.  A window is
+// faithful on a partial bag; only a reduction is silently wrong on one.
+//
+// `previous` is optional and the others are not.  That is not a choice made
+// here: `series.lag` is a `prescan` at keep-right, keep-right has no identity,
+// and an exclusive scan's first position folds the empty prefix, so the
+// earliest reading in each machine's group has no predecessor to report
+// (`Mensura.prescanBag`).
+view reading_trend {
+  readings |> assume { arranged } |> map_bags |k, b| (
+    .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
+    .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
+    // `lead` is `lag` at the dual key, so the last reading is the missing one.
+    .next         = series.lead        (|r| r.temperature) (|r| r.taken_at) b
+  )
 }
 
 // Reducing a bag folds each machine's readings, which is silently wrong on a

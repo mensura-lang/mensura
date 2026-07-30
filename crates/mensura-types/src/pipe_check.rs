@@ -17,8 +17,8 @@ use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
-    Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage, Qualifiers,
-    SplitId, TableType, Totality,
+    Arranged, Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage,
+    Qualifiers, SplitId, TableType, Totality,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -328,6 +328,7 @@ fn op_join(
                 JoinKind::Inner => Exhaustive::new(),
             },
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: left.qualifiers.lineage,
         },
     }))
@@ -380,6 +381,7 @@ fn op_flat_map(
             completeness: table.qualifiers.completeness,
             exhaustive,
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -658,6 +660,7 @@ fn op_map_bags(
             completeness: table.qualifiers.completeness,
             exhaustive: table.qualifiers.exhaustive,
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -715,6 +718,18 @@ fn bag_record_content(
                     format!(
                         "field `{}` is a bag of rows; project a column \
                          (`b.name`) or count the group (`#b`)",
+                        field.name.name
+                    ),
+                    field.value.span,
+                )),
+                // A descending marker is an order annotation, not a value, so
+                // it names its own home rather than reporting a bare "not a
+                // value" (ADR 0031, Decision 7).
+                None if matches!(ty, Ty::Desc(_)) => errs.push(te(
+                    format!(
+                        "field `{}` is a descending marker, which orders a \
+                         scan's key and is never stored; drop the `desc`, or \
+                         move it into the order key",
                         field.name.name
                     ),
                     field.value.span,
@@ -819,6 +834,7 @@ fn op_union(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             completeness,
             exhaustive,
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
     }))
@@ -835,6 +851,7 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
             completeness: table.qualifiers.completeness,
             exhaustive: Exhaustive::new(),
             functional: Functional::new(),
+            arranged: Arranged::Unclaimed,
             lineage,
         },
     }
@@ -871,16 +888,21 @@ fn lambda_params<'a>(
 
 /// The column domain and totality a value type contributes, or `None` for a
 /// bag, a bag of rows (the fiber is a type-level notion, ADR 0031 Decision
-/// 10), a nested record (window/nested returns are deferred), or a function
-/// (which never enters a column, ADR 0030).
+/// 10), a nested record (window/nested returns are deferred), a descending
+/// marker (an order annotation, not a value, ADR 0031 Decision 7), or a
+/// function (which never enters a column, ADR 0030).
 ///
 /// This is the storage boundary: returning `None` for the fiber is what keeps
-/// nested collections out of a column, so the rows type cannot smuggle one in.
+/// nested collections out of a column, so the rows type cannot smuggle one in,
+/// and returning `None` for `Ty::Desc` is what makes "never storable" hold by
+/// construction rather than by a rule someone must remember to write.
 fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
         Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
-        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Fn(_) | Ty::Builtin(_) => None,
+        Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Desc(_) | Ty::Fn(_) | Ty::Builtin(_) => {
+            None
+        }
     }
 }
 
@@ -1296,7 +1318,18 @@ fn op_assume(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
                 ExprKind::Name(claim) if claim == "complete" => {
                     table.qualifiers.completeness = Completeness::Complete;
                 }
-                _ => errs.push(te("`assume` accepts only the claim `complete`", e.span)),
+                // The second claim ADR 0017 anticipated ("the block form
+                // generalizes later without a surface change"): tie-freedom of a
+                // scan's order key, ADR 0029 Decision 11's tier 3.  Needed
+                // because the ordered primitives demand what no grading covers
+                // for a computed or ungraded key.
+                ExprKind::Name(claim) if claim == "arranged" => {
+                    table.qualifiers.arranged = Arranged::Assumed;
+                }
+                _ => errs.push(te(
+                    "`assume` accepts the claims `complete` and `arranged`",
+                    e.span,
+                )),
             },
             Stmt::Let { value, .. } => {
                 errs.push(te(
@@ -1477,6 +1510,7 @@ mod tests {
                 scol("ts", ColumnType::Int, ColumnRole::Key, false),
                 scol("machine", ColumnType::String, ColumnRole::Attr, false),
                 scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+                scol("taken_at", ColumnType::Date, ColumnRole::Attr, false),
                 scol("peak", ColumnType::Real, ColumnRole::Attr, true),
                 scol("flag", ColumnType::Bool, ColumnRole::Attr, false),
                 scol("note", ColumnType::String, ColumnRole::Attr, true),
@@ -1493,7 +1527,7 @@ mod tests {
         Sources::new()
             .with("readings", readings)
             .with("machines", machines)
-            .with_ambient(ambient_with_bag())
+            .with_ambient(ambient_with_modules(&["bag", "series"]))
     }
 
     /// The ambient a program gets from `import bag` (ADR 0031, Decision 8).
@@ -1502,17 +1536,26 @@ mod tests {
     /// is the equivalent, and keeps the fixtures reading as a user would
     /// write them.
     fn ambient_with_bag() -> crate::expr_check::Ambient {
+        ambient_with_modules(&["bag"])
+    }
+
+    /// The ambient a program gets from importing each named bundled module.
+    /// These tests type bare pipelines, so there is no `import` item to
+    /// resolve; injecting the modules' envs is the equivalent.
+    fn ambient_with_modules(names: &[&str]) -> crate::expr_check::Ambient {
         let mut ambient = crate::expr_check::intrinsics();
-        let env = crate::modules::bundled("bag")
-            .expect("bag is bundled")
-            .as_ref()
-            .expect("bag resolves cleanly");
-        let members = env
-            .values
-            .iter()
-            .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
-            .collect();
-        ambient.insert("bag".to_string(), crate::expr_check::Ty::Record(members));
+        for name in names {
+            let env = crate::modules::bundled(name)
+                .unwrap_or_else(|| panic!("`{name}` is bundled"))
+                .as_ref()
+                .unwrap_or_else(|e| panic!("`{name}` resolves cleanly: {e:?}"));
+            let members = env
+                .values
+                .iter()
+                .filter_map(|(n, v)| Some((n.clone(), v.ty()?)))
+                .collect();
+            ambient.insert((*name).to_string(), crate::expr_check::Ty::Record(members));
+        }
         ambient
     }
 
@@ -2258,6 +2301,73 @@ mod tests {
             .expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    /// A scan is the window shape, so it needs no completeness fact: one output
+    /// row per input row is faithful on a partial bag, and only a *reduction* is
+    /// silently wrong on one (ADR 0023).
+    #[test]
+    fn a_scan_is_the_window_shape_and_demands_no_completeness() {
+        let s = sample_sources();
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> promote machine |> demote machine \
+                 |> map_bags |k, b| (.run = series.running_max (|r| r.temperature) (|r| r.taken_at) b)",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    /// **`series.lag` yields an optional column**, with no pipe-layer rule to
+    /// make it so: `lag` is a `prescan` at keep-right, keep-right has no
+    /// identity, and an exclusive scan's first position folds the empty prefix.
+    /// The optionality is decided in `type_scan` and flows through the record's
+    /// existing `mark_optional` path, which is the evidence that the primitive
+    /// decomposition carries its own consequences.
+    #[test]
+    fn lag_yields_an_optional_column() {
+        let s = sample_sources();
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> promote machine |> demote machine \
+                 |> map_bags |k, b| (.prev = series.lag (|r| r.temperature) (|r| r.taken_at) b)",
+            )
+            .expect("ok"),
+        );
+        assert!(
+            t.qualifiers.totality.is_optional("prev"),
+            "the earliest row in a group has no predecessor, so `lag` is optional"
+        );
+        // Its inclusive sibling has no such hole: every prefix `1..i` is
+        // non-empty, so `running_max` stays total at the same combiner class.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> promote machine |> demote machine \
+                 |> map_bags |k, b| (.run = series.running_max (|r| r.temperature) (|r| r.taken_at) b)",
+            )
+            .expect("ok"),
+        );
+        assert!(!t.qualifiers.totality.is_optional("run"));
+    }
+
+    /// A descending marker orders a key and is not a value, so it cannot be a
+    /// column.  `column_of` returning `None` for it is what makes that hold by
+    /// construction (ADR 0031, Decision 7).
+    #[test]
+    fn a_descending_marker_cannot_be_a_column() {
+        let s = sample_sources();
+        let errs =
+            pipe_ty(&s, "readings |> map_bags |k, b| (.d = desc 1)").expect_err("not storable");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("desc") || e.message.contains("descending")),
+            "unexpected: {:?}",
+            errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

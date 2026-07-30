@@ -1,0 +1,48 @@
+// Accepted: `series.lag` yields an **optional** column, and the optionality is
+// not a rule anyone wrote for `lag` (ADR 0031, Decision 7).
+//
+// `lag` is `prescan `:>``.  An exclusive scan's position i folds the proper
+// prefix 1..i-1, so its first position folds the *empty* prefix; keep-right has
+// no identity, so there is no answer there.  The earliest row in each group has
+// no predecessor, and the column carries a missing value for it.
+//
+// That is the same identity-and-emptiness rule that governs an empty window and
+// that makes `bag.min`/`bag.max` fold through the `Option` completion in
+// `formal/Mensura/Fold.lean`; here it arrives through a different door, since
+// the *bag* is non-empty and only a prefix of it is.
+//
+// Its inclusive sibling has no such hole: every prefix 1..i is non-empty, so
+// `running_max` is total at the very same combiner.
+import series
+
+unit Sample {
+  machine: string
+  taken_at: date
+}
+
+store history {
+  unit { Sample }
+  attr { temperature: real }
+}
+
+// The claim that pins both columns: conformance checks type *and* totality
+// (ADR 0019), so this shape fails if `lag` were to come back total or
+// `running_max` optional.  `attr*` because a window keeps one row per input
+// row, so the demoted bag stays a bag (ADR 0022).
+shape Lagged {
+  attr* {
+    previous:     real?
+    running_peak: real
+  }
+}
+
+view deltas : Lagged {
+  history
+    |> demote taken_at
+    |> map_bags |k, b| (
+      // Optional: the first row under the order has no predecessor.
+      .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b,
+      // Total: no prefix of a non-empty bag's inclusive scan is empty.
+      .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b
+    )
+}

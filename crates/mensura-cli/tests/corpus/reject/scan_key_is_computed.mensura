@@ -1,0 +1,31 @@
+// Rejected at resolve (typing): a *computed* order key cannot be checked for
+// ties at all, so it needs the claim.
+//
+// The checker's tie rule reads a grading (ADR 0024), which is a fact about
+// columns; an arbitrary expression has no such fact, and injectivity of an
+// expression is not decidable in general.  So the diagnostic asks for
+// `assume { arranged }` rather than pretending to analyse the arithmetic.
+//
+// Note the rule looks *through* `desc` and through a lambda applied to the row,
+// since neither changes which column is read (`desc` of an injective key is
+// injective).  What it will not do is reason about `+`.
+import series
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    offset: real
+  }
+}
+
+view bad {
+  readings
+    |> map_bags |k, b| (
+      .peak = series.running_max (|r| r.temperature) (|r| r.temperature + r.offset) b
+    )
+}

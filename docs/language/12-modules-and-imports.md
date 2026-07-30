@@ -104,8 +104,9 @@ import si
   matching the resolver's existing duplicate policy.
 - **Acyclic.**  Module imports form a DAG; a cycle is a compile error.
 - **A bare import resolves `bundled`, and only `bundled`** (ADR 0027,
-  Decision 6): it names a module that ships with the toolchain (`si` and
-  `bag` today), needs no manifest and no network, and cannot be remapped.  An
+  Decision 6): it names a module that ships with the toolchain (`si`, `bag`,
+  and `series` today), needs no manifest and no network, and cannot be
+  remapped.  An
   unknown name is a compile error at the import site.  The
   manifest-resolved marked form for third-party modules is provisional
   and not implemented (ADR 0027, Decision 7).
@@ -114,16 +115,20 @@ import si
 
 The language provides a deliberately small **initial environment**: the seven
 base units (`second`, `meter`, `kilogram`, `ampere`, `kelvin`, `mole`,
-`candela`; ADR 0026, Decision 6), the reduction primitives `fold` and `map`,
-`to_real`, and the pipeline operations.
+`candela`; ADR 0026, Decision 6), the reduction primitives `fold`, `scan`,
+`prescan`, and `map`, the order marker `desc`, `to_real`, and the pipeline
+operations.
 
 ADR 0031 Decision 8 **amends ADR 0027 Decision 4** here: the aggregate
 combinators that decision named as intrinsics have left.  With `fold` a
 builtin there is no reason to keep so many *names* in the language, so
 `sum`, `min`, `max`, `any`, `all`, and `prod` are const bindings in the
 bundled `bag` module, `count` became the `#` operator, and the freed names
-returned to users.  The ordered siblings (`cumsum`, `rank`, `lag`, ...) will
-live in `series` once ADR 0029's Stage 2 lands.
+returned to users.  The ordered siblings live in the bundled `series` module,
+in the same way and for the same reason: `cumsum`, `running_min`,
+`running_max`, `first_value`, `lag`, `lead`, and `rank`, each a partial
+application of `scan` or `prescan` (ADR 0029's Stage 2 gates them,
+`formal/Mensura/Arranged.lean`).
 
 The consequence is that **"no implicit prelude" now holds without
 exception**.  `si` was already an ordinary import (`9.8 * meter / second^2`
@@ -137,7 +142,9 @@ the rule holding uniformly.
 applications of `fold`, so a module member can be applied
 (`bag.max b.temperature`) and piped into (`b.temperature |> bag.max`) exactly
 as a top-level `let` function can (ADR 0030).  `si`, which exports only
-scalars, is the simpler case rather than the general one.
+scalars, is the simpler case rather than the general one.  `series` goes one
+step further: `lead` is a genuine lambda whose body returns a partially applied
+primitive, so applying it walks a closure *and then* a builtin's slot rules.
 
 Inside a lambda, a parameter may reuse an ambient name (`|meter, r| ...`);
 the parameter wins locally.  This is ordinary lexical scoping, not the

@@ -1112,8 +1112,178 @@ fn combine(op: &str, a: Value, b: Value) -> Result<Value, EvalError> {
             }
             _ => internal("a boolean combiner on non-booleans"),
         },
-        // The tacks are `scan`-only, so the checker rejects them under `fold`.
-        "<:" | ":>" => internal("a non-commutative combiner reached `fold`"),
+        // The tacks: keep-left discards each later operand, keep-right each
+        // earlier one.  Associative but not commutative, so `fold` refuses
+        // them and only a scan (whose key supplies an order) admits them.  The
+        // const evaluator's `arith` has the same two arms.
+        "<:" => Ok(a),
+        ":>" => Ok(b),
+        other => internal(format!("`{other}` is not a combiner")),
+    }
+}
+
+/// `scan` and `prescan` (ADR 0031, Decision 7): arrange the fiber by the key,
+/// scan the mapped values along that order, and return one value per input row
+/// **in input order**.
+///
+/// Backed by `formal/Mensura/Arranged.lean`: `IsArrangement` (existence needs
+/// no hypothesis, uniqueness is Tier 1), `scanBag`/`prescanBag` as the `tail`
+/// and `dropLast` of one `List.scanl`, and `scanFiber_splitSafe`.
+///
+/// The un-permutation at the end is not incidental.  `eval_map_bags` zips a
+/// window field element-wise against the group's members in input order, so a
+/// scan that returned its values in *key* order would silently attach each
+/// value to the wrong row.  Nothing in the type system catches that, which is
+/// why the scatter is written explicitly rather than left to a sort's output.
+///
+/// Ties resolve to input order, because the sort is stable.  That is
+/// deterministic but it is *not* a determinism the type system licenses: Tier 1
+/// (`Mensura.IsArrangement.unique`) is what would license it, the checker
+/// cannot verify key injectivity on data, and ADR 0031 leaves Tier 3's escape
+/// hatch unattached.  So the honest position is a reproducible answer plus this
+/// note, rather than an arbitrary order or a rejection.
+fn eval_scan(
+    scope: &Scope,
+    which: &str,
+    combiner: &Expr,
+    mapper: &Expr,
+    key: &Expr,
+    bag: &Expr,
+) -> Result<RtVal, EvalError> {
+    let ExprKind::Combiner(raw) = &combiner.kind else {
+        return internal("a scan combiner that is not a backticked operator");
+    };
+    let exclusive = which == "prescan";
+    // Both lambdas read the same rows, so the fiber is transposed once.
+    let elements = mapper_elements(scope, bag)?;
+    let values = apply_row_fn(scope, mapper, &elements, "a scan mapper")?;
+    let keys = apply_row_fn(scope, key, &elements, "a scan order key")?;
+    let n = values.len();
+    if keys.len() != n {
+        return internal("a scan's mapper and key disagree on the row count");
+    }
+    // Arrange: the permutation that sorts the rows by the key.  Stable, so
+    // ties keep input order (see the note above).
+    let descending = key_is_descending(key);
+    let mut perm: Vec<usize> = (0..n).collect();
+    let mut cmp_err = None;
+    perm.sort_by(|&i, &j| match compare(&keys[i], &keys[j]) {
+        Ok(ord) => {
+            if descending {
+                ord.reverse()
+            } else {
+                ord
+            }
+        }
+        Err(e) => {
+            cmp_err.get_or_insert(e);
+            std::cmp::Ordering::Equal
+        }
+    });
+    if let Some(e) = cmp_err {
+        return Err(e);
+    }
+    // Scan along the arrangement, scattering each result back to its row.
+    let mut out = vec![Value::Missing; n];
+    let mut acc: Option<Value> = None;
+    for (rank, &row) in perm.iter().enumerate() {
+        if exclusive {
+            // The proper prefix `1..i-1`.  At rank 0 that prefix is empty, so
+            // the answer is the combiner's identity, or missing where the
+            // domain has none: this is where `lag`'s first row comes from.
+            out[row] = match &acc {
+                Some(v) => v.clone(),
+                None => identity_of(raw, &values[row])?,
+            };
+            acc = Some(match acc {
+                Some(a) => combine(raw, a, values[row].clone())?,
+                None => values[row].clone(),
+            });
+        } else {
+            let next = match acc {
+                Some(a) => combine(raw, a, values[row].clone())?,
+                None => values[row].clone(),
+            };
+            out[row] = next.clone();
+            acc = Some(next);
+        }
+        let _ = rank;
+    }
+    Ok(RtVal::Bag(out))
+}
+
+/// Apply a one-parameter lambda to each row of a transposed fiber.
+fn apply_row_fn(
+    scope: &Scope,
+    f: &Expr,
+    elements: &[RtVal],
+    what: &str,
+) -> Result<Vec<Value>, EvalError> {
+    let ExprKind::Lambda { params, body, .. } = &f.kind else {
+        return internal(format!("{what} that is not a lambda"));
+    };
+    let [param] = &params[..] else {
+        return internal(format!("{what} that does not take exactly one row"));
+    };
+    let mut out = Vec::with_capacity(elements.len());
+    for element in elements {
+        let mut inner = scope.clone();
+        inner.insert(param.name.clone(), element.clone());
+        match eval_scalar(&inner, body)? {
+            RtVal::V(v) => out.push(v),
+            _ => return internal(format!("{what} that did not produce a value")),
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a key lambda's body is wrapped in `desc`, i.e. orders the dual.
+///
+/// The marker is read off the *syntax* rather than carried in a `Value`, for
+/// the same reason `Ty::Desc` is not a `ColumnType`: direction is a compile-time
+/// annotation on a key, and putting it in the runtime value type would let an
+/// order marker reach storage.  Lowering preserves the head, since
+/// `spine_head_is_function` beta-reduces a literal lambda applied to a row but
+/// leaves an unknown head like `desc` in place with its argument reduced.
+fn key_is_descending(key: &Expr) -> bool {
+    let ExprKind::Lambda { body, .. } = &key.kind else {
+        return false;
+    };
+    let mut cur = body.as_ref();
+    while let ExprKind::App(f, _) = &cur.kind {
+        if matches!(&f.kind, ExprKind::Name(n) if n == "desc") {
+            return true;
+        }
+        cur = f;
+    }
+    false
+}
+
+/// The combiner's identity at the sample's domain, for `prescan`'s first
+/// position (whose prefix is empty).
+///
+/// Derived from a sample element rather than from a type, because the runtime
+/// does not carry a `ColumnType` here; a dimensioned real is just a real, and
+/// its identity is `0.0` at any dimension.  An identity-free combiner returns
+/// `Value::Missing`, which the checker has already reflected by typing the
+/// column optional (`type_scan`'s matrix), so this is not a silent widening.
+fn identity_of(op: &str, sample: &Value) -> Result<Value, EvalError> {
+    match op {
+        "+" => match sample {
+            Value::Int(_) => Ok(Value::Int(0)),
+            Value::Real(_) => Ok(Value::Real(0.0)),
+            _ => internal("`+` over a non-numeric domain"),
+        },
+        "*" => match sample {
+            Value::Int(_) => Ok(Value::Int(1)),
+            Value::Real(_) => Ok(Value::Real(1.0)),
+            _ => internal("`*` over a non-numeric domain"),
+        },
+        "or" => Ok(Value::Bool(false)),
+        "and" => Ok(Value::Bool(true)),
+        // No smallest element of nothing, and no previous element of the
+        // first: the honest answer is absence (ADR 0029 Decision 4).
+        "<<" | ">>" | "<:" | ":>" => Ok(Value::Missing),
         other => internal(format!("`{other}` is not a combiner")),
     }
 }
@@ -1137,6 +1307,14 @@ fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, E
             };
             return eval_fold(scope, combiner, mapper, bag);
         }
+        "scan" | "prescan" => {
+            let [combiner, mapper, key, bag] = args else {
+                return internal(format!(
+                    "`{name}` expects a combiner, a mapper, a key, and a bag"
+                ));
+            };
+            return eval_scan(scope, name, combiner, mapper, key, bag);
+        }
         "map" => {
             let [mapper, bag] = args else {
                 return internal("`map` expects a mapper and a bag");
@@ -1148,6 +1326,13 @@ fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, E
     let [arg] = args else {
         return internal(format!("`{name}` expects one argument"));
     };
+    // `desc` is transparent at the value level: the direction it marks is read
+    // off the key's syntax by `key_is_descending`, so evaluating it yields the
+    // underlying value unchanged.  Keeping the marker out of `Value` is what
+    // stops an order annotation from reaching storage.
+    if name == "desc" {
+        return eval_scalar(scope, arg);
+    }
     match (name.as_str(), eval_scalar(scope, arg)?) {
         ("to_real", RtVal::V(Value::Int(i))) => Ok(RtVal::V(Value::Real(i as f64))),
         ("to_real", RtVal::Bag(vs)) => Ok(RtVal::Bag(

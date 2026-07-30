@@ -710,6 +710,192 @@ admitted here.
   construction.
 \end{proof}
 
+\section{The arranged structure}
+
+This section is ADR 0029's Stage 2, the gate on the surface \texttt{scan},
+\texttt{prescan}, \texttt{desc}, and the \texttt{series} module (ADR 0031
+Decision 7).  \ref{def:table} fixes a fiber's content as a multiset, and the
+core module argues \emph{for} that choice: the order of nested rows is
+``arbitrary but fixed'', so the model declines to assert an order it never
+uses.  That argument is why the ordered verbs need new structure, and the
+structure added here does not weaken the substrate: content stays a
+multiset, and an arrangement is a \emph{relation} between it and a list of
+the same elements.
+
+\begin{definition}[Arranged tables and window operations]
+  \label{def:arranged}\lean{Mensura.IsArrangement}\uses{def:table}\leanok
+  Order-dependent verbs (lag, cumulative sum, rank) are not bag
+  operations: lift the content from the bag monad to the list monad, as in
+  the book's ``grouped and arranged'' section.  A list arranges a bag by a
+  key when it holds exactly the bag's elements and its keys are
+  non-decreasing.
+
+  Stated as a relation rather than as a chosen sort, because existence and
+  uniqueness have different hypotheses (\ref{thm:arrange-exists},
+  \ref{thm:arrange-unique}) and a sort conflates them.
+
+  Split-invariance is a hypothesis to pin, not a contradiction to resolve.
+  A \ref{def:split} routes each key's \emph{whole} multiset to one side, so
+  a fiber is never torn and an arranged verb sorts an intact bag: the
+  results agree whichever side the key lands on
+  (\ref{thm:scanfiber-splitsafe}).  What is deliberately \emph{not}
+  split-invariant is lifting to the list monad in general, where an order
+  \emph{across} keys would be asserted; these operations, under this split,
+  are safe.  Determinism is the separate obligation, discharged by
+  \ref{thm:arrange-unique}.
+\end{definition}
+
+\begin{theorem}[Every fiber can be arranged]
+  \label{thm:arrange-exists}\lean{Mensura.exists_isArrangement}\leanok
+  \uses{def:arranged}
+  With no hypothesis on the key.  Merge sort at the key-induced order
+  supplies the witness, and the pairwise property it guarantees needs only
+  totality and transitivity, neither of which mentions ties.
+\end{theorem}
+\begin{proof}\leanok
+  Induction on the quotient, then merge sort's permutation and pairwise
+  lemmas.
+\end{proof}
+
+\begin{theorem}[Tier 1 determinism: a tie-free key arranges uniquely]
+  \label{thm:arrange-unique}\lean{Mensura.IsArrangement.unique}\leanok
+  \uses{def:arranged, def:functional}
+  A key injective \emph{on the fiber} admits exactly one arrangement.  This
+  is ADR 0029 Decision 11's first tier, and it is the reason the ordered
+  surface needs a totality obligation the unordered one does not: two rows
+  with equal keys are interchangeable, so without injectivity the
+  intermediate values of a scan are not determined.
+
+  The standard sort operation cannot state this.  It requires antisymmetry
+  as a typeclass instance on the element type, which for a key-induced
+  order is global injectivity of the key; tier 1 supplies only the
+  per-fiber fact, and a per-fiber fact yields no global instance.  The
+  proof therefore uses the permutation lemma whose antisymmetry argument is
+  a pointwise hypothesis about the members.
+\end{theorem}
+\begin{proof}\leanok
+  The two arrangements are permutations of each other; discharge
+  antisymmetry pointwise from injectivity and the order's own antisymmetry.
+\end{proof}
+
+\begin{definition}[The inclusive and exclusive scans]
+  \label{def:scanbag}\lean{Mensura.scanBag}\uses{def:arranged}\leanok
+  The inclusive scan's position $i$ carries the fold of elements $1..i$;
+  the exclusive scan's (\texttt{prescanBag}, after Blelloch) carries
+  $1..i-1$, so its first entry folds the empty prefix.  Both are slices of
+  one list scan, which is natively exclusive plus a final total: drop the
+  seed for the inclusive form, drop the total for the exclusive one.
+
+  Hence the first entry of an exclusive scan is the combiner's identity, or
+  \emph{absent} for a combiner that has none.  The missing first row of a
+  lag is therefore not designed; it falls out of the identity-and-emptiness
+  rule that already governs \ref{def:foldbag-opt}.
+\end{definition}
+
+\begin{theorem}[Scan/fold coherence]
+  \label{thm:scan-fold-coherence}\lean{Mensura.scanl_getLast_eq_foldBag}\leanok
+  \uses{def:scanbag, def:foldbag}
+  The last entry of an inclusive scan over \emph{any} arrangement equals
+  the bag's fold.  This is what makes ``same combiner, two variants'' a
+  theorem rather than a slogan: the ordered variant refines the unordered
+  one instead of departing from it, which is why one closed combiner table
+  serves both.
+
+  Note what it does not need: injectivity.  Ties permute the arrangement,
+  but an associative-commutative combiner cannot observe the difference, so
+  the total is determined even when the intermediates are not.  That
+  asymmetry is exactly why a fold needs no order and a scan does.  The
+  claim is also per combiner class: for the associative-only tacks no fold
+  exists to cohere with, which is the formal content of the surface rule
+  admitting them under a scan only.
+\end{theorem}
+\begin{proof}\leanok
+  The last element of a list scan is the left fold; transport along the
+  arrangement's multiset equality and use the fold's commutativity.
+\end{proof}
+
+\begin{theorem}[The prefix decomposition]
+  \label{thm:scan-prefix-decomp}\lean{Mensura.scanl_append_decomp}\leanok
+  \uses{def:scanbag}
+  Scanning a concatenation is the first part's scan followed by the second
+  part's scan seeded at the first part's total, which is what licenses a
+  parallel scan.  Stage 2's analogue of \ref{thm:foldbag-shards}, and
+  unlike it this needs no laws at all, because a list scan asserts no
+  order-independence to protect.
+\end{theorem}
+\begin{proof}\leanok
+  The list scan's append lemma.
+\end{proof}
+
+\begin{definition}[The scan as a fiber action]
+  \label{def:scanfiber}\lean{Mensura.scanFiber}\leanok
+  \uses{def:scanbag, def:fibermap}
+  Arrange the fiber by the key, scan the mapped elements, and write one
+  output row per input row.  Unlike \ref{def:foldfiber} this is a
+  \emph{window} shape: the output bag has the input's cardinality, which is
+  the second group-transform shape \ref{thm:fibermap-exhaustive} already
+  anticipated.
+\end{definition}
+
+\begin{theorem}[A scan is split-safe]
+  \label{thm:scanfiber-splitsafe}\lean{Mensura.scanFiber_splitSafe}\leanok
+  \uses{def:scanfiber, thm:fibermap-splitsafe}
+  The lemma \ref{def:arranged} promises.  A scan is a strict fiber
+  transform, so it inherits safety unchanged: the arrangement is computed
+  inside one key's fiber, and a split never tears a fiber.
+\end{theorem}
+\begin{proof}\leanok
+  Strictness, then the fiber-transform safety lemma.  The empty bag
+  arranges to the empty list, whose scan is empty.
+\end{proof}
+
+\begin{theorem}[A scan preserves the rectangle]
+  \label{thm:scanfiber-exhaustive}\lean{Mensura.scanFiber_exhaustive}\leanok
+  \uses{def:scanfiber, thm:fibermap-exhaustive}
+  One output row per input row, so no fiber loses its presence.
+\end{theorem}
+\begin{proof}\leanok
+  A non-empty fiber arranges to a non-empty list, and the scan preserves
+  its length.
+\end{proof}
+
+\begin{theorem}[Functional discharges tier 1, vacuously]
+  \label{thm:keyinjon-of-functional}\lean{Mensura.keyInjOn_of_functional}\leanok
+  \uses{thm:arrange-unique, def:functional}
+  A functional table's fibers hold at most one row, so no key can tie.
+  Recorded because ADR 0029 asks the determinism hypothesis to compose with
+  functionality rather than restate it, and it does; but the composition is
+  \emph{vacuous}, since a one-row fiber makes any scan a one-element list.
+  So it is a compatibility bridge (a singleton-cardinality store needs no
+  tie ceremony), not evidence that a scan over a real bag is deterministic.
+  The substantive hypothesis is \ref{thm:keyinjon-demote-tag}.
+\end{theorem}
+\begin{proof}\leanok
+  At cardinality at most one there are no two distinct members.
+\end{proof}
+
+\begin{theorem}[A projected key component is injective on every fiber]
+  \label{thm:keyinjon-demote-tag}\lean{Mensura.keyInjOn_demote_tag}\leanok
+  \uses{thm:arrange-unique, def:demote, def:functional}
+  The \emph{substantive} tier 1 discharge, and the theorem a checker rule may
+  cite.  \ref{def:demote} merges the rows of every key $(k,d)$ into the single
+  output key $k$, tagging each with its own $d$.  So if the input is
+  functional, at most one row per $(k,d)$, then each output fiber holds at most
+  one row per tag value, and the tag column is injective on the fiber.
+
+  Unlike \ref{thm:keyinjon-of-functional} this is not vacuous: the fiber may
+  hold many rows, and what is bounded is how many share a tag.  It is also the
+  common shape of a window (a history keyed by entity and time, projected to
+  the entity, scanned in time order), and the surface tracks exactly this fact
+  as a grading over the flat table, carried unchanged through the projection
+  because a grading does not depend on which columns currently form the key
+  (ADR 0024).
+\end{theorem}
+\begin{proof}\leanok
+  Two rows of one output fiber agreeing on the tag came from one input key,
+  which holds at most one row, so they are the same row.
+\end{proof}
+
 \chapter{Physical dimensions}
 
 This chapter is standalone: it backs ADR 0026's dimensional-unit model and
@@ -774,15 +960,6 @@ are the intended targets.
   arguments split by compatible indicators) and settle it for the binary
   inner join, which can erase rows from either side.
 \end{theorem}
-
-\begin{definition}[Arranged tables and window operations]
-  \label{def:arranged}\lean{Mensura.Arranged}\uses{def:table} % planned
-  Order-dependent verbs (lag, cumulative sum, rank) are not bag
-  operations: lift the content from the bag monad to the list monad (an
-  explicit row-number index), as in the book's ``grouped and arranged''
-  section.  Deliberately not split-invariant; the point is to place them
-  precisely.
-\end{definition}
 
 \begin{theorem}[Axis-blind splits preserve the rectangle]
   \label{thm:split-exhaustive-axis-blind}

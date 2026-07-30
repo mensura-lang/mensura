@@ -1,0 +1,48 @@
+// Rejected at resolve (typing): a lexicographic tuple key is ADR 0031
+// Decision 7's tier-2 tie spelling, and it is **not yet supported**.
+//
+// A value tuple has no type in the checker today (the tuple syntax exists only
+// to destructure a tupled lambda's parameters, ADR 0030 Decision 2), and adding
+// one collides with that convention: `f (a, b)` currently binds two parameters
+// rather than passing one pair.  That is an open design question, so the
+// diagnostic names the gap instead of reporting a generic "unsupported".
+//
+// Scalar keys cover every binding in the bundled `series` module, so nothing in
+// the shipped vocabulary waits on this.
+//
+// **When tuple keys land, the injectivity rule must extend with them.**  A scan
+// requires a tie-free order key, discharged either by a grading over
+// `key + {column}` (`Mensura.keyInjOn_demote_tag`) or by an explicit claim on
+// the pipeline.  A tuple key is injective when the *whole component set* is,
+// which is a grading over `key + {c1, c2, ...}`, so the lookup generalizes from
+// one column to a set rather than needing a new mechanism.  Two things to get
+// right at that point:
+//
+//   - the components' union is what must be graded, not each component
+//     separately (a tuple can be injective when no single part is, which is the
+//     entire reason tier 2 exists);
+//   - a `desc` marker on any component is transparent to the question, since
+//     the dual of an injective key is injective.
+//
+// Whoever implements tier 2 should extend the grading lookup and the claim in
+// the same change, or a tuple key will silently bypass a check its scalar
+// counterpart has to pass.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    taken_at: date
+    seq: int
+  }
+}
+
+view bad {
+  readings
+    |> map_bags |k, b| (
+      .run = scan `+` (|r| r.temperature) (|r| (r.taken_at, r.seq)) b
+    )
+}

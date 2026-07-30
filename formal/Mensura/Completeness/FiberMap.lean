@@ -28,8 +28,13 @@ Honest scope: the clean `iff` here is for the key-preserving fragment; the
 graded generalization along a reindexing function is
 `Mensura.Completeness.Reindex`.  Order-dependent verbs (window functions:
 `lag`, `cumsum`, `rank`) are not bag operations; they require lifting from
-the bag monad to the list monad (an explicit row-number index) and are out
-of scope, as in the chapter's "grouped and arranged" section.
+the bag monad to the list monad, as in the chapter's "grouped and arranged"
+section.  That lifting is `Mensura.Arranged` (ADR 0029 Stage 2), and it does
+not escape this file's characterization: a scan arranges one key's fiber and
+emits one row per input row, so it is a strict `fiberMap` and inherits
+split-safety from `fiberMap_splitSafe` unchanged (`scanFiber_splitSafe`).
+What the arrangement adds is an order *within* a fiber, which `split` never
+tears; what stays out of scope is an order *across* keys.
 -/
 
 import Mensura.Core.Ops

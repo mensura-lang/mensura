@@ -30,11 +30,14 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
              ('m1', '2020-01-01', 'operational', NULL),
              ('m2', '2021-06-15', 'degraded', '2025-12-01'),
              ('m3', '2022-03-10', 'failure', NULL);
+           -- `m1`'s two readings are inserted out of order under `taken_at`,
+           -- so a window that ignores the key would be indistinguishable from
+           -- one that honours it (ADR 0031, Decision 7).
            INSERT INTO "readings" VALUES
-             ('m1', 300.0),
-             ('m1', 302.5),
-             ('m2', 299.0),
-             ('m3', 371.5);"#,
+             ('m1', 302.5, '2025-01-02'),
+             ('m1', 300.0, '2025-01-01'),
+             ('m2', 299.0, '2025-01-01'),
+             ('m3', 371.5, '2025-01-01');"#,
     )
     .unwrap();
     db
@@ -50,6 +53,9 @@ fn attention_needed_materializes_the_degraded_machines() {
         materialized,
         vec![
             ("attention_needed".to_string(), 1),
+            // The window view emits one row per reading, not one per machine:
+            // four readings in, four rows out (ADR 0031, Decision 7).
+            ("reading_trend".to_string(), 4),
             ("machine_temperature".to_string(), 3),
             ("overheating".to_string(), 1),
         ]
@@ -75,7 +81,7 @@ fn attention_needed_materializes_the_degraded_machines() {
 
     // A re-run over unchanged stores replaces the contents, not appends.
     let again = materialize_views(&mut db, &program).unwrap();
-    assert_eq!(again.len(), 3);
+    assert_eq!(again.len(), 4);
     assert_eq!(db.scan(&view.shape()).unwrap().len(), 1);
 }
 
@@ -107,6 +113,73 @@ fn machine_temperature_reduces_the_bag_store() {
 }
 
 #[test]
+fn reading_trend_scans_each_machine_in_key_order() {
+    // The window path end to end (ADR 0031 Decision 7, gated by ADR 0029's
+    // Stage 2).  `m1`'s two readings are *seeded out of order* under
+    // `taken_at`, so this distinguishes a scan that honours the key from one
+    // that walks the bag as stored.
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
+    materialize_views(&mut db, &program).unwrap();
+
+    let view = program
+        .views
+        .iter()
+        .find(|v| v.name == "reading_trend")
+        .expect("the example declares reading_trend");
+    let rows = db.scan(&view.shape()).unwrap();
+    assert_eq!(rows.len(), 4, "one output row per input reading");
+
+    // Columns, in the record's declaration order: id, running_peak, previous,
+    // next.
+    // `m1` at 2025-01-01 is the earlier reading (300.0) even though it was
+    // inserted second, so it is the one whose `previous` is missing and whose
+    // running peak is its own value.
+    let m1: Vec<&Vec<Value>> = rows
+        .iter()
+        .filter(|r| r[0] == Value::String("m1".into()))
+        .collect();
+    assert_eq!(m1.len(), 2);
+    let earlier = m1
+        .iter()
+        .find(|r| r[1] == Value::Real(300.0))
+        .expect("the earlier reading's running peak is its own value");
+    assert_eq!(
+        earlier[2],
+        Value::Missing,
+        "the first row under the order has no predecessor: `lag` is a \
+         `prescan` at keep-right, which has no identity"
+    );
+    let later = m1
+        .iter()
+        .find(|r| r[1] == Value::Real(302.5))
+        .expect("the later reading's running peak is the group max so far");
+    assert_eq!(
+        later[2],
+        Value::Real(300.0),
+        "the later row's predecessor is the earlier one *under the key*, not \
+         under the insertion order"
+    );
+    // `lead` is the mirror: it is `lag` at the dual key, so the *last* row
+    // under the order is the missing one, not the first.  That symmetry is not
+    // coded anywhere; it falls out of `lead` reusing `prescan` at `desc`.
+    assert_eq!(earlier[3], Value::Real(302.5));
+    assert_eq!(later[3], Value::Missing);
+
+    // A single-reading machine: its only row is also its first, so `previous`
+    // is missing and the running peak is its own value.
+    let m3 = rows
+        .iter()
+        .find(|r| r[0] == Value::String("m3".into()))
+        .expect("m3 has a reading");
+    assert_eq!(m3[1], Value::Real(371.5));
+    // Its only row is both the first and the last under the order, so both
+    // neighbours are absent.
+    assert_eq!(m3[2], Value::Missing);
+    assert_eq!(m3[3], Value::Missing);
+}
+
+#[test]
 fn overheating_compares_against_the_lowered_const() {
     // The units path end to end (ADR 0026/0027): `overheat` is a top-level
     // const (`350.0 * kelvin`) folded into the view body at resolve time,
@@ -124,6 +197,10 @@ fn overheating_compares_against_the_lowered_const() {
     let rows = db.scan(&view.shape()).unwrap();
     assert_eq!(
         rows,
-        vec![vec![Value::String("m3".into()), Value::Real(371.5)]]
+        vec![vec![
+            Value::String("m3".into()),
+            Value::Date("2025-01-01".into()),
+            Value::Real(371.5),
+        ]]
     );
 }

@@ -1,0 +1,24 @@
+// Rejected at resolve (typing): a scan's order key must land in an orderable
+// domain (ADR 0031, Decision 7).  `string` is equatable but not orderable in
+// this language (ADR 0014), so it cannot arrange a fiber.
+//
+// The obligation is decidable, which is the whole reason the key may be an open
+// lambda while the combiner may not: a domain's orderability is a type fact,
+// whereas a comparator's being a strict total order is a law no checker could
+// verify on a user function.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr* {
+    temperature: real
+    label: string
+  }
+}
+
+view bad {
+  readings
+    |> map_bags |k, b| (.run = scan `+` (|r| r.temperature) (|r| r.label) b)
+}

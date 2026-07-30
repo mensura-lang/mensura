@@ -23,6 +23,16 @@ pub fn encoded_len(s: &str, encoding: PositionEncoding) -> u32 {
     }
 }
 
+/// The largest character boundary of `src` at or before `offset`, and never
+/// past its end.  `str::floor_char_boundary` is unstable, so this is the walk.
+fn clamp_to_boundary(src: &str, offset: usize) -> usize {
+    let mut offset = offset.min(src.len());
+    while !src.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 /// The byte offset of the start of each line in a source string.
 pub struct LineIndex {
     line_starts: Vec<usize>,
@@ -41,7 +51,13 @@ impl LineIndex {
 
     /// The `(line, character)` of a byte offset, with `character` in the given
     /// encoding.  `line` and `character` are both zero-based, as LSP expects.
+    ///
+    /// An offset outside `src`, or inside a multi-byte character, is clamped
+    /// rather than fatal: a language server must survive a span it cannot
+    /// render.  Such a span is a bug elsewhere, and the clamped position sends
+    /// the reader to the end of the file instead of killing the session.
     pub fn position(&self, src: &str, offset: usize, encoding: PositionEncoding) -> (u32, u32) {
+        let offset = clamp_to_boundary(src, offset);
         // The line is the last line start at or before the offset.
         let line = self.line_starts.partition_point(|&start| start <= offset) - 1;
         let line_start = self.line_starts[line];
@@ -63,6 +79,23 @@ mod tests {
         // First byte of the second line.
         assert_eq!(li.position(src, 3, PositionEncoding::Utf8), (1, 0));
         assert_eq!(li.position(src, 5, PositionEncoding::Utf8), (1, 2));
+    }
+
+    #[test]
+    fn clamps_an_offset_from_outside_the_source() {
+        // A diagnostic raised inside a bundled module carries an offset into
+        // *its* source (spans have no file identity yet), which may run past
+        // the document being rendered.  Clamp, never panic.
+        let src = "ab\ncde\n";
+        let li = LineIndex::new(src);
+        assert_eq!(
+            li.position(src, 1899, PositionEncoding::Utf8),
+            li.position(src, src.len(), PositionEncoding::Utf8)
+        );
+        // Mid-character offsets walk back to the boundary.
+        let multi = "é";
+        let li = LineIndex::new(multi);
+        assert_eq!(li.position(multi, 1, PositionEncoding::Utf8), (0, 0));
     }
 
     #[test]

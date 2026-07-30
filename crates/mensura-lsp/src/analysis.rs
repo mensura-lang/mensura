@@ -175,6 +175,30 @@ mod tests {
     }
 
     #[test]
+    fn a_module_diagnostic_lands_inside_the_document() {
+        // `bag.sum`'s body lives in `stdlib/bag.mensura`, a longer file than
+        // this document.  Before the checker re-anchored such diagnostics at the
+        // call site, this asked the line index for an offset past the end of the
+        // source and the server panicked mid-session.
+        let src = "import bag\n\
+                   unit U { id: string }\n\
+                   store s { unit { U } attr* { label: string } }\n\
+                   view v { s |> assume { complete }\n\
+                              |> map_bags |k, b| (.t = bag.sum b.label) }\n";
+        let analysis = analyze(src, PositionEncoding::Utf8);
+        assert!(!analysis.diagnostics.is_empty());
+        let lines = src.lines().count() as u32;
+        for d in &analysis.diagnostics {
+            assert!(
+                d.range.end.line < lines,
+                "{:?} is outside the document: {}",
+                d.range,
+                d.message
+            );
+        }
+    }
+
+    #[test]
     fn diagnostics_report_an_unknown_unit() {
         let analysis = analyze("store S { unit { Missing } }", PositionEncoding::Utf8);
         assert!(!analysis.diagnostics.is_empty());
