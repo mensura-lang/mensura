@@ -16,10 +16,10 @@ fn fleet_program() -> ResolvedProgram {
     mensura_types::resolve(&program).expect("should resolve")
 }
 
-/// Create the example's stores and seed both: the `machines` singletons
-/// store and the `readings` bag store (duplicate keys are the point of the
-/// latter, ADR 0022).  The dimensioned `temperature` column stores plain
-/// base-unit (kelvin) magnitudes (`docs/toolkit/00-storage-backend.md`).
+/// Create the example's stores and seed both singletons stores: `machines`
+/// and the `readings` history keyed by `(machine_id, taken_at)` that the
+/// views `demote` (ADR 0024).  The dimensioned `temperature` column stores
+/// plain base-unit (kelvin) magnitudes (`docs/toolkit/00-storage-backend.md`).
 fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
     let mut db = SqliteBackend::open_in_memory().unwrap();
     for schema in &program.schemas {
@@ -30,14 +30,15 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
              ('m1', '2020-01-01', 'operational', NULL),
              ('m2', '2021-06-15', 'degraded', '2025-12-01'),
              ('m3', '2022-03-10', 'failure', NULL);
-           -- `m1`'s two readings are inserted out of order under `taken_at`,
-           -- so a window that ignores the key would be indistinguishable from
-           -- one that honours it (ADR 0031, Decision 7).
+           -- `m1`'s two readings are inserted out of order under `taken_at`.
+           -- The store scan orders by the full key, so they arrive sorted
+           -- anyway; the scan-order discrimination for the window operators
+           -- lives in the evaluator's unit tests.
            INSERT INTO "readings" VALUES
-             ('m1', 302.5, '2025-01-02'),
-             ('m1', 300.0, '2025-01-01'),
-             ('m2', 299.0, '2025-01-01'),
-             ('m3', 371.5, '2025-01-01');"#,
+             ('m1', '2025-01-02', 302.5),
+             ('m1', '2025-01-01', 300.0),
+             ('m2', '2025-01-01', 299.0),
+             ('m3', '2025-01-01', 371.5);"#,
     )
     .unwrap();
     db
@@ -86,12 +87,13 @@ fn attention_needed_materializes_the_degraded_machines() {
 }
 
 #[test]
-fn machine_temperature_reduces_the_bag_store() {
-    // The end-to-end bag-store path (ADR 0022 + ADR 0023): the `readings`
-    // bag holds several rows per machine, the view assumes completeness and
-    // the reducing `map_bags` folds each machine's bag to its maximum.  The
-    // column is dimensioned (`temperature[real]`, ADR 0026); at runtime it
-    // is a plain base-unit magnitude.
+fn machine_temperature_reduces_the_demoted_history() {
+    // The end-to-end key-coarsening path (ADR 0024 + ADR 0023): `demote
+    // taken_at` drops the time out of the key, leaving a bag of readings per
+    // machine, and the reducing `map_bags` folds each machine's bag to its
+    // maximum (completeness assumed at the source, propagated through the
+    // demote).  The column is dimensioned (`temperature[real]`, ADR 0026);
+    // at runtime it is a plain base-unit magnitude.
     let program = fleet_program();
     let mut db = seeded_db(&program);
     materialize_views(&mut db, &program).unwrap();
@@ -115,9 +117,9 @@ fn machine_temperature_reduces_the_bag_store() {
 #[test]
 fn reading_trend_scans_each_machine_in_key_order() {
     // The window path end to end (ADR 0031 Decision 7, gated by ADR 0029's
-    // Stage 2).  `m1`'s two readings are *seeded out of order* under
-    // `taken_at`, so this distinguishes a scan that honours the key from one
-    // that walks the bag as stored.
+    // Stage 2), over a demoted history: no `assume { arranged }`, because
+    // the `(machine_id, taken_at)` grading survives the `demote` and
+    // discharges the scan's tie-freedom (ADR 0024).
     let program = fleet_program();
     let mut db = seeded_db(&program);
     materialize_views(&mut db, &program).unwrap();
@@ -130,8 +132,8 @@ fn reading_trend_scans_each_machine_in_key_order() {
     let rows = db.scan(&view.shape()).unwrap();
     assert_eq!(rows.len(), 4, "one output row per input reading");
 
-    // Columns, in the record's declaration order: id, running_peak, previous,
-    // next.
+    // Columns, in the record's declaration order: machine_id, running_peak,
+    // previous, next.
     // `m1` at 2025-01-01 is the earlier reading (300.0) even though it was
     // inserted second, so it is the one whose `previous` is missing and whose
     // running peak is its own value.

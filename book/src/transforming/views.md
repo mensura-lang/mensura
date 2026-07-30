@@ -146,9 +146,7 @@ of the key, so rows that differed only in their timestamp share the key
 `demote` itself only rekeys: its result is an honest bag of whatever
 rows are present, so it demands nothing, and it *propagates* a completeness
 fact from the finer key to the coarser one, so the `assume` may equally sit
-before it.  The obligation is the reducer's, exactly as above.  This view
-type-checks today; executing a key-coarsening stage is the part of the
-runtime still being built (`docs/toolkit/04-processing-layer.md`).
+before it.  The obligation is the reducer's, exactly as above.
 
 ## What a view tracks
 

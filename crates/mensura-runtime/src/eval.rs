@@ -6,11 +6,11 @@
 //! well-typed, so evaluation cannot fail on shape; every "internal" error
 //! here marks a case the frontend is supposed to have ruled out.  All Tier A
 //! operations execute (`flat_map`, `map_bags`, `promote`, the joins,
-//! `split`/`union`, `unpivot`), plus `pivot` (Tier B only for its lineage
-//! effect, ADR 0020; batch evaluation is unaffected), and the establish
-//! stages (`assume`, `completeness_check`) are identities: their facts are
-//! proven at compile time and trusted at runtime (`ROADMAP.md` M2).
-//! `demote` is not yet executable.
+//! `split`/`union`, `unpivot`), plus the Tier B stages `pivot` and `demote`
+//! (Tier B only for their lineage effect, ADR 0020/0024; batch evaluation
+//! is unaffected), and the establish stages (`assume`,
+//! `completeness_check`) are identities: their facts are proven at compile
+//! time and trusted at runtime (`ROADMAP.md` M2).
 
 use std::collections::BTreeMap;
 
@@ -270,8 +270,7 @@ fn apply_op(
         "unpivot" => Ok(TableVal::Table(eval_unpivot(expect_table(input)?, args)?)),
         "pivot" => Ok(TableVal::Table(eval_pivot(expect_table(input)?, args)?)),
         "assume" | "completeness_check" => Ok(TableVal::Table(expect_table(input)?)),
-        "demote" => err("`demote` is Tier B and not yet executable \
-             (docs/toolkit/04-processing-layer.md)"),
+        "demote" => Ok(TableVal::Table(eval_demote(expect_table(input)?, args)?)),
         other => err(format!(
             "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
         )),
@@ -682,6 +681,44 @@ fn eval_promote(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, E
         for row in &mut table.rows {
             let v = row.remove(nkeys + pos);
             row.insert(nkeys, v);
+        }
+    }
+    Ok(table)
+}
+
+/// `demote cols` (section 6.3): drop the named key columns into the
+/// attribute part.  Dropped columns keep their relative key order and
+/// re-enter at the end of the attribute list, mirroring the checker's
+/// `op_demote` (ADR 0024 section 3).  Its obligations (completeness
+/// propagation, the lineage drop that makes it Tier B) are compile-time
+/// facts; only the rekeying happens here.
+fn eval_demote(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+    let mut names = Vec::new();
+    for arg in args {
+        let ExprKind::Name(name) = &arg.kind else {
+            return internal("`demote` expects column names");
+        };
+        names.push(name.as_str());
+    }
+    let dropped: Vec<usize> = table
+        .key
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| names.contains(&c.name.as_str()))
+        .map(|(i, _)| i)
+        .collect();
+    if dropped.len() != names.len() {
+        return internal("`demote` on a column outside the key");
+    }
+    // Walk the dropped positions right to left so earlier removals do not
+    // shift later ones; each column and value still lands in key order
+    // because insertion happens at the front of the already-demoted block.
+    for (offset, &pos) in dropped.iter().rev().enumerate() {
+        let column = table.key.remove(pos);
+        table.attrs.insert(table.attrs.len() - offset, column);
+        for row in &mut table.rows {
+            let v = row.remove(pos);
+            row.insert(row.len() - offset, v);
         }
     }
     Ok(table)
@@ -2175,17 +2212,101 @@ mod tests {
         );
     }
 
+    /// A history keyed by `(machine, taken_at)`: the shape whose grading
+    /// survives `demote` (ADR 0024).
+    const HISTORY: &str = r#"
+        unit Sample {
+          machine: string
+          taken_at: date
+        }
+        store history {
+          unit { Sample }
+          attr { temperature: real }
+        }
+    "#;
+
     #[test]
-    fn tier_b_demote_reports_not_executable() {
-        let err = try_eval_over(
-            MACHINES,
-            r#"view coarse {
-                 machines |> promote hours |> assume { complete } |> demote hours
+    fn demote_drops_key_columns_to_the_end_in_key_order() {
+        // `demote c a` names the columns out of key order; they still re-enter
+        // at the end of the attribute list in key order, as the checker's
+        // `op_demote` types them (ADR 0024 section 3).
+        let rows = eval_over(
+            r#"
+                unit Triple {
+                  a: string
+                  b: string
+                  c: string
+                }
+                store t {
+                  unit { Triple }
+                  attr { x: int }
+                }
+            "#,
+            r#"view coarse { t |> demote c a }"#,
+            &[(
+                "t",
+                vec![vec![
+                    Value::String("a1".into()),
+                    Value::String("b1".into()),
+                    Value::String("c1".into()),
+                    Value::Int(7),
+                ]],
+            )],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("b1".into()),
+                Value::Int(7),
+                Value::String("a1".into()),
+                Value::String("c1".into()),
+            ]]
+        );
+    }
+
+    #[test]
+    fn promote_then_demote_restores_the_rows() {
+        // The exact round trip is the identity on the rows (`demote_promote`);
+        // only the attribute order moves, `hours` re-entering at the end.
+        let rows = eval(
+            r#"view same {
+                 machines |> promote hours |> demote hours
                }"#,
-            &[("machines", Vec::new())],
-        )
-        .expect_err("Tier B must not execute");
-        assert!(err.message.contains("demote"), "{err}");
-        assert!(err.message.contains("not yet executable"), "{err}");
+            vec![machine("m1", "operational", 10, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Enum("operational".into()),
+                Value::Missing,
+                Value::Int(10),
+            ]]
+        );
+    }
+
+    #[test]
+    fn demote_then_promote_is_the_identity() {
+        // The other round-trip order (`promote_demote`): the demoted column
+        // is the last attribute, so promoting it back restores the source
+        // exactly, column order included.
+        let source = vec![
+            vec![
+                Value::String("m1".into()),
+                Value::Date("2026-01-01".into()),
+                Value::Real(300.0),
+            ],
+            vec![
+                Value::String("m1".into()),
+                Value::Date("2026-01-02".into()),
+                Value::Real(302.5),
+            ],
+        ];
+        let rows = eval_over(
+            HISTORY,
+            r#"view same { history |> demote taken_at |> promote taken_at }"#,
+            &[("history", source.clone())],
+        );
+        assert_eq!(rows, source);
     }
 }

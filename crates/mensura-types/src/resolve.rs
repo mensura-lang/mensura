@@ -2420,8 +2420,9 @@ mod tests {
     #[test]
     fn fleet_monitoring_example_resolves() {
         // The fleet-monitoring example grows milestone by milestone; its
-        // compilable subset must keep resolving.  Today it declares the
-        // `machines` singletons store and the `readings` bag store (ADR 0022).
+        // compilable subset must keep resolving.  Today it declares two
+        // singletons stores: `machines` and the `readings` history keyed by
+        // `(machine_id, taken_at)` that the views `demote` (ADR 0024).
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/examples/fleet-monitoring.mensura");
         let src = std::fs::read_to_string(&path)
@@ -2433,7 +2434,10 @@ mod tests {
             by("machines").cardinality,
             crate::table::Cardinality::Singletons
         );
-        assert_eq!(by("readings").cardinality, crate::table::Cardinality::Bag);
+        assert_eq!(
+            by("readings").cardinality,
+            crate::table::Cardinality::Singletons
+        );
     }
 
     // --- Casing convention (docs/language/05-naming-and-casing.md) ---
