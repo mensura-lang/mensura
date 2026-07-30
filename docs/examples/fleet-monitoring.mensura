@@ -5,8 +5,6 @@
 // sensor columns, `import si`, and const bindings).
 //
 // Still to come, milestone by milestone:
-//   M3+ measurement precision (a library extension of `real`, ADR 0026) and
-//       measure semantics (`@additive`, ...)
 //   M4  device declarations and ingestion (sensor readings land in stores)
 //   M5  windowed feature views and incremental refresh
 //   M6  the leak-free remaining-useful-life pipeline and its validation

@@ -97,8 +97,9 @@ mensura/
   the seven SI base dimensions), top-level `let` bindings, bundled imports,
   and the `si` standard library are implemented (ADRs 0026-0028).  Compound
   (multi-entity) units and foreign-key (`domain`) resolution are scheduled for
-  M4 (where devices and cross-store ingestion first need them); precision is
-  deferred to a future library extension of `real`.  **Const functions** (ADR
+  M4 (where devices and cross-store ingestion first need them).  Precision
+  and measure semantics are **out of scope**: dropped from the roadmap, not
+  deferred to a milestone.  **Const functions** (ADR
   0030) and the **fold half of the aggregate family** (ADR 0031) are
   implemented on top of M3's module machinery: lambdas and partial application
   as compile-time values, `fold` and `map` as curried builtins over a closed
@@ -111,10 +112,8 @@ mensura/
   module, behind ADR 0029's Stage 2.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): devices and `registry`; ingestion endpoints; streaming windows and
-  refresh; measure semantics (M5, where the window rollups it gates are the
-  first consumer); precision; ML signatures and validation; the
-  serving/transport integration; and the toolkit docs for the CLI,
-  diagnostics, and LSP.
+  refresh; ML signatures and validation; the serving/transport integration;
+  and the toolkit docs for the CLI, diagnostics, and LSP.
 
 The original design-only phase is essentially complete for the core; what
 remains is captured per milestone below.
@@ -207,12 +206,11 @@ error.  Delivered.
   and deferred until it has a consumer; finalizing it (the marked import
   form, the manifest schema, the check artifact) is a later,
   post-M3 roadmap item of its own (ADR 0027, Decision 7).
-- Precision (the `NxE` significand/exponent idea) is deferred to a future
-  library extension of `real`, not M3 core.
-- Measure semantics was originally scoped here and has **moved to M5**, next
-  to the window rollups it gates.  Nothing in M3 consumes it, and ADR 0029
-  changed what it should be: an annotation over the combiner table rather
-  than a taxonomy of columns.
+- Precision (the `NxE` significand/exponent idea) and measure semantics are
+  **out of scope**: both were originally scoped here and have been dropped
+  from the roadmap.  If either ever returns, precision is a library
+  extension of `real`, and measure semantics is an annotation over the
+  combiner table (ADR 0029's reframing), not a taxonomy of columns.
 
 Status: complete.  Dimensions, modules, and the `si` stdlib are implemented
 and checked (ADRs 0026-0028, `11-physical-units.md`,
@@ -238,27 +236,17 @@ Output: device readings land in stores under a typed ingestion path.
 
 Output: windowed, incrementally refreshed views over device streams.
 
-- Design docs first: streaming windows and refresh; measure semantics (below).
+- Design docs first: streaming windows and refresh.
 - `sliding_window` and tumbling windows, `latest`, window-closedness, and
   `on_change` / incremental refresh through the processing layer.
-- **Measure semantics**, moved here from M3 because the window rollups it
-  gates are the first consumer.  ADR 0029 reframed it: the annotation
-  declares which **combiners** a column admits (a temperature column admits
-  `min` and `max` but not `+`), a property of the (column, combiner) pair
-  rather than a taxonomy of columns.  That dissolves the problem of defining
-  `@semiadditive` before the language has an axis notion, and it means the
-  doc is best written against ADR 0029's combiner table, which `fold` now
-  realizes (ADR 0031; the table lives in `09-typing-reference.md` section
-  5.4).
 - Per-window sampling inference (Exhaustive when the fleet is fully covered,
   Biased or Representative otherwise).
 - The temporal and dependency typing rules, and temporal referential integrity
   (the "outlives" constraint), extending `docs/language/08-lineage.md`.
 - The ordered primitives that window functions need (**`scan` and `prescan`**,
   the `desc` marker, and the bundled `series` module) have **landed early**,
-  with ADR 0029's Stage 2 `formal/` work, since M5's window rollups and the
-  measure-semantics document both need something concrete to refer to.  What
-  remains here is the *streaming* half: windowed refresh, window-closedness,
+  with ADR 0029's Stage 2 `formal/` work, since M5's window rollups need
+  something concrete to refer to.  What remains here is the *streaming* half: windowed refresh, window-closedness,
   and per-window sampling inference.
 
   The tie model's **tier 1 and tier 3 are enforced**: a scan demands a
@@ -334,10 +322,9 @@ M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 ──► M6
 ```
 
 Units (M3) precede streaming (M5) because a window rollup is a rollup of
-dimensioned quantities, and because measure semantics (now an M5 item) is
-stated over them; streaming precedes ML validation (M6) because the features
-are windowed; serving (M7) is last because it puts the whole typed pipeline
-behind endpoints.
+dimensioned quantities; streaming precedes ML validation (M6) because the
+features are windowed; serving (M7) is last because it puts the whole typed
+pipeline behind endpoints.
 
 ## Validation criterion
 
