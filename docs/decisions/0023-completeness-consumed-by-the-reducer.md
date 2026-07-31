@@ -20,6 +20,15 @@ propagation rules are backed by proofs or stay conservative,
 `07-pipelines.md`, `08-lineage.md`, `09-typing-reference.md` (sections 3.4,
 6.2, 6.3, 7, 8, 10, 11), and `10-views.md`.
 
+Amended by `docs/decisions/0035-completeness-cleared-by-demote.md`: the
+propagation rule ("`shrink_key` propagates completeness from the fine
+key to the coarse key") is revoked.  The tracked fact is fiber-level
+completeness at the current key against a fixed intended population,
+which a genuine coarsening destroys; `demote` re-derives the qualifier
+from the ADR 0024 gradings instead, and an establishment step placed
+before the coarsening no longer discharges a reducer placed after it.
+The consumer placement decided here (the reducing `map_bags`) stands.
+
 ## Context
 
 `0017` ratified the M1 surface for completeness: `completeness_check { assert

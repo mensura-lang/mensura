@@ -93,19 +93,22 @@ Completeness is what licenses *reducing* a bag.  A fold (`sum`, `max`,
 `count`) over a bag equals the true value only if none of the bag's rows
 are missing, so it is the reducing `map_bags` that *consumes* the fact.
 Coarsening the key with `demote` demands nothing by itself: a bag of the
-rows present is an honest table, and the operation *propagates* the fact from
-the finer key to the coarser one.  (`pivot` also coarsens the key and needs no
-license either: an absent row simply becomes a missing cell, and a related
-fact, `exhaustive`, decides whether the spread columns come out total.)  So
-completeness is *established* upstream, *propagated* by the rekey, and
-*consumed* by the reduction:
+rows present is an honest table.  But the fact does not survive the
+coarsening either.  Completeness is about the current key, and a whole
+row that is absent at the finer key (a student whose enrollment was
+never recorded has no bag to be partial) becomes a *gap inside* the
+coarser key's bag the moment the keys merge.  (`pivot` also coarsens the
+key and needs no license: an absent row simply becomes a missing cell,
+and a related fact, `exhaustive`, decides whether the spread columns come
+out total.)  So completeness is *established* at the key the reduction
+folds, after the rekey, and *consumed* by the reduction:
 
 ```mensura,ignore
 import bag
 
 enrollments
-|> completeness_check { assert row_count open_offerings == 0 }  // establish
-|> demote course                                        // propagate to the coarser key
+|> demote course                                        // coarsen; the finer key's fact is forfeited
+|> completeness_check { assert row_count open_offerings == 0 }  // establish at the folded key
 |> map_bags |k, b| (.total = bag.sum b.credits)         // consume
 ```
 
@@ -115,10 +118,10 @@ is already whole; only a coarsened key, or a bag store, can hold a partial
 bag for a fold to be silently wrong on.
 
 A table earns the fact in one of three ways: by **mechanism** (a `registry`
-source is complete by construction), by a **check** (the `completeness_check`
-stage above), or by an **annotation** (`@complete_over(col)` on a source store).
-When none of these apply, `assume { ... }` admits the operation by fiat, locally
-and visibly.
+source is complete by construction, at its own declared key), by a **check**
+(the `completeness_check` stage above), or by an **annotation**
+(`@complete_over(col)` on a source store).  When none of these apply,
+`assume { ... }` admits the operation by fiat, locally and visibly.
 
 **What other systems cannot do.**  `SELECT student, sum(credits) ... GROUP BY
 student` will compute a per-student total over whatever rows happen to be loaded.

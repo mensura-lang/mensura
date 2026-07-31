@@ -74,8 +74,12 @@ parameters; views hosting the core pipeline algebra over the expression
 sublanguage, including the Tier B completeness discharge (ADR 0017); and
 typed ingestion through `mensura ingest` (ADR 0034).  A `registry`
 (ADR 0033) shares the store's grammar and resolved model exactly, differing
-in one `kind` field: its table is `Complete` by mechanism, so a reducer
-over it needs no `assume { complete }`.  Key moves on flattened compound
+in one `kind` field: its table is `Complete` by mechanism at its own
+declared key, so a reducer at that key needs no `assume { complete }`.
+The fact is about the current key and does not survive a genuinely
+coarsening `demote` (ADR 0035): the key moves re-derive it from the
+ADR 0024 gradings, and a reducer over a demoted bag discharges its
+obligation after the `demote`.  Key moves on flattened compound
 components and unit-typed shape attributes remain deferred and are
 rejected with "not yet supported" diagnostics.  Worked examples live in
 `docs/examples/*.mensura`.

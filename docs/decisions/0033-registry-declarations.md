@@ -19,6 +19,17 @@ slice.  Endpoint exposure and `auth {}` stay with M7
 (`docs/decisions/0005-identity-and-authorization.md`,
 `docs/decisions/0006-transport-agnostic-surface.md`).
 
+Amended by `docs/decisions/0035-completeness-cleared-by-demote.md`:
+decision 2's propagation sentence ("`demote` propagates it to the
+coarser key with no discharge step anywhere in the pipeline") is
+revoked.  A registry is `Complete` at its own declared key only; a
+genuine coarsening clears the fact, and a reducer over the demoted bag
+discharges its obligation after the `demote`.  The uniform rule itself
+(decision 2, `Complete` at either cardinality) stands, but the store
+contrast moves to `bag`: a `singletons` store now enters `Complete` on
+the same trivial corollary, so the keyword's type-level content lives
+entirely at `bag`.
+
 ## Context
 
 Five documents already promise that a `registry` source is complete by

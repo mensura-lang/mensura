@@ -25,13 +25,15 @@ core, `assert` / `assume` cover anything the hierarchy cannot decide.
 operation states how it transforms the fact, the fact is *established* by a
 mechanism or a check or an annotation, and a downstream operation *demands*
 it.  Completeness is the template (`07-pipelines.md`, "What a pipeline
-tracks" and "Completeness: establish, propagate, consume"):
+tracks" and "Completeness: establish, clear, consume"):
 
-- established by mechanism (`registry` is complete by construction), by a check
-  (`completeness_check { assert ... }`), or by a source annotation
-  (`@complete_over(col)`);
-- preserved by Tier A operations, propagated fine key to coarse key by
-  `demote`, and *demanded* (consumed) by a reducing `map_bags`
+- established by mechanism (`registry` is complete by construction at its
+  own key), by a check (`completeness_check { assert ... }`), or by a
+  source annotation (`@complete_over(col)`);
+- preserved by row-wise Tier A operations, re-derived at the key moves
+  (cleared by a genuine `demote`,
+  `docs/decisions/0035-completeness-cleared-by-demote.md`), and
+  *demanded* (consumed) by a reducing `map_bags`
   (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`; `pivot`'s
   former demand is dissolved by
   `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`);

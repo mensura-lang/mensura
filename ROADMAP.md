@@ -101,9 +101,10 @@ mensura/
   complete**: compound (multi-entity) units and foreign-key (`domain`)
   resolution (ADR 0032: units flatten to dotted columns, `domain` entries
   resolve into `singletons` tabulations, both acyclicity checks run);
-  `registry` declarations whose tables are `Complete` by mechanism
-  (ADR 0033: a `kind` on the resolved schema, so the runtime, backend, and
-  tooling carry them for free); and typed ingestion (ADR 0034: a
+  `registry` declarations whose tables are `Complete` by mechanism at
+  their own declared key (ADR 0033 as amended by ADR 0035: a `kind` on
+  the resolved schema, so the runtime, backend, and tooling carry them
+  for free); and typed ingestion (ADR 0034: a
   delta-shaped backend `apply`, a format-agnostic decoder from name-keyed
   records, `mensura ingest` over JSON Lines, and `PRAGMA foreign_keys` on,
   which makes ADR 0032's clauses enforced).  Precision
