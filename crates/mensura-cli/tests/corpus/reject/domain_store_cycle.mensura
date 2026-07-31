@@ -1,0 +1,23 @@
+// Rejected at resolve: the store dependency graph must be acyclic
+// (`02-stores.md`).  The cycle here is between the *stores*, through
+// unit-reference attributes; neither unit's key references the other, so
+// only the store-graph check catches it.
+unit Person {
+  id: string
+}
+
+unit Machine {
+  serial: string
+}
+
+store persons {
+  unit { Person }
+  domain { favorite: machines }
+  attr { favorite: Machine }
+}
+
+store machines {
+  unit { Machine }
+  domain { owner: persons }
+  attr { owner: Person }
+}

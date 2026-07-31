@@ -93,6 +93,14 @@ Resolution is one level deep: `student_grades.domain` says only where
 the responsibility of `courses`, declared in *its* `domain` block.
 Transitivity follows the store graph.
 
+A `domain` entry must name a **`singletons` store** of the referenced
+unit.  A `bag` store is not a valid target: presence of an entity in a
+bag is incidental to its observations, so "values that appear as
+observations" is ill-defined there, and a bag has no per-key row for a
+reference to land on.  Per-entity facts about a bag's entities live in
+a companion `singletons` store, which is the valid target
+(`docs/decisions/0032-compound-keys-flatten-to-dotted-columns.md`).
+
 ## Attributes
 
 The `attr` block lists the attributes that accompany each observation.

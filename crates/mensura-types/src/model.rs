@@ -22,6 +22,31 @@ pub struct Schema {
     /// blocks, the ADR 0001 default, `card <= 1` over the key) or `Bag`
     /// (`attr*` blocks, many observations per entity, `card >= 0`).
     pub cardinality: Cardinality,
+    /// One entry per `domain` entry: where each unit-reference field
+    /// resolves (ADR 0032).
+    pub foreign_keys: Vec<ForeignKey>,
+    pub span: Span,
+}
+
+/// One resolved `domain` entry (ADR 0032): a unit-reference field of the
+/// store, the unit it references, the `singletons` store it resolves into,
+/// and the pairwise column mapping between the field's flattened columns
+/// and the target store's key columns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForeignKey {
+    /// The unit-reference field being resolved (`course`).
+    pub field: String,
+    /// The referenced unit (`Course`).
+    pub unit: String,
+    /// The target store (`courses`).
+    pub store: String,
+    /// `(child, parent)` column pairs: the field's flattened dotted columns
+    /// in this store (`course.name`) against the target store's key columns
+    /// (`name`), in the referenced unit's flattening order.
+    pub columns: Vec<(String, String)>,
+    /// Whether the reference sits in the key or in the attributes.
+    pub role: ColumnRole,
+    /// The `domain` entry's source span.
     pub span: Span,
 }
 
@@ -163,6 +188,9 @@ pub struct TableShape {
     /// Whether rows are 0-or-1 per key tuple: `true` maps to a composite
     /// primary key over the key columns, `false` (a `bag` view) to none.
     pub keyed: bool,
+    /// The store's resolved `domain` entries (ADR 0032), emitted as
+    /// `FOREIGN KEY` clauses.  Always empty for a view.
+    pub foreign_keys: Vec<ForeignKey>,
 }
 
 impl Schema {
@@ -175,6 +203,7 @@ impl Schema {
             name: self.store.clone(),
             columns: self.columns.clone(),
             keyed: self.cardinality == Cardinality::Singletons,
+            foreign_keys: self.foreign_keys.clone(),
         }
     }
 }
@@ -187,6 +216,7 @@ impl ViewPlan {
             name: self.name.clone(),
             columns: self.columns.clone(),
             keyed: self.cardinality == Cardinality::Singletons,
+            foreign_keys: Vec::new(),
         }
     }
 }

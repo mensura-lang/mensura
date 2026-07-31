@@ -681,6 +681,33 @@ fn bind2(ambient: &Ambient, a: &str, aty: Ty, b: &str, bty: Ty) -> BTreeMap<Stri
     names
 }
 
+/// Group flat dotted column names into nested record groups (ADR 0032): the
+/// column `course.department.code` presents as `course` holding
+/// `department` holding `code`, so member access follows the unit hierarchy
+/// exactly as `01-units.md` writes it.  The resolver reserves a group's
+/// prefix, so a scalar column can never collide with a group name.
+fn nest_fields(fields: BTreeMap<String, Ty>) -> BTreeMap<String, Ty> {
+    let mut out: BTreeMap<String, Ty> = BTreeMap::new();
+    let mut groups: BTreeMap<String, BTreeMap<String, Ty>> = BTreeMap::new();
+    for (name, ty) in fields {
+        match name.split_once('.') {
+            None => {
+                out.insert(name, ty);
+            }
+            Some((head, rest)) => {
+                groups
+                    .entry(head.to_string())
+                    .or_default()
+                    .insert(rest.to_string(), ty);
+            }
+        }
+    }
+    for (head, sub) in groups {
+        out.insert(head, Ty::Record(nest_fields(sub)));
+    }
+    out
+}
+
 /// The value row `r` of a table (ADR 0015): the non-key columns as single
 /// values carrying their totality. The key columns live in the key `k`.
 fn value_record(table: &TableType) -> Ty {
@@ -694,13 +721,14 @@ fn value_record(table: &TableType) -> Ty {
             },
         );
     }
-    Ty::Record(fields)
+    Ty::Record(nest_fields(fields))
 }
 
 /// The **fiber** `b` of a table (ADR 0031, Decision 1): the bag of rows at one
 /// key.  The field types are the *projections* (`b.x` is a bag of `x`), which
 /// is the columnar presentation of ADR 0015 kept as sugar; the key columns
-/// live in `k`.
+/// live in `k`.  A unit-reference group nests as a record of bags
+/// (ADR 0032), so `b.course.name` is still a projection.
 fn fiber(table: &TableType) -> Ty {
     let mut fields = BTreeMap::new();
     for col in &table.content.columns {
@@ -712,7 +740,7 @@ fn fiber(table: &TableType) -> Ty {
             },
         );
     }
-    Ty::Rows(fields)
+    Ty::Rows(nest_fields(fields))
 }
 
 /// A key view of a table: the key columns as total values.
@@ -727,7 +755,7 @@ fn key_record(table: &TableType) -> Ty {
             },
         );
     }
-    Ty::Record(fields)
+    Ty::Record(nest_fields(fields))
 }
 
 fn column_opt(table: &TableType, name: &str) -> Optionality {
@@ -2344,6 +2372,7 @@ mod tests {
                 ),
             ],
             cardinality: crate::table::Cardinality::Singletons,
+            foreign_keys: Vec::new(),
             span: Span::new(0, 0),
         };
         TableType::from_store(&schema)

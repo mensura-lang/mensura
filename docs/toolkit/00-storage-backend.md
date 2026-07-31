@@ -155,12 +155,23 @@ The choice is made with the processing layer in mind:
 SQLite remains the queryable current-state store; DBSP, when it arrives, is a
 separate engine fed by the store's changes.
 
+## Compound stores
+
+A store of a compound unit maps like any other (ADR 0032): its
+unit-reference fields are already flattened to dotted columns in the
+schema, so the table carries quoted dotted column names
+(`"course.department.code"`) and the composite primary key spans the
+flattened key.  Each resolved `domain` entry emits a `FOREIGN KEY` clause
+referencing the target store's key columns.  The clauses are
+**unenforced**: SQLite checks them only under `PRAGMA foreign_keys = ON`,
+which the backend does not set; whether ingestion turns it on is that
+slice's decision.
+
 ## Forward references
 
 - Reads, inserts, updates, and deletes (CRUD), and the delta/changelog write
   path that feeds the processing layer.  The read side and batch view
   materialization are specified in `04-processing-layer.md`.
-- Compound units, `domain` resolution, and foreign keys.
 - Schema migration when a store's shape changes between revisions
   (`mensura migrate` in `ROADMAP.md`).
 - Additional backends behind the same trait.

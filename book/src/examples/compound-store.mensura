@@ -1,0 +1,32 @@
+unit Person {
+  id: string
+}
+
+unit Course {
+  name: string
+  year: int
+}
+
+unit Enrollment {
+  student: Person
+  course: Course
+}
+
+store students {
+  unit { Person }
+  attr { admission: date }
+}
+
+store courses {
+  unit { Course }
+  attr { credits: int }
+}
+
+store student_grades {
+  unit { Enrollment }
+  domain {
+    student: students
+    course:  courses
+  }
+  attr { grade: real }
+}

@@ -58,13 +58,17 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
   mdBook preprocessor that highlights and check-gates the `book/` code
   blocks (`docs/toolkit/03-book-highlighting.md`).
 
-Current scope: scalar-index units; stores with primitive attributes
-(`string`, `int`, `real`, `bool`, `date`, and named `enum` types whose
-variants are string literals); shapes with `Unit`/`string` parameters; and
-views hosting the core pipeline algebra over the expression sublanguage,
-including the Tier B completeness discharge (ADR 0017).  Compound
-units, `domain`/foreign-key resolution, and physical-unit/precision types
-are deferred and rejected with "not yet supported" diagnostics.  Worked
+Current scope: basic and compound units (a compound key flattens to dotted
+columns, and a store of a compound unit resolves each unit-reference field
+in its `domain` block, ADR 0032); stores with primitive attributes
+(`string`, `int`, `real`, `bool`, `date`, named `enum` types whose
+variants are string literals, dimensioned `D[real]` quantities, and
+unit references resolved through `domain`); shapes with `Unit`/`string`
+parameters; and views hosting the core pipeline algebra over the
+expression sublanguage, including the Tier B completeness discharge
+(ADR 0017).  `registry` declarations, typed ingestion, key moves on
+flattened compound components, and unit-typed shape attributes are
+deferred and rejected with "not yet supported" diagnostics.  Worked
 examples live in `docs/examples/*.mensura`.
 
 ## Style guide
@@ -90,6 +94,8 @@ examples live in `docs/examples/*.mensura`.
   Cite docs by path or name, never by bare number.
 - Do not create new top-level files without a clear place for them in the
   repository layout described in `ROADMAP.md`.
-- Before each commit, run `cargo fmt --all` and `cargo test --workspace`.
-  CI enforces the same on every pull request (`cargo fmt --all -- --check`
-  plus the tests), so a commit that skips them will fail CI.
+- Before each commit, run `cargo fmt --all`, `cargo test --workspace`, and
+  `cargo clippy --workspace --all-targets -- -D warnings`.  CI enforces all
+  three on every pull request (`cargo fmt --all -- --check`, the tests, and
+  clippy with warnings denied), so a commit that skips any of them will
+  fail CI.

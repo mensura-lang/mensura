@@ -95,9 +95,12 @@ mensura/
   implemented and checked by `mensura check` (M1).  Batch view materialization
   runs end to end (M2).  **M3 is complete**: dimensioned types (`D[real]` over
   the seven SI base dimensions), top-level `let` bindings, bundled imports,
-  and the `si` standard library are implemented (ADRs 0026-0028).  Compound
-  (multi-entity) units and foreign-key (`domain`) resolution are scheduled for
-  M4 (where devices and cross-store ingestion first need them).  Precision
+  and the `si` standard library are implemented (ADRs 0026-0028).  **M4's
+  compound half is done**: compound (multi-entity) units and foreign-key
+  (`domain`) resolution are implemented (ADR 0032: units flatten to dotted
+  columns, `domain` entries resolve into `singletons` stores, both
+  acyclicity checks run, and `CREATE TABLE` carries unenforced `FOREIGN
+  KEY` clauses).  Precision
   and measure semantics are **out of scope**: dropped from the roadmap, not
   deferred to a milestone.  **Const functions** (ADR
   0030) and the **fold half of the aggregate family** (ADR 0031) are
@@ -111,9 +114,11 @@ mensura/
   marker, and the window vocabulary as const bindings in a bundled `series`
   module, behind ADR 0029's Stage 2.
 - **Design docs still to write** (each ahead of its milestone, per specs
-  first): devices and `registry`; ingestion endpoints; streaming windows and
+  first): `registry`; ingestion endpoints; streaming windows and
   refresh; ML signatures and validation; the serving/transport integration;
-  and the toolkit docs for the CLI, diagnostics, and LSP.
+  and the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
+  document: ADR 0005 eliminated the construct; devices are authenticated
+  principals, not declarations.)
 
 The original design-only phase is essentially complete for the core; what
 remains is captured per milestone below.
@@ -216,21 +221,24 @@ Status: complete.  Dimensions, modules, and the `si` stdlib are implemented
 and checked (ADRs 0026-0028, `11-physical-units.md`,
 `12-modules-and-imports.md`).
 
-## M4 - Devices, collect, and ingestion
+## M4 - Registry, collect, and ingestion
 
 Output: device readings land in stores under a typed ingestion path.
 
-- Design docs first: devices and `registry`; ingestion (the `insert`/`update`/
+- Design docs first: `registry`; ingestion (the `insert`/`update`/
   `set`/`where`/`case` forms).
-- `device` and `registry` declarations; `registry` is complete by mechanism
-  (overview pillar 7).
+- `registry` declarations; `registry` is complete by mechanism (overview
+  pillar 7).  There is no `device` declaration: ADR 0005 eliminated the
+  construct (devices are authenticated principals under roles and
+  `auth {}`, whose surface document is scheduled with M7's serving work).
 - Store ingestion via the CLI or as a library; the over-the-wire transport is
   wired in M7.
-- Compound (multi-entity) units and foreign-key (`domain`) resolution: a
-  reading keyed by several entities, and `domain` blocks resolving a column to
-  another store's key.  Deferred from M1 (the frontend rejects them today with
-  "not yet supported"); needed here because cross-store ingestion is the first
-  consumer.
+- **Done**: compound (multi-entity) units and foreign-key (`domain`)
+  resolution (ADR 0032): a reading keyed by several entities, and `domain`
+  blocks resolving a column to another store's key.  Units flatten to
+  dotted columns; `domain` targets must be `singletons` stores; the unit
+  key-reference graph and the store `domain` graph are both checked
+  acyclic; `CREATE TABLE` emits unenforced `FOREIGN KEY` clauses.
 
 ## M5 - Streaming and reactive
 

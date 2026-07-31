@@ -1,0 +1,20 @@
+// Rejected at resolve: a unit-reference field's base name reserves its
+// whole prefix (ADR 0032), so the store's scalar attribute `student`
+// collides with `Enrollment`'s key field `student`.
+unit Person {
+  id: string
+}
+
+unit Enrollment {
+  student: Person
+}
+
+store students {
+  unit { Person }
+}
+
+store grades {
+  unit { Enrollment }
+  domain { student: students }
+  attr { student: string }
+}

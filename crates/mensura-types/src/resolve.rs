@@ -23,7 +23,7 @@ use mensura_syntax::{
 };
 
 use crate::consts::{ConstDecl, eval_const_bindings};
-use crate::model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
+use crate::model::{Column, ColumnRole, ColumnType, ForeignKey, ResolvedProgram, Schema, ViewPlan};
 use crate::modules::ModuleEnv;
 use crate::pipe_check::{Sources, type_view};
 use crate::table::{Cardinality, TableType};
@@ -392,6 +392,11 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         }
     }
 
+    // Pass 1.5 (ADR 0032): flatten each unit's key depth-first, detecting
+    // key-reference cycles.  The flattened form drives store columns,
+    // `domain` resolution, and unit-fixing shape conformance alike.
+    let flat_units = flatten_units(&units, &mut errors);
+
     // Pass 2: resolve each shape's structure, for conformance checks below.
     let mut resolved_shapes: HashMap<&str, ResolvedShape> = HashMap::new();
     for (name, sh) in &shapes {
@@ -403,17 +408,29 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         }
     }
 
-    // Pass 3: resolve each store, then check the shapes it claims.
+    // Pass 3: resolve each store, then check the shapes it claims.  A store
+    // of a compound unit also reports its pending unit references, which
+    // pass 3b resolves against its `domain` block once every store's
+    // schema is known.
     let mut schemas = Vec::new();
+    let mut pending_refs: Vec<(&StoreDecl, Vec<PendingRef>)> = Vec::new();
     for s in &stores {
-        match resolve_store(s, &units, &enums, &dim_aliases) {
-            Ok(schema) => {
+        match resolve_store(s, &units, &enums, &dim_aliases, &flat_units) {
+            Ok((schema, pending)) => {
                 check_conformance(s, &schema, &shapes, &resolved_shapes, &units, &mut errors);
                 schemas.push(schema);
+                pending_refs.push((s, pending));
             }
             Err(mut errs) => errors.append(&mut errs),
         }
     }
+
+    // Pass 3b: validate each store's `domain` block against its pending
+    // unit references and fill in the foreign keys (ADR 0032).
+    resolve_domains(&mut schemas, &pending_refs, &flat_units, &mut errors);
+
+    // Pass 3c: the store dependency graph must be acyclic (`02-stores.md`).
+    check_store_graph(&schemas, &mut errors);
 
     // Pass 4: type-check each view's body against the store schemas presented
     // as table sources (`docs/language/10-views.md`), and lower each checked
@@ -442,6 +459,7 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                         &units,
                         &enums,
                         &dim_aliases,
+                        &flat_units,
                         &mut errors,
                     );
                     // Constant-fold the body before it reaches the
@@ -566,12 +584,118 @@ fn collect_expr(expr: &Expr, stores: &HashSet<&str>, found: &mut BTreeSet<String
     }
 }
 
+/// One flattened leaf of a unit's key (ADR 0032): its dotted path relative
+/// to the unit and the scalar leaf field it came from.
+struct FlatField<'a> {
+    path: String,
+    field: &'a Field,
+}
+
+/// Every unit's key flattened depth-first (ADR 0032), or `None` for a unit
+/// that has no finite key tree (a key-reference cycle, reported once).
+type FlatUnits<'a> = HashMap<&'a str, Option<Vec<FlatField<'a>>>>;
+
+/// A unit-reference field awaiting `domain` resolution (ADR 0032): recorded
+/// while a store's columns flatten, resolved by pass 3b.
+struct PendingRef {
+    field: String,
+    unit: String,
+    role: ColumnRole,
+    /// Where a missing `domain` entry is reported: the store's `unit { U }`
+    /// clause for a key reference, the attribute's name for an attribute
+    /// reference.
+    span: Span,
+}
+
+/// Flatten every unit's key depth-first (ADR 0032).  A unit whose key
+/// references itself, directly or through other units, has no finite key
+/// tree: the cycle is reported once, at the field that closes it, and every
+/// unit it makes unflattenable maps to `None` (uses fail silently, the
+/// cycle having been reported).
+fn flatten_units<'a>(
+    units: &HashMap<&'a str, &'a UnitDecl>,
+    errors: &mut Vec<ResolveError>,
+) -> FlatUnits<'a> {
+    let mut memo: FlatUnits<'a> = HashMap::new();
+    let mut names: Vec<&str> = units.keys().copied().collect();
+    names.sort_unstable();
+    for name in names {
+        let mut stack = Vec::new();
+        flatten_unit(name, units, &mut memo, &mut stack, errors);
+    }
+    memo
+}
+
+/// Flatten one unit, memoized; returns whether it flattened.  `stack` is
+/// the DFS path, for cycle reporting.
+fn flatten_unit<'a>(
+    name: &'a str,
+    units: &HashMap<&'a str, &'a UnitDecl>,
+    memo: &mut FlatUnits<'a>,
+    stack: &mut Vec<&'a str>,
+    errors: &mut Vec<ResolveError>,
+) -> bool {
+    if let Some(done) = memo.get(name) {
+        return done.is_some();
+    }
+    stack.push(name);
+    let unit = units[name];
+    let mut leaves = Vec::new();
+    let mut ok = true;
+    for f in &unit.fields {
+        // An interpolated field name in a unit is reported where the unit
+        // is used (`add_column`); skip the leaf here.
+        let Some(fname) = f.name.as_literal() else {
+            continue;
+        };
+        match f.ty.named().map(|id| id.name.as_str()) {
+            Some(other) if units.contains_key(other) => {
+                if stack.contains(&other) {
+                    let start = stack.iter().position(|n| *n == other).expect("on stack");
+                    let path = stack[start..]
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .chain(std::iter::once(format!("`{other}`")))
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    errors.push(ResolveError::new(
+                        format!(
+                            "unit key-reference cycle: {path}; a compound key \
+                             must be a finite tree (ADR 0032)"
+                        ),
+                        f.span,
+                    ));
+                    ok = false;
+                    continue;
+                }
+                if !flatten_unit(other, units, memo, stack, errors) {
+                    ok = false;
+                    continue;
+                }
+                let sub = memo[other].as_ref().expect("flattened above");
+                leaves.extend(sub.iter().map(|l| FlatField {
+                    path: format!("{fname}.{}", l.path),
+                    field: l.field,
+                }));
+            }
+            _ => leaves.push(FlatField {
+                path: fname.to_string(),
+                field: f,
+            }),
+        }
+    }
+    stack.pop();
+    memo.insert(name, if ok { Some(leaves) } else { None });
+    ok
+}
+
 fn resolve_store(
     s: &StoreDecl,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
     aliases: &DimAliases,
-) -> Result<Schema, Vec<ResolveError>> {
+    flat_units: &FlatUnits,
+) -> Result<(Schema, Vec<PendingRef>), Vec<ResolveError>> {
     let Some(unit) = units.get(s.unit.name.as_str()) else {
         return Err(vec![ResolveError::new(
             format!("unknown unit `{}`", s.unit.name),
@@ -581,30 +705,29 @@ fn resolve_store(
 
     let mut errors = Vec::new();
 
-    if let Some(first) = s.domain.first() {
-        errors.push(ResolveError::new(
-            "compound stores are not yet supported (`domain` block)",
-            first.span,
-        ));
-    }
-
     let cardinality = declared_cardinality(&s.attrs, "store", &mut errors);
 
     // Columns in storage order: key fields, then attributes in declaration
-    // order.  Compound units surface here: an key field whose type
-    // references another unit is rejected by `resolve_type`.
+    // order.  A unit-reference field (a compound unit's key field, or a
+    // unit-typed attribute) flattens to dotted columns and records a
+    // pending reference, which pass 3b resolves against the `domain` block
+    // (ADR 0032).
     let mut columns = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut pending = Vec::new();
     for f in &unit.fields {
         add_column(
             &mut columns,
             &mut seen,
             &mut errors,
+            &mut pending,
             f,
             ColumnRole::Key,
+            s.unit.span,
             units,
             enums,
             aliases,
+            flat_units,
         );
     }
     for a in &s.attrs {
@@ -612,24 +735,197 @@ fn resolve_store(
             &mut columns,
             &mut seen,
             &mut errors,
+            &mut pending,
             &a.field,
             ColumnRole::Attr,
+            a.field.name.span,
             units,
             enums,
             aliases,
+            flat_units,
         );
     }
 
     if errors.is_empty() {
-        Ok(Schema {
-            store: s.name.name.clone(),
-            unit: s.unit.name.clone(),
-            columns,
-            cardinality,
-            span: s.span,
-        })
+        Ok((
+            Schema {
+                store: s.name.name.clone(),
+                unit: s.unit.name.clone(),
+                columns,
+                cardinality,
+                foreign_keys: Vec::new(),
+                span: s.span,
+            },
+            pending,
+        ))
     } else {
         Err(errors)
+    }
+}
+
+/// Pass 3b (ADR 0032): validate each store's `domain` block against its
+/// pending unit references and fill in the schema's foreign keys.  Every
+/// failure is its own collected diagnostic: a duplicate entry, an entry
+/// naming no unit-reference field, an unknown target store, a target of
+/// the wrong unit, a `bag` target, and a missing entry.
+fn resolve_domains(
+    schemas: &mut [Schema],
+    pending_refs: &[(&StoreDecl, Vec<PendingRef>)],
+    flat_units: &FlatUnits,
+    errors: &mut Vec<ResolveError>,
+) {
+    let store_info: HashMap<String, (String, Cardinality)> = schemas
+        .iter()
+        .map(|sc| (sc.store.clone(), (sc.unit.clone(), sc.cardinality)))
+        .collect();
+    for (i, (s, pending)) in pending_refs.iter().enumerate() {
+        let mut seen_fields: HashSet<&str> = HashSet::new();
+        let mut fks = Vec::new();
+        for entry in &s.domain {
+            let fname = entry.field.name.as_str();
+            if !seen_fields.insert(fname) {
+                errors.push(ResolveError::new(
+                    format!("duplicate `domain` entry for field `{fname}`"),
+                    entry.span,
+                ));
+                continue;
+            }
+            let Some(p) = pending.iter().find(|p| p.field == fname) else {
+                let msg = if schemas[i].columns.iter().any(|c| c.name == fname) {
+                    format!(
+                        "`domain` entry `{fname}` does not name a unit-reference \
+                         field: `{fname}` is a scalar column"
+                    )
+                } else {
+                    format!(
+                        "unknown field `{fname}` in `domain` block: neither the \
+                         unit's key nor the store's attributes declare it"
+                    )
+                };
+                errors.push(ResolveError::new(msg, entry.field.span));
+                continue;
+            };
+            let tname = entry.store.name.as_str();
+            let Some((tunit, tcard)) = store_info.get(tname) else {
+                errors.push(ResolveError::new(
+                    format!("unknown store `{tname}` in `domain` entry for `{fname}`"),
+                    entry.store.span,
+                ));
+                continue;
+            };
+            if tunit != &p.unit {
+                errors.push(ResolveError::new(
+                    format!(
+                        "field `{fname}` references unit `{}`, but store \
+                         `{tname}` tabulates `{tunit}`",
+                        p.unit
+                    ),
+                    entry.store.span,
+                ));
+                continue;
+            }
+            if *tcard == Cardinality::Bag {
+                errors.push(ResolveError::new(
+                    format!(
+                        "a `domain` target must be a `singletons` store: \
+                         `{tname}` is a `bag` store (ADR 0032)"
+                    ),
+                    entry.store.span,
+                ));
+                continue;
+            }
+            // The referenced unit failed to flatten: the cycle was already
+            // reported at the unit declaration.
+            let Some(Some(leaves)) = flat_units.get(p.unit.as_str()) else {
+                continue;
+            };
+            fks.push(ForeignKey {
+                field: p.field.clone(),
+                unit: p.unit.clone(),
+                store: tname.to_string(),
+                columns: leaves
+                    .iter()
+                    .map(|l| (format!("{fname}.{}", l.path), l.path.clone()))
+                    .collect(),
+                role: p.role,
+                span: entry.span,
+            });
+        }
+        for p in pending {
+            if !seen_fields.contains(p.field.as_str()) {
+                errors.push(ResolveError::new(
+                    format!(
+                        "unit-reference field `{}` (unit `{}`) needs a `domain` \
+                         entry naming the store it resolves into",
+                        p.field, p.unit
+                    ),
+                    p.span,
+                ));
+            }
+        }
+        schemas[i].foreign_keys = fks;
+    }
+}
+
+/// Pass 3c: the store dependency graph, one edge per resolved `domain`
+/// entry, must be acyclic (`02-stores.md`).  A depth-first search reports
+/// each back edge as a cycle, at the `domain` entry that closes it.
+fn check_store_graph(schemas: &[Schema], errors: &mut Vec<ResolveError>) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Color {
+        White,
+        Gray,
+        Black,
+    }
+    fn dfs(
+        i: usize,
+        schemas: &[Schema],
+        index: &HashMap<&str, usize>,
+        colors: &mut [Color],
+        stack: &mut Vec<usize>,
+        errors: &mut Vec<ResolveError>,
+    ) {
+        colors[i] = Color::Gray;
+        stack.push(i);
+        for fk in &schemas[i].foreign_keys {
+            let Some(&j) = index.get(fk.store.as_str()) else {
+                continue;
+            };
+            match colors[j] {
+                Color::White => dfs(j, schemas, index, colors, stack, errors),
+                Color::Gray => {
+                    let start = stack.iter().position(|&k| k == j).expect("on stack");
+                    let path = stack[start..]
+                        .iter()
+                        .map(|&k| format!("`{}`", schemas[k].store))
+                        .chain(std::iter::once(format!("`{}`", schemas[j].store)))
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    errors.push(ResolveError::new(
+                        format!(
+                            "store dependency cycle: {path}; the `domain` graph \
+                             must be acyclic (`02-stores.md`)"
+                        ),
+                        fk.span,
+                    ));
+                }
+                Color::Black => {}
+            }
+        }
+        stack.pop();
+        colors[i] = Color::Black;
+    }
+    let index: HashMap<&str, usize> = schemas
+        .iter()
+        .enumerate()
+        .map(|(i, sc)| (sc.store.as_str(), i))
+        .collect();
+    let mut colors = vec![Color::White; schemas.len()];
+    let mut stack = Vec::new();
+    for i in 0..schemas.len() {
+        if colors[i] == Color::White {
+            dfs(i, schemas, &index, &mut colors, &mut stack, errors);
+        }
     }
 }
 
@@ -816,6 +1112,22 @@ fn resolve_shape(
                     f.name.span,
                 ));
             }
+        }
+        // A unit-reference attribute is legal in a store (where a `domain`
+        // block resolves it), but a shape has no `domain` block, so its
+        // conformance semantics are unsettled (ADR 0032, deferred).
+        if let Some(id) = f.ty.named()
+            && units.contains_key(id.name.as_str())
+        {
+            errors.push(ResolveError::new(
+                format!(
+                    "a unit-reference attribute in a shape is not yet supported \
+                     (references unit `{}`; ADR 0032)",
+                    id.name
+                ),
+                f.ty.span(),
+            ));
+            continue;
         }
         match resolve_type(&f.ty, units, enums, aliases) {
             Ok(ty) => attrs.push(ResolvedAttr {
@@ -1063,6 +1375,7 @@ fn check_view_conformance(
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
     aliases: &DimAliases,
+    flat_units: &FlatUnits,
     errors: &mut Vec<ResolveError>,
 ) {
     for claim in &view.conforms {
@@ -1095,9 +1408,9 @@ fn check_view_conformance(
             ShapeUnit::Param(p) => Some(unit_bind[p.as_str()]),
         };
         if let Some(uname) = required_unit
-            && let Some(unit) = units.get(uname).copied()
+            && units.contains_key(uname)
         {
-            let expected = unit_key_columns(unit, units, enums, aliases);
+            let expected = unit_key_columns(uname, flat_units, units, enums, aliases);
             let actual: Vec<(String, ColumnType)> = output
                 .content
                 .key
@@ -1199,26 +1512,27 @@ fn check_view_conformance(
     }
 }
 
-/// Resolve a unit's key fields to their `(name, type)` pairs, for structural
-/// conformance of a view claiming a unit-fixing shape.  Fields that fail to
-/// resolve (for example a still-unsupported compound field) are skipped: such
-/// a unit cannot back a store either, and its error surfaces where it is used.
+/// A unit's key as flattened `(name, type)` pairs (ADR 0032), for structural
+/// conformance of a view claiming a unit-fixing shape.  Leaves whose type
+/// fails to resolve are skipped: such a unit cannot back a store either, and
+/// its error surfaces where it is used.
 fn unit_key_columns(
-    unit: &UnitDecl,
+    unit_name: &str,
+    flat_units: &FlatUnits,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
     aliases: &DimAliases,
 ) -> Vec<(String, ColumnType)> {
-    let mut out = Vec::new();
-    for f in &unit.fields {
-        if let (Ok(name), Ok(ty)) = (
-            literal_field_name(&f.name),
-            resolve_type(&f.ty, units, enums, aliases),
-        ) {
-            out.push((name, ty));
-        }
-    }
-    out
+    let Some(Some(leaves)) = flat_units.get(unit_name) else {
+        return Vec::new();
+    };
+    leaves
+        .iter()
+        .filter_map(|l| {
+            let ty = resolve_type(&l.field.ty, units, enums, aliases).ok()?;
+            Some((l.path.clone(), ty))
+        })
+        .collect()
 }
 
 /// Two column lists match iff they carry the same names, each with the same
@@ -1313,11 +1627,14 @@ fn add_column(
     columns: &mut Vec<Column>,
     seen: &mut HashSet<String>,
     errors: &mut Vec<ResolveError>,
+    pending: &mut Vec<PendingRef>,
     field: &Field,
     role: ColumnRole,
+    ref_span: Span,
     units: &HashMap<&str, &UnitDecl>,
     enums: &HashMap<&str, &EnumDecl>,
     aliases: &DimAliases,
+    flat_units: &FlatUnits,
 ) {
     // Units and stores carry no parameters, so a field name must render to a
     // plain identifier with no interpolation.
@@ -1340,10 +1657,80 @@ fn add_column(
     if role != ColumnRole::Key {
         check_case(&name, field.name.span, Case::Snake, "attribute", errors);
     }
+    let is_key = role == ColumnRole::Key;
+
+    // A unit-reference field (ADR 0032): expand the referenced unit's
+    // flattened key into dotted columns and record the pending reference
+    // for `domain` resolution (pass 3b).  The base name reserves its whole
+    // prefix (`seen` above), and identifiers cannot contain `.`, so the
+    // dotted names cannot collide with declared columns.
+    if let Some(id) = field.ty.named()
+        && units.contains_key(id.name.as_str())
+    {
+        if let Some(span) = field.ty.optional {
+            if is_key {
+                errors.push(ResolveError::new(
+                    format!("an key field cannot be optional: drop the `?` on `{name}`"),
+                    span,
+                ));
+            } else {
+                // The group's columns would be missing all-or-nothing, a
+                // constraint per-column nullability cannot express.
+                errors.push(ResolveError::new(
+                    format!(
+                        "an optional unit-reference attribute is not yet \
+                         supported: drop the `?` on `{name}` (ADR 0032)"
+                    ),
+                    span,
+                ));
+            }
+        }
+        // A unit that failed to flatten already reported its cycle.
+        let Some(Some(leaves)) = flat_units.get(id.name.as_str()) else {
+            return;
+        };
+        for leaf in leaves {
+            let full = format!("{name}.{}", leaf.path);
+            let ct = match resolve_type(&leaf.field.ty, units, enums, aliases) {
+                Ok(ct) => ct,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
+            // The flattened columns are key values of the referenced unit,
+            // whatever their role here, so they must be key-eligible.
+            if !ct.is_key_eligible() {
+                errors.push(ResolveError::new(
+                    format!(
+                        "an key field must be a key-eligible type: `{}` cannot \
+                         be a key (`{full}` flattens from unit `{}`)",
+                        type_name(&ct),
+                        id.name
+                    ),
+                    leaf.field.ty.span(),
+                ));
+            }
+            columns.push(Column {
+                name: full,
+                ty: ct,
+                role,
+                optional: false,
+                span: field.name.span,
+            });
+        }
+        pending.push(PendingRef {
+            field: name,
+            unit: id.name.clone(),
+            role,
+            span: ref_span,
+        });
+        return;
+    }
+
     // An key field is always known: whether the row exists at all is
     // cardinality, a separate axis from value missingness (ADR 0010).  `?` on
     // an key field is rejected; an attribute may be optional.
-    let is_key = role == ColumnRole::Key;
     if is_key && let Some(span) = field.ty.optional {
         errors.push(ResolveError::new(
             format!("an key field cannot be optional: drop the `?` on `{name}`"),
@@ -1629,8 +2016,15 @@ fn eval_tl_name(id: &Ident, env: &TlEnv) -> Result<TlValue, ResolveError> {
                 variants: e.variants.iter().map(|v| v.value.clone()).collect(),
             }))
         }
+        // A unit reference is only meaningful as the *whole* type of a key
+        // field or store attribute, where `add_column` intercepts it before
+        // this evaluator runs (ADR 0032).  Reaching it here means it sits in
+        // a type-level expression or an ascription, where it has no meaning.
         other if env.units.contains_key(other) => Err(ResolveError::new(
-            format!("compound fields are not yet supported (references unit `{other}`)"),
+            format!(
+                "`{other}` is a unit; a unit reference can only be the whole \
+                 type of a unit key field or a store attribute (ADR 0032)"
+            ),
             id.span,
         )),
         other => Err(ResolveError::new(
@@ -1921,31 +2315,273 @@ mod tests {
     }
 
     #[test]
-    fn compound_unit_field_is_rejected() {
+    fn compound_store_flattens_the_key() {
+        // Two-level flattening (ADR 0032): Enrollment -> Course -> Department
+        // becomes dotted key columns, in declaration order, with the store's
+        // own attributes after them.
         let src = r#"
+            unit Person { id: string }
             unit Department { code: string }
-            unit Course { department: Department }
-            store courses { unit { Course } }
+            unit Course {
+              department: Department
+              name: string
+              year: int
+            }
+            unit Enrollment {
+              student: Person
+              course: Course
+            }
+            store students { unit { Person } }
+            store departments { unit { Department } }
+            store courses {
+              unit { Course }
+              domain { department: departments }
+            }
+            store student_grades {
+              unit { Enrollment }
+              domain {
+                student: students
+                course: courses
+              }
+              attr { grade: real }
+            }
         "#;
-        let errs = errors(src);
-        assert!(
-            errs[0]
-                .message
-                .contains("compound fields are not yet supported")
+        let schemas = resolve_str(src).expect("should resolve");
+        let grades = schemas
+            .iter()
+            .find(|s| s.store == "student_grades")
+            .expect("student_grades resolves");
+        let cols: Vec<(&str, ColumnRole)> = grades
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.role))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                ("student.id", ColumnRole::Key),
+                ("course.department.code", ColumnRole::Key),
+                ("course.name", ColumnRole::Key),
+                ("course.year", ColumnRole::Key),
+                ("grade", ColumnRole::Attr),
+            ]
+        );
+        // The foreign keys pair the flattened child columns with the target
+        // store's key columns, in flattening order.
+        assert_eq!(grades.foreign_keys.len(), 2);
+        let course_fk = grades
+            .foreign_keys
+            .iter()
+            .find(|fk| fk.field == "course")
+            .expect("course resolves");
+        assert_eq!(course_fk.unit, "Course");
+        assert_eq!(course_fk.store, "courses");
+        assert_eq!(course_fk.role, ColumnRole::Key);
+        assert_eq!(
+            course_fk.columns,
+            vec![
+                (
+                    "course.department.code".to_string(),
+                    "department.code".to_string()
+                ),
+                ("course.name".to_string(), "name".to_string()),
+                ("course.year".to_string(), "year".to_string()),
+            ]
         );
     }
 
     #[test]
-    fn domain_block_is_rejected() {
+    fn compound_attribute_resolves_through_domain() {
+        // A unit-reference *attribute* flattens and resolves the same way
+        // (`02-stores.md`, the `programs`/`coordinator` example).
+        let src = r#"
+            unit Person { id: string }
+            unit Program { code: string }
+            store persons { unit { Person } }
+            store programs {
+              unit { Program }
+              domain { coordinator: persons }
+              attr {
+                name:        string
+                coordinator: Person
+              }
+            }
+        "#;
+        let schemas = resolve_str(src).expect("should resolve");
+        let programs = schemas
+            .iter()
+            .find(|s| s.store == "programs")
+            .expect("programs resolves");
+        let cols: Vec<(&str, ColumnRole)> = programs
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.role))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                ("code", ColumnRole::Key),
+                ("name", ColumnRole::Attr),
+                ("coordinator.id", ColumnRole::Attr),
+            ]
+        );
+        assert_eq!(programs.foreign_keys.len(), 1);
+        assert_eq!(programs.foreign_keys[0].role, ColumnRole::Attr);
+        assert_eq!(
+            programs.foreign_keys[0].columns,
+            vec![("coordinator.id".to_string(), "id".to_string())]
+        );
+    }
+
+    #[test]
+    fn unit_key_reference_cycle_is_an_error() {
+        let src = r#"
+            unit A { b: B }
+            unit B { a: A }
+            store things { unit { A } domain { b: others } }
+            store others { unit { B } domain { a: things } }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unit key-reference cycle")),
+            "got: {errs:?}"
+        );
+        // The cycle is reported once, at the field closing it; the stores
+        // using the cyclic units stay silent about it.
+        assert_eq!(
+            errs.iter()
+                .filter(|e| e.message.contains("unit key-reference cycle"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn domain_entry_diagnostics() {
+        // Missing entry.
+        let errs = errors(
+            r#"
+            unit Person { id: string }
+            unit Enrollment { student: Person }
+            store students { unit { Person } }
+            store grades { unit { Enrollment } }
+        "#,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("needs a `domain` entry")),
+            "got: {errs:?}"
+        );
+
+        // Entry naming a scalar field.
+        let errs = errors(
+            r#"
+            unit Person { id: string }
+            store students { unit { Person } domain { id: students } }
+        "#,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("does not name a unit-reference field")),
+            "got: {errs:?}"
+        );
+
+        // Target tabulating the wrong unit.
+        let errs = errors(
+            r#"
+            unit Person { id: string }
+            unit Machine { serial: string }
+            unit Enrollment { student: Person }
+            store machines { unit { Machine } }
+            store students { unit { Person } }
+            store grades { unit { Enrollment } domain { student: machines } }
+        "#,
+        );
+        assert!(
+            errs.iter().any(|e| e
+                .message
+                .contains("but store `machines` tabulates `Machine`")),
+            "got: {errs:?}"
+        );
+
+        // Bag target (ADR 0032: a `domain` target must be `singletons`).
+        let errs = errors(
+            r#"
+            unit Person { id: string }
+            unit Enrollment { student: Person }
+            store students { unit { Person } attr* { note: string } }
+            store grades { unit { Enrollment } domain { student: students } }
+        "#,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("must be a `singletons` store")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn store_dependency_cycle_is_an_error() {
+        // Two basic units; the cycle is between the *stores*, through
+        // unit-reference attributes (no unit cycle in sight).
+        let src = r#"
+            unit Person { id: string }
+            unit Machine { serial: string }
+            store persons {
+              unit { Person }
+              domain { favorite: machines }
+              attr { favorite: Machine }
+            }
+            store machines {
+              unit { Machine }
+              domain { owner: persons }
+              attr { owner: Person }
+            }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("store dependency cycle")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn optional_unit_reference_attribute_is_rejected() {
+        let src = r#"
+            unit Person { id: string }
+            unit Program { code: string }
+            store persons { unit { Person } }
+            store programs {
+              unit { Program }
+              domain { coordinator: persons }
+              attr { coordinator: Person? }
+            }
+        "#;
+        let errs = errors(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("optional unit-reference attribute")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn domain_entry_for_unknown_field_is_rejected() {
         let src = r#"
             unit Person { id: string }
             store s {
               unit { Person }
-              domain { x: Other }
+              domain { x: others }
             }
         "#;
         let errs = errors(src);
-        assert!(errs.iter().any(|e| e.message.contains("`domain` block")));
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown field `x` in `domain` block")),
+            "got: {errs:?}"
+        );
     }
 
     #[test]
@@ -2414,7 +3050,27 @@ mod tests {
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let schemas = resolve_str(&src).expect("example should resolve");
-        assert_eq!(schemas.len(), 3);
+        assert_eq!(schemas.len(), 5);
+
+        // The compound store flattens its key to dotted columns and
+        // resolves both unit-reference fields (ADR 0032).
+        let grades = schemas
+            .iter()
+            .find(|s| s.store == "student_grades")
+            .expect("the example declares student_grades");
+        let names: Vec<&str> = grades.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "student.id",
+                "course.department.code",
+                "course.name",
+                "course.year",
+                "class_id",
+                "grade",
+            ]
+        );
+        assert_eq!(grades.foreign_keys.len(), 2);
     }
 
     #[test]

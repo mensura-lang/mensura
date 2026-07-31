@@ -205,6 +205,30 @@ pub fn create_table_sql(shape: &TableShape) -> String {
         lines.push(format!("  PRIMARY KEY ({})", key.join(", ")));
     }
 
+    // One clause per resolved `domain` entry (ADR 0032).  SQLite accepts
+    // the clauses regardless of table-creation order and enforces them only
+    // under `PRAGMA foreign_keys = ON`, which this backend does not set:
+    // there is no write path yet, so the clauses are documentation-grade
+    // until the ingestion slice decides on enforcement.
+    for fk in &shape.foreign_keys {
+        let children: Vec<String> = fk
+            .columns
+            .iter()
+            .map(|(child, _)| quote_ident(child))
+            .collect();
+        let parents: Vec<String> = fk
+            .columns
+            .iter()
+            .map(|(_, parent)| quote_ident(parent))
+            .collect();
+        lines.push(format!(
+            "  FOREIGN KEY ({}) REFERENCES {} ({})",
+            children.join(", "),
+            quote_ident(&fk.store),
+            parents.join(", ")
+        ));
+    }
+
     format!(
         "CREATE TABLE IF NOT EXISTS {} (\n{}\n);",
         quote_ident(&shape.name),
@@ -399,6 +423,64 @@ mod tests {
         assert!(sql.contains("\"status\" TEXT CHECK (\"status\" IN ('active', 'inactive'))"));
     }
 
+    const COMPOUND: &str = r#"
+        unit Person { id: string }
+        unit Department { code: string }
+        unit Course {
+          department: Department
+          name: string
+          year: int
+        }
+        unit Enrollment {
+          student: Person
+          course: Course
+        }
+        store students { unit { Person } }
+        store departments { unit { Department } }
+        store courses {
+          unit { Course }
+          domain { department: departments }
+        }
+        store student_grades {
+          unit { Enrollment }
+          domain {
+            student: students
+            course:  courses
+          }
+          attr { grade: real }
+        }
+    "#;
+
+    #[test]
+    fn compound_store_maps_to_dotted_columns_and_foreign_keys() {
+        // ADR 0032: dotted quoted columns, a composite primary key over the
+        // flattened key, and one unenforced FOREIGN KEY clause per resolved
+        // `domain` entry.
+        let sql = create_table_sql(&schema(COMPOUND, "student_grades").shape());
+        assert_eq!(
+            sql,
+            "CREATE TABLE IF NOT EXISTS \"student_grades\" (\n  \
+               \"student.id\" TEXT NOT NULL,\n  \
+               \"course.department.code\" TEXT NOT NULL,\n  \
+               \"course.name\" TEXT NOT NULL,\n  \
+               \"course.year\" INTEGER NOT NULL,\n  \
+               \"grade\" REAL NOT NULL,\n  \
+               PRIMARY KEY (\"student.id\", \"course.department.code\", \"course.name\", \"course.year\"),\n  \
+               FOREIGN KEY (\"student.id\") REFERENCES \"students\" (\"id\"),\n  \
+               FOREIGN KEY (\"course.department.code\", \"course.name\", \"course.year\") REFERENCES \"courses\" (\"department.code\", \"name\", \"year\")\n\
+             );"
+        );
+
+        // The DDL is accepted by SQLite (clauses are unenforced: the
+        // `foreign_keys` pragma stays off until the ingestion slice).
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        assert_eq!(
+            db.ensure_store(&schema(COMPOUND, "student_grades"))
+                .unwrap(),
+            EnsureOutcome::Created
+        );
+    }
+
     #[test]
     fn ensure_store_creates_then_reports_existing() {
         let mut db = SqliteBackend::open_in_memory().unwrap();
@@ -507,6 +589,7 @@ mod tests {
             name: "v".into(),
             columns: schema(PERSONS, "persons").columns,
             keyed: true,
+            foreign_keys: Vec::new(),
         };
         let mut db = SqliteBackend::open_in_memory().unwrap();
 

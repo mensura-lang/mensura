@@ -252,16 +252,16 @@ as `x / s`.
   identifiers (`"in-progress"`, spaces, accents), which also matches how
   categorical values are stored and matched.  `enum` is a keyword only in
   declaration position.
-- **`domain` is parsed, not yet resolved.**  The grammar accepts `domain`
-  blocks and unit-reference field types so the surface stays stable, but the
-  current resolver rejects compound units and `domain` blocks as "not yet
-  supported".
+- **`domain` is resolved.**  A unit-reference field flattens to dotted
+  columns, and each `domain` entry resolves it into a `singletons` store of
+  the referenced unit; the unit key-reference graph and the store `domain`
+  graph must both be acyclic (`02-stores.md`, ADR 0032).
 
 ## Types in this subset
 
 A lone identifier in type position is one of the recognized primitive
 types, the name of a declared `enum`, otherwise it is read as a reference
-to a unit (a compound field, deferred):
+to a unit (a compound field, ADR 0032):
 
 | Type       | Meaning                                          |
 |------------|--------------------------------------------------|
@@ -592,7 +592,6 @@ identifiers, as the keyword-free lexer intends.
 
 - Numeric and predicate parameter kinds, and the parameter list on function
   signatures.
-- Compound units, `domain` resolution, and foreign keys.
 - Annotations (`@audited`, `@versioned`, `@auto`, `@domain`, ...).
 - Precision types and any measured-precision literal (deferred with the
   precision library, ADR 0026 Decision 9; the dimensioned-type grammar is
@@ -605,6 +604,8 @@ identifiers, as the keyword-free lexer intends.
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.
 - `view` declarations host a pipeline and are specified in
-  `10-views.md` (the `view_decl` production above is their grammar).  `device`
-  and transforms, which also host or feed pipelines, and the streaming
-  operations (`sliding_window`, `latest`), each get their own section here.
+  `10-views.md` (the `view_decl` production above is their grammar).
+  Transforms, which also host or feed pipelines, `registry` declarations,
+  and the streaming operations (`sliding_window`, `latest`), each get their
+  own section here.  (`device` is not coming: ADR 0005 eliminated it in
+  favour of roles, `auth {}`, and `registry`.)

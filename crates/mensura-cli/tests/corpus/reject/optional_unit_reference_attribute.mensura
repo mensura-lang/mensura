@@ -1,0 +1,20 @@
+// Rejected at resolve: `?` on a unit-reference attribute is deferred; the
+// group's columns would be missing all-or-nothing, which per-column
+// nullability cannot express (ADR 0032).
+unit Person {
+  id: string
+}
+
+unit Program {
+  code: string
+}
+
+store persons {
+  unit { Person }
+}
+
+store programs {
+  unit { Program }
+  domain { coordinator: persons }
+  attr { coordinator: Person? }
+}
