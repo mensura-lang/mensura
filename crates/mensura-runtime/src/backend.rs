@@ -92,7 +92,9 @@ pub enum StorageError {
     },
     /// A write violated the key discipline: a `singletons` tabulation holds
     /// at most one row per key (ADR 0001).
-    DuplicateKey { table: String },
+    DuplicateKey {
+        table: String,
+    },
 }
 
 impl fmt::Display for StorageError {
