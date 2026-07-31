@@ -179,8 +179,14 @@ impl Totality {
 }
 
 /// Table-scoped completeness qualifier (`09` section 3.4): whether each key's
-/// bag holds all its possible rows. A `registry` source is `Complete` by
-/// mechanism (ADR 0033); a bare `store` is not.
+/// bag holds all its possible rows, at the **current** key against the fixed
+/// intended population (`Mensura.FiberCompleteWrt`). Held trivially by any
+/// `Singletons` table (a present key's single row is its whole fiber,
+/// `fiberCompleteWrt_of_functional`); at `Bag` a `registry` source carries it
+/// by mechanism at its own declared key (ADR 0033) and a bare `store` does
+/// not. The fact does not survive a genuine key coarsening: the key moves
+/// re-derive it from the gradings, and `demote` to a `bag` clears it
+/// (ADR 0035).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Completeness {
     Complete,
@@ -297,16 +303,25 @@ impl TableType {
                 }
             }
         }
-        // Completeness by mechanism (ADR 0033 decision 2): a registry's
-        // declaration is the sole intake for its observations and the intake
-        // only appends, so what it holds for a key is everything there is.
-        // The fact is trivially true at `Singletons` (the
-        // `fiberCompleteWrt_of_functional` corollary) and contentful at
-        // `Bag`, where it pins the reference population per entity; one rule
-        // covers both so the keyword means one thing wherever it appears.
-        let completeness = match schema.kind {
-            StoreKind::Registry => Completeness::Complete,
-            StoreKind::Store => Completeness::Incomplete,
+        // Completeness at the source (ADR 0033 decision 2, as amended by
+        // ADR 0035). A registry's declaration is the sole intake for its
+        // observations and the intake only appends, so what it holds for a
+        // key of its own declared boundary is everything there is: `Complete`
+        // at either cardinality, trivially at `Singletons` (the
+        // `fiberCompleteWrt_of_functional` corollary) and contentfully at
+        // `Bag`, where it pins the reference population per entity. Any
+        // `Singletons` source carries the same trivial fact (a present key's
+        // single row is its whole fiber), which is what keeps the qualifier
+        // consistent with the key moves' re-derivation and the reducer's
+        // trivial discharge (ADR 0035). The kinds therefore differ exactly
+        // at `Bag`, where the registry mechanism is the only source-level
+        // establishment. The fact stops at the declared boundary either
+        // way: a genuine `demote` clears it, because recording every
+        // observation received is not receiving every observation that
+        // happened (ADR 0035).
+        let completeness = match (schema.kind, schema.cardinality) {
+            (StoreKind::Registry, _) | (_, Cardinality::Singletons) => Completeness::Complete,
+            (StoreKind::Store, Cardinality::Bag) => Completeness::Incomplete,
         };
         let mut table = TableType {
             content: Content { key, columns },
@@ -481,9 +496,12 @@ mod tests {
         assert_eq!(t.content.key[0].name, "machine");
         assert_eq!(t.content.columns.len(), 2);
 
-        // Qualifiers: store boundary is singletons, incomplete, untagged.
+        // Qualifiers: store boundary is singletons and untagged.  At
+        // `Singletons` the completeness qualifier is the trivial corollary
+        // (a present key's single row is its whole fiber, ADR 0035), so it
+        // is derived from the cardinality, kind notwithstanding.
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
-        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
         assert_eq!(t.qualifiers.lineage, Lineage::root());
 
         // Totality: the optional column is recorded; the key never is.
@@ -546,19 +564,30 @@ mod tests {
     }
 
     #[test]
-    fn a_store_is_incomplete_at_either_cardinality() {
-        for cardinality in [Cardinality::Singletons, Cardinality::Bag] {
-            let t = kinded(StoreKind::Store, cardinality);
-            assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
-        }
+    fn a_store_is_incomplete_exactly_at_bag() {
+        // ADR 0035: the kinds differ exactly at `Bag`.  A `singletons` store
+        // enters `Complete` on the trivial corollary (a present key's single
+        // row is its whole fiber), so the registry's type-level content
+        // lives entirely at `Bag`, where its mechanism is the only
+        // source-level establishment.
+        let t = kinded(StoreKind::Store, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        let t = kinded(StoreKind::Store, Cardinality::Singletons);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
     }
 
     #[test]
     fn a_registry_is_otherwise_lifted_exactly_as_a_store() {
         // Everything but the completeness qualifier is kind-independent:
         // a registry materializes as the same table (ADR 0033 decision 3).
-        let store = kinded(StoreKind::Store, Cardinality::Singletons);
-        let registry = kinded(StoreKind::Registry, Cardinality::Singletons);
+        // `Bag` is where the qualifier actually differs (ADR 0035), so that
+        // is where the "otherwise" is contentful.
+        let store = kinded(StoreKind::Store, Cardinality::Bag);
+        let registry = kinded(StoreKind::Registry, Cardinality::Bag);
+        assert_ne!(
+            store.qualifiers.completeness,
+            registry.qualifiers.completeness
+        );
         assert_eq!(store.content, registry.content);
         assert_eq!(store.qualifiers.totality, registry.qualifiers.totality);
         assert_eq!(store.qualifiers.functional, registry.qualifiers.functional);

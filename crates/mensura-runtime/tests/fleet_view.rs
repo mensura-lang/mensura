@@ -88,11 +88,13 @@ fn attention_needed_materializes_the_degraded_machines() {
 
 #[test]
 fn machine_temperature_reduces_the_demoted_history() {
-    // The end-to-end key-coarsening path (ADR 0024 + ADR 0023): `demote
-    // taken_at` drops the time out of the key, leaving a bag of readings per
-    // machine, and the reducing `map_bags` folds each machine's bag to its
-    // maximum (completeness assumed at the source, propagated through the
-    // demote).  The column is dimensioned (`temperature[real]`, ADR 0026);
+    // The end-to-end key-coarsening path (ADR 0024 + ADR 0023 + ADR 0035):
+    // `demote taken_at` drops the time out of the key, leaving a bag of
+    // readings per machine, and the reducing `map_bags` folds each machine's
+    // bag to its maximum.  The coarsening forfeits the registry's own-key
+    // completeness, so the view claims the fact after the `demote` with an
+    // `assume { complete }`, a runtime identity (eval.rs): evaluation is
+    // unchanged.  The column is dimensioned (`temperature[real]`, ADR 0026);
     // at runtime it is a plain base-unit magnitude.
     let program = fleet_program();
     let mut db = seeded_db(&program);

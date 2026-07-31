@@ -87,18 +87,22 @@ unit Reading {
 // A **registry**, not a store (ADR 0033, `13-registries.md`): a reading is
 // appended when it is taken and never revised, and this declaration is the
 // sole intake for readings.  That mechanism establishes completeness at the
-// type level, which is what lets the reducing view below fold each machine's
-// bag with no `assume { complete }`.  Contrast `machines` above, a store:
-// a machine is commissioned and its status changes, so rows are updated in
-// place and the table is `Incomplete`.
+// type level **at the reading's own key**, and there it stops (ADR 0035):
+// recording every reading received is not receiving every reading that
+// happened, so nothing here says a machine's demoted bag is whole.
+// Contrast `machines` above, a store: a machine is commissioned and its
+// status changes, so rows are updated in place.
 //
 // The registry stays `singletons` at the reading's own key, so the ADR 0024
 // grading survives and `reading_trend`'s scan still discharges tie-freedom
-// structurally.  Completeness holds here too, trivially
-// (`Mensura.fiberCompleteWrt_of_functional`), and `demote` propagates it to
-// the machine, where it is contentful and consumed.  An `attr*` registry
-// keyed by `Machine` would make completeness contentful at the source but
-// cost `assume { arranged }` at every window: one assumption for another.
+// structurally.  Completeness holds here trivially
+// (`Mensura.fiberCompleteWrt_of_functional`), as it would for any
+// `singletons` table; what the keyword buys is the append-only sole
+// intake.  An `attr*` registry keyed by `Machine` would instead make
+// completeness contentful at the source (the bag per machine is pinned by
+// the intake), sparing `machine_temperature` its `assume { complete }`,
+// but cost `assume { arranged }` at every window: one assumption for
+// another.
 registry readings {
   unit { Reading }
   attr {
@@ -152,16 +156,19 @@ view reading_trend {
 
 // Reducing folds each machine's readings, which is silently wrong on a
 // partial bag, so the reducing `map_bags` demands completeness (ADR 0023).
-// **Nothing establishes it here**, and nothing needs to: `readings` is a
-// registry, so the fact holds at the source by mechanism (ADR 0033), and
-// `demote` *propagates* it to the coarser key rather than consuming it
-// (`Mensura.demote_completeWrt`).  Were `readings` a store, this view would
-// not compile without an `assume { complete }` or a `completeness_check`.
-// `demote taken_at` also restores the `Machine` key structurally, which is
-// what the `Tabular[Machine]` claim checks.  `max` preserves the dimension,
-// so `max_temperature` is `temperature[real]` too.
+// The registry's by-mechanism fact does not reach here: it holds at the
+// reading's own key, and `demote taken_at` forfeits it on the way to the
+// machine, because a reading that was never recorded is an absent key at
+// the fine key and a **gap inside the machine's bag** after the coarsening
+// (ADR 0035).  So the view states the claim the fold actually rests on,
+// after the `demote` and visibly: no reading a machine produced went
+// unrecorded.  The registry cannot supply that claim; only the deployment
+// can.  `demote taken_at` also restores the `Machine` key structurally,
+// which is what the `Tabular[Machine]` claim checks.  `max` preserves the
+// dimension, so `max_temperature` is `temperature[real]` too.
 view machine_temperature : Tabular[Machine] {
   readings |> demote taken_at
+           |> assume { complete }
            |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 }
 
