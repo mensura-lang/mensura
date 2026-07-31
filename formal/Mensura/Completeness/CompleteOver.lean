@@ -11,10 +11,15 @@ complete when it has a row wherever the reference does.
 
 Two results seed ADR 0023.  First, `demote` (the algebra's `demote`,
 `Mensura.demote`) **propagates** completeness from the fine key `K × D` to
-the coarse key `K`.  It neither demands nor invents the fact; it carries it
-across the coarsening, which is why the ADR moves the *demand* onto the
-reducing `map_bags` downstream and leaves `demote` responsible only for
-its lineage break (`demote_not_preservesDisjoint`).
+the coarse key `K`, *relative to a reference that coarsens with the table*
+(`demote_completeWrt`).  ADR 0035 sharpens what that does and does not
+give: the fact the checker's qualifier tracks is fiber-level completeness
+against a **fixed** reference, and that fact does not survive a genuine
+coarsening (the fiber-gap counterexample recorded at the end of this
+file), which is why the checker clears the qualifier at a coarsening
+`demote` and the establishment step sits after it.  The *demand* stays on the reducing `map_bags` downstream,
+and `demote` remains responsible only for its lineage break
+(`demote_not_preservesDisjoint`).
 
 Second, the **trivial discharge at `card <= 1`**: `CompleteWrt` is key
 coverage (no key the population has is absent), but the fact a *fold* needs
@@ -25,7 +30,10 @@ world) and the table holds only genuine observations, every present key
 carries its whole fiber (`fiberCompleteWrt_of_functional`): a singleton
 group is either absent or whole, never partial.  This is the base case the
 checker uses to accept a reducing `map_bags` over a `singletons` store's
-full key with no establishment step (ADR 0022 / 0023).
+full key with no establishment step (ADR 0022 / 0023), and, applied at the
+post-move key, it is also what re-derives the qualifier when a key move's
+result is graded `singletons` (ADR 0035), keeping `promote`/`demote` a
+true inverse pair on the whole qualifier vector.
 -/
 
 import Mensura.Core.Ops
@@ -46,13 +54,15 @@ def CompleteWrt (R T : Table K H σ) : Prop := ∀ k, R.Present k → T.Present 
 /-- Reflexivity: every table is complete with respect to itself. -/
 theorem completeWrt_refl (T : Table K H σ) : CompleteWrt T T := fun _ h => h
 
-/-- **`demote` propagates completeness (ADR 0023).**  If `T` is complete
-with respect to a reference `R` at the fine key `K × D`, then `demote T` is
-complete with respect to `demote R` at the coarse key `K`.  Coarsening keeps
-"nothing is missing": a coarse group is present exactly when some fine key in
-its fibre is present, and completeness carries that fine presence from `R` to
-`T`.  So `demote` (the algebra's `demote`) transforms the fact rather than
-consuming it. -/
+/-- **`demote` propagates reference-relative completeness (ADR 0023).**  If
+`T` is complete with respect to a reference `R` at the fine key `K × D`,
+then `demote T` is complete with respect to `demote R` at the coarse key
+`K`.  Coarsening keeps "nothing is missing": a coarse group is present
+exactly when some fine key in its fibre is present, and completeness
+carries that fine presence from `R` to `T`.  Note the reference coarsens
+**with** the table; this is *not* the fact the checker's qualifier tracks
+(fiber-level completeness against a fixed reference, which a coarsening
+destroys: the counterexample at the end of this file, ADR 0035). -/
 theorem demote_completeWrt {R T : Table (K × D) H σ}
     (h : CompleteWrt R T) : CompleteWrt (demote R) (demote T) := by
   intro k hR
@@ -94,5 +104,24 @@ theorem fiberCompleteWrt_of_functional {R T : Table K H σ}
     have h2 : 0 < (T.rows k).card := Multiset.card_pos.mpr hk'
     omega
   exact Multiset.eq_of_le_of_card_le (hsub k) hcard
+
+/-! **`demote` does not preserve fiber-level completeness (ADR 0035).**
+Against a fixed reference, "every present group is whole" is destroyed by
+a genuine coarsening.  `FiberCompleteWrt` never constrains a key *absent*
+from `T`, and `demote` merges exactly that absence into a coarse fiber,
+where it becomes a gap.  Witness: over key `Unit × Bool`, let the
+population `R` hold one row at each of `((), false)` and `((), true)`,
+and let `T` hold only the `false` row.  `FiberCompleteWrt R T` holds
+(the one present key carries its whole fiber), yet after `demote` the
+single coarse key `()` is present in `demote T` with a one-row bag where
+`demote R`'s has two, so `FiberCompleteWrt (demote R) (demote T)` fails.
+
+Contrast `demote_completeWrt` above, which is true because its reference
+coarsens *with* the table.  The checker tracks the fixed-reference fact,
+so a coarsening `demote` clears the qualifier and the establishment step
+sits after it; the clearing is conservative and needs no lemma
+(ADR 0021).  Mechanizing this witness as `demote_not_fiberCompleteWrt`
+is recorded in ADR 0035 as the slice's open formal item, alongside the
+`promote` preservation row. -/
 
 end Mensura

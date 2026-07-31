@@ -19,8 +19,8 @@ a table.
 - **No runtime obligations.**  Views host Tier A pipelines plus the Tier B
   stages `pivot` and `demote`.  Both are Tier B only for compile-time
   effects (`pivot` for its lineage effect and the `exhaustive` totality
-  upgrade, ADR 0020; `demote` for its lineage drop, completeness
-  propagation, and the reducer's discharge, ADR 0023/0024), so batch
+  upgrade, ADR 0020; `demote` for its lineage drop, its completeness
+  clearing, and the reducer's discharge, ADR 0023/0024/0035), so batch
   evaluation is unaffected: the runtime trusts the checker and only
   rekeys.
 - **One-shot batch recompute.**  A view is recomputed from its sources'

@@ -3,8 +3,8 @@
 A registry is a tabulation of observations of a unit whose data arrives
 through an ingestion mechanism rather than through CRUD operations.
 Because that mechanism is the sole intake for its observations, a
-registry carries a completeness guarantee at the type level that an
-ordinary store does not.
+registry carries a completeness guarantee at the type level, at its own
+declared key, that an ordinary `attr*` store does not.
 
 This document defines what a registry is and how it is declared.  It is
 the companion of `02-stores.md`, which defines the store it varies, and
@@ -25,14 +25,20 @@ observations get in, and what the type system may therefore conclude.
 A store is written through ordinary create, update, and delete
 operations.  Rows may be added at any time by anyone with permission, so
 at any moment a store holds *some* of the observations that exist.  Its
-tables are `Incomplete`: a fold over one key's rows may be folding over
-a partial bag.
+`attr*` tables are `Incomplete`: a fold over one key's rows may be
+folding over a partial bag.  (An `attr` table is trivially `Complete` at
+its own key whatever the declaration kind: a present key's single row is
+its whole bag.)
 
 A registry is written only by appending, and the declaration is the sole
 intake for its observations.  Nothing else writes it, and nothing
 removes from it.  That is a statement about *mechanism*, and it is what
-licenses the type-level fact: what the registry holds for a key is
-everything there is.
+licenses the type-level fact: what the registry holds for a key of its
+**own declared boundary** is everything there is.  The fact stops at
+that boundary: recording every observation received is not receiving
+every observation that happened, so it does not survive a coarsening of
+the key ("Completeness by mechanism" below,
+`docs/decisions/0035-completeness-cleared-by-demote.md`).
 
 This is the "properties are derived from mechanism, not declared"
 pillar of `00-overview.md` in its clearest form.  The programmer does
@@ -135,11 +141,15 @@ registry readings {
 ```
 
 Here time is part of the identity, so each `(machine_id, taken_at)` pair
-is observed once.  The completeness fact is true but says little on its
-own, because a key with at most one row has nothing missing from its
-bag.  What it buys is that a reduction over a *coarsened* key stays
-free of ceremony: `demote taken_at` propagates the fact to the machine,
-and the reducing `map_bags` consumes it with no `assume` in sight.
+is observed once.  The completeness fact is true but trivial, because a
+key with at most one row has nothing missing from its bag.  It does
+**not** extend below the reading's own key: an unrecorded reading is an
+absent key, and `demote taken_at` merges that absence into the machine's
+bag as a gap, so the fact is cleared at the coarsening and a reduction
+per machine discharges its own obligation there
+(`docs/decisions/0035-completeness-cleared-by-demote.md`).  What a
+`singletons` registry buys is the intake discipline itself and, through
+the ADR 0024 grading its key seeds, derived tie-freedom for windows.
 
 An **`attr*`** registry is a `bag`, keyed by the entity the observations
 are about:
@@ -173,22 +183,34 @@ is established (`07-pipelines.md`, `09-typing-reference.md` section 8):
 - **check**: `completeness_check { assert ... }` establishes it locally;
 - **fiat**: `assume { complete }` admits it, visibly.
 
-Because the fact holds at the source, everything downstream inherits it
-without ceremony.  Tier A operations preserve it, `demote` propagates it
-from the fine key to the coarse one, and a reducing `map_bags` consumes
-it.  The pipeline that needs an `assume { complete }` over a store needs
-nothing at all over a registry:
+The fact holds at the source, **at the registry's own key**.  Row-wise
+Tier A operations preserve it (they map whole fibers to whole fibers),
+and a reducing `map_bags` at that key consumes it.  It does not survive
+a genuine coarsening: `demote` clears it, because an absent fine key
+becomes a gap inside a coarse fiber
+(`docs/decisions/0035-completeness-cleared-by-demote.md`).  The pipeline
+that needs an `assume { complete }` over a `bag` store needs nothing at
+all over a `bag` registry:
 
 ```
-// Over a store: the fold may be folding over a partial bag, so the
-// obligation must be discharged before the reducer.
+// Over an attr* store keyed by Machine: the fold may be folding over a
+// partial bag, so the obligation must be discharged before the reducer.
 readings |> assume { complete }
-         |> demote taken_at
          |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 
-// Over a registry: established at the source, propagated by `demote`,
+// Over an attr* registry keyed by Machine: established at the source,
 // consumed by the reducer.  Nothing to discharge.
+readings |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
+```
+
+Below the declared key the two kinds are on the same footing.  A
+`singletons` registry of readings demoted to the machine is a possibly
+partial bag exactly as a store's would be, and the reduction states its
+own claim:
+
+```
 readings |> demote taken_at
+         |> assume { complete }
          |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 ```
 
@@ -196,8 +218,9 @@ The uniform rule (complete at either cardinality) is deliberate.  On a
 `singletons` registry the fact is the
 `Mensura.fiberCompleteWrt_of_functional` corollary and adds nothing a
 reducer had not already discharged from cardinality; on a `bag`
-registry it is the contentful fact above.  One rule covers both, so the
-keyword means one thing wherever it appears.
+registry it is the contentful fact above, and the one the mechanism arm
+exists for.  One rule covers both, so the keyword means one thing
+wherever it appears.
 
 ## Registry versus store
 
@@ -208,7 +231,8 @@ keyword means one thing wherever it appears.
 | Materializes as a table | yes | yes, identically |
 | Readable by a view | yes | yes |
 | Written by | create, update, delete | append only |
-| Table completeness | `Incomplete` | `Complete` |
+| Table completeness at `attr*` | `Incomplete` | `Complete` |
+| Table completeness at `attr` | `Complete` (trivially) | `Complete` (trivially) |
 | Valid `domain` target | when `singletons` | when `singletons` |
 | Importable across modules | yes | **no** |
 
@@ -279,15 +303,20 @@ registry readings {
 
 view machine_temperature : Tabular[Machine] {
   readings |> demote taken_at
+           |> assume { complete }
            |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 }
 ```
 
 `machines` is a store: a machine is commissioned, its status changes,
 and rows are updated in place.  `readings` is a registry: a reading is
-appended when it is taken and never revised.  The view reduces each
-machine's readings with no completeness ceremony, because the registry
-established the fact at the source.
+appended when it is taken and never revised.  At the reading's own key
+the registry's fact is trivially true and nothing more is needed.  The
+view folds *below* that key: `demote taken_at` coarsens to the machine
+and forfeits the fact, so the `assume { complete }` states the claim the
+fold actually rests on, that no reading a machine produced went
+unrecorded.  The registry cannot supply that claim; only the deployment
+can.
 
 ## Forward references and open questions
 
@@ -305,4 +334,5 @@ established the fact at the source.
   to declare that one is the intake for the other is unsettled.
 - **Completeness over a coarser key.**  See "What is not in a registry"
   above; shared with `assume { complete }`
-  (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
+  (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`,
+  `docs/decisions/0035-completeness-cleared-by-demote.md` alternative 3).
