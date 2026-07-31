@@ -1,0 +1,21 @@
+// Rejected at resolve: a `domain` target must be a `singletons` tabulation.
+// A bag registry is rejected for the same reason a bag store is, since the
+// rule is about cardinality rather than kind (ADR 0032 decision 5, ADR 0033
+// decision 5): a bag has no per-key row for a reference to land on.
+unit Machine {
+  serial: string
+}
+
+unit Alert {
+  machine: Machine
+}
+
+registry readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+
+store alerts {
+  unit { Alert }
+  domain { machine: readings }
+}

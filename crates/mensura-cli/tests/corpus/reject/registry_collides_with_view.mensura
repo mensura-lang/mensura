@@ -1,0 +1,14 @@
+// Rejected at resolve: a registry and a view cannot share a name; both
+// name a queryable table (ADR 0033 decision 5).
+unit Machine {
+  serial: string
+}
+
+registry readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+
+view readings {
+  readings |> flat_map |_, r| r
+}

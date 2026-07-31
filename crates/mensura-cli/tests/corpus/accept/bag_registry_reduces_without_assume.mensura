@@ -1,0 +1,20 @@
+// Accept: a reducing `map_bags` over a bag registry needs no establish
+// step.  This is `accept/bag_store.mensura` with the source's kind changed
+// and its `assume { complete }` deleted: a registry is the sole intake for
+// its observations, so the bag it holds per entity is whole by mechanism
+// (ADR 0033 decision 2, the contentful reading ADR 0022 predicted).
+import bag
+
+unit Machine { id: string }
+
+registry readings {
+  unit { Machine }
+  attr* {
+    kelvin: real
+    rpm:    int
+  }
+}
+
+view max_kelvin {
+  readings |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin)
+}

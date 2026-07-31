@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mensura_runtime::{EnsureOutcome, SqliteBackend, StorageBackend, materialize_views};
-use mensura_syntax::{Span, parse, tokenize};
+use mensura_syntax::{Span, StoreKind, parse, tokenize};
 
 #[derive(Parser)]
 #[command(name = "mensura", about = "The Mensura toolchain", version)]
@@ -93,15 +93,42 @@ fn cmd_check(path: &Path) -> ExitCode {
     };
     match frontend(path, &src) {
         Ok(program) => {
-            let stores = program.schemas.len();
+            // Registries are `Schema`s too (ADR 0033), so they are counted
+            // under their own noun rather than reported as stores.
+            let registries = program
+                .schemas
+                .iter()
+                .filter(|s| s.kind == StoreKind::Registry)
+                .count();
+            let stores = program.schemas.len() - registries;
             let views = program.views.len();
-            let store_noun = if stores == 1 { "store" } else { "stores" };
-            if views == 0 {
-                println!("ok: {stores} {store_noun}");
-            } else {
-                let view_noun = if views == 1 { "view" } else { "views" };
-                println!("ok: {stores} {store_noun}, {views} {view_noun}");
+
+            // A bare `0 stores` still reads as the useful "nothing here",
+            // but suppress it once another count carries that news.
+            let mut parts = Vec::new();
+            if stores > 0 || (registries == 0 && views == 0) {
+                parts.push(format!(
+                    "{stores} {}",
+                    if stores == 1 { "store" } else { "stores" }
+                ));
             }
+            if registries > 0 {
+                parts.push(format!(
+                    "{registries} {}",
+                    if registries == 1 {
+                        "registry"
+                    } else {
+                        "registries"
+                    }
+                ));
+            }
+            if views > 0 {
+                parts.push(format!(
+                    "{views} {}",
+                    if views == 1 { "view" } else { "views" }
+                ));
+            }
+            println!("ok: {}", parts.join(", "));
             ExitCode::SUCCESS
         }
         Err(()) => ExitCode::FAILURE,
@@ -133,19 +160,20 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
         eprintln!("note: using an in-memory database; pass --db <path> to persist");
     }
     for schema in &program.schemas {
+        let noun = schema.kind.keyword();
         match backend.ensure_store(schema) {
             Ok(EnsureOutcome::Created) => {
                 println!(
-                    "created store {} ({} columns)",
+                    "created {noun} {} ({} columns)",
                     schema.store,
                     schema.columns.len()
                 );
             }
             Ok(EnsureOutcome::AlreadyExists) => {
-                println!("store {} already exists", schema.store);
+                println!("{noun} {} already exists", schema.store);
             }
             Err(e) => {
-                eprintln!("error: store {}: {e}", schema.store);
+                eprintln!("error: {noun} {}: {e}", schema.store);
                 return ExitCode::FAILURE;
             }
         }

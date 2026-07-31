@@ -1,0 +1,9 @@
+// Rejected at resolve: a registry name is a term and must be snake_case,
+// exactly as a store name is (docs/language/05-naming-and-casing.md).
+unit U {
+  id: string
+}
+
+registry TempReadings {
+  unit { U }
+}

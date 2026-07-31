@@ -1,0 +1,5 @@
+// Rejected at resolve: the `unit { U }` clause must name a declared unit.
+registry readings {
+  unit { Missing }
+  attr { kelvin: real }
+}
