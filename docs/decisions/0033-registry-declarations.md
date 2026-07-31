@@ -148,7 +148,42 @@ What this ADR must settle, none of it fixed by the documents above:
    observations, and creates no intake.  The store `domain` graph
    acyclicity check covers registries unchanged.
 
-6. **Deferred, recorded.**  Each of the following is left to the slice
+6. **Completeness and `domain` are orthogonal.**  Decision 5 lets
+   references cross between the two kinds freely, which invites the
+   question of whether a `domain` edge can undermine the completeness
+   fact.  It cannot, and the reason is worth stating rather than leaving
+   to be re-derived.
+
+   `CompleteWrt R T` is *key coverage relative to a reference population*
+   (`formal/Mensura/Completeness/CompleteOver.lean`): every key present
+   in `R` is present in `T`.  The registry mechanism says the registry is
+   its **own** reference population, because it is the sole intake for
+   its observations.  A `domain` entry constrains **which values a column
+   may hold**, not **which rows exist**.  The two quantify over different
+   things, which is why the mechanized definition mentions foreign keys
+   nowhere.
+
+   Concretely, in both directions:
+
+   - **A registry with a `domain` into a store.**  The reference filters
+     the rows the registry will accept; it does not supply rows.  The
+     registry remains its own sole intake, so it remains its own
+     reference population and the fact holds.
+   - **A store with a `domain` into a registry.**  Being referenced
+     changes nothing about what the registry holds.
+
+   What is *not* true, and what this decision exists to forestall: a
+   registry is complete over **its own key**, never over its `domain`
+   target's.  A registry of readings keyed by `(machine, time)` is a
+   complete census of *readings*; it does not assert that every machine
+   in the target store has one.  A machine with no readings is an absent
+   key, not a partial bag, so a reducing fold over the registry stays
+   sound and simply produces no row for it.  Completeness over a *target
+   store's* population would be a different proposition, would need the
+   key-carrying fact of the open questions below, and is not established
+   by anything here.
+
+7. **Deferred, recorded.**  Each of the following is left to the slice
    that owns it rather than designed here:
 
    - `auth {}` on a registry, endpoint exposure, and the auto-derived
@@ -246,7 +281,7 @@ Neutral:
 - Whether a future `registry` of a unit already tabulated by a store
   wants a stated relationship between the two (today they are
   independent tabulations that happen to share a unit).
-- The key-carrying completeness fact of decision 6, if a consumer
+- The key-carrying completeness fact of decision 7, if a consumer
   appears that needs completeness over a key coarser than the
   declaration's.
 

@@ -92,6 +92,24 @@ while a `bag` has none.  A `domain` entry naming a `bag` registry is
 rejected for the same reason a `bag` store is
 (`docs/decisions/0032-compound-keys-flatten-to-dotted-columns.md`).
 
+### References do not affect completeness
+
+A reference in either direction leaves the completeness fact intact, and
+it is worth seeing why.  Completeness is *key coverage over the
+registry's own population*: every key that should be there is there.  A
+`domain` entry constrains **which values a column may hold**, not
+**which rows exist**.  The two say different things, so a reference
+neither strengthens nor weakens the fact.
+
+Read the guarantee precisely, though.  A registry is complete over **its
+own key**, never over its `domain` target's.  The example above is a
+complete census of *events*; it does not assert that every machine in
+`machines` has one.  A machine with no events is an absent key, not a
+partial bag, so a fold over the registry stays sound and simply produces
+no row for that machine.  "Every entity in the target store appears
+here" is a different claim, and nothing in a registry declaration makes
+it.
+
 ## Cardinality: `attr` versus `attr*`
 
 A registry declares its cardinality through the attribute block form,

@@ -1,0 +1,37 @@
+// Accept: a registry's `domain` may resolve into a store, and the registry
+// stays complete by mechanism (ADR 0033 decision 6).  Completeness is key
+// coverage over the registry's *own* population, while a `domain` entry
+// constrains which values a column may hold; the two quantify over
+// different things, so the reference cannot undermine the fact.
+//
+// Note what the fold below does and does not say.  It counts the events
+// this registry recorded for each machine, which the sole intake can answer
+// honestly.  It does not claim every machine in `machines` has events: a
+// machine with none is an absent key, not a partial bag, so it simply gets
+// no output row.  Completeness over the *target store's* population would
+// be a different proposition and is established by nothing here.
+import bag
+
+unit Machine {
+  serial: string
+}
+
+unit Event {
+  machine: Machine
+  at:      date
+}
+
+store machines {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+registry events {
+  unit { Event }
+  domain { machine: machines }
+  attr { note: string }
+}
+
+view events_per_machine {
+  events |> demote at |> map_bags |k, b| (.n = #b.note)
+}

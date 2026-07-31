@@ -6,7 +6,7 @@ use mensura_types::{ColumnRole, ColumnType, Schema, TableShape};
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 
-use crate::backend::{EnsureOutcome, StorageBackend, StorageError};
+use crate::backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError};
 use crate::value::{Row, Value};
 
 /// A store backend that materializes schemas as SQLite tables.
@@ -17,22 +17,28 @@ pub struct SqliteBackend {
 impl SqliteBackend {
     /// Open (or create) a database at `path`.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
-        Ok(SqliteBackend {
-            conn: Connection::open(path)?,
-        })
+        Self::configure(Connection::open(path)?)
     }
 
     /// Open a transient in-memory database (used in tests).
     pub fn open_in_memory() -> Result<Self, StorageError> {
-        Ok(SqliteBackend {
-            conn: Connection::open_in_memory()?,
-        })
+        Self::configure(Connection::open_in_memory()?)
     }
 
-    /// Execute raw SQL against the backing database.  A test scaffold: until
-    /// M4's typed ingestion exists, tests seed store rows at the SQL level
-    /// (`docs/toolkit/04-processing-layer.md`, "Validation").  Not a language
-    /// surface.
+    /// Settings every connection needs.  SQLite scopes `foreign_keys` to the
+    /// connection rather than the database, so it is set at open and both
+    /// the read and write paths see it (ADR 0034 decision 5): the
+    /// `FOREIGN KEY` clauses `CREATE TABLE` emits for each resolved `domain`
+    /// entry (ADR 0032) are enforced now that there is a write path.
+    fn configure(conn: Connection) -> Result<Self, StorageError> {
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(SqliteBackend { conn })
+    }
+
+    /// Execute raw SQL against the backing database.  A test scaffold for
+    /// seeding rows (`docs/toolkit/04-processing-layer.md`, "Validation"),
+    /// kept because it bypasses decoding; the supported intake is
+    /// [`StorageBackend::apply`] (`docs/toolkit/05-ingestion.md`).
     pub fn execute_sql(&self, sql: &str) -> Result<(), StorageError> {
         self.conn.execute_batch(sql)?;
         Ok(())
@@ -128,7 +134,95 @@ impl StorageBackend for SqliteBackend {
         tx.commit()?;
         Ok(())
     }
+
+    fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError> {
+        // One transaction for the batch: every change lands or none does
+        // (ADR 0034 decision 4).
+        let tx = self.conn.transaction()?;
+        let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
+
+        let mut applied = Applied::default();
+        if !delta.inserts.is_empty() {
+            let holes: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                quote_ident(&table.name),
+                cols.join(", "),
+                holes.join(", ")
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            for row in &delta.inserts {
+                stmt.execute(rusqlite::params_from_iter(row.iter().map(encode)))
+                    .map_err(|e| write_error(e, table))?;
+                applied.inserted += 1;
+            }
+        }
+
+        if !delta.deletes.is_empty() {
+            // Delete by whole-row match: the row is the identity on an
+            // unkeyed (bag) table, and matches the key on a keyed one.
+            let matches: Vec<String> = cols
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{c} IS ?{}", i + 1))
+                .collect();
+            let sql = format!(
+                "DELETE FROM {} WHERE {}",
+                quote_ident(&table.name),
+                matches.join(" AND ")
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            for row in &delta.deletes {
+                let n = stmt
+                    .execute(rusqlite::params_from_iter(row.iter().map(encode)))
+                    .map_err(|e| write_error(e, table))?;
+                applied.deleted += n;
+            }
+        }
+
+        tx.commit()?;
+        Ok(applied)
+    }
 }
+
+/// Translate a constraint failure into a diagnostic that names what the
+/// program declared, rather than a raw SQLite code (ADR 0034 decision 5).
+fn write_error(e: rusqlite::Error, table: &TableShape) -> StorageError {
+    use rusqlite::ErrorCode;
+    let rusqlite::Error::SqliteFailure(err, _) = &e else {
+        return StorageError::Sqlite(e);
+    };
+    match err.code {
+        ErrorCode::ConstraintViolation if err.extended_code == FOREIGN_KEY_VIOLATION => {
+            StorageError::ForeignKey {
+                table: table.name.clone(),
+                references: table
+                    .foreign_keys
+                    .iter()
+                    .map(|fk| (fk.field.clone(), fk.store.clone()))
+                    .collect(),
+            }
+        }
+        ErrorCode::ConstraintViolation
+            if matches!(
+                err.extended_code,
+                PRIMARY_KEY_VIOLATION | UNIQUE_VIOLATION
+            ) =>
+        {
+            StorageError::DuplicateKey {
+                table: table.name.clone(),
+            }
+        }
+        _ => StorageError::Sqlite(e),
+    }
+}
+
+/// `SQLITE_CONSTRAINT_FOREIGNKEY`.
+const FOREIGN_KEY_VIOLATION: i32 = 787;
+/// `SQLITE_CONSTRAINT_PRIMARYKEY`.
+const PRIMARY_KEY_VIOLATION: i32 = 1555;
+/// `SQLITE_CONSTRAINT_UNIQUE`.
+const UNIQUE_VIOLATION: i32 = 2067;
 
 /// Decode one stored cell into a typed [`Value`].  `NULL` is [`Value::Missing`]
 /// (an optional value, ADR 0010); anything else must match the column's
@@ -206,10 +300,9 @@ pub fn create_table_sql(shape: &TableShape) -> String {
     }
 
     // One clause per resolved `domain` entry (ADR 0032).  SQLite accepts
-    // the clauses regardless of table-creation order and enforces them only
-    // under `PRAGMA foreign_keys = ON`, which this backend does not set:
-    // there is no write path yet, so the clauses are documentation-grade
-    // until the ingestion slice decides on enforcement.
+    // the clauses regardless of table-creation order, and enforces them
+    // because `SqliteBackend::configure` sets `PRAGMA foreign_keys = ON`
+    // (ADR 0034 decision 5, the question ADR 0032 left to this slice).
     for fk in &shape.foreign_keys {
         let children: Vec<String> = fk
             .columns
