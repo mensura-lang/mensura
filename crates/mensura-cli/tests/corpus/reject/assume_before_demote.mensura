@@ -1,8 +1,10 @@
-// Accept: assume { complete } establishes the fact at the fine key,
-// demote propagates it to the coarser key (`demote_completeWrt`), and
-// the reducing map_bags consumes it (ADR 0017 as amended by ADR 0023),
-// bringing the bag back to singletons.  Dropping `ts` (not the promoted
-// column) keeps this a genuine coarsening, not an ADR 0024 round trip.
+// Reject: the claim is made at the fine key and the coarsening forfeits
+// it (ADR 0035).  Completeness is about the current key: an absent fine
+// key becomes a gap inside a coarse fiber the moment `demote ts` merges
+// the keys, so the `assume { complete }` placed before the `demote` says
+// nothing about the bags the reducing `map_bags` folds, and the reducer
+// rejects.  Move the `assume` after the `demote` and it is accepted
+// (`accept/assume_after_demote.mensura`).
 import bag
 
 unit Reading { ts: int }
