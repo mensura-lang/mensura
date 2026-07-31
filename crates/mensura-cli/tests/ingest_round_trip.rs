@@ -1,0 +1,191 @@
+//! The M4 loop end to end: ingest a batch, then materialize the views over
+//! it (`docs/toolkit/05-ingestion.md`, ADRs 0033 and 0034).
+//!
+//! This exercises the whole slice against the committed fleet example: the
+//! typed decoder, the delta-shaped write path, enforced foreign keys, and
+//! the completeness-by-mechanism that lets `machine_temperature` reduce with
+//! no `assume { complete }` anywhere in the program.
+
+use mensura_runtime::{
+    Delta, SqliteBackend, StorageBackend, Value, decode_jsonl, materialize_views,
+};
+use mensura_syntax::{parse, tokenize};
+use mensura_types::{ResolvedProgram, Schema};
+
+const FLEET: &str = include_str!("../../../docs/examples/fleet-monitoring.mensura");
+
+fn resolve(src: &str) -> ResolvedProgram {
+    let tokens = tokenize(src).expect("should lex");
+    let program = parse(&tokens).expect("should parse");
+    mensura_types::resolve(&program).expect("should resolve")
+}
+
+fn table<'a>(program: &'a ResolvedProgram, name: &str) -> &'a Schema {
+    program
+        .schemas
+        .iter()
+        .find(|s| s.store == name)
+        .unwrap_or_else(|| panic!("no table named {name}"))
+}
+
+/// Open a database with every table of `program` created.
+fn seeded(program: &ResolvedProgram) -> SqliteBackend {
+    let mut db = SqliteBackend::open_in_memory().expect("in-memory database");
+    for schema in &program.schemas {
+        db.ensure_store(schema).expect("create table");
+    }
+    db
+}
+
+#[test]
+fn ingesting_the_fleet_registry_feeds_its_views() {
+    let program = resolve(FLEET);
+    let mut db = seeded(&program);
+
+    // `readings` has no `domain`, so it needs no machines to reference; the
+    // views below nonetheless read both tables.
+    let machines = table(&program, "machines");
+    let rows = decode_jsonl(
+        machines,
+        r#"{"machine_id":"m-01","commissioned":"2026-01-05","status":"operational","last_service":null}
+{"machine_id":"m-02","commissioned":"2026-02-11","status":"degraded","last_service":"2026-06-01"}
+"#,
+    )
+    .expect("machines decode");
+    assert_eq!(
+        db.apply(&machines.shape(), &Delta::appending(rows))
+            .expect("append machines")
+            .inserted,
+        2
+    );
+
+    let readings = table(&program, "readings");
+    let rows = decode_jsonl(
+        readings,
+        r#"{"machine_id":"m-01","taken_at":"2026-07-30","temperature":300.0}
+{"machine_id":"m-01","taken_at":"2026-07-31","temperature":312.5}
+{"machine_id":"m-02","taken_at":"2026-07-31","temperature":355.0}
+"#,
+    )
+    .expect("readings decode");
+    assert_eq!(
+        db.apply(&readings.shape(), &Delta::appending(rows))
+            .expect("append readings")
+            .inserted,
+        3
+    );
+
+    let materialized = materialize_views(&mut db, &program).expect("materialize");
+    let count = |name: &str| {
+        materialized
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no view named {name}"))
+            .1
+    };
+
+    // The payoff: a reducing fold over the registry, with no completeness
+    // discharge anywhere in the program (ADR 0033).  One row per machine,
+    // carrying that machine's maximum.
+    assert_eq!(count("machine_temperature"), 2);
+    let peaks = db
+        .scan(
+            &program
+                .views
+                .iter()
+                .find(|v| v.name == "machine_temperature")
+                .expect("the view")
+                .shape(),
+        )
+        .expect("scan");
+    assert_eq!(
+        peaks,
+        vec![
+            vec![Value::String("m-01".into()), Value::Real(312.5)],
+            vec![Value::String("m-02".into()), Value::Real(355.0)],
+        ]
+    );
+
+    // The windowed view emits one row per input row, and `overheating`
+    // filters against the 350 K threshold, so only m-02's reading survives.
+    assert_eq!(count("reading_trend"), 3);
+    assert_eq!(count("overheating"), 1);
+    // `attention_needed` reads `machines`, where m-02 is degraded.
+    assert_eq!(count("attention_needed"), 1);
+}
+
+#[test]
+fn a_bad_record_stops_the_batch_before_anything_is_written() {
+    // The decode runs over the whole batch first, so a bad record at the end
+    // means no write is attempted at all.
+    let program = resolve(FLEET);
+    let db = seeded(&program);
+    let readings = table(&program, "readings");
+
+    let err = decode_jsonl(
+        readings,
+        r#"{"machine_id":"m-01","taken_at":"2026-07-30","temperature":300.0}
+{"machine_id":"m-02","taken_at":"2026-07-31","temperature":"warm"}
+"#,
+    )
+    .expect_err("the second record's temperature is not a number");
+    assert_eq!(err.record, 2);
+    assert!(err.message.contains("temperature"), "{err}");
+    assert!(db.scan(&readings.shape()).expect("scan").is_empty());
+}
+
+#[test]
+fn a_batch_that_fails_at_the_write_rolls_back() {
+    // The other half of all-or-nothing (ADR 0034 decision 4): these records
+    // all decode, so the failure lands mid-transaction, and the good rows
+    // ahead of the bad one must not survive it.
+    let program = resolve(FLEET);
+    let mut db = seeded(&program);
+    let machines = table(&program, "machines");
+
+    let rows = decode_jsonl(
+        machines,
+        r#"{"machine_id":"m-01","commissioned":"2026-01-05","status":"operational","last_service":null}
+{"machine_id":"m-01","commissioned":"2026-03-09","status":"failure","last_service":null}
+"#,
+    )
+    .expect("both records decode; the clash is a key one");
+    db.apply(&machines.shape(), &Delta::appending(rows))
+        .expect_err("a singletons store holds one row per key");
+    assert!(
+        db.scan(&machines.shape()).expect("scan").is_empty(),
+        "the first row must not survive the batch that failed"
+    );
+}
+
+#[test]
+fn a_reference_to_a_missing_row_is_rejected_by_name() {
+    // Foreign keys are enforced (ADR 0034 decision 5), and the diagnostic
+    // names the `domain` entry rather than a SQLite code.
+    let src = r#"
+        unit Machine { serial: string }
+        unit Event { machine: Machine  at: date }
+        store machines { unit { Machine } attr { commissioned: date } }
+        registry events {
+          unit { Event }
+          domain { machine: machines }
+          attr { note: string }
+        }
+    "#;
+    let program = resolve(src);
+    let mut db = seeded(&program);
+    let events = table(&program, "events");
+
+    let rows = decode_jsonl(
+        events,
+        r#"{"machine.serial":"ghost","at":"2026-07-31","note":"swap"}
+"#,
+    )
+    .expect("decodes: the reference is a storage concern, not a decode one");
+    let err = db
+        .apply(&events.shape(), &Delta::appending(rows))
+        .expect_err("no such machine");
+    let shown = err.to_string();
+    assert!(shown.contains("`machines`"), "{shown}");
+    assert!(shown.contains("`machine`"), "{shown}");
+}
