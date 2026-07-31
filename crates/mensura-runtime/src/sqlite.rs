@@ -544,8 +544,8 @@ mod tests {
     #[test]
     fn compound_store_maps_to_dotted_columns_and_foreign_keys() {
         // ADR 0032: dotted quoted columns, a composite primary key over the
-        // flattened key, and one unenforced FOREIGN KEY clause per resolved
-        // `domain` entry.
+        // flattened key, and one FOREIGN KEY clause per resolved `domain`
+        // entry (enforced since ADR 0034 turned the pragma on).
         let sql = create_table_sql(&schema(COMPOUND, "student_grades").shape());
         assert_eq!(
             sql,
@@ -561,8 +561,9 @@ mod tests {
              );"
         );
 
-        // The DDL is accepted by SQLite (clauses are unenforced: the
-        // `foreign_keys` pragma stays off until the ingestion slice).
+        // The DDL is accepted by SQLite regardless of table-creation order,
+        // which is what lets `ensure_store` run in declaration order even
+        // though the targets do not exist yet.
         let mut db = SqliteBackend::open_in_memory().unwrap();
         assert_eq!(
             db.ensure_store(&schema(COMPOUND, "student_grades"))
