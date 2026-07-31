@@ -141,11 +141,14 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                     ));
                 }
             }
-            Item::Store(s) => {
-                check_case(&s.name.name, s.name.span, Case::Snake, "store", &mut errors);
+            // A registry shares the store's declaration, namespace, and
+            // resolution; only its `kind` differs (ADR 0033).
+            Item::Store(s) | Item::Registry(s) => {
+                let noun = s.kind.keyword();
+                check_case(&s.name.name, s.name.span, Case::Snake, noun, &mut errors);
                 if !store_names.insert(&s.name.name) {
                     errors.push(ResolveError::new(
-                        format!("duplicate store `{}`", s.name.name),
+                        format!("duplicate {noun} `{}`", s.name.name),
                         s.name.span,
                     ));
                 }

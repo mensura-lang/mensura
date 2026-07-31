@@ -7,8 +7,8 @@
 
 use crate::ast::{
     Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LetDecl, LetKind, NameSeg,
-    NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StrLit, TypeExpr,
-    TypeKind, UnitDecl, ViewDecl,
+    NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StoreKind, StrLit,
+    TypeExpr, TypeKind, UnitDecl, ViewDecl,
 };
 use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
@@ -229,7 +229,9 @@ impl<'a> Parser<'a> {
         if self.at_keyword("unit") {
             Ok(Item::Unit(self.parse_unit_decl()?))
         } else if self.at_keyword("store") {
-            Ok(Item::Store(self.parse_store_decl()?))
+            Ok(Item::Store(self.parse_store_decl(StoreKind::Store)?))
+        } else if self.at_keyword("registry") {
+            Ok(Item::Registry(self.parse_store_decl(StoreKind::Registry)?))
         } else if self.at_keyword("shape") {
             Ok(Item::Shape(self.parse_shape_decl()?))
         } else if self.at_keyword("enum") {
@@ -242,8 +244,8 @@ impl<'a> Parser<'a> {
             Ok(Item::Import(self.parse_import_decl()?))
         } else {
             Err(self.error(
-                "expected a `unit`, `store`, `shape`, `enum`, `view`, `let`, or `import` \
-                 declaration",
+                "expected a `unit`, `store`, `registry`, `shape`, `enum`, `view`, `let`, or \
+                 `import` declaration",
             ))
         }
     }
@@ -357,12 +359,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_store_decl(&mut self) -> Result<StoreDecl, ParseError> {
+    /// `store_decl` and the identical `registry_decl` (ADR 0033): the two
+    /// share a production, so they share a parser, and `kind` supplies the
+    /// noun for each diagnostic.
+    fn parse_store_decl(&mut self, kind: StoreKind) -> Result<StoreDecl, ParseError> {
         let start = self.cur_span().start;
-        self.bump_keyword(); // `store`
-        let name = self.expect_ident("a store name")?;
+        self.bump_keyword(); // `store` or `registry`
+        let name = self.expect_ident(&format!("a {} name", kind.keyword()))?;
         let conforms = self.parse_conforms_clause()?;
-        self.expect(&TokenKind::LBrace, "`{` to open the store body")?;
+        self.expect(
+            &TokenKind::LBrace,
+            &format!("`{{` to open the {} body", kind.keyword()),
+        )?;
         let unit = self.parse_unit_clause()?;
 
         let mut attrs = Vec::new();
@@ -380,8 +388,12 @@ impl<'a> Parser<'a> {
                 return Err(self.error("expected `attr`, `domain`, or `}`"));
             }
         }
-        let end = self.expect(&TokenKind::RBrace, "`}` to close the store body")?;
+        let end = self.expect(
+            &TokenKind::RBrace,
+            &format!("`}}` to close the {} body", kind.keyword()),
+        )?;
         Ok(StoreDecl {
+            kind,
             name,
             unit,
             conforms,
@@ -1580,6 +1592,76 @@ mod tests {
         assert!(store.conforms.is_empty());
     }
 
+    // --- `registry` declarations (`13-registries.md`, ADR 0033) -----------
+
+    #[test]
+    fn parses_registry_declaration() {
+        let program = parse_str("registry readings { unit { Reading } }").unwrap();
+        let Item::Registry(registry) = &program.items[0] else {
+            panic!("expected a registry");
+        };
+        assert_eq!(registry.kind, StoreKind::Registry);
+        assert_eq!(registry.name.name, "readings");
+        assert_eq!(registry.unit.name, "Reading");
+    }
+
+    #[test]
+    fn store_declaration_carries_the_store_kind() {
+        let program = parse_str("store machines { unit { Machine } }").unwrap();
+        let Item::Store(store) = &program.items[0] else {
+            panic!("expected a store");
+        };
+        assert_eq!(store.kind, StoreKind::Store);
+    }
+
+    #[test]
+    fn registry_body_is_a_stores_verbatim() {
+        // Conformance, `attr*`, and `domain` all parse in a registry exactly
+        // as they do in a store: the two share one production.
+        let src = r#"
+            registry events : Logged {
+              unit { Event }
+              domain { machine: machines }
+              attr* { kind: EventKind }
+            }
+        "#;
+        let program = parse_str(src).unwrap();
+        let Item::Registry(registry) = &program.items[0] else {
+            panic!("expected a registry");
+        };
+        assert_eq!(registry.conforms.len(), 1);
+        assert_eq!(registry.domain.len(), 1);
+        assert_eq!(registry.attrs.len(), 1);
+        assert!(registry.attrs[0].many.is_some());
+    }
+
+    #[test]
+    fn registry_without_unit_clause_is_an_error() {
+        let err = parse_str("registry r { attr { x: int } }").unwrap_err();
+        assert!(err.message.contains("unit"));
+    }
+
+    #[test]
+    fn unknown_registry_block_is_an_error() {
+        let err = parse_str("registry r { unit { U } nope { } }").unwrap_err();
+        assert!(err.message.contains("expected `attr`, `domain`, or `}`"));
+    }
+
+    #[test]
+    fn registry_keyword_is_recorded_as_a_keyword_span() {
+        // The highlighter colors every `bump_keyword` span, so recording the
+        // introducer here is what makes `registry` highlight (ADR 0033).
+        let src = "registry r { unit { U } }";
+        let tokens = tokenize(src).expect("should lex");
+        let parsed = parse_with_meta(&tokens).expect("should parse");
+        let words: Vec<&str> = parsed
+            .keyword_spans
+            .iter()
+            .map(|s| &src[s.start..s.end])
+            .collect();
+        assert_eq!(words, vec!["registry", "unit"]);
+    }
+
     #[test]
     fn parses_unit_parameter_shape() {
         let program = parse_str("shape Tabular[U: Unit] { unit { U } }").unwrap();
@@ -1730,8 +1812,9 @@ mod tests {
     fn junk_at_top_level_is_an_error() {
         let err = parse_str("wat X { }").unwrap_err();
         assert!(
-            err.message
-                .contains("`unit`, `store`, `shape`, `enum`, `view`, `let`, or `import`")
+            err.message.contains(
+                "`unit`, `store`, `registry`, `shape`, `enum`, `view`, `let`, or `import`"
+            )
         );
     }
 

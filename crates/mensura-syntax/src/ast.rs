@@ -18,6 +18,10 @@ pub struct Program {
 pub enum Item {
     Unit(UnitDecl),
     Store(StoreDecl),
+    /// A `registry`: the same declaration as a `store`, differing only in
+    /// its intake discipline and hence its completeness (ADR 0033).  It
+    /// reuses [`StoreDecl`], whose `kind` records which one it is.
+    Registry(StoreDecl),
     Shape(ShapeDecl),
     Enum(EnumDecl),
     View(ViewDecl),
@@ -130,9 +134,37 @@ pub struct Attr {
     pub many: Option<Span>,
 }
 
-/// `store Name [: ShapeRef, ...] { unit { U } (attr|domain block)* }`
+/// Which kind of tabulation a [`StoreDecl`] declares (ADR 0033).  The two
+/// share a grammar, a resolved model, and a storage mapping; they differ in
+/// their intake discipline, and hence in whether the resolved table is
+/// complete by mechanism.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StoreKind {
+    /// A `store`: written by create, update, and delete, so it holds some
+    /// of the observations that exist and its table is incomplete.
+    #[default]
+    Store,
+    /// A `registry`: the declaration is the sole intake for its
+    /// observations and the intake only appends, which establishes
+    /// completeness at the type level.
+    Registry,
+}
+
+impl StoreKind {
+    /// The keyword that introduces this kind, for diagnostics.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            StoreKind::Store => "store",
+            StoreKind::Registry => "registry",
+        }
+    }
+}
+
+/// `store Name [: ShapeRef, ...] { unit { U } (attr|domain block)* }`, and
+/// the identical `registry` form (ADR 0033); `kind` says which.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoreDecl {
+    pub kind: StoreKind,
     pub name: Ident,
     /// The unit named by the `unit { U }` clause.
     pub unit: Ident,
