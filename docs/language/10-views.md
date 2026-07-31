@@ -214,6 +214,7 @@ and are noted here only so the scope is unambiguous:
 - The grammar production for `view` is in `04-grammar.md`; the decision and its
   alternatives are in `docs/decisions/0012-view-hosting.md`.
 - `registry` (the process variant of a store) is a sibling declaration site
-  that also feeds pipelines; it gets its own document.  (`device` is not
-  coming: ADR 0005 eliminated it in favour of roles, `auth {}`, and
-  `registry`.)
+  that also feeds pipelines, specified in `13-registries.md`.  A view reads
+  a registry exactly as it reads a store, and inherits its completeness
+  fact.  (`device` is not coming: ADR 0005 eliminated it in favour of
+  roles, `auth {}`, and `registry`.)

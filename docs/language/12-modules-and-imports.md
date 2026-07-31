@@ -93,7 +93,12 @@ import si
 - **A module is a file** that exports its const bindings and type-level
   names (dimension aliases).  It does not export stores, views, or
   pipelines: those are materialized, site-specific resources
-  (ADR 0027, Decision 2).  A `registry` (M4) is never importable.
+  (ADR 0027, Decision 2).  A `registry` is never importable: its
+  completeness guarantee comes from being the sole intake for its
+  observations, and a second consumer would break it silently
+  (`13-registries.md`).  This constrains the *module* boundary only; a
+  `domain` edge inside one program consumes no observations and is
+  unaffected.
 - **Qualified by default.**  `import si` brings the module in under its
   name; members are referenced `si.km`, `si.newton`.  There is no glob
   import.  A selective-unqualified `exposing` form is a contemplated

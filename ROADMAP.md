@@ -30,6 +30,8 @@ milestones below.
   milestone-by-milestone:
   - `mensura check <file>`: typecheck only.
   - `mensura run <file>`: typecheck and execute.
+  - `mensura ingest <file> <target>`: typecheck, then decode and append a
+    batch of records into a store or registry.
   - `mensura test [<filter>]`: run language and endpoint tests.
   - `mensura fmt <file>`: format.
   - `mensura repl`: interactive REPL.
@@ -95,12 +97,16 @@ mensura/
   implemented and checked by `mensura check` (M1).  Batch view materialization
   runs end to end (M2).  **M3 is complete**: dimensioned types (`D[real]` over
   the seven SI base dimensions), top-level `let` bindings, bundled imports,
-  and the `si` standard library are implemented (ADRs 0026-0028).  **M4's
-  compound half is done**: compound (multi-entity) units and foreign-key
-  (`domain`) resolution are implemented (ADR 0032: units flatten to dotted
-  columns, `domain` entries resolve into `singletons` stores, both
-  acyclicity checks run, and `CREATE TABLE` carries unenforced `FOREIGN
-  KEY` clauses).  Precision
+  and the `si` standard library are implemented (ADRs 0026-0028).  **M4 is
+  complete**: compound (multi-entity) units and foreign-key (`domain`)
+  resolution (ADR 0032: units flatten to dotted columns, `domain` entries
+  resolve into `singletons` tabulations, both acyclicity checks run);
+  `registry` declarations whose tables are `Complete` by mechanism
+  (ADR 0033: a `kind` on the resolved schema, so the runtime, backend, and
+  tooling carry them for free); and typed ingestion (ADR 0034: a
+  delta-shaped backend `apply`, a format-agnostic decoder from name-keyed
+  records, `mensura ingest` over JSON Lines, and `PRAGMA foreign_keys` on,
+  which makes ADR 0032's clauses enforced).  Precision
   and measure semantics are **out of scope**: dropped from the roadmap, not
   deferred to a milestone.  **Const functions** (ADR
   0030) and the **fold half of the aggregate family** (ADR 0031) are
@@ -114,9 +120,10 @@ mensura/
   marker, and the window vocabulary as const bindings in a bundled `series`
   module, behind ADR 0029's Stage 2.
 - **Design docs still to write** (each ahead of its milestone, per specs
-  first): `registry`; ingestion endpoints; streaming windows and
-  refresh; ML signatures and validation; the serving/transport integration;
-  and the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
+  first): streaming windows and refresh; ML signatures and validation; the
+  serving/transport integration (including the ingestion *endpoints*, whose
+  local intake is already specified in `docs/toolkit/05-ingestion.md`); and
+  the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
   document: ADR 0005 eliminated the construct; devices are authenticated
   principals, not declarations.)
 
@@ -221,24 +228,42 @@ Status: complete.  Dimensions, modules, and the `si` stdlib are implemented
 and checked (ADRs 0026-0028, `11-physical-units.md`,
 `12-modules-and-imports.md`).
 
-## M4 - Registry, collect, and ingestion
+## M4 - Registry and ingestion (complete)
 
 Output: device readings land in stores under a typed ingestion path.
+Delivered.
 
-- Design docs first: `registry`; ingestion (the `insert`/`update`/
-  `set`/`where`/`case` forms).
-- `registry` declarations; `registry` is complete by mechanism (overview
-  pillar 7).  There is no `device` declaration: ADR 0005 eliminated the
-  construct (devices are authenticated principals under roles and
-  `auth {}`, whose surface document is scheduled with M7's serving work).
-- Store ingestion via the CLI or as a library; the over-the-wire transport is
-  wired in M7.
-- **Done**: compound (multi-entity) units and foreign-key (`domain`)
-  resolution (ADR 0032): a reading keyed by several entities, and `domain`
-  blocks resolving a column to another store's key.  Units flatten to
-  dotted columns; `domain` targets must be `singletons` stores; the unit
+- Design docs first (ADR 0032 compound keys, 0033 registries, 0034 typed
+  ingestion; the language doc `13-registries.md` and the toolkit doc
+  `05-ingestion.md` on top).
+- Compound (multi-entity) units and foreign-key (`domain`) resolution
+  (ADR 0032): a reading keyed by several entities, and `domain` blocks
+  resolving a column to another store's key.  Units flatten to dotted
+  columns; `domain` targets must be `singletons` tabulations; the unit
   key-reference graph and the store `domain` graph are both checked
-  acyclic; `CREATE TABLE` emits unenforced `FOREIGN KEY` clauses.
+  acyclic.
+- `registry` declarations (ADR 0033): a store with an append-only intake,
+  whose table is `Complete` by mechanism (overview pillar 7) at its
+  declared boundary, trivially on a `singletons` registry and
+  contentfully on an `attr*` one.  A registry is a `Schema` with a
+  `kind`, so the runtime, backend, and tooling carry it for free.  There
+  is no `device` declaration: ADR 0005 eliminated the construct (devices
+  are authenticated principals under roles and `auth {}`, whose surface
+  document is scheduled with M7's serving work).
+- Store ingestion via the CLI or as a library (ADR 0034): a delta-shaped
+  `apply` on the storage backend, a **format-agnostic** typed decoder
+  from name-keyed records to rows, and `mensura ingest` over JSON Lines.
+  `PRAGMA foreign_keys` is on, so the `FOREIGN KEY` clauses ADR 0032
+  emitted are now enforced.  The over-the-wire transport is wired in M7,
+  where each transport becomes a caller of the same decoder.
+- The ingestion surface is **not** the `insert`/`update`/`set`/`where`/
+  `case` forms this roadmap originally listed.  ADR 0034 Decision 1
+  drops them: `case` and `where` duplicate the single expression
+  sublanguage (ADR 0007) that ADR 0015 already pruned `filter` from,
+  `set` and `update` pre-empt the mutability model ADR 0019 deferred,
+  and `insert` is an effect in a pure lazy pipeline language.  Ingestion
+  is a typed API and a CLI subcommand instead, which is what the line
+  below this one always said.
 
 ## M5 - Streaming and reactive
 

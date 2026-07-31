@@ -3,7 +3,9 @@
 This document specifies the surface grammar of Mensura.  Most of it is the
 grammar the parser accepts *today*, and it grows one feature at a time: the
 implemented subset covers `unit` declarations, the basic form of `store`
-declarations, `shape` declarations (with an optional unit clause and
+declarations, `registry` declarations (`13-registries.md`, ADR 0033,
+whose body is a store's verbatim), `shape` declarations (with an
+optional unit clause and
 `Unit`/`string` parameters, the latter interpolated into attribute names)
 claimed through the `:` conformance clause on stores, `enum` declarations,
 `view` declarations, top-level `let` bindings and `import` items
@@ -65,8 +67,8 @@ string literal and `template` a backtick template token.  Punctuation tokens
 ```ebnf
 program       = { item } EOF ;
 
-item          = unit_decl | store_decl | shape_decl | enum_decl | view_decl
-              | let_decl | import_decl ;
+item          = unit_decl | store_decl | registry_decl | shape_decl
+              | enum_decl | view_decl | let_decl | import_decl ;
 
 unit_decl     = "unit" ident "{" { field } "}" ;
 field         = ident ":" type ;
@@ -84,6 +86,8 @@ attr_block    = "attr" [ "*" ] "{" { store_attr } "}" ;
 store_attr    = ident ":" type ;
 domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
+
+registry_decl = "registry" ident [ conforms ] "{" unit_clause { store_block } "}" ;
 
 shape_decl    = "shape" ident [ params ] "{" [ unit_clause ] { shape_block } "}" ;
 params        = "[" param { "," param } "]" ;
@@ -110,9 +114,16 @@ tl_factor     = ident [ "[" ident "]" ]
 ## Why this is LL(1)
 
 - **`item`**: the parser peeks one token.  `unit` selects `unit_decl`,
-  `store` selects `store_decl`, `shape` selects `shape_decl`, `enum` selects
-  `enum_decl`, `view` selects `view_decl`, `let` selects `let_decl`, and
-  `import` selects `import_decl`; the seven FIRST sets are disjoint words.
+  `store` selects `store_decl`, `registry` selects `registry_decl`, `shape`
+  selects `shape_decl`, `enum` selects `enum_decl`, `view` selects
+  `view_decl`, `let` selects `let_decl`, and `import` selects
+  `import_decl`; the eight FIRST sets are disjoint words.
+- **`registry_decl`**: its body is `store_decl`'s verbatim (a mandatory
+  `unit_clause`, then `attr` and `domain` blocks in any order), so the
+  `store_block` loop justification below applies unchanged and no new
+  decision point arises inside the braces.  The two productions differ
+  only in their introducer word, which `item` has already discriminated,
+  and the `conforms` bullet covers the optional clause for both.
 - **`let_decl`**: after the bound name the next token decides the kind: `[`
   opens the alias parameter list (a type-level dimension alias, ADR 0026
   Decision 8) and a braced body parsed with the type grammar follows; `:`
@@ -140,8 +151,8 @@ tl_factor     = ident [ "[" ident "]" ]
   like the entries of an `attr` block: after a variant the next token is
   either a string (another variant) or `}` (the enum closes), so one token
   decides.  An empty `{ }` is rejected (an enum needs at least one variant).
-- **`conforms`**: after a store name the next token is either `:` (the
-  clause is present) or `{` (it is absent).  One token decides.
+- **`conforms`**: after a store or registry name the next token is either
+  `:` (the clause is present) or `{` (it is absent).  One token decides.
 - **`shape_ref`**: after the shape name, `[` opens an argument list and any
   other token (`,` or `{`) ends the reference.  One token decides.
 - **`arg`**: an `ident` (a unit name) and a `string` literal are distinct
@@ -153,8 +164,8 @@ tl_factor     = ident [ "[" ident "]" ]
 - **`shape_decl` body**: the optional `unit_clause` is taken when the body
   opens with the `unit` keyword, and skipped otherwise.  One token decides.
 - **`store_block` loop**: at each turn the next token is either `}` (end the
-  store body) or one of the introducers `attr` / `domain`, distinct words.
-  One token decides.
+  store or registry body) or one of the introducers `attr` / `domain`,
+  distinct words.  One token decides.
 - **`attr_block` cardinality marker**: after the `attr` word the next token
   is either `*` (an `attr*` block, whose attributes are bag-valued,
   ADR 0022) or `{` (a plain block).  One token decides.  The `*` is the
@@ -605,7 +616,9 @@ identifiers, as the keyword-free lexer intends.
   new grammar.
 - `view` declarations host a pipeline and are specified in
   `10-views.md` (the `view_decl` production above is their grammar).
-  Transforms, which also host or feed pipelines, `registry` declarations,
-  and the streaming operations (`sliding_window`, `latest`), each get their
-  own section here.  (`device` is not coming: ADR 0005 eliminated it in
-  favour of roles, `auth {}`, and `registry`.)
+  Transforms, which also host or feed pipelines, and the streaming
+  operations (`sliding_window`, `latest`), each get their own section
+  here.  (`registry` declarations have landed: the `registry_decl`
+  production above is their grammar, specified in `13-registries.md`.
+  `device` is not coming: ADR 0005 eliminated it in favour of roles,
+  `auth {}`, and `registry`.)

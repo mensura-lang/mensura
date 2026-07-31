@@ -295,9 +295,22 @@ the ordinary aggregation over a plain store stays ceremony-free.  The M1
 surface for establishing and consuming the fact is ratified in
 `docs/decisions/0017-completeness-establish-consume.md` (as amended by
 ADR 0023): M1 ships the `completeness_check` and `assume { complete }`
-stages (with key-context asserts), and defers `registry`-by-mechanism
-completeness and the `@complete_over` annotation.  Completeness is
-established in one of three ways:
+stages (with key-context asserts).  `registry`-by-mechanism completeness
+landed with M4 (`13-registries.md`, ADR 0033); the `@complete_over`
+annotation stays deferred with its family.  Completeness is established
+in one of three ways:
+
+- **mechanism**: a `registry` source is complete by construction (overview
+  pillar 7, `13-registries.md`), so a reducer over it needs no discharge at
+  all.  The fact is established at the source, whatever the registry's
+  cardinality: trivially on a `singletons` registry, contentfully on an
+  `attr*` one, where it pins the full set of observations per entity.
+
+  ```
+  readings                          // a registry
+  |> demote taken_at
+  |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
+  ```
 
 - **`completeness_check { assert ... }`**, a pipe stage that *establishes* the
   fact locally.  It is an ordinary stage (`completeness_check` applied to a
@@ -320,8 +333,6 @@ established in one of three ways:
   no per-use check is needed.  This is an annotation; its surface lands with
   the annotation family (`@audited`, `@versioned`, ...), so this document names
   it but does not fix its grammar.
-- **mechanism**: a `registry` source is complete by construction (overview
-  pillar 7), so a reducer over it needs no further discharge.
 
 `assume { ... }` remains the escape hatch: it admits the reducer by fiat,
 locally and visibly, when the obligation cannot be discharged.
@@ -443,6 +454,7 @@ cost of dropping disjointness.  It type-checks.
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
 - **Hosting and streaming.**  `view` declarations that host pipelines are
-  specified in `10-views.md`.  The other hosting sites (`transform`, `registry`,
-  `device`) and the streaming operations (`sliding_window`, `latest`, reactive
-  `on` blocks) extend this grammar and get their own sections.
+  specified in `10-views.md`, and `registry` declarations in
+  `13-registries.md`.  The remaining hosting sites (`transform`, endpoints)
+  and the streaming operations (`sliding_window`, `latest`, reactive `on`
+  blocks) extend this grammar and get their own sections.

@@ -7,7 +7,7 @@ to them.
 
 This document defines what a store is and how it is declared.  The
 unit being tabulated is defined separately (`01-units.md`).  The
-process variant of a store, `registry`, is treated in its own document.
+process variant of a store, `registry`, is treated in `13-registries.md`.
 The API surface a store may expose (REST endpoints, authentication,
 permissions) is part of the web-service work and is out of scope
 here.  The audit, version, and auto-fill policy syntax (`@audited`,
@@ -33,6 +33,14 @@ may disagree on:
 
 What they cannot disagree on is the unit itself: identity is fixed by
 the unit declaration.
+
+A store is written through create, update, and delete operations, so at
+any moment it holds *some* of the observations that exist and its table
+is `Incomplete`.  A **registry** (`13-registries.md`) is the process
+variant: the declaration is the sole intake for its observations and the
+intake only appends, which establishes completeness at the type level.
+The two declarations are otherwise identical, down to the body grammar,
+and a unit may be tabulated by both at once.
 
 ## Store declaration
 
@@ -370,11 +378,6 @@ nothing.  Acyclic, well-formed.
 
 ## Forward references and open questions
 
-- **`registry`.**  A process-style variant of `store`, where data
-  enters through an ingestion mechanism rather than CRUD.  Treated in
-  its own document.  Briefly: registry declarations carry a
-  completeness guarantee at the type level that ordinary stores do
-  not.
 - **Change control.**  The syntax and semantics of `@audited`,
   `@versioned`, `@auto`, `@allowcreate`, and how per-attribute
   mutability returns (see "Mutability is deferred" above), belong in a

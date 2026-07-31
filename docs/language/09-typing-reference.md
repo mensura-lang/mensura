@@ -769,7 +769,12 @@ Completeness (each key's bag holds all its rows, section 3.4) is established in
 one of three ways (`07`, "Completeness: establish, propagate, consume"):
 
 - **mechanism**: a `registry` source is complete by construction (overview
-  pillar 7), so a reducer over it needs no further discharge;
+  pillar 7, `13-registries.md`, ADR 0033), so a reducer over it needs no
+  further discharge.  The fact holds at the registry's declared boundary
+  whatever its cardinality: on a `singletons` registry it is the
+  `fiberCompleteWrt_of_functional` corollary and discharges what
+  cardinality already would, while on an `attr*` registry it is
+  contentful, pinning the reference population per entity;
 - **check**: `completeness_check { assert ... }`, a pipe stage that establishes
   the fact locally; each `assert` is a boolean expression, and together they
   witness that the partition is complete over the relevant key.  The stage is
