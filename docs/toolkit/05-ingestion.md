@@ -50,9 +50,14 @@ The rules, all derived from the schema:
   (`docs/decisions/0032-compound-keys-flatten-to-dotted-columns.md`).
 - **Types.**  Each value is decoded per the column's `ColumnType`:
   `string`, `int`, `real`, `bool`, `date`, an `enum`, or a dimensioned
-  `D[real]`.  A value of the wrong shape is an error, not a coercion;
-  `int` and `real` do not interconvert, matching the expression rules
-  (`docs/decisions/0014-scalar-domain-taxonomy.md`).
+  `D[real]`.  A value of the wrong shape is an error, not a coercion.
+  In particular **`int` does not widen to `real`**: a payload `300` for a
+  `temperature[real]` column is rejected and must be written `300.0`.
+  This is stricter than most JSON tooling, and deliberately so: ADR 0014
+  keeps the two domains apart in expressions, and a boundary that
+  silently widened would be the one place the distinction did not hold.
+  A JSON number counts as an `int` only when written with no fraction and
+  no exponent.
 - **Enums.**  The value must be one of the type's declared variants.
 - **Optionality.**  A value may be absent only where the column is
   declared optional (`?`).  A missing required field is an error.  An
