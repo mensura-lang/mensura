@@ -2332,6 +2332,7 @@ fn domain_name(domain: &ColumnType) -> String {
 mod tests {
     use super::*;
     use crate::model::{Column as StorageColumn, ColumnRole, Schema};
+    use mensura_syntax::StoreKind;
 
     fn scol(name: &str, ty: ColumnType, role: ColumnRole, optional: bool) -> StorageColumn {
         StorageColumn {
@@ -2346,6 +2347,7 @@ mod tests {
     fn sample_table() -> TableType {
         let schema = Schema {
             store: "readings".to_string(),
+            kind: StoreKind::Store,
             unit: "Machine".to_string(),
             columns: vec![
                 scol("machine", ColumnType::String, ColumnRole::Key, false),

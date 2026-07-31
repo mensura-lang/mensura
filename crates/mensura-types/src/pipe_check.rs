@@ -1537,6 +1537,7 @@ mod tests {
     use super::*;
     use crate::model::{Column as StorageColumn, ColumnRole, ColumnType, Schema};
     use crate::table::Cardinality;
+    use mensura_syntax::StoreKind;
 
     fn scol(name: &str, ty: ColumnType, role: ColumnRole, optional: bool) -> StorageColumn {
         StorageColumn {
@@ -1551,6 +1552,7 @@ mod tests {
     fn from_cols(store: &str, unit: &str, columns: Vec<StorageColumn>) -> TableType {
         TableType::from_store(&Schema {
             store: store.to_string(),
+            kind: StoreKind::Store,
             unit: unit.to_string(),
             columns,
             cardinality: Cardinality::Singletons,
@@ -2191,6 +2193,33 @@ mod tests {
         )
         .expect_err("incomplete bag");
         assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
+    }
+
+    #[test]
+    fn reducing_map_bags_over_a_registry_needs_no_establish_step() {
+        // The same pipeline as the test above, over a source that differs
+        // only in its kind: a registry is complete by mechanism, so the
+        // reducer's obligation is discharged at the source (ADR 0033).
+        let readings = TableType::from_store(&Schema {
+            store: "readings".to_string(),
+            kind: StoreKind::Registry,
+            unit: "Reading".to_string(),
+            columns: vec![
+                scol("ts", ColumnType::Int, ColumnRole::Key, false),
+                scol("machine", ColumnType::String, ColumnRole::Attr, false),
+                scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+            cardinality: Cardinality::Singletons,
+            foreign_keys: Vec::new(),
+            span: Span::new(0, 0),
+        });
+        let s = sample_sources().with("readings", readings);
+        pipe_ty(
+            &s,
+            "readings |> promote machine |> demote ts \
+             |> map_bags |k, b| (.n = #b.temperature)",
+        )
+        .expect("a registry discharges the reducer by mechanism");
     }
 
     /// Equality up to attribute order (ADR 0024): a round trip restores the

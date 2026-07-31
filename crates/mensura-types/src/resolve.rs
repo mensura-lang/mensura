@@ -708,7 +708,7 @@ fn resolve_store(
 
     let mut errors = Vec::new();
 
-    let cardinality = declared_cardinality(&s.attrs, "store", &mut errors);
+    let cardinality = declared_cardinality(&s.attrs, s.kind.keyword(), &mut errors);
 
     // Columns in storage order: key fields, then attributes in declaration
     // order.  A unit-reference field (a compound unit's key field, or a
@@ -753,6 +753,7 @@ fn resolve_store(
         Ok((
             Schema {
                 store: s.name.name.clone(),
+                kind: s.kind,
                 unit: s.unit.name.clone(),
                 columns,
                 cardinality,
