@@ -622,9 +622,13 @@ columns are the return's.  Cardinality:
 **inferred from the return** -- a single record yields `singletons` (one row per
 key, the aggregate shape, which later lets `pivot` meet its precondition); a bag
 yields `bag` (the window shape, one output row per input row).  Completeness:
-preserved, and **demanded by the aggregate (reducing) shape** (ADR 0023): a
+**demanded by the aggregate (reducing) shape** (ADR 0023): a
 fold over a partial bag is silently wrong, so a reducing body over a `bag`
-input requires the fact "complete over the current key".  Over a
+input requires the fact "complete over the current key".  The fact is
+carried through the operation: every body expressible today emits at least
+one output row per present fiber (the non-emptying hypothesis of
+`fiberMap_exhaustive`), so a present key stays present; whether every
+future body preserves this is an open question of `07-pipelines.md`.  Over a
 `singletons` input the obligation discharges trivially -- a present key's
 single row is the identity's whole fiber (`fiberCompleteWrt_of_functional`)
 -- so the checker recognizes that base case from the input cardinality and
@@ -825,8 +829,10 @@ gradings, and a `demote` that genuinely coarsens **clears** it, because an
 absent fine key becomes a gap inside a coarse fiber
 (the fiber-gap counterexample, ADR 0035); a **reducing `map_bags`**
 **consumes** it, because a fold over a partial bag is silently wrong
-(ADR 0023, amending ADR 0017's consumer placement).  Over a `singletons`
-input the reducer's obligation discharges trivially
+(ADR 0023, amending ADR 0017's consumer placement).  *Consume* names the
+demand (the reducer is rejected without the fact), not the fate of the
+fact, which is carried through the operation (section 6.2).  Over a
+`singletons` input the reducer's obligation discharges trivially
 (`fiberCompleteWrt_of_functional`), so only a reduction over a `bag` -- a
 coarsened key, or a `bag` store -- needs an establishment step, placed
 after the coarsening it folds under.  `assume { ... }` is the escape

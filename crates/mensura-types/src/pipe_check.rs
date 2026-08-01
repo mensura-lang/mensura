@@ -650,11 +650,15 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// partial bag, so it demands completeness over the current key (ADR 0023);
 /// at a `Singletons` input the obligation discharges trivially, since a
 /// present key's single row is the identity's whole fiber
-/// (`fiberCompleteWrt_of_functional`). The key, completeness, and lineage
-/// are preserved; `exhaustive` is carried (one output row per present key in
-/// the aggregate shape, one per input row in the window shape, so no fiber
-/// loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive` the
-/// aggregate-shape special case).
+/// (`fiberCompleteWrt_of_functional`). The key and lineage are preserved.
+/// Completeness is carried through: sound for today's bodies because both
+/// shapes emit at least one output row per present fiber, but a property of
+/// the body language, not of `map_bags` (no named preservation lemma yet;
+/// open question in `docs/language/07-pipelines.md`). `exhaustive` is
+/// carried on the same non-emptying grounds (one output row per present key
+/// in the aggregate shape, one per input row in the window shape, so no
+/// fiber loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive`
+/// the aggregate-shape special case).
 fn op_map_bags(
     sources: &Sources,
     input: PipeTy,

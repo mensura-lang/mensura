@@ -134,10 +134,16 @@ the return.  Cardinality: **inferred from the return** - returning a single
 record yields `singletons` (one row per key, the `aggregate` shape, and it is
 what later lets `pivot` satisfy its `singletons` precondition); returning a
 bag yields `bag` (the window shape: one output row per input row).
-Completeness: preserved, and **demanded by the reducing shape**
+Completeness: **demanded by the reducing shape**
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a body that
 folds each key's bag to a single record is silently wrong on a partial bag,
-so it consumes the completeness fact.  Over a `singletons` input the
+so it consumes the completeness obligation.  The fact itself is carried
+through the operation: every body expressible today emits at least one
+output row per present fiber (the aggregate shape folds a non-empty bag to
+one record, the window shape emits one row per input row), so a key present
+before the operation is present after it.  That carry-through is a property
+of the current body language, not of `map_bags` in general (see the open
+questions).  Over a `singletons` input the
 obligation discharges trivially, since a present key's single row is the
 identity's whole fiber (`fiberCompleteWrt_of_functional`); the demand bites
 only where a present key's bag can be partial, that is, on a `bag` input.  The
@@ -296,7 +302,12 @@ dissolved by ADR 0020 (an absent row becomes a missing cell, and
 `demote`'s is moved by
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md` to the
 operation whose result is silently wrong without it: a **reducing
-`map_bags`** (the aggregate shape) consumes the fact.  The fact itself
+`map_bags`** (the aggregate shape) consumes the fact.  Here *consume*
+names the demand: the consuming operation is the one that is rejected
+when the fact is absent, the one whose obligation an establishment step
+discharges.  It does not by itself say what happens to the fact past the
+operation; that is stated per operation (for the reducer, see the
+`map_bags` entry and the open questions).  The fact itself
 does not survive the coarsening
 (`docs/decisions/0035-completeness-cleared-by-demote.md`): completeness
 is about the *current* key, an absent fine key becomes a gap inside a
@@ -467,6 +478,20 @@ cost of dropping disjointness.  It type-checks.
   derived `exhaustive`) are written in a `Type` is the content/types
   document.  (The orthogonal total/optional axis and its `?` marker are
   settled in ADR 0010.)
+- **Which `map_bags` bodies preserve completeness.**  The checker carries
+  the completeness qualifier through `map_bags` (what the reducer consumes
+  is the obligation, not the fact).  This is justified today because every
+  expressible body emits at least one output row per present fiber, the
+  non-emptying hypothesis of `fiberMap_exhaustive`, but no named lemma
+  states the preservation.  A future body whose fiber action can empty a
+  present fiber (a bag filter, a `top_k`, a conditional yielding an empty
+  bag) would forfeit coverage, so when the body language grows such
+  combinators the carry-through must either be restricted to non-emptying
+  bodies and backed by a lemma, or replaced by the conservative
+  alternative: drop the qualifier at `map_bags`, at the cost of a
+  redundant `assume` where the fact is still live downstream (a reducer
+  after a window-shaped `map_bags`, a `union` that needs both sides
+  complete); a genuinely coarsening `demote` clears it anyway (ADR 0035).
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
 - **Hosting and streaming.**  `view` declarations that host pipelines are
