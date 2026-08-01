@@ -288,6 +288,45 @@ misreported as authoritative.
 
 - The key-carrying fact of alternative 3, if a consumer appears that
   needs a fact established coarser than it is consumed.
+- **A `demote` along an `exhaustive` axis preserves completeness.**
+  The clearing rule of decision 2 guards against exactly one thing:
+  absent fine keys along the demoted axis, which the coarsening turns
+  into gaps inside coarse bags.  ADR 0020's `exhaustive(A)` fact rules
+  those absences out: every residual key present in the table carries
+  its row for every variant of `A`.  So the two facts compose.  If a
+  table is `Complete` at `(machine, sensor)` and `exhaustive(sensor)`,
+  then `demote sensor` is `FiberCompleteWrt` at `(machine)`: the coarse
+  bag at a present `machine` is the union of the fibers at
+  `(machine, s)`, exhaustiveness makes every such key present (and the
+  population's sensor values range over the same variant set, by
+  typing), fiber-completeness makes every present fiber whole, and a
+  union of whole fibers covering all the population's fibers is a
+  whole bag.  A wholly absent `machine` stays an honest absence, which
+  `FiberCompleteWrt` permits.  Multi-column demotes chain: if every
+  demoted column is in the exhaustive set, the per-axis facts compose
+  into the full rectangle.  The fiber-gap counterexample recorded in
+  `CompleteOver.lean` fails the exhaustive hypothesis (one variant's
+  key is absent), so the candidate lemma
+  `demote_fiberCompleteWrt_of_exhaustive` should be mechanizable.
+
+  Against alternative 3, this is the narrow, cheap fix rather than the
+  honest general one: it applies only to enum-domained axes (the
+  reference is the variant set, which is what keeps `exhaustive`
+  extensional and decidable) and it rides machinery that already
+  exists, since the qualifier is already a per-column set and the
+  checker's `demote` already inspects the demoted columns.
+
+  Recorded rather than adopted because the establishment surface is
+  undecided.  Today only `unpivot` establishes `exhaustive`, there is
+  no claim form, and the audit table above counts that absence as a
+  safety property: a stale fact cannot be injected by hand.  Adopting
+  the rule means choosing how a source or a pipeline stage comes to
+  hold the fact honestly.  The candidates stay open on purpose: a
+  registry-level axis declaration enforced at ingest (ADR 0020's
+  store-level-declaration open question), an operation that fills the
+  missing entries and thereby *makes* the axis exhaustive (a
+  rectangularizing stage, establishing the fact the way
+  `completeness_check` establishes completeness), or other means.
 - Whether `union`'s rule (complete iff both inputs are) deserves the
   same scrutiny at overlapping lineages, where merging bags is not
   merging whole fibers.
