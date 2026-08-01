@@ -492,6 +492,15 @@ cost of dropping disjointness.  It type-checks.
   redundant `assume` where the fact is still live downstream (a reducer
   after a window-shaped `map_bags`, a `union` that needs both sides
   complete); a genuinely coarsening `demote` clears it anyway (ADR 0035).
+
+  **`exhaustive` rides the same hypothesis and must be revisited in the
+  same breath.**  `map_bags` carries it on exactly the non-emptying
+  grounds above (`fiberMap_exhaustive`), so an emptying body forfeits
+  both facts at once, not completeness alone.  The two differ only in
+  their fallback: `exhaustive` has no `assume` form, so dropping it at
+  `map_bags` costs a `pivot` its totality upgrade (section 6.6, ADR 0020)
+  with no escape hatch, where completeness can be re-established by fiat.
+  Whichever way the carry-through is resolved, resolve it for both.
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
 - **Hosting and streaming.**  `view` declarations that host pipelines are

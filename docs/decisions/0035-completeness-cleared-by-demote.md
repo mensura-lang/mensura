@@ -208,6 +208,48 @@ Neutral:
    key argument and the qualifier to carry column sets, for no consumer
    the current surface cannot serve with placement.  Stays deferred.
 
+## The other qualifiers were audited against the same failure mode
+
+The defect above has a shape: a fact **about the current key**, carried
+across an operation that changes what the key means, so a claim about
+the fine key is silently read as a claim about the coarse one.  Every
+other tracked qualifier was checked against it.  All three are sound,
+and for three different reasons, which is worth recording because the
+differences say what to watch when a fifth qualifier is added.
+
+| qualifier | about the current key? | at a coarsening `demote` | claimable by fiat |
+|---|---|---|---|
+| completeness | yes | **was carried** | `assume { complete }` |
+| `exhaustive` | yes | cleared | no |
+| lineage | yes | dropped | no |
+| `arranged` | **no** (a flat-table fact) | carried, soundly | `assume { arranged }` |
+
+- **`exhaustive`** has the vulnerable shape (a set of key columns,
+  defined over "every residual key present in the table") and is
+  nonetheless safe: every key-changing operation clears it.  The
+  `promote` case was caught during ADR 0020's implementation and
+  overridden there, against that ADR's own "preserved" sketch, on
+  precisely this reasoning: the promoted column refines the residual
+  key, which can cut a fiber.  `demote` clears it conservatively
+  pending mechanization, `split` destroys it on both sides, and `union`
+  intersects.  There is also no claim form, so a stale fact cannot be
+  injected by hand.
+- **Lineage** drops at `demote` and key `pivot`.  That is not a
+  precaution but the definition of Tier B
+  (`demote_not_preservesDisjoint`, `pivot_not_splitInvariant`):
+  forfeiting disjointness at a coarsening is what the Tier names.
+  Worth knowing when reading a pipeline: `union` never *rejects* on a
+  missing disjointness fact, it degrades the result to `bag`, so the
+  failure surfaces at whatever downstream stage demands `singletons`
+  rather than at the join itself.
+- **`arranged`** is not key-relative at all; see the next section.
+
+The pattern: completeness was the only qualifier that was key-relative
+**and** hand-injectable **and** carried across the coarsening.  Remove
+any one of the three and the bug cannot arise.  A new qualifier that has
+all three needs the re-derivation treatment of decision 2 from the
+start.
+
 ## `arranged` was audited and is not the same bug
 
 The obvious follow-up to this ADR is whether `assume { arranged }`
