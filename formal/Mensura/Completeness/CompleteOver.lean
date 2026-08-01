@@ -105,6 +105,39 @@ theorem fiberCompleteWrt_of_functional {R T : Table K H σ}
     omega
   exact Multiset.eq_of_le_of_card_le (hsub k) hcard
 
+/-- **Exhaustiveness of the demoted axis** (ADR 0020's `exhaustive(A)`,
+mechanized): no fine key the population has is absent from `T`.  This is
+exactly the absence that the coarsening below would otherwise turn into a
+gap inside a coarse fiber. -/
+def ExhaustiveOn (R T : Table (K × D) H σ) : Prop :=
+  ∀ k d, R.Present (k, d) → T.Present (k, d)
+
+/-- **`demote` preserves fiber completeness along an exhaustive axis**
+(ADR 0035, decision 6).  Fiber completeness at the fine key together with
+exhaustiveness of the demoted axis gives fiber completeness at the coarse
+key.
+
+The coarse bag is the sum of the fine fibers over `D`, so it suffices that
+the summands agree.  Where `T` has the fine key, fiber completeness makes
+its fiber whole; where `T` lacks it, exhaustiveness says the population
+lacks it too, so both summands are empty.  No key of `T` is left carrying
+a partial bag, which is what a reducing `map_bags` needs.
+
+This is the composition the checker performs when every demoted column
+carries `exhaustive`.  Drop the hypothesis and the fiber-gap witness
+recorded below applies: it fails exactly `ExhaustiveOn`. -/
+theorem demote_fiberCompleteWrt_of_exhaustive {R T : Table (K × D) H σ}
+    (hfib : FiberCompleteWrt R T) (hex : ExhaustiveOn R T) :
+    FiberCompleteWrt (demote R) (demote T) := by
+  intro k _
+  simp only [demote]
+  refine Finset.sum_congr rfl (fun d _ => ?_)
+  by_cases hT : T.Present (k, d)
+  · rw [hfib (k, d) hT]
+  · have hR : ¬ R.Present (k, d) := fun h => hT (hex k d h)
+    simp only [Table.Present, not_not] at hT hR
+    rw [hT, hR]
+
 /-! **`demote` does not preserve fiber-level completeness (ADR 0035).**
 Against a fixed reference, "every present group is whole" is destroyed by
 a genuine coarsening.  `FiberCompleteWrt` never constrains a key *absent*

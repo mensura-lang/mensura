@@ -684,7 +684,10 @@ graded `singletons` and is `Complete` (`fiberCompleteWrt_of_functional`),
 while a genuine coarsening **clears** the fact, because merging fibers
 turns an absent fine key into a gap inside a coarse fiber
 (the ADR 0035 fiber-gap counterexample; the reference-relative
-`demote_completeWrt` remains true but is not the tracked fact).  A
+`demote_completeWrt` remains true but is not the tracked fact), except
+where every demoted column is an `exhaustive` axis (section 6.6), which
+rules those absences out and keeps the fact
+(`demote_fiberCompleteWrt_of_exhaustive`).  A
 `demote` with no downstream reducer is still admitted with no discharge;
 a reducer over the coarsened bag establishes the fact *after* the
 `demote` (section 8).
@@ -827,7 +830,11 @@ Row-wise Tier A operations **preserve** completeness (they map whole
 fibers to whole fibers); the key moves **re-derive** it from the ADR 0024
 gradings, and a `demote` that genuinely coarsens **clears** it, because an
 absent fine key becomes a gap inside a coarse fiber
-(the fiber-gap counterexample, ADR 0035); a **reducing `map_bags`**
+(the fiber-gap counterexample, ADR 0035).  A coarsening whose every
+demoted column is an `exhaustive` axis (section 6.6) is the exception:
+exhaustiveness rules those absences out, so the fact survives
+(`demote_fiberCompleteWrt_of_exhaustive`, ADR 0035 decision 6).  A
+**reducing `map_bags`**
 **consumes** it, because a fold over a partial bag is silently wrong
 (ADR 0023, amending ADR 0017's consumer placement).  *Consume* names the
 demand (the reducer is rejected without the fact), not the fate of the
@@ -936,7 +943,7 @@ the full key.
 | `flat_map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `flatMap_splitSafe` |
 | `map_bags` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
 | `promote` | cols join key | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | re-derived: `Complete` at graded `singletons`, pres. at `bag` | carried | A | `promote_splitSafe`, `promote_functional`, `fiberCompleteWrt_of_functional` |
-| `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | re-derived: **cleared** on a genuine coarsening, `Complete` at graded `singletons` | **dropped** | B | `demote_not_preservesDisjoint`, `demote_promote`, `fiberCompleteWrt_of_functional`; the clearing arm is conservative (ADR 0035) |
+| `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | re-derived: **cleared** on a genuine coarsening, `Complete` at graded `singletons` or when every demoted column is an `exhaustive` axis | **dropped** | B | `demote_not_preservesDisjoint`, `demote_promote`, `fiberCompleteWrt_of_functional`, `demote_fiberCompleteWrt_of_exhaustive`; the clearing arm is conservative (ADR 0035) |
 | `lookup` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `lookup_splitSafe` |
 | `lookup_total` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `lookupTotal_splitSafe` |
 | `split` | unchanged | unchanged | unchanged | unchanged | adds branches | A | `split_disjoint` |
@@ -993,9 +1000,12 @@ operations, and population-relative completeness:
   fact), and `FiberCompleteWrt` (the tracked fact, section 3.4) with
   `fiberCompleteWrt_of_functional` (at `card <= 1` a present key carries
   its whole fiber: the reducer's trivial discharge and the key moves'
-  `singletons` re-derivation) and the negative witness
-  recorded fiber-gap counterexample (a genuine coarsening turns an absent
-  key into a fiber gap, the clearing rule).
+  `singletons` re-derivation), `ExhaustiveOn` with
+  `demote_fiberCompleteWrt_of_exhaustive` (a coarsening along an
+  exhaustive axis keeps the fact, ADR 0035 decision 6), and the negative
+  witness recorded fiber-gap counterexample (a genuine coarsening turns
+  an absent key into a fiber gap, the clearing rule; it fails exactly the
+  `ExhaustiveOn` hypothesis).
 - `pivotAttr`: `pivotAttr_splitSafe`, `pivotAttr_reversible` (these back the
   bag-long alternative recorded, and not adopted, in ADR 0020; retained for
   a possible future fused attribute-position form).

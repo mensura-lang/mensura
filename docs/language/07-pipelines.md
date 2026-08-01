@@ -49,7 +49,8 @@ checker rejects a pipeline that would violate one of them:
   Completeness is what makes a per-bag fold faithful.  It is established
   (by a check, a source annotation, or a `registry` mechanism), cleared
   by a genuinely coarsening `demote` (the fact is about the current key;
-  ADR 0035), and consumed (by a reducing `map_bags`; ADR 0023).
+  ADR 0035, whose decision 6 spares a coarsening along `exhaustive`
+  axes), and consumed (by a reducing `map_bags`; ADR 0023).
 - **Lineage** (table-scoped qualifier): the split ancestry that carries
   disjointness, specified in `08-lineage.md`.  Sampling and dependency, the
   two `std` qualifiers of ADR 0004 with no rules yet written, are deferred;
@@ -200,7 +201,11 @@ cardinality, never demanded
 trip is graded `singletons` and stays `Complete`, while a genuine
 coarsening **clears** the fact, since merging fibers turns an absent fine
 key into a gap inside a coarse fiber (ADR 0035's fiber-gap
-counterexample).  A
+counterexample).  The one exception is a **rectangular** coarsening: when
+every demoted column is an `exhaustive` axis (section 6.6, ADR 0020) the
+gaps it would create are ruled out by construction, so the fact survives
+(`Mensura.demote_fiberCompleteWrt_of_exhaustive`, ADR 0035 decision 6).
+A
 `demote` with no downstream reducer is admitted on its own (a possibly
 partial bag is an honest rekey); a reducer over the coarsened bag
 establishes the fact after the `demote`.  Tier B on the lineage break
@@ -312,7 +317,10 @@ does not survive the coarsening
 (`docs/decisions/0035-completeness-cleared-by-demote.md`): completeness
 is about the *current* key, an absent fine key becomes a gap inside a
 coarse fiber, so a genuine `demote` clears the qualifier and the
-establishment step belongs after it.  Over a `singletons` input the
+establishment step belongs after it.  A coarsening along `exhaustive`
+axes is not genuine in that sense and keeps the fact (ADR 0035 decision
+6), which is the one case where a reducer below the establishing key
+still needs no discharge.  Over a `singletons` input the
 reducer's obligation discharges trivially, so the ordinary aggregation
 over a plain store stays ceremony-free.  The M1 surface for establishing
 and consuming the fact is ratified in

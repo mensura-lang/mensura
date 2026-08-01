@@ -1100,6 +1100,7 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     if !errs.is_empty() {
         return Err(errs);
     }
+    let was_complete = table.qualifiers.completeness == Completeness::Complete;
     // `to_drop` is now distinct, so this counts distinct dropped key columns.
     if to_drop.len() == table.content.key.len() {
         return Err(error("`demote` must leave at least one key column", span));
@@ -1113,6 +1114,19 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     table.content.key = kept;
     table.content.columns.extend(dropped);
     table.derive_cardinality();
+    // Was the coarsening along axes already known rectangular?  `exhaustive`
+    // (ADR 0020) says every residual key present carries its row for *every*
+    // variant of the axis, which is exactly the absence the clearing rule
+    // below guards against, so the two facts compose (ADR 0035, open
+    // questions): the coarse bag at a present key is the union of the fibers
+    // over the axis, exhaustiveness makes every one of them present, and
+    // fiber-completeness makes each whole, so the union is whole.  Multi-
+    // column demotes chain, hence `all`.
+    let rectangular = was_complete
+        && !to_drop.is_empty()
+        && to_drop
+            .iter()
+            .all(|c| table.qualifiers.exhaustive.contains(c.as_str()));
     // Completeness is re-derived from the graded cardinality (ADR 0035): the
     // fact is about the current key against a fixed intended population, and
     // a genuine coarsening forfeits it, because a whole key absent at the
@@ -1126,6 +1140,9 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     // inverse pair on the whole qualifier vector.
     table.qualifiers.completeness = match table.qualifiers.cardinality {
         Cardinality::Singletons => Completeness::Complete,
+        // A coarsening along exhaustive axes only is not a genuine loss:
+        // see `rectangular` above.
+        Cardinality::Bag if rectangular => Completeness::Complete,
         Cardinality::Bag => Completeness::Incomplete,
     };
     table.qualifiers.lineage = Lineage::dropped();
@@ -2199,6 +2216,112 @@ mod tests {
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
         assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
         assert_eq!(t.qualifiers.lineage, Lineage::root());
+    }
+
+    // --- demote along an exhaustive axis (ADR 0035, adopted) -------------
+
+    /// A wide source whose folded columns are both total, so `unpivot`
+    /// establishes `exhaustive`.  `optional` makes one column `?`, which
+    /// defeats it (a dropped cell leaves the variant absent).
+    fn paired_source(optional: bool) -> Sources {
+        Sources::new().with(
+            "paired",
+            TableType::from_store(&Schema {
+                store: "paired".to_string(),
+                kind: StoreKind::Registry,
+                unit: "Slot".to_string(),
+                columns: vec![
+                    scol("slot", ColumnType::String, ColumnRole::Key, false),
+                    scol("internal", ColumnType::Real, ColumnRole::Attr, false),
+                    scol("external", ColumnType::Real, ColumnRole::Attr, optional),
+                ],
+                cardinality: Cardinality::Singletons,
+                foreign_keys: Vec::new(),
+                span: Span::new(0, 0),
+            }),
+        )
+    }
+
+    #[test]
+    fn demote_along_an_exhaustive_axis_keeps_completeness() {
+        // The composition ADR 0035 records: `exhaustive(sensor)` rules out
+        // exactly the absences the clearing rule guards against, so the
+        // coarse bag is the whole variant set and the fold is faithful.
+        let s = paired_source(false);
+        let t =
+            table_of(pipe_ty(&s, "paired |> unpivot sensor reading |> demote sensor").expect("ok"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn a_reducer_over_an_exhaustive_demote_needs_no_assume() {
+        let s = paired_source(false);
+        pipe_ty(
+            &s,
+            "paired |> unpivot sensor reading |> demote sensor \
+             |> map_bags |k, b| (.n = #b)",
+        )
+        .expect("the rectangle discharges the reducer");
+    }
+
+    #[test]
+    fn demote_without_the_exhaustive_fact_still_clears() {
+        // One folded column optional: `unpivot` establishes nothing, so the
+        // coarsening is a genuine one and ADR 0035's rule applies.
+        let s = paired_source(true);
+        let t =
+            table_of(pipe_ty(&s, "paired |> unpivot sensor reading |> demote sensor").expect("ok"));
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+    }
+
+    #[test]
+    fn demoting_a_non_exhaustive_axis_alongside_clears() {
+        // `sensor` is exhaustive; `taken_at` is an ordinary key column and
+        // is not.  The rule needs *every* demoted column to be rectangular,
+        // so naming both clears the fact.
+        let s = Sources::new().with(
+            "paired",
+            TableType::from_store(&Schema {
+                store: "paired".to_string(),
+                kind: StoreKind::Registry,
+                unit: "Slot".to_string(),
+                columns: vec![
+                    scol("slot", ColumnType::String, ColumnRole::Key, false),
+                    scol("taken_at", ColumnType::Date, ColumnRole::Key, false),
+                    scol("internal", ColumnType::Real, ColumnRole::Attr, false),
+                    scol("external", ColumnType::Real, ColumnRole::Attr, false),
+                ],
+                cardinality: Cardinality::Singletons,
+                foreign_keys: Vec::new(),
+                span: Span::new(0, 0),
+            }),
+        );
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "paired |> unpivot sensor reading |> demote sensor taken_at",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+    }
+
+    #[test]
+    fn a_filter_defeats_the_exhaustive_demote() {
+        // `flat_map` can drop rows, so it forfeits `exhaustive`; the
+        // coarsening is then genuine again.
+        let s = paired_source(false);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "paired |> unpivot sensor reading \
+                 |> flat_map |k, r| if k.sensor == \"internal\" then r else () \
+                 |> demote sensor",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
     }
 
     #[test]
