@@ -3080,15 +3080,18 @@ mod tests {
     #[test]
     fn fleet_monitoring_example_resolves() {
         // The fleet-monitoring example grows milestone by milestone; its
-        // compilable subset must keep resolving.  Today it declares two
-        // singletons stores: `machines` and the `readings` history keyed by
-        // `(machine_id, taken_at)` that the views `demote` (ADR 0024).
+        // compilable subset must keep resolving.  Today it declares three
+        // singletons tabulations (`machines`, the `readings` history keyed
+        // by `(machine_id, taken_at)` that the views `demote` (ADR 0024),
+        // and the wide `paired_readings` the reshape views fold and spread,
+        // ADR 0020) plus one entity-keyed `bag` registry, `vibrations`,
+        // whose reducer needs no `assume` (ADR 0022 / 0033).
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/examples/fleet-monitoring.mensura");
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let schemas = resolve_str(&src).expect("example should resolve");
-        assert_eq!(schemas.len(), 2);
+        assert_eq!(schemas.len(), 4);
         let by = |n: &str| schemas.iter().find(|s| s.store == n).unwrap();
         assert_eq!(
             by("machines").cardinality,
@@ -3098,6 +3101,14 @@ mod tests {
             by("readings").cardinality,
             crate::table::Cardinality::Singletons
         );
+        assert_eq!(
+            by("paired_readings").cardinality,
+            crate::table::Cardinality::Singletons
+        );
+        // The one `bag`, and a registry: together those are what let
+        // `machine_vibration` reduce with no establishment step.
+        assert_eq!(by("vibrations").cardinality, crate::table::Cardinality::Bag);
+        assert_eq!(by("vibrations").kind, mensura_syntax::StoreKind::Registry);
     }
 
     // --- Casing convention (docs/language/05-naming-and-casing.md) ---

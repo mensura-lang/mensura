@@ -183,10 +183,109 @@ view machine_temperature : Tabular[Machine] {
            |> map_bags |k, b| (.max_temperature = bag.max b.temperature)
 }
 
+// The same rollup with **no `assume` at all**, and the difference is the
+// declaration rather than the pipeline.
+//
+// `vibrations` is an **entity-keyed bag registry** (`attr*`, ADR 0022):
+// the machine is the identity and its samples recur, so the bag *is* the
+// tabulation rather than something a key move produces.  Because a registry
+// is the sole intake for its observations and only ever appends, the bag it
+// holds for a machine is the whole bag; that is completeness established at
+// the source by mechanism, and on a `bag` it is **contentful** rather than
+// the trivial reading a `singletons` table carries (ADR 0033 decision 2, as
+// ADR 0022 predicted).
+//
+// The fold below then runs at the registry's **own** key, so nothing
+// coarsens and ADR 0035's clearing rule never fires.  That is the whole
+// difference from `machine_temperature` above: there the fact is
+// established at `(machine_id, taken_at)` and forfeited by `demote
+// taken_at`, so it must be re-claimed at the key the reducer folds; here it
+// is established at `machine_id`, which is already that key.
+//
+// Two one-word edits break it, and both should:
+//
+//   - change `registry` to `store` and the reducer is rejected, because a
+//     store accumulates observations that can have gaps;
+//   - put `taken_at` in the unit's key and `demote` it before the fold, and
+//     the reducer is rejected again, because the fine-key fact says nothing
+//     about the coarse bag.
+unit Vibration {
+  machine_id: string
+}
+
+registry vibrations {
+  unit { Vibration }
+  attr* {
+    sampled_at: date
+    amplitude:  real
+  }
+}
+
+view machine_vibration : Tabular[Vibration] {
+  vibrations |> map_bags |k, b| (
+    .peak_amplitude = bag.max b.amplitude,
+    .sample_count   = #b.amplitude
+  )
+}
+
 // Dimensional arithmetic in a view body: the comparison type-checks because
 // both sides are `temperature[real]`; comparing against a bare `350.0` (or
 // a duration) would be a compile error.  No shape claim: the output keeps
 // the reading identity `(machine_id, taken_at)`, not a `Machine` tabulation.
 view overheating {
   readings |> flat_map |_, r| if too_hot r.temperature then r else ()
+}
+
+// ---------------------------------------------------------------------------
+// A rectangular coarsening: `unpivot`, then a fold with no `assume`
+// ---------------------------------------------------------------------------
+
+// Two sensors report at each slot.  The **wide** form gives each its own
+// column, and both are total: every slot carries both readings.  That
+// totality is the load-bearing detail below.
+unit Slot {
+  machine_id: string
+  taken_at: date
+}
+
+registry paired_readings {
+  unit { Slot }
+  attr {
+    internal: temperature[real]
+    external: temperature[real]
+  }
+}
+
+// The average across a slot's sensors, folded with **no `assume`** even
+// though the fold runs after a `demote`.  Compare `machine_temperature`
+// above, which needs one for what looks like the same shape.
+//
+// `unpivot` is the other pair of inverse operations: where
+// `promote`/`demote` move a column between the key and the attributes
+// (ADR 0024), `unpivot`/`pivot` move information between **rows and
+// columns**.  Folding all attribute columns (they must share a domain,
+// which is why both are `temperature[real]`) spreads their names into a
+// new `enum` key column and their values into one column, so the key
+// becomes `(machine_id, taken_at, sensor)`.
+//
+// **Why no `assume` is needed here.**  Because every folded column was
+// total, `unpivot` establishes `exhaustive(sensor)` (ADR 0020): every slot
+// present carries a row for *every* variant of the axis.  That is exactly
+// the absence ADR 0035's clearing rule guards against, so `demote sensor`
+// is a coarsening with nothing to lose: the resulting bag per slot is the
+// whole variant set, not a sample of it, and the reducing `map_bags`
+// consumes a fact the checker derived rather than one the program claimed.
+//
+// The rule is narrow, and each of these breaks it, correctly:
+//
+//   - make either source column optional: a missing cell drops its row,
+//     the variant goes absent, `exhaustive` is never established;
+//   - filter the long form before demoting: `flat_map` can drop rows, so
+//     it forfeits the fact;
+//   - demote `taken_at` alongside `sensor`: that axis is not rectangular,
+//     and the rule needs *every* demoted column to be.
+view sensor_avg {
+  paired_readings |> unpivot sensor reading
+                  |> demote sensor
+                  |> map_bags |k, b| (.average = (bag.sum b.reading) / to_real(#b))
 }
