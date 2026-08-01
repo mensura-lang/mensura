@@ -6,9 +6,10 @@ semantic mistakes (data leakage, wrong CV strategy on temporal data, biased
 training sets, broken split-invariance, physical-unit mismatches) become
 compile errors.
 
-The project is in M1.  Creating a store is built end to end, and shapes,
-views, and the core pipeline algebra are typechecked in the frontend (see
-Implementation below).
+The project has completed M4.  Stores and registries are built end to end
+(created, ingested into, and read back), and shapes, views, and the core
+pipeline algebra are typechecked in the frontend (see Implementation
+below).
 `ROADMAP.md` has the phased plan and `docs/language/00-overview.md` says what
 the language is.
 
@@ -45,14 +46,19 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
   rather than failing on the first.
 - `mensura-runtime`: the `StorageBackend` trait and a `SqliteBackend`
   (rusqlite, `bundled`).  A `Schema` maps to `CREATE TABLE` (index columns as
-  the primary key, `enum` as `TEXT CHECK`).  Storage mapping and the
+  the primary key, `enum` as `TEXT CHECK`, `FOREIGN KEY` per `domain` entry,
+  enforced under `PRAGMA foreign_keys`).  Also the typed ingestion decoder
+  (`ingest`), which maps name-keyed records onto a `Schema` and is
+  deliberately independent of any wire format.  Storage mapping and the
   storage-versus-processing (DBSP) split are in
-  `docs/toolkit/00-storage-backend.md`.
+  `docs/toolkit/00-storage-backend.md`; the write path is
+  `docs/toolkit/05-ingestion.md`.
 - `mensura-cli`: the `mensura` binary.  `mensura lex <file>` dumps tokens;
   `mensura check <file>` typechecks without touching a database;
   `mensura run <file> [--db <path>]` typechecks and creates the stores
-  (`--db` defaults to an in-memory database); `mensura lsp` runs the
-  language server over stdio.
+  (`--db` defaults to an in-memory database);
+  `mensura ingest <file> <target> --data <rows.jsonl>` appends a batch to a
+  store or registry; `mensura lsp` runs the language server over stdio.
 - `mensura-lsp`, `mensura-highlight`, `mensura-mdbook`: the language server
   backend, the shared source-classification layer for highlighting, and the
   mdBook preprocessor that highlights and check-gates the `book/` code
@@ -60,16 +66,23 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
 
 Current scope: basic and compound units (a compound key flattens to dotted
 columns, and a store of a compound unit resolves each unit-reference field
-in its `domain` block, ADR 0032); stores with primitive attributes
-(`string`, `int`, `real`, `bool`, `date`, named `enum` types whose
-variants are string literals, dimensioned `D[real]` quantities, and
+in its `domain` block, ADR 0032); stores and registries with primitive
+attributes (`string`, `int`, `real`, `bool`, `date`, named `enum` types
+whose variants are string literals, dimensioned `D[real]` quantities, and
 unit references resolved through `domain`); shapes with `Unit`/`string`
-parameters; and views hosting the core pipeline algebra over the
-expression sublanguage, including the Tier B completeness discharge
-(ADR 0017).  `registry` declarations, typed ingestion, key moves on
-flattened compound components, and unit-typed shape attributes are
-deferred and rejected with "not yet supported" diagnostics.  Worked
-examples live in `docs/examples/*.mensura`.
+parameters; views hosting the core pipeline algebra over the expression
+sublanguage, including the Tier B completeness discharge (ADR 0017); and
+typed ingestion through `mensura ingest` (ADR 0034).  A `registry`
+(ADR 0033) shares the store's grammar and resolved model exactly, differing
+in one `kind` field: its table is `Complete` by mechanism at its own
+declared key, so a reducer at that key needs no `assume { complete }`.
+The fact is about the current key and does not survive a genuinely
+coarsening `demote` (ADR 0035): the key moves re-derive it from the
+ADR 0024 gradings, and a reducer over a demoted bag discharges its
+obligation after the `demote`.  Key moves on flattened compound
+components and unit-typed shape attributes remain deferred and are
+rejected with "not yet supported" diagnostics.  Worked examples live in
+`docs/examples/*.mensura`.
 
 ## Style guide
 

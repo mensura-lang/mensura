@@ -6,16 +6,20 @@
 //! checked body, ready for the processing layer to evaluate
 //! (`docs/toolkit/04-processing-layer.md`).
 
-use mensura_syntax::{Block, Span};
+use mensura_syntax::{Block, Span, StoreKind};
 
 use crate::table::Cardinality;
 
-/// A resolved store: its name, the unit it tabulates, its columns in
-/// storage order (key fields, then attributes in declaration order), and
-/// its declared cardinality.
+/// A resolved store or registry: its name, the unit it tabulates, its
+/// columns in storage order (key fields, then attributes in declaration
+/// order), and its declared cardinality.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Schema {
     pub store: String,
+    /// Which kind of tabulation this is (ADR 0033).  The two resolve and
+    /// materialize identically; the kind decides only whether the lifted
+    /// table type is complete by mechanism ([`crate::table::TableType`]).
+    pub kind: StoreKind,
     pub unit: String,
     pub columns: Vec<Column>,
     /// The declared store cardinality (ADR 0022): `Singletons` (`attr`

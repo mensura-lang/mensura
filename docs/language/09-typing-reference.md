@@ -190,17 +190,26 @@ totality qualifier rather than a structural axiom (ADR 0013).
 Whether **each key's bag holds all its possible rows**.  This is the useful,
 tracked fact, and it reads uniformly across the cardinality chain:
 
-- on a `bag` table, every bag is full (no rows missing at any key);
-- on a `singletons` table, every key that should exist does (no empty keys),
-  which is exactly the `exhaustive` corollary above.
+- on a `bag` table it is contentful: every bag is full (no rows missing at
+  any present key);
+- on a `singletons` table it is trivially held: a present key's single row
+  is its whole bag (`fiberCompleteWrt_of_functional`), so the qualifier is
+  derived from the cardinality, at the source lift and at the key moves
+  alike.  Key coverage ("every key that should exist does") is a different
+  fact that nothing tracks table-wide; an absent key is an honest absence,
+  not a partial bag, until a coarsening merges it into one.
 
-Completeness here is a fact about the **current** key, relative to a
-reference population (the mechanized `CompleteWrt`,
-`formal/Mensura/Completeness/CompleteOver.lean`): the table has a row
-wherever the reference does.  The reference coarsens with the table, so
-`demote` transforms the fact rather than consuming it
-(`demote_completeWrt`); the operation that *demands* it is the reducing
-`map_bags`, whose fold is silently wrong on a partial bag (section 8,
+Completeness here is a fact about the **current** key, against the fixed
+intended population (the mechanized `FiberCompleteWrt`,
+`formal/Mensura/Completeness/CompleteOver.lean`): every fiber of the
+current key that is present is whole.  Because the reference is fixed,
+the fact does not survive a genuine coarsening: an absent fine key is
+invisible to the fiber-level fact, and `demote` merges it into a coarse
+fiber as a gap (the fiber-gap counterexample of ADR 0035), so the key moves
+re-derive the qualifier from the ADR 0024 gradings (section 6.3,
+`docs/decisions/0035-completeness-cleared-by-demote.md`).  The operation
+that *demands* it is the reducing `map_bags`, whose fold is silently
+wrong on a partial bag (section 8,
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
 
 A second, **domain-relative** grade is tracked
@@ -416,6 +425,23 @@ sort, so a claimed-but-false key gives a reproducible answer rather than a
 nondeterministic one; that is a courtesy of the implementation, not a
 guarantee the type carries.
 
+**What tie-freedom does not give you.**  The tie model settles whether the
+arrangement is *determined*, not whether it is *gap-free*.  The `series`
+vocabulary is defined over the rows present in the fiber, so `lag` means
+"the previous row in this bag", not "the previous time step".  Over an
+order key reading `1, 2, 4, 5` every obligation above is discharged and
+`lag` at `4` still reports `2`'s value, which a caller differencing
+consecutive readings will take for `3`'s.  `rank` counts present rows
+rather than positions, and `cumsum` totals whatever the bag holds.
+Whether the ordered operations should carry a contiguity obligation of
+their own is an open question recorded in
+`docs/decisions/0035-completeness-cleared-by-demote.md`; it is not the
+completeness fact of section 8, which governs whole rows rather than
+holes in an order key, and it needs a notion (a dense order key, or an
+explicit resampling stage) the language does not yet have.  Until it is
+settled, a discharged `arranged` means the window is deterministic, not
+that it is faithful to an underlying regular series.
+
 **The combiner is closed, the mapper is open.**  A fold over an *unordered*
 bag is deterministic only when the combiner is associative and commutative,
 and those are laws no checker can verify on a user-supplied lambda.  So the
@@ -596,9 +622,13 @@ columns are the return's.  Cardinality:
 **inferred from the return** -- a single record yields `singletons` (one row per
 key, the aggregate shape, which later lets `pivot` meet its precondition); a bag
 yields `bag` (the window shape, one output row per input row).  Completeness:
-preserved, and **demanded by the aggregate (reducing) shape** (ADR 0023): a
+**demanded by the aggregate (reducing) shape** (ADR 0023): a
 fold over a partial bag is silently wrong, so a reducing body over a `bag`
-input requires the fact "complete over the current key".  Over a
+input requires the fact "complete over the current key".  The fact is
+carried through the operation: every body expressible today emits at least
+one output row per present fiber (the non-emptying hypothesis of
+`fiberMap_exhaustive`), so a present key stays present; whether every
+future body preserves this is an open question of `07-pipelines.md`.  Over a
 `singletons` input the obligation discharges trivially -- a present key's
 single row is the identity's whole fiber (`fiberCompleteWrt_of_functional`)
 -- so the checker recognizes that base case from the input cardinality and
@@ -637,18 +667,30 @@ is the `demote_promote` inverse-domain side condition); a continuous
 `real` measurement is rejected (ADR 0014).  Cardinality: derived from the
 gradings; a `singletons` input stays `singletons` (`promote_functional`),
 and a `bag` carrying a grading inside the new key becomes `singletons`.
-Completeness: preserved.  Lineage: preserved.  Tier A (`promote_splitSafe`,
-`promote_preservesDisjoint`).
+Completeness: re-derived from the graded cardinality (ADR 0035): a result
+graded `singletons` is `Complete` (a present singleton fiber is whole,
+`fiberCompleteWrt_of_functional`), and a `bag` result preserves the
+incoming fact (refining the key partitions each fiber by row content, and
+a whole fiber partitions into whole sub-fibers).  Lineage: preserved.
+Tier A (`promote_splitSafe`, `promote_preservesDisjoint`).
 
 **`demote cols`** drops key components into the non-key part.  Content:
 the named key columns become ordinary columns.  Cardinality: derived from
 the gradings; on a genuine coarsening no grading fits the retained key and
 the bound rises to **`bag`** (unless a following `map_bags` reduces it),
-while an exact round trip re-derives `singletons`.  Completeness: **propagated**
-from the fine key to the coarse key (ADR 0023): a table complete against a
-reference at `(a, b)` is complete against the coarsened reference at `a`
-(`demote_completeWrt`), so the fact is transformed, not consumed, and a
-`demote` with no downstream reducer is admitted with no discharge.
+while an exact round trip re-derives `singletons`.  Completeness:
+re-derived from the graded cardinality (ADR 0035): an exact round trip is
+graded `singletons` and is `Complete` (`fiberCompleteWrt_of_functional`),
+while a genuine coarsening **clears** the fact, because merging fibers
+turns an absent fine key into a gap inside a coarse fiber
+(the ADR 0035 fiber-gap counterexample; the reference-relative
+`demote_completeWrt` remains true but is not the tracked fact), except
+where every demoted column is an `exhaustive` axis (section 6.6), which
+rules those absences out and keeps the fact
+(`demote_fiberCompleteWrt_of_exhaustive`).  A
+`demote` with no downstream reducer is still admitted with no discharge;
+a reducer over the coarsened bag establishes the fact *after* the
+`demote` (section 8).
 Lineage: **dropped** -- the branch structure over the old key no longer
 applies, so the disjointness fact falls out of scope and must be
 re-established (`assert`) or assumed (section 9); this lineage break is what
@@ -758,45 +800,64 @@ disjointness fact through a Tier A pipeline intact (section 9).
   cardinality, completeness, and lineage facts end to end.
 - **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
   lineage fact, and that is the whole content of the Tier: `demote`
-  propagates completeness rather than demanding it (the demand sits at the
-  reducing `map_bags`, section 8, ADR 0023), and `pivot` demands nothing
+  demands no completeness itself (the demand sits at the reducing
+  `map_bags`, section 8, ADR 0023, and a genuine coarsening clears the
+  fact rather than carrying it, ADR 0035), and `pivot` demands nothing
   (an absent row becomes a missing cell) and instead upgrades its spread
   columns' totality under `exhaustive` (section 6.6, ADR 0020).
 
-## 8.  Completeness: establish, propagate, consume
+## 8.  Completeness: establish, clear, consume
 
 Completeness (each key's bag holds all its rows, section 3.4) is established in
-one of three ways (`07`, "Completeness: establish, propagate, consume"):
+one of three ways (`07`, "Completeness: establish, clear, consume"):
 
-- **mechanism**: a `registry` source is complete by construction (overview
-  pillar 7), so a reducer over it needs no further discharge;
+- **mechanism**: a `registry` source is complete by construction at its
+  **own declared key** (overview pillar 7, `13-registries.md`, ADR 0033
+  as amended by ADR 0035).  The fact holds at that boundary whatever the
+  cardinality: on a `singletons` registry it is the
+  `fiberCompleteWrt_of_functional` corollary and discharges what
+  cardinality already would, while on an `attr*` registry it is
+  contentful, pinning the reference population per entity, so a reducer
+  at the registry's own key needs no further discharge;
 - **check**: `completeness_check { assert ... }`, a pipe stage that establishes
   the fact locally; each `assert` is a boolean expression, and together they
-  witness that the partition is complete over the relevant key.  The stage is
-  placed ahead of the consuming operation;
+  witness that the partition is complete over the current key.  The stage is
+  placed ahead of the consuming operation and after the last coarsening;
 - **annotation**: `@complete_over(col)` on a source store, establishing the fact
   globally (grammar deferred to the annotation family, section 13).
 
-Tier A operations **preserve** completeness; `demote` **propagates** it
-from the fine key to the coarsened reference at the retained key
-(`demote_completeWrt`); a **reducing `map_bags`** **consumes** it, because
-a fold over a partial bag is silently wrong (ADR 0023, amending ADR 0017's
-consumer placement).  Over a `singletons` input the reducer's obligation
-discharges trivially (`fiberCompleteWrt_of_functional`), so only a reduction
-over a `bag` -- a coarsened key, or a `bag` store -- needs an establishment
-step.  `assume { ... }` is the escape hatch when the obligation cannot be
-discharged.  (`pivot` formerly carried an obligation too; ADR 0020 dissolves
-it into the `exhaustive` totality upgrade of section 6.6.)
+Row-wise Tier A operations **preserve** completeness (they map whole
+fibers to whole fibers); the key moves **re-derive** it from the ADR 0024
+gradings, and a `demote` that genuinely coarsens **clears** it, because an
+absent fine key becomes a gap inside a coarse fiber
+(the fiber-gap counterexample, ADR 0035).  A coarsening whose every
+demoted column is an `exhaustive` axis (section 6.6) is the exception:
+exhaustiveness rules those absences out, so the fact survives
+(`demote_fiberCompleteWrt_of_exhaustive`, ADR 0035 decision 6).  A
+**reducing `map_bags`**
+**consumes** it, because a fold over a partial bag is silently wrong
+(ADR 0023, amending ADR 0017's consumer placement).  *Consume* names the
+demand (the reducer is rejected without the fact), not the fate of the
+fact, which is carried through the operation (section 6.2).  Over a
+`singletons` input the reducer's obligation discharges trivially
+(`fiberCompleteWrt_of_functional`), so only a reduction over a `bag` -- a
+coarsened key, or a `bag` store -- needs an establishment step, placed
+after the coarsening it folds under.  `assume { ... }` is the escape
+hatch when the obligation cannot be discharged.  (`pivot` formerly
+carried an obligation too; ADR 0020 dissolves it into the `exhaustive`
+totality upgrade of section 6.6.)
 
 ```
 enrollments
-|> completeness_check { assert row_count open_offerings == 0 }   // establish
-|> demote course                                             // propagate; bag over student
+|> demote course                                             // coarsen; the fine-key fact is forfeited
+|> completeness_check { assert row_count open_offerings == 0 }   // establish at the folded key
 |> map_bags |k, b| (.total_credits = bag.sum b.credits)            // consume; back to singletons
 ```
 
 Remove the check (and `@complete_over`, and `assume`) and the reducing
-`map_bags` is rejected; the `demote` alone would still be admitted.
+`map_bags` is rejected; the `demote` alone would still be admitted.  Move
+the check ahead of the `demote` and it is rejected too: the check would
+witness the fine key, and the coarsening forfeits that fact.
 
 ## 9.  Lineage and disjointness (the tag hierarchy)
 
@@ -881,8 +942,8 @@ the full key.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `flat_map` | cols := row schema | pres. if max size `<= 1`, else `bag` | as ret. | pres. | carried | A | `flatMap_splitSafe` |
 | `map_bags` | cols := return | `singletons` or `bag` (per return) | as ret. | pres.; **demanded** by the reducing shape on a `bag` input | carried | A | `fiberMap_splitSafe`, `fiberCompleteWrt_of_functional` |
-| `promote` | cols join key | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | pres. | carried | A | `promote_splitSafe`, `promote_functional` |
-| `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | **propagated** (reference coarsens) | **dropped** | B | `demote_not_preservesDisjoint`, `demote_completeWrt`, `demote_promote` |
+| `promote` | cols join key | graded: pres.; a fitting grading promotes `bag` -> `singletons` | pres. | re-derived: `Complete` at graded `singletons`, pres. at `bag` | carried | A | `promote_splitSafe`, `promote_functional`, `fiberCompleteWrt_of_functional` |
+| `demote` | key cols -> non-key | graded: **-> bag** on a genuine coarsening; a round trip re-derives `singletons` | pres. | re-derived: **cleared** on a genuine coarsening, `Complete` at graded `singletons` or when every demoted column is an `exhaustive` axis | **dropped** | B | `demote_not_preservesDisjoint`, `demote_promote`, `fiberCompleteWrt_of_functional`, `demote_fiberCompleteWrt_of_exhaustive`; the clearing arm is conservative (ADR 0035) |
 | `lookup` | + right cols | pres. if right `singletons`, else `bag` | right **optional** | pres. left | carried | A | `lookup_splitSafe` |
 | `lookup_total` | + right cols | pres. if right `singletons`, else `bag` | pres. | pres. left | carried | A | `lookupTotal_splitSafe` |
 | `split` | unchanged | unchanged | unchanged | unchanged | adds branches | A | `split_disjoint` |
@@ -933,12 +994,18 @@ operations, and population-relative completeness:
   `fiberMap_preservesDisjoint`, `fiberMap_splitInvariant`,
   `fiberMap_exhaustive` (a presence-preserving fiber action carries the
   rectangle: both `map_bags` shapes).
-- population-relative completeness (`CompleteOver.lean`, ADR 0023):
-  `CompleteWrt` (a row wherever the reference has one) with
-  `demote_completeWrt` (`demote` coarsens the reference rather than
-  consuming the fact), and `FiberCompleteWrt` with
-  `fiberCompleteWrt_of_functional` (at `card <= 1` a present key carries its
-  whole fiber, the reducer's trivial discharge).
+- population-relative completeness (`CompleteOver.lean`, ADR 0023,
+  ADR 0035): `CompleteWrt` (a row wherever the reference has one) with
+  the reference-relative `demote_completeWrt` (retained; not the tracked
+  fact), and `FiberCompleteWrt` (the tracked fact, section 3.4) with
+  `fiberCompleteWrt_of_functional` (at `card <= 1` a present key carries
+  its whole fiber: the reducer's trivial discharge and the key moves'
+  `singletons` re-derivation), `ExhaustiveOn` with
+  `demote_fiberCompleteWrt_of_exhaustive` (a coarsening along an
+  exhaustive axis keeps the fact, ADR 0035 decision 6), and the negative
+  witness recorded fiber-gap counterexample (a genuine coarsening turns
+  an absent key into a fiber gap, the clearing rule; it fails exactly the
+  `ExhaustiveOn` hypothesis).
 - `pivotAttr`: `pivotAttr_splitSafe`, `pivotAttr_reversible` (these back the
   bag-long alternative recorded, and not adopted, in ADR 0020; retained for
   a possible future fused attribute-position form).
@@ -1037,9 +1104,10 @@ suite itself is M1 work (`ROADMAP.md`, M1).
   all Tier A, result `singletons` per key.
 - Filter with `flat_map` (ADR 0015): `map |_, r| if r.degraded then r else ()` keeps
   or drops a row and stays `singletons`; `flat_map |k, r| (r, r)` expands to `bag`.
-- Coarsen with the fact established first (`07`): `completeness_check { ... }
-  |> demote course |> map_bags ...` (the check establishes, `demote`
-  propagates, the reducer consumes; ADR 0023).
+- Coarsen, then establish at the folded key (`07`): `demote course
+  |> completeness_check { ... } |> map_bags ...` (the coarsening clears,
+  the check establishes at the retained key, the reducer consumes;
+  ADR 0023, ADR 0035).
 - Reindex only: `demote` with no downstream reducer and no establish
   step (a possibly partial bag is an honest rekey; ADR 0023).
 - Reduce a plain store: `map_bags |k, b| (.m = bag.max b.x)` straight over a
@@ -1057,7 +1125,8 @@ suite itself is M1 work (`ROADMAP.md`, M1).
 
 - A reducing `map_bags` over a `bag` with no completeness fact (no check,
   no `@complete_over`, no `assume`); e.g. `demote` then an aggregate
-  with no establish step (ADR 0023).
+  with no establish step, or with the establish step placed *before* the
+  `demote` (ADR 0023, ADR 0035).
 - A disjointness-demanding site fed two tables that are not structurally
   disjoint and were neither asserted nor assumed.
 - A scalar operator applied to a bag, or to an optional value without narrowing

@@ -1,0 +1,14 @@
+// Accept: a registry claims shapes through the same `:` conformance clause
+// a store uses.  Conformance is structural and kind-agnostic (ADR 0003).
+unit Machine { id: string }
+
+shape SensorLog {
+  attr* { kelvin: real }
+}
+
+registry readings : SensorLog {
+  unit { Machine }
+  attr* {
+    kelvin: real
+  }
+}

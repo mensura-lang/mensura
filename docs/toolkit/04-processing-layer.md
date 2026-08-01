@@ -19,14 +19,15 @@ a table.
 - **No runtime obligations.**  Views host Tier A pipelines plus the Tier B
   stages `pivot` and `demote`.  Both are Tier B only for compile-time
   effects (`pivot` for its lineage effect and the `exhaustive` totality
-  upgrade, ADR 0020; `demote` for its lineage drop, completeness
-  propagation, and the reducer's discharge, ADR 0023/0024), so batch
+  upgrade, ADR 0020; `demote` for its lineage drop, its completeness
+  clearing, and the reducer's discharge, ADR 0023/0024/0035), so batch
   evaluation is unaffected: the runtime trusts the checker and only
   rekeys.
 - **One-shot batch recompute.**  A view is recomputed from its sources'
-  current state every `mensura run`.  Until ingestion lands (M4) a store
-  changes only between runs, so recompute-at-run is a complete semantics,
-  not an approximation of a missing incremental one.
+  current state every `mensura run`.  This stayed a complete semantics
+  when ingestion landed (M4, `05-ingestion.md`): a batch applies between
+  runs, so the next run sees it whole.  What makes recompute an
+  approximation is *incremental refresh*, which is M5's.
 - **`flat_map` first.**  The first operation implemented end to end is `flat_map`,
   which subsumes filtering (ADR 0015) and is what the committed
   `attention_needed` view in `docs/examples/fleet-monitoring.mensura`
@@ -201,9 +202,10 @@ database.
 
 - The committed `attention_needed` view materializes end to end: a runtime
   test seeds the `machines` table, runs the pipeline, and asserts the
-  degraded rows and only those come back.  Until M4's typed ingestion
-  exists, tests seed stores at the SQL level through the backend; that is a
-  test scaffold, not a language surface.
+  degraded rows and only those come back.  These tests seed stores at the
+  SQL level through the backend, a test scaffold rather than a language
+  surface; M4's typed ingestion (`05-ingestion.md`) is the supported way
+  to put rows in.
 - `docs/examples/fleet-monitoring.mensura` stays the driving example: its
   existing resolve test is joined by a `mensura run` test over an in-memory
   database.
@@ -213,8 +215,9 @@ database.
 ## Forward references
 
 - The remaining Tier A operations at runtime, completing M2.
-- Typed ingestion and the delta-shaped write path (M4,
-  `00-storage-backend.md`, forward references).
+- Typed ingestion and the delta-shaped write path landed in M4
+  (`05-ingestion.md`); the delta stream it produces is what the
+  incremental engine below consumes.
 - Incremental refresh: the DBSP engine replacing the batch evaluator behind
   the same boundary, with `on_change` and windows (M5).
 - View-on-view sources.

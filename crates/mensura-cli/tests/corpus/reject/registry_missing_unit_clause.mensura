@@ -1,0 +1,6 @@
+// Rejected at parse: the `unit { U }` clause is mandatory and comes first,
+// in a registry as in a store.  A registry tabulates a unit, so ADR 0001's
+// identity discipline binds it.
+registry readings {
+  attr { kelvin: real }
+}

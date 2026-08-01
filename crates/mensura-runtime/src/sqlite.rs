@@ -6,7 +6,7 @@ use mensura_types::{ColumnRole, ColumnType, Schema, TableShape};
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 
-use crate::backend::{EnsureOutcome, StorageBackend, StorageError};
+use crate::backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError};
 use crate::value::{Row, Value};
 
 /// A store backend that materializes schemas as SQLite tables.
@@ -17,22 +17,28 @@ pub struct SqliteBackend {
 impl SqliteBackend {
     /// Open (or create) a database at `path`.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
-        Ok(SqliteBackend {
-            conn: Connection::open(path)?,
-        })
+        Self::configure(Connection::open(path)?)
     }
 
     /// Open a transient in-memory database (used in tests).
     pub fn open_in_memory() -> Result<Self, StorageError> {
-        Ok(SqliteBackend {
-            conn: Connection::open_in_memory()?,
-        })
+        Self::configure(Connection::open_in_memory()?)
     }
 
-    /// Execute raw SQL against the backing database.  A test scaffold: until
-    /// M4's typed ingestion exists, tests seed store rows at the SQL level
-    /// (`docs/toolkit/04-processing-layer.md`, "Validation").  Not a language
-    /// surface.
+    /// Settings every connection needs.  SQLite scopes `foreign_keys` to the
+    /// connection rather than the database, so it is set at open and both
+    /// the read and write paths see it (ADR 0034 decision 5): the
+    /// `FOREIGN KEY` clauses `CREATE TABLE` emits for each resolved `domain`
+    /// entry (ADR 0032) are enforced now that there is a write path.
+    fn configure(conn: Connection) -> Result<Self, StorageError> {
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(SqliteBackend { conn })
+    }
+
+    /// Execute raw SQL against the backing database.  A test scaffold for
+    /// seeding rows (`docs/toolkit/04-processing-layer.md`, "Validation"),
+    /// kept because it bypasses decoding; the supported intake is
+    /// [`StorageBackend::apply`] (`docs/toolkit/05-ingestion.md`).
     pub fn execute_sql(&self, sql: &str) -> Result<(), StorageError> {
         self.conn.execute_batch(sql)?;
         Ok(())
@@ -128,7 +134,92 @@ impl StorageBackend for SqliteBackend {
         tx.commit()?;
         Ok(())
     }
+
+    fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError> {
+        // One transaction for the batch: every change lands or none does
+        // (ADR 0034 decision 4).
+        let tx = self.conn.transaction()?;
+        let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
+
+        let mut applied = Applied::default();
+        if !delta.inserts.is_empty() {
+            let holes: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                quote_ident(&table.name),
+                cols.join(", "),
+                holes.join(", ")
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            for row in &delta.inserts {
+                stmt.execute(rusqlite::params_from_iter(row.iter().map(encode)))
+                    .map_err(|e| write_error(e, table))?;
+                applied.inserted += 1;
+            }
+        }
+
+        if !delta.deletes.is_empty() {
+            // Delete by whole-row match: the row is the identity on an
+            // unkeyed (bag) table, and matches the key on a keyed one.
+            let matches: Vec<String> = cols
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{c} IS ?{}", i + 1))
+                .collect();
+            let sql = format!(
+                "DELETE FROM {} WHERE {}",
+                quote_ident(&table.name),
+                matches.join(" AND ")
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            for row in &delta.deletes {
+                let n = stmt
+                    .execute(rusqlite::params_from_iter(row.iter().map(encode)))
+                    .map_err(|e| write_error(e, table))?;
+                applied.deleted += n;
+            }
+        }
+
+        tx.commit()?;
+        Ok(applied)
+    }
 }
+
+/// Translate a constraint failure into a diagnostic that names what the
+/// program declared, rather than a raw SQLite code (ADR 0034 decision 5).
+fn write_error(e: rusqlite::Error, table: &TableShape) -> StorageError {
+    use rusqlite::ErrorCode;
+    let rusqlite::Error::SqliteFailure(err, _) = &e else {
+        return StorageError::Sqlite(e);
+    };
+    match err.code {
+        ErrorCode::ConstraintViolation if err.extended_code == FOREIGN_KEY_VIOLATION => {
+            StorageError::ForeignKey {
+                table: table.name.clone(),
+                references: table
+                    .foreign_keys
+                    .iter()
+                    .map(|fk| (fk.field.clone(), fk.store.clone()))
+                    .collect(),
+            }
+        }
+        ErrorCode::ConstraintViolation
+            if matches!(err.extended_code, PRIMARY_KEY_VIOLATION | UNIQUE_VIOLATION) =>
+        {
+            StorageError::DuplicateKey {
+                table: table.name.clone(),
+            }
+        }
+        _ => StorageError::Sqlite(e),
+    }
+}
+
+/// `SQLITE_CONSTRAINT_FOREIGNKEY`.
+const FOREIGN_KEY_VIOLATION: i32 = 787;
+/// `SQLITE_CONSTRAINT_PRIMARYKEY`.
+const PRIMARY_KEY_VIOLATION: i32 = 1555;
+/// `SQLITE_CONSTRAINT_UNIQUE`.
+const UNIQUE_VIOLATION: i32 = 2067;
 
 /// Decode one stored cell into a typed [`Value`].  `NULL` is [`Value::Missing`]
 /// (an optional value, ADR 0010); anything else must match the column's
@@ -206,10 +297,9 @@ pub fn create_table_sql(shape: &TableShape) -> String {
     }
 
     // One clause per resolved `domain` entry (ADR 0032).  SQLite accepts
-    // the clauses regardless of table-creation order and enforces them only
-    // under `PRAGMA foreign_keys = ON`, which this backend does not set:
-    // there is no write path yet, so the clauses are documentation-grade
-    // until the ingestion slice decides on enforcement.
+    // the clauses regardless of table-creation order, and enforces them
+    // because `SqliteBackend::configure` sets `PRAGMA foreign_keys = ON`
+    // (ADR 0034 decision 5, the question ADR 0032 left to this slice).
     for fk in &shape.foreign_keys {
         let children: Vec<String> = fk
             .columns
@@ -454,8 +544,8 @@ mod tests {
     #[test]
     fn compound_store_maps_to_dotted_columns_and_foreign_keys() {
         // ADR 0032: dotted quoted columns, a composite primary key over the
-        // flattened key, and one unenforced FOREIGN KEY clause per resolved
-        // `domain` entry.
+        // flattened key, and one FOREIGN KEY clause per resolved `domain`
+        // entry (enforced since ADR 0034 turned the pragma on).
         let sql = create_table_sql(&schema(COMPOUND, "student_grades").shape());
         assert_eq!(
             sql,
@@ -471,8 +561,9 @@ mod tests {
              );"
         );
 
-        // The DDL is accepted by SQLite (clauses are unenforced: the
-        // `foreign_keys` pragma stays off until the ingestion slice).
+        // The DDL is accepted by SQLite regardless of table-creation order,
+        // which is what lets `ensure_store` run in declaration order even
+        // though the targets do not exist yet.
         let mut db = SqliteBackend::open_in_memory().unwrap();
         assert_eq!(
             db.ensure_store(&schema(COMPOUND, "student_grades"))
@@ -616,5 +707,214 @@ mod tests {
         ];
         db.materialize_view(&shape, &second).unwrap();
         assert_eq!(db.scan(&shape).unwrap(), second);
+    }
+
+    // --- the write path (`05-ingestion.md`, ADR 0034) ---------------------
+
+    const FLEET: &str = r#"
+        unit Machine { serial: string }
+        unit Reading { machine: Machine  at: date }
+        store machines {
+          unit { Machine }
+          attr { commissioned: date }
+        }
+        registry readings {
+          unit { Reading }
+          domain { machine: machines }
+          attr { kelvin: real }
+        }
+    "#;
+
+    fn opened(src: &str, tables: &[&str]) -> (SqliteBackend, Vec<TableShape>) {
+        let tokens = mensura_syntax::tokenize(src).expect("should lex");
+        let program = mensura_syntax::parse(&tokens).expect("should parse");
+        let resolved = mensura_types::resolve(&program).expect("should resolve");
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        for schema in &resolved.schemas {
+            db.ensure_store(schema).unwrap();
+        }
+        let shapes = tables
+            .iter()
+            .map(|t| {
+                resolved
+                    .schemas
+                    .iter()
+                    .find(|s| &s.store == t)
+                    .unwrap_or_else(|| panic!("no table named {t}"))
+                    .shape()
+            })
+            .collect();
+        (db, shapes)
+    }
+
+    #[test]
+    fn foreign_keys_are_enforced() {
+        // The pragma is on (ADR 0034 decision 5), so the clauses ADR 0032
+        // emits now bite.  The reading references a machine that was never
+        // created.
+        let (mut db, shapes) = opened(FLEET, &["readings"]);
+        let err = db
+            .apply(
+                &shapes[0],
+                &Delta::appending(vec![vec![
+                    Value::String("m-01".into()),
+                    Value::Date("2026-07-31".into()),
+                    Value::Real(300.0),
+                ]]),
+            )
+            .expect_err("the machine does not exist");
+        let StorageError::ForeignKey { table, references } = &err else {
+            panic!("expected a foreign-key error, got {err:?}");
+        };
+        assert_eq!(table, "readings");
+        assert_eq!(
+            references,
+            &[("machine".to_string(), "machines".to_string())]
+        );
+        // The message names the declaration, not a SQLite code.
+        let shown = err.to_string();
+        assert!(shown.contains("`machines`"), "{shown}");
+        assert!(shown.contains("`machine`"), "{shown}");
+    }
+
+    #[test]
+    fn appending_lands_rows_and_a_satisfied_reference_passes() {
+        let (mut db, shapes) = opened(FLEET, &["machines", "readings"]);
+        let (machines, readings) = (&shapes[0], &shapes[1]);
+
+        let applied = db
+            .apply(
+                machines,
+                &Delta::appending(vec![vec![
+                    Value::String("m-01".into()),
+                    Value::Date("2026-01-05".into()),
+                ]]),
+            )
+            .unwrap();
+        assert_eq!(applied.inserted, 1);
+
+        let rows = vec![
+            vec![
+                Value::String("m-01".into()),
+                Value::Date("2026-07-30".into()),
+                Value::Real(300.0),
+            ],
+            vec![
+                Value::String("m-01".into()),
+                Value::Date("2026-07-31".into()),
+                Value::Real(312.5),
+            ],
+        ];
+        assert_eq!(
+            db.apply(readings, &Delta::appending(rows.clone()))
+                .unwrap()
+                .inserted,
+            2
+        );
+        assert_eq!(db.scan(readings).unwrap(), rows);
+    }
+
+    #[test]
+    fn a_singletons_target_rejects_a_repeated_key() {
+        let (mut db, shapes) = opened(FLEET, &["machines"]);
+        let row = vec![
+            Value::String("m-01".into()),
+            Value::Date("2026-01-05".into()),
+        ];
+        db.apply(&shapes[0], &Delta::appending(vec![row.clone()]))
+            .unwrap();
+        let err = db
+            .apply(&shapes[0], &Delta::appending(vec![row]))
+            .expect_err("a singletons tabulation holds one row per key");
+        assert!(
+            matches!(err, StorageError::DuplicateKey { .. }),
+            "expected a duplicate-key error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_bag_target_accepts_a_repeated_key() {
+        // ADR 0022: a bag holds many observations per entity, so the same
+        // key twice is the point rather than an error.
+        let src = r#"
+            unit Machine { serial: string }
+            registry pings { unit { Machine } attr* { latency_ms: int } }
+        "#;
+        let (mut db, shapes) = opened(src, &["pings"]);
+        let rows = vec![
+            vec![Value::String("m-01".into()), Value::Int(12)],
+            vec![Value::String("m-01".into()), Value::Int(15)],
+        ];
+        assert_eq!(
+            db.apply(&shapes[0], &Delta::appending(rows.clone()))
+                .unwrap()
+                .inserted,
+            2
+        );
+        assert_eq!(db.scan(&shapes[0]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_batch_is_all_or_nothing() {
+        // One transaction (ADR 0034 decision 4): the good row ahead of the
+        // bad one must not survive.
+        let (mut db, shapes) = opened(FLEET, &["machines", "readings"]);
+        db.apply(
+            &shapes[0],
+            &Delta::appending(vec![vec![
+                Value::String("m-01".into()),
+                Value::Date("2026-01-05".into()),
+            ]]),
+        )
+        .unwrap();
+        db.apply(
+            &shapes[1],
+            &Delta::appending(vec![
+                vec![
+                    Value::String("m-01".into()),
+                    Value::Date("2026-07-30".into()),
+                    Value::Real(300.0),
+                ],
+                vec![
+                    Value::String("ghost".into()),
+                    Value::Date("2026-07-31".into()),
+                    Value::Real(312.5),
+                ],
+            ]),
+        )
+        .expect_err("the second row has no machine");
+        assert!(db.scan(&shapes[1]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deletes_remove_matching_rows() {
+        let (mut db, shapes) = opened(FLEET, &["machines"]);
+        let row = vec![
+            Value::String("m-01".into()),
+            Value::Date("2026-01-05".into()),
+        ];
+        db.apply(&shapes[0], &Delta::appending(vec![row.clone()]))
+            .unwrap();
+        let applied = db
+            .apply(
+                &shapes[0],
+                &Delta {
+                    inserts: Vec::new(),
+                    deletes: vec![row],
+                },
+            )
+            .unwrap();
+        assert_eq!(applied.deleted, 1);
+        assert!(db.scan(&shapes[0]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_foreign_key_pragma_is_on() {
+        let db = SqliteBackend::open_in_memory().unwrap();
+        let on: i64 = db
+            .conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(on, 1);
     }
 }

@@ -650,11 +650,15 @@ fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
 /// partial bag, so it demands completeness over the current key (ADR 0023);
 /// at a `Singletons` input the obligation discharges trivially, since a
 /// present key's single row is the identity's whole fiber
-/// (`fiberCompleteWrt_of_functional`). The key, completeness, and lineage
-/// are preserved; `exhaustive` is carried (one output row per present key in
-/// the aggregate shape, one per input row in the window shape, so no fiber
-/// loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive` the
-/// aggregate-shape special case).
+/// (`fiberCompleteWrt_of_functional`). The key and lineage are preserved.
+/// Completeness is carried through: sound for today's bodies because both
+/// shapes emit at least one output row per present fiber, but a property of
+/// the body language, not of `map_bags` (no named preservation lemma yet;
+/// open question in `docs/language/07-pipelines.md`). `exhaustive` is
+/// carried on the same non-emptying grounds (one output row per present key
+/// in the aggregate shape, one per input row in the window shape, so no
+/// fiber loses a row; `fiberMap_exhaustive`, with `aggregate_exhaustive`
+/// the aggregate-shape special case).
 fn op_map_bags(
     sources: &Sources,
     input: PipeTy,
@@ -672,7 +676,8 @@ fn op_map_bags(
         return Err(error(
             "a reducing `map_bags` needs completeness over the current key (a \
              fold over a partial bag is silently wrong); establish it with \
-             `completeness_check { ... }` or `assume { complete }` first",
+             `completeness_check { ... }` or `assume { complete }` first, \
+             after any `demote` (the fact does not survive a key coarsening)",
             span,
         ));
     }
@@ -935,8 +940,15 @@ fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
 
 /// `promote cols` (section 6.3, Tier A): promote each named column into the
 /// key. A column must be total to enter the key (ADR 0013, and the
-/// `demote_promote` inverse-domain side condition, ADR 0024); completeness
-/// and lineage are preserved. `exhaustive` is **forfeited**,
+/// `demote_promote` inverse-domain side condition, ADR 0024); lineage is
+/// preserved. Completeness is re-derived from the graded cardinality
+/// (ADR 0035): a result graded `singletons` is `Complete` (a present
+/// singleton fiber is its whole fiber, `fiberCompleteWrt_of_functional`,
+/// and this is what restores the fact on a `demote c |> promote c` round
+/// trip, keeping the pair truly inverse), and a `bag` result preserves the
+/// incoming fact, since refining the key partitions each fiber by row
+/// content and a whole fiber partitions into whole sub-fibers.
+/// `exhaustive` is **forfeited**,
 /// against ADR 0020 section 2's "preserved" sketch: the promoted column
 /// refines the residual key, which can cut a fiber (rows
 /// `(s, math, score=5)` and `(s, port, score=7)` are exhaustive in the
@@ -976,6 +988,14 @@ fn op_promote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
     }
     table.qualifiers.exhaustive.clear();
     table.derive_cardinality();
+    // A graded `singletons` result re-derives `Complete` (ADR 0035): a
+    // present singleton fiber is whole (`fiberCompleteWrt_of_functional`).
+    // A `bag` result keeps the incoming fact (fiber splitting preserves
+    // whole fibers); no clearing arm, unlike `demote`, because refining a
+    // key never merges fibers.
+    if table.qualifiers.cardinality == Cardinality::Singletons {
+        table.qualifiers.completeness = Completeness::Complete;
+    }
     Ok(PipeTy::Table(table))
 }
 
@@ -1025,19 +1045,23 @@ fn promote_to_key(table: &mut TableType, col: &str, span: Span) -> Result<(), Ty
     Ok(())
 }
 
-/// `demote cols` (section 6.3, Tier B, ADR 0017 as amended by ADR 0023):
-/// drop key components into the non-key part. Content: the named key
-/// columns become ordinary columns. Cardinality: **derived from the
+/// `demote cols` (section 6.3, Tier B, ADR 0017 as amended by ADR 0023 and
+/// ADR 0035): drop key components into the non-key part. Content: the named
+/// key columns become ordinary columns. Cardinality: **derived from the
 /// gradings** (ADR 0024): the move leaves the gradings untouched and re-runs
 /// the subset check against the shrunken key, so a genuine coarsening
 /// rises to `bag` (no grading fits the retained key) while the round trip
 /// `promote c |> demote c` re-derives `singletons` from the source
-/// grading (`demote_promote`). Completeness:
-/// **propagated**, not demanded: a table complete against a reference at the
-/// fine key stays complete against the coarsened reference at the retained key
-/// (`demote_completeWrt`); the consumer is the reducing `map_bags`
-/// downstream. Lineage: **dropped** (`demote_not_preservesDisjoint`), the
-/// lineage break that keeps `demote` Tier B on its own.
+/// grading (`demote_promote`). Completeness: **re-derived from the graded
+/// cardinality** (ADR 0035): a `singletons` result is `Complete` (a present
+/// singleton fiber is its whole fiber, `fiberCompleteWrt_of_functional`),
+/// while a genuine coarsening **clears** the fact, since merging fibers
+/// turns an absent fine key into a gap inside a coarse fiber
+/// (ADR 0035's recorded fiber-gap counterexample); a reducer over the
+/// coarsened bag
+/// establishes the fact after the `demote`, never before. Lineage:
+/// **dropped** (`demote_not_preservesDisjoint`), the lineage break that
+/// keeps `demote` Tier B on its own.
 fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     if args.is_empty() {
@@ -1076,6 +1100,7 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     if !errs.is_empty() {
         return Err(errs);
     }
+    let was_complete = table.qualifiers.completeness == Completeness::Complete;
     // `to_drop` is now distinct, so this counts distinct dropped key columns.
     if to_drop.len() == table.content.key.len() {
         return Err(error("`demote` must leave at least one key column", span));
@@ -1089,10 +1114,38 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     table.content.key = kept;
     table.content.columns.extend(dropped);
     table.derive_cardinality();
+    // Was the coarsening along axes already known rectangular?  `exhaustive`
+    // (ADR 0020) says every residual key present carries its row for *every*
+    // variant of the axis, which is exactly the absence the clearing rule
+    // below guards against, so the two facts compose (ADR 0035, open
+    // questions): the coarse bag at a present key is the union of the fibers
+    // over the axis, exhaustiveness makes every one of them present, and
+    // fiber-completeness makes each whole, so the union is whole.  Multi-
+    // column demotes chain, hence `all`.
+    let rectangular = was_complete
+        && !to_drop.is_empty()
+        && to_drop
+            .iter()
+            .all(|c| table.qualifiers.exhaustive.contains(c.as_str()));
+    // Completeness is re-derived from the graded cardinality (ADR 0035): the
+    // fact is about the current key against a fixed intended population, and
+    // a genuine coarsening forfeits it, because a whole key absent at the
+    // fine key becomes a gap inside a coarse fiber
+    // (ADR 0035's recorded fiber-gap counterexample; the reference-relative
+    // `demote_completeWrt` remains true but co-coarsens the reference, which
+    // is not what the reducing `map_bags` consumes). At a graded
+    // `singletons` result (an exact ADR 0024 round trip) the fact is
+    // re-derived instead: a present singleton fiber is its whole fiber
+    // (`fiberCompleteWrt_of_functional`), which keeps the key moves a true
+    // inverse pair on the whole qualifier vector.
+    table.qualifiers.completeness = match table.qualifiers.cardinality {
+        Cardinality::Singletons => Completeness::Complete,
+        // A coarsening along exhaustive axes only is not a genuine loss:
+        // see `rectangular` above.
+        Cardinality::Bag if rectangular => Completeness::Complete,
+        Cardinality::Bag => Completeness::Incomplete,
+    };
     table.qualifiers.lineage = Lineage::dropped();
-    // Completeness carries over unchanged: whatever fact held at the fine key
-    // holds against the coarsened reference at the retained key
-    // (`demote_completeWrt`, ADR 0023).
     // `exhaustive` is forfeited: ADR 0020 section 2 sketches the retained-axis
     // carry (a union of full fibers is full), but the key-changing propagation
     // rows are the ADR's open formal work item, so the checker stays
@@ -1537,6 +1590,7 @@ mod tests {
     use super::*;
     use crate::model::{Column as StorageColumn, ColumnRole, ColumnType, Schema};
     use crate::table::Cardinality;
+    use mensura_syntax::StoreKind;
 
     fn scol(name: &str, ty: ColumnType, role: ColumnRole, optional: bool) -> StorageColumn {
         StorageColumn {
@@ -1551,6 +1605,7 @@ mod tests {
     fn from_cols(store: &str, unit: &str, columns: Vec<StorageColumn>) -> TableType {
         TableType::from_store(&Schema {
             store: store.to_string(),
+            kind: StoreKind::Store,
             unit: unit.to_string(),
             columns,
             cardinality: Cardinality::Singletons,
@@ -2140,12 +2195,14 @@ mod tests {
     }
 
     #[test]
-    fn demote_propagates_completeness_to_the_coarser_key() {
+    fn demote_clears_completeness_on_a_genuine_coarsening() {
         let s = sample_sources();
         // Promote `machine`, establish completeness, then genuinely coarsen
         // by dropping `ts`: result is a bag (no grading fits the retained
-        // key), still complete (against the coarsened reference,
-        // `demote_completeWrt`), with lineage dropped.
+        // key) and the fact is **forfeited** (ADR 0035), establish step
+        // notwithstanding: an absent fine key becomes a gap inside a coarse
+        // fiber, so the claim made at the fine key says nothing about the
+        // bags the coarse key folds.  Lineage dropped as before.
         let t = table_of(
             pipe_ty(
                 &s,
@@ -2157,8 +2214,114 @@ mod tests {
         assert!(!t.content.key.iter().any(|c| c.name == "ts"));
         assert!(t.content.columns.iter().any(|c| c.name == "ts"));
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
-        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
         assert_eq!(t.qualifiers.lineage, Lineage::root());
+    }
+
+    // --- demote along an exhaustive axis (ADR 0035, adopted) -------------
+
+    /// A wide source whose folded columns are both total, so `unpivot`
+    /// establishes `exhaustive`.  `optional` makes one column `?`, which
+    /// defeats it (a dropped cell leaves the variant absent).
+    fn paired_source(optional: bool) -> Sources {
+        Sources::new().with(
+            "paired",
+            TableType::from_store(&Schema {
+                store: "paired".to_string(),
+                kind: StoreKind::Registry,
+                unit: "Slot".to_string(),
+                columns: vec![
+                    scol("slot", ColumnType::String, ColumnRole::Key, false),
+                    scol("internal", ColumnType::Real, ColumnRole::Attr, false),
+                    scol("external", ColumnType::Real, ColumnRole::Attr, optional),
+                ],
+                cardinality: Cardinality::Singletons,
+                foreign_keys: Vec::new(),
+                span: Span::new(0, 0),
+            }),
+        )
+    }
+
+    #[test]
+    fn demote_along_an_exhaustive_axis_keeps_completeness() {
+        // The composition ADR 0035 records: `exhaustive(sensor)` rules out
+        // exactly the absences the clearing rule guards against, so the
+        // coarse bag is the whole variant set and the fold is faithful.
+        let s = paired_source(false);
+        let t =
+            table_of(pipe_ty(&s, "paired |> unpivot sensor reading |> demote sensor").expect("ok"));
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn a_reducer_over_an_exhaustive_demote_needs_no_assume() {
+        let s = paired_source(false);
+        pipe_ty(
+            &s,
+            "paired |> unpivot sensor reading |> demote sensor \
+             |> map_bags |k, b| (.n = #b)",
+        )
+        .expect("the rectangle discharges the reducer");
+    }
+
+    #[test]
+    fn demote_without_the_exhaustive_fact_still_clears() {
+        // One folded column optional: `unpivot` establishes nothing, so the
+        // coarsening is a genuine one and ADR 0035's rule applies.
+        let s = paired_source(true);
+        let t =
+            table_of(pipe_ty(&s, "paired |> unpivot sensor reading |> demote sensor").expect("ok"));
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+    }
+
+    #[test]
+    fn demoting_a_non_exhaustive_axis_alongside_clears() {
+        // `sensor` is exhaustive; `taken_at` is an ordinary key column and
+        // is not.  The rule needs *every* demoted column to be rectangular,
+        // so naming both clears the fact.
+        let s = Sources::new().with(
+            "paired",
+            TableType::from_store(&Schema {
+                store: "paired".to_string(),
+                kind: StoreKind::Registry,
+                unit: "Slot".to_string(),
+                columns: vec![
+                    scol("slot", ColumnType::String, ColumnRole::Key, false),
+                    scol("taken_at", ColumnType::Date, ColumnRole::Key, false),
+                    scol("internal", ColumnType::Real, ColumnRole::Attr, false),
+                    scol("external", ColumnType::Real, ColumnRole::Attr, false),
+                ],
+                cardinality: Cardinality::Singletons,
+                foreign_keys: Vec::new(),
+                span: Span::new(0, 0),
+            }),
+        );
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "paired |> unpivot sensor reading |> demote sensor taken_at",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+    }
+
+    #[test]
+    fn a_filter_defeats_the_exhaustive_demote() {
+        // `flat_map` can drop rows, so it forfeits `exhaustive`; the
+        // coarsening is then genuine again.
+        let s = paired_source(false);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "paired |> unpivot sensor reading \
+                 |> flat_map |k, r| if k.sensor == \"internal\" then r else () \
+                 |> demote sensor",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
     }
 
     #[test]
@@ -2191,6 +2354,73 @@ mod tests {
         )
         .expect_err("incomplete bag");
         assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
+    }
+
+    fn registry_readings(cardinality: Cardinality) -> TableType {
+        let (machine_role, ts) = match cardinality {
+            // A bag registry is keyed by the entity; time is an observation.
+            Cardinality::Bag => (ColumnRole::Key, ColumnRole::Attr),
+            // A singletons registry keys the reading itself.
+            Cardinality::Singletons => (ColumnRole::Attr, ColumnRole::Key),
+        };
+        TableType::from_store(&Schema {
+            store: "readings".to_string(),
+            kind: StoreKind::Registry,
+            unit: "Reading".to_string(),
+            columns: vec![
+                scol("ts", ColumnType::Int, ts, false),
+                scol("machine", ColumnType::String, machine_role, false),
+                scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+            cardinality,
+            foreign_keys: Vec::new(),
+            span: Span::new(0, 0),
+        })
+    }
+
+    #[test]
+    fn a_bag_registry_reduces_at_its_own_key_with_no_establish_step() {
+        // The surviving contentful case (ADR 0033 as amended by ADR 0035):
+        // an `attr*` registry pins the reference population per entity, so a
+        // reducer at the registry's own key needs no ceremony.  The same
+        // pipeline over a bag *store* is rejected
+        // (`reducing_map_bags_over_a_bag_demands_completeness` shows the
+        // shape).
+        let s = sample_sources().with("registry_readings", registry_readings(Cardinality::Bag));
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "registry_readings |> map_bags |k, b| (.n = #b.temperature)",
+            )
+            .expect("a bag registry discharges the reducer at its own key"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn a_demoted_registry_no_longer_discharges_the_reducer() {
+        // ADR 0035: the by-mechanism fact holds at the registry's own key
+        // and does not survive the coarsening; recording every reading
+        // received is not receiving every reading that happened.  The
+        // reducer over the demoted bag demands its own establishment step,
+        // placed after the `demote`.
+        let s = sample_sources().with(
+            "registry_readings",
+            registry_readings(Cardinality::Singletons),
+        );
+        let errs = pipe_ty(
+            &s,
+            "registry_readings |> promote machine |> demote ts \
+             |> map_bags |k, b| (.n = #b.temperature)",
+        )
+        .expect_err("the fact was forfeited at the coarsening");
+        assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
+        pipe_ty(
+            &s,
+            "registry_readings |> promote machine |> demote ts \
+             |> assume { complete } |> map_bags |k, b| (.n = #b.temperature)",
+        )
+        .expect("establishing after the demote discharges the reducer");
     }
 
     /// Equality up to attribute order (ADR 0024): a round trip restores the
@@ -2265,7 +2495,10 @@ mod tests {
         // What a snapshot mechanism could not do (ADR 0024): the gradings
         // ride through `assume`/`completeness_check`, so the round trip
         // still restores `singletons` with an establish step between the
-        // moves.
+        // moves, and with it `Complete`: the exact round trip is graded
+        // `singletons`, so the key move re-derives the fact rather than
+        // clearing it (ADR 0035), keeping the pair a true inverse on the
+        // whole qualifier vector.
         let t = table_of(
             pipe_ty(
                 &s,
@@ -2273,6 +2506,24 @@ mod tests {
                  |> demote machine",
             )
             .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn a_promote_that_rederives_singletons_rederives_completeness() {
+        let s = sample_sources();
+        // The demote-first order (ADR 0024's `promote_demote`) restores the
+        // fact too (ADR 0035): the coarsening clears it with the grading
+        // surviving, and promoting the column back re-derives `singletons`
+        // and with it the trivial fiber fact
+        // (`fiberCompleteWrt_of_functional`).  The re-derivation fires on
+        // the graded cardinality, not only on exact round trips.
+        let bag = table_of(pipe_ty(&s, "readings |> promote machine |> demote ts").expect("ok"));
+        assert_eq!(bag.qualifiers.completeness, Completeness::Incomplete);
+        let t = table_of(
+            pipe_ty(&s, "readings |> promote machine |> demote ts |> promote ts").expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
         assert_eq!(t.qualifiers.completeness, Completeness::Complete);
@@ -2329,19 +2580,33 @@ mod tests {
     }
 
     #[test]
-    fn completeness_propagates_through_demote_to_the_reducer() {
+    fn the_establish_step_sits_after_the_demote() {
         let s = sample_sources();
-        // The establish step may sit before or after `demote`; either way
-        // the reducer's demand is met (ADR 0023).
-        for src in [
-            "readings |> promote machine |> assume { complete } |> demote machine \
+        // ADR 0035: the fact is about the current key, so the discharge for
+        // a reducer over a coarsened bag is placed after the `demote`.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> promote machine |> demote ts |> assume { complete } \
+                 |> map_bags |k, b| (.n = #b.temperature)",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn an_establish_step_before_the_demote_is_forfeited() {
+        let s = sample_sources();
+        // The same pipeline with the claim made at the fine key: the
+        // coarsening forfeits it (ADR 0035), so the reducer still rejects.
+        let errs = pipe_ty(
+            &s,
+            "readings |> promote machine |> assume { complete } |> demote ts \
              |> map_bags |k, b| (.n = #b.temperature)",
-            "readings |> promote machine |> demote machine |> assume { complete } \
-             |> map_bags |k, b| (.n = #b.temperature)",
-        ] {
-            let t = table_of(pipe_ty(&s, src).expect("ok"));
-            assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
-        }
+        )
+        .expect_err("the fine-key claim does not survive the coarsening");
+        assert!(errs[0].message.contains("reducing `map_bags`"), "{errs:?}");
     }
 
     #[test]

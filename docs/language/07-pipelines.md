@@ -47,9 +47,10 @@ checker rejects a pipeline that would violate one of them:
 - **Completeness** (table-scoped qualifier): whether a partition is fully
   present, that is, whether every key's bag has all of its rows.
   Completeness is what makes a per-bag fold faithful.  It is established
-  (by a check, a source annotation, or a `registry` mechanism), propagated
-  fine key to coarse key by `demote`, and consumed (by a reducing
-  `map_bags`; ADR 0023).
+  (by a check, a source annotation, or a `registry` mechanism), cleared
+  by a genuinely coarsening `demote` (the fact is about the current key;
+  ADR 0035, whose decision 6 spares a coarsening along `exhaustive`
+  axes), and consumed (by a reducing `map_bags`; ADR 0023).
 - **Lineage** (table-scoped qualifier): the split ancestry that carries
   disjointness, specified in `08-lineage.md`.  Sampling and dependency, the
   two `std` qualifiers of ADR 0004 with no rules yet written, are deferred;
@@ -134,10 +135,16 @@ the return.  Cardinality: **inferred from the return** - returning a single
 record yields `singletons` (one row per key, the `aggregate` shape, and it is
 what later lets `pivot` satisfy its `singletons` precondition); returning a
 bag yields `bag` (the window shape: one output row per input row).
-Completeness: preserved, and **demanded by the reducing shape**
+Completeness: **demanded by the reducing shape**
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a body that
 folds each key's bag to a single record is silently wrong on a partial bag,
-so it consumes the completeness fact.  Over a `singletons` input the
+so it consumes the completeness obligation.  The fact itself is carried
+through the operation: every body expressible today emits at least one
+output row per present fiber (the aggregate shape folds a non-empty bag to
+one record, the window shape emits one row per input row), so a key present
+before the operation is present after it.  That carry-through is a property
+of the current body language, not of `map_bags` in general (see the open
+questions).  Over a `singletons` input the
 obligation discharges trivially, since a present key's single row is the
 identity's whole fiber (`fiberCompleteWrt_of_functional`); the demand bites
 only where a present key's bag can be partial, that is, on a `bag` input.  The
@@ -177,20 +184,32 @@ to match its own output cardinality until its transport rule is mechanized.
 named columns join the key.  Cardinality: derived from the gradings; a
 `singletons` input stays `singletons` (`promote_functional`), and a `bag`
 whose grading fits inside the grown key promotes to `singletons`.
-Completeness: preserved.  Tier A (`promote_splitSafe`).
+Completeness: re-derived from the graded cardinality
+(`docs/decisions/0035-completeness-cleared-by-demote.md`): `Complete` at
+a graded `singletons` result, preserved at a `bag` result (a whole fiber
+partitions into whole sub-fibers).  Tier A (`promote_splitSafe`).
 
 **`demote cols`** drops key component(s) into the non-key part.
 Content: the named key columns become ordinary columns.  Cardinality: derived
 from the gradings; on a genuine coarsening no grading fits the retained key,
 so per-key cardinality **grows** (the result is `bag` over the coarser key
 unless a following `map_bags` reduces it), while an exact round trip
-re-derives `singletons`.  Completeness: **propagated**, not demanded
-(`docs/decisions/0023-completeness-consumed-by-the-reducer.md`): a table
-complete against a reference at the fine key stays complete against the
-coarsened reference at the retained key (`demote_completeWrt`), and a
+re-derives `singletons`.  Completeness: re-derived from the graded
+cardinality, never demanded
+(`docs/decisions/0023-completeness-consumed-by-the-reducer.md`,
+`docs/decisions/0035-completeness-cleared-by-demote.md`): an exact round
+trip is graded `singletons` and stays `Complete`, while a genuine
+coarsening **clears** the fact, since merging fibers turns an absent fine
+key into a gap inside a coarse fiber (ADR 0035's fiber-gap
+counterexample).  The one exception is a **rectangular** coarsening: when
+every demoted column is an `exhaustive` axis (section 6.6, ADR 0020) the
+gaps it would create are ruled out by construction, so the fact survives
+(`Mensura.demote_fiberCompleteWrt_of_exhaustive`, ADR 0035 decision 6).
+A
 `demote` with no downstream reducer is admitted on its own (a possibly
-partial bag is an honest rekey).  Tier B on the lineage break alone
-(`demote_not_preservesDisjoint`).
+partial bag is an honest rekey); a reducer over the coarsened bag
+establishes the fact after the `demote`.  Tier B on the lineage break
+alone (`demote_not_preservesDisjoint`).
 
 ### `lookup` / `lookup_total` - join a fixed table
 
@@ -278,7 +297,7 @@ So `pivot` is where cardinality tracking pays off directly: it type-checks
 only when each cell it spreads is known to hold at most one value, which
 the long form's key discipline provides.
 
-## Completeness: establish, propagate, consume
+## Completeness: establish, clear, consume
 
 Two operations are Tier B: **`demote`** and **`pivot`**.  Both change
 the key and drop the lineage fact, and that lineage break is all their Tier
@@ -288,31 +307,59 @@ dissolved by ADR 0020 (an absent row becomes a missing cell, and
 `demote`'s is moved by
 `docs/decisions/0023-completeness-consumed-by-the-reducer.md` to the
 operation whose result is silently wrong without it: a **reducing
-`map_bags`** (the aggregate shape) consumes the fact, while `demote`
-propagates it from the fine key to the coarse key (`demote_completeWrt`).
-Over a `singletons` input the reducer's obligation discharges trivially, so
-the ordinary aggregation over a plain store stays ceremony-free.  The M1
-surface for establishing and consuming the fact is ratified in
+`map_bags`** (the aggregate shape) consumes the fact.  Here *consume*
+names the demand: the consuming operation is the one that is rejected
+when the fact is absent, the one whose obligation an establishment step
+discharges.  It does not by itself say what happens to the fact past the
+operation; that is stated per operation (for the reducer, see the
+`map_bags` entry and the open questions).  The fact itself
+does not survive the coarsening
+(`docs/decisions/0035-completeness-cleared-by-demote.md`): completeness
+is about the *current* key, an absent fine key becomes a gap inside a
+coarse fiber, so a genuine `demote` clears the qualifier and the
+establishment step belongs after it.  A coarsening along `exhaustive`
+axes is not genuine in that sense and keeps the fact (ADR 0035 decision
+6), which is the one case where a reducer below the establishing key
+still needs no discharge.  Over a `singletons` input the
+reducer's obligation discharges trivially, so the ordinary aggregation
+over a plain store stays ceremony-free.  The M1 surface for establishing
+and consuming the fact is ratified in
 `docs/decisions/0017-completeness-establish-consume.md` (as amended by
 ADR 0023): M1 ships the `completeness_check` and `assume { complete }`
-stages (with key-context asserts), and defers `registry`-by-mechanism
-completeness and the `@complete_over` annotation.  Completeness is
-established in one of three ways:
+stages (with key-context asserts).  `registry`-by-mechanism completeness
+landed with M4 (`13-registries.md`, ADR 0033 as amended by ADR 0035);
+the `@complete_over` annotation stays deferred with its family.
+Completeness is established in one of three ways:
+
+- **mechanism**: a `registry` source is complete by construction at its
+  **own declared key** (overview pillar 7, `13-registries.md`), so a
+  reducer at that key needs no discharge at all.  The fact is established
+  at the source, whatever the registry's cardinality: trivially on a
+  `singletons` registry, contentfully on an `attr*` one, where it pins
+  the full set of observations per entity.  It does not survive a
+  coarsening: recording every observation received is not receiving
+  every observation that happened, so a reduction below the registry's
+  key discharges its own obligation there.
+
+  ```
+  events                            // an attr* registry keyed by Machine
+  |> map_bags |k, b| (.n = #b.note)
+  ```
 
 - **`completeness_check { assert ... }`**, a pipe stage that *establishes* the
   fact locally.  It is an ordinary stage (`completeness_check` applied to a
   block of `assert` statements); conceptually it is an operation that
   guarantees completeness, and a later round may let a combination of asserting
   operations stand in for it.  Each `assert` is a boolean expression; together
-  they witness that the partition is complete over the relevant key.  The fact
+  they witness that the partition is complete over the current key.  The fact
   must hold where the reducer runs, so the check is placed on the pipeline
-  ahead of it (before or after an intervening `demote`, which propagates
-  the fact either way).
+  ahead of it and after any intervening `demote`, whose coarsening would
+  forfeit it.
 
   ```
   enrollments
-  |> completeness_check { assert row_count open_offerings == 0 }
   |> demote course
+  |> completeness_check { assert row_count open_offerings == 0 }
   |> map_bags |k, b| (.total_credits = bag.sum b.credits)
   ```
 
@@ -320,8 +367,6 @@ established in one of three ways:
   no per-use check is needed.  This is an annotation; its surface lands with
   the annotation family (`@audited`, `@versioned`, ...), so this document names
   it but does not fix its grammar.
-- **mechanism**: a `registry` source is complete by construction (overview
-  pillar 7), so a reducer over it needs no further discharge.
 
 `assume { ... }` remains the escape hatch: it admits the reducer by fiat,
 locally and visibly, when the obligation cannot be discharged.
@@ -377,22 +422,23 @@ completeness preserved); `map_bags` reduces each bag to one record, so the
 result is **singletons** per `(…, machine)` key.  All Tier A, so it composes
 safely; it type-checks.
 
-**Coarsen the key, then reduce (the fact established, propagated, consumed).**
+**Coarsen the key, then reduce (cleared, established, consumed).**
 
 ```
 enrollments
-|> completeness_check { assert row_count open_offerings == 0 }
 |> demote course
+|> completeness_check { assert row_count open_offerings == 0 }
 |> map_bags |k, b| (.total_credits = bag.sum b.credits)
 ```
 
-The check **establishes** the fact; `demote course` **propagates** it to
-the coarser key (dropping `course` makes the table `bag` over `student`);
-the reducing `map_bags` **consumes** it and brings the table back to
-**singletons** per student.  It type-checks because the obligation was
-discharged.  Remove the check (and `@complete_over`, and `assume`) and the
-`map_bags` is rejected; the `demote` alone would still be admitted
-(ADR 0023).
+`demote course` coarsens the key (dropping `course` makes the table `bag`
+over `student`) and **forfeits** any completeness fact along the way
+(ADR 0035); the check **establishes** the fact at the key the fold runs
+over; the reducing `map_bags` **consumes** it and brings the table back
+to **singletons** per student.  It type-checks because the obligation was
+discharged where it bites.  Remove the check (and `@complete_over`, and
+`assume`), or move it ahead of the `demote`, and the `map_bags` is
+rejected; the `demote` alone would still be admitted (ADR 0023).
 
 **Reindex round trip (key-graded cardinality).**
 
@@ -440,9 +486,33 @@ cost of dropping disjointness.  It type-checks.
   derived `exhaustive`) are written in a `Type` is the content/types
   document.  (The orthogonal total/optional axis and its `?` marker are
   settled in ADR 0010.)
+- **Which `map_bags` bodies preserve completeness.**  The checker carries
+  the completeness qualifier through `map_bags` (what the reducer consumes
+  is the obligation, not the fact).  This is justified today because every
+  expressible body emits at least one output row per present fiber, the
+  non-emptying hypothesis of `fiberMap_exhaustive`, but no named lemma
+  states the preservation.  A future body whose fiber action can empty a
+  present fiber (a bag filter, a `top_k`, a conditional yielding an empty
+  bag) would forfeit coverage, so when the body language grows such
+  combinators the carry-through must either be restricted to non-emptying
+  bodies and backed by a lemma, or replaced by the conservative
+  alternative: drop the qualifier at `map_bags`, at the cost of a
+  redundant `assume` where the fact is still live downstream (a reducer
+  after a window-shaped `map_bags`, a `union` that needs both sides
+  complete); a genuinely coarsening `demote` clears it anyway (ADR 0035).
+
+  **`exhaustive` rides the same hypothesis and must be revisited in the
+  same breath.**  `map_bags` carries it on exactly the non-emptying
+  grounds above (`fiberMap_exhaustive`), so an emptying body forfeits
+  both facts at once, not completeness alone.  The two differ only in
+  their fallback: `exhaustive` has no `assume` form, so dropping it at
+  `map_bags` costs a `pivot` its totality upgrade (section 6.6, ADR 0020)
+  with no escape hatch, where completeness can be re-established by fiat.
+  Whichever way the carry-through is resolved, resolve it for both.
 - **`@complete_over` and other annotations.**  The annotation surface
   (`@audited`, `@versioned`, `@auto`, `@complete_over`) is its own document.
 - **Hosting and streaming.**  `view` declarations that host pipelines are
-  specified in `10-views.md`.  The other hosting sites (`transform`, `registry`,
-  `device`) and the streaming operations (`sliding_window`, `latest`, reactive
-  `on` blocks) extend this grammar and get their own sections.
+  specified in `10-views.md`, and `registry` declarations in
+  `13-registries.md`.  The remaining hosting sites (`transform`, endpoints)
+  and the streaming operations (`sliding_window`, `latest`, reactive `on`
+  blocks) extend this grammar and get their own sections.

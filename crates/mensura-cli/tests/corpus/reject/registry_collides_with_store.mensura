@@ -1,0 +1,15 @@
+// Rejected at resolve: stores, registries, and views share one table
+// namespace, since all three name a queryable table (ADR 0033 decision 5).
+unit Machine {
+  serial: string
+}
+
+store readings {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+registry readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}

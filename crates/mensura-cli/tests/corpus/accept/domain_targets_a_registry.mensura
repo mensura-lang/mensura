@@ -1,0 +1,22 @@
+// Accept: a `domain` entry may resolve into a `singletons` registry.
+// ADR 0032 decision 5 restricts targets by cardinality, not by kind: a
+// singletons registry has a per-key row for the reference to land on
+// (ADR 0033 decision 5).
+unit Machine {
+  serial: string
+}
+
+unit Alert {
+  machine: Machine
+}
+
+registry machines {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+store alerts {
+  unit { Alert }
+  domain { machine: machines }
+  attr { severity: int }
+}

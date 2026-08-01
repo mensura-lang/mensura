@@ -1,9 +1,18 @@
-// Accept: completeness_check establishes completeness for a downstream shrink
-// (ADR 0017).  The assert is a boolean over the key context.
-unit Reading { ts: int }
-store readings { unit { Reading } attr { machine: string } attr { credits: int } }
+// Accept: completeness_check establishes the fact at the current key
+// (ADR 0017 as amended by ADR 0023 and ADR 0035).  It sits after the
+// coarsening, because a genuine `demote` forfeits any earlier fact (an
+// absent fine key becomes a gap inside a coarse fiber), and ahead of the
+// reducing map_bags that consumes it.  The assert is a boolean over the
+// key context of the coarsened table.
+import bag
+
+unit Reading {
+  machine_id: int
+  ts: int
+}
+store readings { unit { Reading } attr { credits: int } }
 view rollup {
-  readings |> promote machine
-           |> completeness_check { assert k.ts > 0 }
-           |> demote machine
+  readings |> demote ts
+           |> completeness_check { assert k.machine_id > 0 }
+           |> map_bags |k, b| (.total = bag.sum b.credits)
 }

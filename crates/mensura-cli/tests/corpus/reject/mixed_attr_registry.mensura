@@ -1,0 +1,12 @@
+// Rejected at resolve: a tabulation does not mix `attr` and `attr*` blocks.
+// ADR 0022's restriction is about aligning one value to many rows, which is
+// a cardinality question and so applies to registries unchanged.
+unit Machine {
+  serial: string
+}
+
+registry readings {
+  unit { Machine }
+  attr  { location: string }
+  attr* { kelvin:   real }
+}

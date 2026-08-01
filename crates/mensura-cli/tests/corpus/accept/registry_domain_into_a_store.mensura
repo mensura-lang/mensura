@@ -1,0 +1,48 @@
+// Accept: a registry's `domain` may resolve into a store, and the registry
+// stays complete by mechanism (ADR 0033 decision 6).  Completeness is key
+// coverage over the registry's *own* population, while a `domain` entry
+// constrains which values a column may hold; the two quantify over
+// different things, so the reference cannot undermine the fact.
+//
+// The registry is `attr*`, keyed by the machine, so the fact is the
+// contentful one (ADR 0033 decision 2 as amended by ADR 0035): the
+// declaration is the sole intake, pinning the full bag of events per
+// machine, and the fold below consumes it at the registry's own key with
+// no `assume { complete }`.
+//
+// Note what the fold does and does not say.  It counts the events this
+// registry recorded for each machine, which the sole intake can answer
+// honestly.  It does not claim every machine in `machines` has events: a
+// machine with none is an absent key, not a partial bag, so it simply gets
+// no output row.  Completeness over the *target store's* population would
+// be a different proposition and is established by nothing here.
+import bag
+
+unit Machine {
+  serial: string
+}
+
+// The event log is keyed by the machine it belongs to: an entity-keyed
+// `attr*` tabulation (ADR 0022), whose unit-reference key resolves through
+// `domain` (ADR 0032).
+unit EventLog {
+  machine: Machine
+}
+
+store machines {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+registry events {
+  unit { EventLog }
+  domain { machine: machines }
+  attr* {
+    at:   date
+    note: string
+  }
+}
+
+view events_per_machine {
+  events |> map_bags |k, b| (.n = #b.note)
+}

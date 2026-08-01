@@ -191,8 +191,9 @@ and are noted here only so the scope is unambiguous:
   body, and discharging the reducing `map_bags`'s completeness obligation
   (`completeness_check`, `@complete_over`, a `registry` source, or `assume`)
   at the hosting site (`09-typing-reference.md`, section 8; `demote`
-  propagates the fact rather than demanding it, ADR 0023, and `pivot`
-  carries no obligation, ADR 0020).
+  demands nothing itself and a genuine coarsening clears the fact,
+  ADR 0023 as amended by ADR 0035, and `pivot` carries no obligation,
+  ADR 0020).
 - **Lineage-demanding sites.**  The learning operations (`fit`/`evaluate`) that
   *consume* disjointness when fed two views (`09-typing-reference.md`, section
   9, deferred ledger).
@@ -214,6 +215,7 @@ and are noted here only so the scope is unambiguous:
 - The grammar production for `view` is in `04-grammar.md`; the decision and its
   alternatives are in `docs/decisions/0012-view-hosting.md`.
 - `registry` (the process variant of a store) is a sibling declaration site
-  that also feeds pipelines; it gets its own document.  (`device` is not
-  coming: ADR 0005 eliminated it in favour of roles, `auth {}`, and
-  `registry`.)
+  that also feeds pipelines, specified in `13-registries.md`.  A view reads
+  a registry exactly as it reads a store, and inherits its completeness
+  fact at the registry's own key.  (`device` is not coming: ADR 0005
+  eliminated it in favour of roles, `auth {}`, and `registry`.)

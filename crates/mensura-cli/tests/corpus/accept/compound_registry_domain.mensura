@@ -1,0 +1,22 @@
+// Accept: a registry of a compound unit resolves its unit-reference fields
+// in a `domain` block, exactly as a store does (ADR 0032 unchanged by
+// ADR 0033).  The registry's key flattens to dotted columns.
+unit Machine {
+  serial: string
+}
+
+unit Event {
+  machine: Machine
+  at:      date
+}
+
+store machines {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+registry events {
+  unit { Event }
+  domain { machine: machines }
+  attr { note: string }
+}

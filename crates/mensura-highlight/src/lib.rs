@@ -154,7 +154,10 @@ fn highlight_program(builder: &mut Builder, program: &Program) {
                     highlight_field(builder, field);
                 }
             }
-            Item::Store(store) => {
+            // A registry reuses the store's declaration node, so it
+            // highlights identically (ADR 0033).  The introducer keyword
+            // itself needs no arm: every `bump_keyword` span is colored.
+            Item::Store(store) | Item::Registry(store) => {
                 builder.push(store.name.span, HighlightKind::Type);
                 builder.push(store.unit.span, HighlightKind::Type);
                 for shape_ref in &store.conforms {
@@ -378,6 +381,16 @@ mod tests {
     #[test]
     fn highlights_a_unit_declaration() {
         let ks = kinds("unit U { id: string }");
+        assert!(ks.contains(&HighlightKind::Keyword));
+        assert!(ks.contains(&HighlightKind::Type));
+        assert!(ks.contains(&HighlightKind::Property));
+    }
+
+    #[test]
+    fn highlights_a_registry_declaration() {
+        // The keyword needs no arm of its own: the parser records every
+        // contextual keyword span and the lex tier colors them (ADR 0033).
+        let ks = kinds("registry readings { unit { Reading } attr { kelvin: real } }");
         assert!(ks.contains(&HighlightKind::Keyword));
         assert!(ks.contains(&HighlightKind::Type));
         assert!(ks.contains(&HighlightKind::Property));

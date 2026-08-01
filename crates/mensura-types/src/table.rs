@@ -6,6 +6,8 @@
 
 use std::collections::BTreeSet;
 
+use mensura_syntax::StoreKind;
+
 use crate::model::{ColumnRole, ColumnType, Schema};
 
 /// Table-scoped cardinality qualifier: the two-value chain
@@ -177,8 +179,14 @@ impl Totality {
 }
 
 /// Table-scoped completeness qualifier (`09` section 3.4): whether each key's
-/// bag holds all its possible rows. A `collect` source is `Complete` by
-/// mechanism; a bare `store` is not.
+/// bag holds all its possible rows, at the **current** key against the fixed
+/// intended population (`Mensura.FiberCompleteWrt`). Held trivially by any
+/// `Singletons` table (a present key's single row is its whole fiber,
+/// `fiberCompleteWrt_of_functional`); at `Bag` a `registry` source carries it
+/// by mechanism at its own declared key (ADR 0033) and a bare `store` does
+/// not. The fact does not survive a genuine key coarsening: the key moves
+/// re-derive it from the gradings, and `demote` to a `bag` clears it
+/// (ADR 0035).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Completeness {
     Complete,
@@ -273,8 +281,9 @@ impl TableType {
     /// is the store's declared one (ADR 0022): `Singletons` for a plain
     /// `attr` store (the ADR 0001 discipline), `Bag` for an `attr*` store
     /// (many observations per entity). Index columns are total; non-key
-    /// columns optional per their declared `?`. A bare store is `Incomplete`
-    /// (only a `collect` is complete by mechanism, `09` section 8) and untagged.
+    /// columns optional per their declared `?`. A bare store is `Incomplete`;
+    /// a `registry` is `Complete` by mechanism (`09` section 8, ADR 0033),
+    /// at its declared boundary whatever its cardinality. Both are untagged.
     pub fn from_store(schema: &Schema) -> TableType {
         let mut key = Vec::new();
         let mut columns = Vec::new();
@@ -294,12 +303,32 @@ impl TableType {
                 }
             }
         }
+        // Completeness at the source (ADR 0033 decision 2, as amended by
+        // ADR 0035). A registry's declaration is the sole intake for its
+        // observations and the intake only appends, so what it holds for a
+        // key of its own declared boundary is everything there is: `Complete`
+        // at either cardinality, trivially at `Singletons` (the
+        // `fiberCompleteWrt_of_functional` corollary) and contentfully at
+        // `Bag`, where it pins the reference population per entity. Any
+        // `Singletons` source carries the same trivial fact (a present key's
+        // single row is its whole fiber), which is what keeps the qualifier
+        // consistent with the key moves' re-derivation and the reducer's
+        // trivial discharge (ADR 0035). The kinds therefore differ exactly
+        // at `Bag`, where the registry mechanism is the only source-level
+        // establishment. The fact stops at the declared boundary either
+        // way: a genuine `demote` clears it, because recording every
+        // observation received is not receiving every observation that
+        // happened (ADR 0035).
+        let completeness = match (schema.kind, schema.cardinality) {
+            (StoreKind::Registry, _) | (_, Cardinality::Singletons) => Completeness::Complete,
+            (StoreKind::Store, Cardinality::Bag) => Completeness::Incomplete,
+        };
         let mut table = TableType {
             content: Content { key, columns },
             qualifiers: Qualifiers {
                 cardinality: schema.cardinality,
                 totality,
-                completeness: Completeness::Incomplete,
+                completeness,
                 exhaustive: Exhaustive::new(),
                 functional: Functional::new(),
                 arranged: Arranged::Unclaimed,
@@ -448,6 +477,7 @@ mod tests {
     fn from_store_lifts_structure_and_qualifiers() {
         let schema = Schema {
             store: "readings".to_string(),
+            kind: StoreKind::Store,
             unit: "Machine".to_string(),
             columns: vec![
                 col("machine", ColumnType::String, ColumnRole::Key, false),
@@ -466,9 +496,12 @@ mod tests {
         assert_eq!(t.content.key[0].name, "machine");
         assert_eq!(t.content.columns.len(), 2);
 
-        // Qualifiers: store boundary is singletons, incomplete, untagged.
+        // Qualifiers: store boundary is singletons and untagged.  At
+        // `Singletons` the completeness qualifier is the trivial corollary
+        // (a present key's single row is its whole fiber, ADR 0035), so it
+        // is derived from the cardinality, kind notwithstanding.
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
-        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
         assert_eq!(t.qualifiers.lineage, Lineage::root());
 
         // Totality: the optional column is recorded; the key never is.
@@ -480,9 +513,11 @@ mod tests {
     #[test]
     fn from_store_lifts_the_declared_bag_cardinality() {
         // An `attr*` store enters the pipeline as a `Bag` (ADR 0022); it is
-        // still `Incomplete` (establishment is an annotation or a `collect`).
+        // still `Incomplete` (establishment is an annotation, a check, or a
+        // `registry` mechanism).
         let schema = Schema {
             store: "readings".to_string(),
+            kind: StoreKind::Store,
             unit: "Machine".to_string(),
             columns: vec![
                 col("machine", ColumnType::String, ColumnRole::Key, false),
@@ -497,5 +532,65 @@ mod tests {
         assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
         // The storage shape follows: a bag store is unkeyed.
         assert!(!schema.shape().keyed);
+    }
+
+    // --- completeness by mechanism (ADR 0033 decision 2) ------------------
+
+    fn kinded(kind: StoreKind, cardinality: Cardinality) -> TableType {
+        TableType::from_store(&Schema {
+            store: "readings".to_string(),
+            kind,
+            unit: "Machine".to_string(),
+            columns: vec![
+                col("machine", ColumnType::String, ColumnRole::Key, false),
+                col("kelvin", ColumnType::Real, ColumnRole::Attr, false),
+            ],
+            cardinality,
+            foreign_keys: Vec::new(),
+            span: Span::new(0, 0),
+        })
+    }
+
+    #[test]
+    fn a_registry_is_complete_at_either_cardinality() {
+        // The uniform rule: trivially true at `Singletons` (the
+        // `fiberCompleteWrt_of_functional` corollary), contentful at `Bag`,
+        // where it pins the reference population per entity.
+        for cardinality in [Cardinality::Singletons, Cardinality::Bag] {
+            let t = kinded(StoreKind::Registry, cardinality);
+            assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+            assert_eq!(t.qualifiers.cardinality, cardinality);
+        }
+    }
+
+    #[test]
+    fn a_store_is_incomplete_exactly_at_bag() {
+        // ADR 0035: the kinds differ exactly at `Bag`.  A `singletons` store
+        // enters `Complete` on the trivial corollary (a present key's single
+        // row is its whole fiber), so the registry's type-level content
+        // lives entirely at `Bag`, where its mechanism is the only
+        // source-level establishment.
+        let t = kinded(StoreKind::Store, Cardinality::Bag);
+        assert_eq!(t.qualifiers.completeness, Completeness::Incomplete);
+        let t = kinded(StoreKind::Store, Cardinality::Singletons);
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn a_registry_is_otherwise_lifted_exactly_as_a_store() {
+        // Everything but the completeness qualifier is kind-independent:
+        // a registry materializes as the same table (ADR 0033 decision 3).
+        // `Bag` is where the qualifier actually differs (ADR 0035), so that
+        // is where the "otherwise" is contentful.
+        let store = kinded(StoreKind::Store, Cardinality::Bag);
+        let registry = kinded(StoreKind::Registry, Cardinality::Bag);
+        assert_ne!(
+            store.qualifiers.completeness,
+            registry.qualifiers.completeness
+        );
+        assert_eq!(store.content, registry.content);
+        assert_eq!(store.qualifiers.totality, registry.qualifiers.totality);
+        assert_eq!(store.qualifiers.functional, registry.qualifiers.functional);
+        assert_eq!(store.qualifiers.lineage, registry.qualifiers.lineage);
     }
 }

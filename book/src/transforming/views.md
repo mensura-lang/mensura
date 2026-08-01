@@ -61,6 +61,13 @@ leaves holes in its bag), so completeness is a claim you make, not a given.
 over a default store's own key needs no such discharge: with at most one row
 per key, a present bag is already whole.)
 
+Declaring the source a `registry` instead removes the discharge entirely:
+the same pipeline with no `assume` compiles, because the declaration is the
+sole intake for its observations and so its bags are whole by construction.
+That is the difference the keyword buys, at the registry's own key (a
+coarsened key is another matter, below), and it is the only difference: a
+registry's body, its storage, and its reads are a store's exactly.
+
 ## Windows: the other shape of `map_bags`
 
 A reduction collapses each bag to one row.  The other thing you can do with a
@@ -144,9 +151,13 @@ of the key, so rows that differed only in their timestamp share the key
 ```
 
 `demote` itself only rekeys: its result is an honest bag of whatever
-rows are present, so it demands nothing, and it *propagates* a completeness
-fact from the finer key to the coarser one, so the `assume` may equally sit
-before it.  The obligation is the reducer's, exactly as above.
+rows are present, so it demands nothing.  But it does not carry a
+completeness fact across the coarsening either.  Completeness is about
+the current key, and a `(machine, ts)` row that was never recorded has
+no bag to be partial at the fine key; merge the keys and that absence
+becomes a hole *inside* the machine's bag.  So the claim is made where
+the fold happens: the `assume` sits after the `demote`, at the key the
+reducer folds.  The obligation is the reducer's, exactly as above.
 
 ## What a view tracks
 

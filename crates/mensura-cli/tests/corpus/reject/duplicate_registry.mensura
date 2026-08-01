@@ -1,0 +1,15 @@
+// Rejected at resolve: two registries cannot share a name, exactly as two
+// stores cannot.
+unit Machine {
+  serial: string
+}
+
+registry readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+
+registry readings {
+  unit { Machine }
+  attr* { rpm: int }
+}

@@ -1,0 +1,14 @@
+// Accept: the minimal registry (`13-registries.md`, ADR 0033).  A registry
+// declares a unit and attributes exactly as a store does; the difference is
+// its intake discipline, not its shape.
+unit Reading {
+  machine_id: string
+  taken_at:   date
+}
+
+registry readings {
+  unit { Reading }
+  attr {
+    kelvin: real
+  }
+}

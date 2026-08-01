@@ -38,7 +38,22 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
              ('m1', '2025-01-02', 302.5),
              ('m1', '2025-01-01', 300.0),
              ('m2', '2025-01-01', 299.0),
-             ('m3', '2025-01-01', 371.5);"#,
+             ('m3', '2025-01-01', 371.5);
+           -- The wide sensor table the reshape views fold and spread
+           -- (ADR 0020).  Both columns are total, which is what makes
+           -- `unpivot` establish `exhaustive(sensor)`.
+           INSERT INTO "paired_readings" VALUES
+             ('m1', '2025-01-01', 300.0, 291.0),
+             ('m2', '2025-01-01', 299.0, 288.5);
+           -- The entity-keyed bag registry (ADR 0022): many samples per
+           -- machine, and the bag is whole by mechanism, which is what lets
+           -- `machine_vibration` reduce with no `assume { complete }`.
+           -- An unkeyed table, so the key columns repeat.
+           INSERT INTO "vibrations" ("machine_id", "sampled_at", "amplitude")
+             VALUES
+             ('m1', '2025-01-01', 0.4),
+             ('m1', '2025-01-02', 0.9),
+             ('m2', '2025-01-01', 0.2);"#,
     )
     .unwrap();
     db
@@ -58,7 +73,14 @@ fn attention_needed_materializes_the_degraded_machines() {
             // four readings in, four rows out (ADR 0031, Decision 7).
             ("reading_trend".to_string(), 4),
             ("machine_temperature".to_string(), 3),
+            // The bag registry reduces at its own key with no `assume`
+            // (ADR 0033): three samples across two machines, two rows out.
+            ("machine_vibration".to_string(), 2),
             ("overheating".to_string(), 1),
+            // `unpivot` makes `sensor` an exhaustive axis, so demoting it is
+            // a rectangular coarsening and the fold needs no `assume`
+            // (ADR 0035's adopted rule): two slots in, two averages out.
+            ("sensor_avg".to_string(), 2),
         ]
     );
 
@@ -82,17 +104,19 @@ fn attention_needed_materializes_the_degraded_machines() {
 
     // A re-run over unchanged stores replaces the contents, not appends.
     let again = materialize_views(&mut db, &program).unwrap();
-    assert_eq!(again.len(), 4);
+    assert_eq!(again, materialized);
     assert_eq!(db.scan(&view.shape()).unwrap().len(), 1);
 }
 
 #[test]
 fn machine_temperature_reduces_the_demoted_history() {
-    // The end-to-end key-coarsening path (ADR 0024 + ADR 0023): `demote
-    // taken_at` drops the time out of the key, leaving a bag of readings per
-    // machine, and the reducing `map_bags` folds each machine's bag to its
-    // maximum (completeness assumed at the source, propagated through the
-    // demote).  The column is dimensioned (`temperature[real]`, ADR 0026);
+    // The end-to-end key-coarsening path (ADR 0024 + ADR 0023 + ADR 0035):
+    // `demote taken_at` drops the time out of the key, leaving a bag of
+    // readings per machine, and the reducing `map_bags` folds each machine's
+    // bag to its maximum.  The coarsening forfeits the registry's own-key
+    // completeness, so the view claims the fact after the `demote` with an
+    // `assume { complete }`, a runtime identity (eval.rs): evaluation is
+    // unchanged.  The column is dimensioned (`temperature[real]`, ADR 0026);
     // at runtime it is a plain base-unit magnitude.
     let program = fleet_program();
     let mut db = seeded_db(&program);

@@ -1,0 +1,16 @@
+// Accept: a unit may be tabulated by a store and a registry at once, on the
+// same terms as two stores of one unit (`02-stores.md`).  They are
+// independent tabulations that share an identity discipline.
+unit Machine {
+  serial: string
+}
+
+store machines {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+registry machine_pings {
+  unit { Machine }
+  attr* { latency_ms: int }
+}

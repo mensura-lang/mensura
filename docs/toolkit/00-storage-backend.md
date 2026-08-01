@@ -163,15 +163,19 @@ schema, so the table carries quoted dotted column names
 (`"course.department.code"`) and the composite primary key spans the
 flattened key.  Each resolved `domain` entry emits a `FOREIGN KEY` clause
 referencing the target store's key columns.  The clauses are
-**unenforced**: SQLite checks them only under `PRAGMA foreign_keys = ON`,
-which the backend does not set; whether ingestion turns it on is that
-slice's decision.
+**enforced**: the backend sets `PRAGMA foreign_keys = ON` per connection
+when it opens a database, so the ingestion write path checks every
+declared reference (ADR 0034, `05-ingestion.md`).  ADR 0032 emitted the
+clauses unenforced because nothing wrote yet and left the pragma to the
+ingestion slice; that slice turned it on.
 
 ## Forward references
 
-- Reads, inserts, updates, and deletes (CRUD), and the delta/changelog write
-  path that feeds the processing layer.  The read side and batch view
-  materialization are specified in `04-processing-layer.md`.
+- Updates and deletes at the CLI.  The read side and batch view
+  materialization are specified in `04-processing-layer.md`; the insert
+  side, the delta-shaped write path, and the typed decoder are
+  `05-ingestion.md`.  The changelog that feeds an incremental engine
+  arrives with M5.
 - Schema migration when a store's shape changes between revisions
   (`mensura migrate` in `ROADMAP.md`).
 - Additional backends behind the same trait.

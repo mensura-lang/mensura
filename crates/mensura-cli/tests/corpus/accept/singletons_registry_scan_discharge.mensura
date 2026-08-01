@@ -1,0 +1,35 @@
+// Accept: the fleet example's shape in miniature.  A `singletons` registry
+// keyed by (machine_id, taken_at) discharges the *ordering* obligation
+// with no ceremony: the ADR 0024 grading survives `demote`, so the scan's
+// order key is tie-free and the window view needs no `assume { arranged }`.
+// The reducing view is another matter (ADR 0035): the registry's
+// completeness holds at the reading's own key only, `demote taken_at`
+// forfeits it (an unrecorded reading is an absent key at the fine key and
+// a gap inside the machine's bag after the coarsening), so the fold states
+// its own claim, after the `demote` and visibly.
+import bag
+import series
+
+unit Reading {
+  machine_id: string
+  taken_at:   date
+}
+
+registry readings {
+  unit { Reading }
+  attr {
+    kelvin: real
+  }
+}
+
+view reading_trend {
+  readings |> demote taken_at |> map_bags |k, b| (
+    .running_peak = series.running_max (|r| r.kelvin) (|r| r.taken_at) b
+  )
+}
+
+view machine_peak {
+  readings |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.max_kelvin = bag.max b.kelvin)
+}

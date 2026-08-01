@@ -1,9 +1,10 @@
 //! End-to-end materialization over compound stores (ADR 0032): create the
-//! stores (dotted columns, composite primary keys, unenforced FOREIGN KEY
-//! clauses), seed them, and materialize views that read nested key groups
-//! and forward rows containing a unit-reference group.  Seeding happens at
-//! the SQL level through the backend; that is a test scaffold until M4's
-//! typed ingestion exists.
+//! stores (dotted columns, composite primary keys, FOREIGN KEY clauses),
+//! seed them, and materialize views that read nested key groups and forward
+//! rows containing a unit-reference group.  Seeding happens at the SQL level
+//! through the backend, a scaffold that predates M4's typed ingestion
+//! (`docs/toolkit/05-ingestion.md`) and is kept because it bypasses
+//! decoding; `tests/ingest_round_trip.rs` covers the supported path.
 
 use mensura_runtime::{SqliteBackend, StorageBackend, Value, materialize_views};
 use mensura_types::ResolvedProgram;

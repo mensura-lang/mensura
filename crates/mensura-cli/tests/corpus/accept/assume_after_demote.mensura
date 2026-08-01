@@ -1,0 +1,19 @@
+// Accept: the establish step sits after the coarsening (ADR 0035).
+// `demote ts` merges the fine keys into a possibly partial bag per
+// `machine` and forfeits any earlier completeness fact on the way; the
+// `assume { complete }` then states, at the key the fold actually runs
+// over, that no bag is short, and the reducing `map_bags` consumes it,
+// bringing the table back to singletons.  Dropping `ts` (not the
+// promoted column) keeps this a genuine coarsening, not an ADR 0024
+// round trip; the same claim placed before the `demote` is rejected
+// (`reject/assume_before_demote.mensura`).
+import bag
+
+unit Reading { ts: int }
+store readings { unit { Reading } attr { machine: string } attr { credits: int } }
+view rollup {
+  readings |> promote machine
+           |> demote ts
+           |> assume { complete }
+           |> map_bags |k, b| (.total = bag.sum b.credits)
+}

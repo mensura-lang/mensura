@@ -10,3 +10,4 @@ description = "Storage backends and the processing layer for Mensura."
 mensura-syntax = { workspace = true }
 mensura-types = { workspace = true }
 rusqlite = { workspace = true }
+serde_json = { workspace = true }

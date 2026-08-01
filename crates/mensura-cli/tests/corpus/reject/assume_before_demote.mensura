@@ -1,0 +1,17 @@
+// Reject: the claim is made at the fine key and the coarsening forfeits
+// it (ADR 0035).  Completeness is about the current key: an absent fine
+// key becomes a gap inside a coarse fiber the moment `demote ts` merges
+// the keys, so the `assume { complete }` placed before the `demote` says
+// nothing about the bags the reducing `map_bags` folds, and the reducer
+// rejects.  Move the `assume` after the `demote` and it is accepted
+// (`accept/assume_after_demote.mensura`).
+import bag
+
+unit Reading { ts: int }
+store readings { unit { Reading } attr { machine: string } attr { credits: int } }
+view rollup {
+  readings |> promote machine
+           |> assume { complete }
+           |> demote ts
+           |> map_bags |k, b| (.total = bag.sum b.credits)
+}

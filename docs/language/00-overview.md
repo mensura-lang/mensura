@@ -218,17 +218,22 @@ Completeness is demanded where its absence would silently corrupt a
 result: at a **reducing `map_bags`**, whose aggregate over a partial bag
 would silently ignore the missing rows
 (`docs/decisions/0023-completeness-consumed-by-the-reducer.md`).
-`demote` propagates the fact from the fine key to the coarser one on
-the way there, and on a `singletons` input the reducer's demand discharges
-trivially (a present key's single row is its whole bag), so the ordinary
-aggregation over a plain store needs no ceremony.  (`pivot` needs no such
-fact either: an absent row simply becomes a missing cell; the related,
-domain-relative fact `exhaustive` decides whether its spread columns come
-out total.  See `docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.)
+The fact is about the *current* key and does not survive a genuine
+coarsening: `demote` merges an absent fine key into a coarse fiber as a
+gap, so it clears the qualifier on the way there
+(`docs/decisions/0035-completeness-cleared-by-demote.md`), and the
+establishment step sits after the `demote`.  On a `singletons` input the
+reducer's demand discharges trivially (a present key's single row is its
+whole bag), so the ordinary aggregation over a plain store needs no
+ceremony.  (`pivot` needs no such fact either: an absent row simply
+becomes a missing cell; the related, domain-relative fact `exhaustive`
+decides whether its spread columns come out total.  See
+`docs/decisions/0020-reshape-as-a-true-inverse-pair.md`.)
 
-Completeness is established by mechanism (a `registry` source guarantees it),
-by explicit check (`completeness_check { ... }`), by annotation
-(`@complete_over(col)`), or by fiat (`assume { complete }`).
+Completeness is established by mechanism (a `registry` source guarantees
+it at its own declared key), by explicit check
+(`completeness_check { ... }`), by annotation (`@complete_over(col)`), or
+by fiat (`assume { complete }`).
 
 ### Table
 
@@ -283,8 +288,9 @@ policy.  A store is the primary source of raw data in Mensura.
 A **registry** is a process-style counterpart to a store, where data arrives
 through a streaming or ingestion mechanism rather than through CRUD
 operations.  Because that mechanism is the sole intake for its observations,
-a registry carries a type-level completeness guarantee that stores do not.
-(Earlier drafts called this declaration `collect`.)
+a registry carries a type-level completeness guarantee, at its own
+declared key, that a bag store does not.  (Earlier drafts called this
+declaration `collect`.)
 
 ### Shape
 
@@ -338,10 +344,11 @@ freely and require no extra ceremony around splits.
 
 **Tier B** operations are not split-invariant: `demote` and `pivot`.
 Both drop the lineage qualifier on their output, and that is the whole
-content of the Tier: neither demands completeness (`demote` propagates
-it to the coarser key, ADR 0023; for `pivot` an absent row becomes a
-missing cell, ADR 0020).  The completeness demand sits downstream, at the
-reducing `map_bags`.
+content of the Tier: neither demands completeness (a genuine `demote`
+clears it, since the fact is about the current key, ADR 0023 as amended
+by ADR 0035; for `pivot` an absent row becomes a missing cell, ADR 0020).
+The completeness demand sits downstream, at the reducing `map_bags`,
+discharged after the coarsening it folds under.
 
 The central guarantee of Mensura is that a pipeline composed entirely of
 Tier A operations cannot introduce data leakage between disjoint partitions.
