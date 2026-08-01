@@ -208,6 +208,40 @@ Neutral:
    key argument and the qualifier to carry column sets, for no consumer
    the current surface cannot serve with placement.  Stays deferred.
 
+## `arranged` was audited and is not the same bug
+
+The obvious follow-up to this ADR is whether `assume { arranged }`
+(ADR 0029 Decision 11's tier 3) has the same defect, since it too is a
+claim discharged from the ADR 0024 gradings and too survives a `demote`.
+It does not, and the reason is worth recording so the next reader need
+not re-derive it.
+
+The two facts quantify over different things:
+
+- **Completeness** is about *which rows exist*, relative to an intended
+  population, at the **current key**.  A coarsening merges fibers and
+  turns an absent fine key into a gap inside a coarse one, so the
+  fine-key claim is strictly weaker than the coarse-key claim it was
+  being read as.  Hence the clearing rule above.
+- **Tie-freedom** is a **functional dependency of the flat table**: no
+  two rows share the order key.  It is not indexed by the current key at
+  all, so a key move re-reads the same property rather than
+  strengthening it.  `formal/Mensura/Arranged.lean` states this
+  directly: a grading is "carried unchanged through `demote` because it
+  is a fact about the flat table rather than about the current key",
+  and `keyInjOn_demote_tag` proves the step the checker relies on (two
+  rows of one output fiber agreeing on the tag would have been two rows
+  of one *input* key, which `Functional` forbids).
+
+So `assume { arranged }` before a `demote` claims exactly what survives
+it, while `assume { complete }` before a `demote` claims something the
+coarsening destroys.  Two smaller differences reinforce this.
+Tie-freedom is checkable from the rows in hand (a duplicate key is
+*present*), where completeness asserts something about rows that were
+never recorded and so cannot be seen.  And a tie yields an undetermined
+arrangement, which is a real bug but a visible one, not a number
+misreported as authoritative.
+
 ## Open questions
 
 - The key-carrying fact of alternative 3, if a consumer appears that
@@ -218,6 +252,39 @@ Neutral:
 - The two mechanizations of "Formal status": the
   `demote_not_fiberCompleteWrt` witness and the `bag`-result `promote`
   preservation lemma.
+- **Whether the ordered operations need a completeness obligation of
+  their own, distinct from tie-freedom.**  The section above settles
+  that `arranged` is sound *as tie-freedom*, but tie-freedom is not the
+  only thing a window silently assumes.  The `series` vocabulary is
+  defined over the rows that are *present* in the fiber, so `lag` means
+  "the previous row in this bag", not "the previous time step".  Over an
+  order key reading `1, 2, 4, 5` the result is well-typed, deterministic
+  (the key is tie-free), and still misleading: `lag` at `4` reports
+  `2`'s value while the reader takes it for `3`'s, and a caller
+  differencing consecutive readings computes a rate over the wrong
+  interval.  `rank` counts present rows rather than positions, and
+  `cumsum` totals a sample of the series.
+
+  This is *not* the fact this ADR governs.  Fiber-level completeness
+  says no row of a present group is missing, which for a genuinely
+  gap-free intended population is what would rule the case out; but the
+  window vocabulary makes the stronger *contiguity* reading tempting,
+  and nothing in the type system distinguishes "every row that exists is
+  here" from "the order key has no holes".  Densely-indexed series (a
+  reading per minute) and irregular ones (an event log) are both legal
+  and want different answers, which is why the obligation cannot simply
+  be added.
+
+  Recorded rather than decided, since a fix needs a notion the language
+  does not have: either a *dense*/*regular* marker on an order key, a
+  gap-aware reading of the window vocabulary (`lag` over a step rather
+  than over a position), or an explicit resampling stage that
+  establishes contiguity the way `completeness_check` establishes
+  completeness.  M5's streaming work is where windows meet
+  window-closedness and is the natural place to settle it.  Until then
+  the risk is unflagged by the checker, and `13-registries.md` and
+  `07-pipelines.md` should not imply that a discharged `arranged` makes
+  a window faithful.
 
 ## Forward references
 

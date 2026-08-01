@@ -425,6 +425,23 @@ sort, so a claimed-but-false key gives a reproducible answer rather than a
 nondeterministic one; that is a courtesy of the implementation, not a
 guarantee the type carries.
 
+**What tie-freedom does not give you.**  The tie model settles whether the
+arrangement is *determined*, not whether it is *gap-free*.  The `series`
+vocabulary is defined over the rows present in the fiber, so `lag` means
+"the previous row in this bag", not "the previous time step".  Over an
+order key reading `1, 2, 4, 5` every obligation above is discharged and
+`lag` at `4` still reports `2`'s value, which a caller differencing
+consecutive readings will take for `3`'s.  `rank` counts present rows
+rather than positions, and `cumsum` totals whatever the bag holds.
+Whether the ordered operations should carry a contiguity obligation of
+their own is an open question recorded in
+`docs/decisions/0035-completeness-cleared-by-demote.md`; it is not the
+completeness fact of section 8, which governs whole rows rather than
+holes in an order key, and it needs a notion (a dense order key, or an
+explicit resampling stage) the language does not yet have.  Until it is
+settled, a discharged `arranged` means the window is deterministic, not
+that it is faithful to an underlying regular series.
+
 **The combiner is closed, the mapper is open.**  A fold over an *unordered*
 bag is deterministic only when the combiner is associative and commutative,
 and those are laws no checker can verify on a user-supplied lambda.  So the

@@ -132,6 +132,17 @@ registry readings {
 // such grading and claims the fact with `assume { arranged }` instead,
 // locally and visibly (ADR 0017's block form).
 //
+// **Tie-freedom is not gap-freedom**, and the checker only gives the first.
+// `series.lag` means "the previous reading *in this bag*", not "the previous
+// minute": if a machine was offline and its readings run 10:00, 10:01,
+// 10:04, then `.previous` at 10:04 carries 10:01's temperature, and code
+// differencing the two computes a rate over three minutes while reading like
+// one.  Nothing here is ill-typed and the arrangement is determined; the
+// window is simply faithful to the rows present rather than to a regular
+// series.  Whether the ordered operations should demand contiguity is an
+// open question in ADR 0035, and M5's window-closedness work is where it
+// gets settled.
+//
 // `demote` is Tier B: the branch lineage over the finer key falls out of
 // scope (ADR 0024).  That is inert here, because nothing downstream
 // re-joins a `split`.
