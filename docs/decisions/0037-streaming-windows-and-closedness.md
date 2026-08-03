@@ -6,7 +6,9 @@ Accepted.  The design half of M5's first slice ("Streaming and
 reactive", `ROADMAP.md`), on top of the ordered primitives that landed
 early with ADR 0029 Stage 2.  Rests on
 `docs/decisions/0036-temporal-domains-and-torsor-arithmetic.md` for
-extents.  Settles two questions flagged in earlier ADRs: whether a
+extents, for the grid origin of decision 1, and for the
+order-compatibility lemma its formal gates use.  Settles two
+questions flagged in earlier ADRs: whether a
 prefix scan over a partial bag needs a completeness fact
 (`docs/decisions/0029-fold-and-scan.md`, open questions) and the
 contiguity question
@@ -69,8 +71,8 @@ data |> window w taken_at (15 * si.minute) (5 * si.minute)
 `window w p size stride` replicates each row into every window that
 contains its point `p`, adding the window's start as a fresh key
 column `w` with `p`'s domain.  Window starts lie on the stride grid
-anchored at the domain's zero (the Unix epoch for `datetime`, day
-zero for `date`, zero for `int`): the starts are the integer
+anchored at the domain's zero (ADR 0036 decision 5: the Unix epoch
+for `instant`, zero for `int`): the starts are the integer
 multiples of `stride`, and a row with point `p` lands in every window
 `w` with `w <= p < w + size`.  The grid makes placement deterministic
 with no declaration and no data dependence.
@@ -80,6 +82,14 @@ size`.  When `stride` divides `size` a row lands in exactly
 `size / stride` windows; `stride > size` leaves gaps between windows
 and a row whose point falls in a gap lands in none, which is legal
 and occasionally wanted (periodic sampling).
+
+The dual holds and is worth stating, because it is the first question
+every reader asks: **a window containing no rows does not appear in
+the output at all.**  `window` replicates rows; with no row there is
+nothing to replicate, and the grid is infinite, so there is no
+candidate set of empty windows to emit.  An empty window is
+represented by absence.  Materializing one is rectangularization, not
+windowing, and decision 6 says where it belongs.
 
 The semantics are *specified as a derived form*: a replicating
 `flat_map` (one output row per containing window, `w` computed from
@@ -124,12 +134,14 @@ the expansion; and `w` and `p` are column names, which are not values
 ### 3.  Extents are torsor differences, known at compile time
 
 `size` and `stride` are const expressions (compile-time values, ADR
-0030) of type `diff(domain(p))` per ADR 0036: `time[real]` for a
-`datetime` point (`15 * si.minute`), `int` days for a `date` point,
-`int` for an `int` point.  Both must be positive.  The dimension
-check is the ordinary quantity check, so a `size` in kelvin against a
-`datetime` point is the same compile error as any other unit
-mismatch, and count-based windows ("the last N rows" over a
+0030) of type `diff(domain(p))` per ADR 0036: `time[real]` for an
+`instant` point (`15 * si.minute`), `int` for an `int` point.  Both
+must be positive.  ADR 0036 decision 4 defers `diff(date)`, so
+`date`-keyed windows are unavailable in this slice; they become
+available, with no change here, when that deferral is lifted.  The
+dimension check is the ordinary quantity check, so a `size` in kelvin
+against an `instant` point is the same compile error as any other
+unit mismatch, and count-based windows ("the last N rows" over a
 `series.rank` key) need no special case: they are windows over an
 `int` point with `int` extents.  Extents are const because the
 checker must carry them in the windowing fact and `closed` must
@@ -146,7 +158,8 @@ window-extended key, joining `completeness_check`/`assume` (ADR
 exhaustive-axis rule (ADR 0035 decision 6).  Three parts:
 
 **The `lateness` contract.**  A registry may declare a lateness bound
-on an orderable temporal point column:
+on an orderable point column whose domain has a difference type
+(ADR 0036 decision 4), which today means `instant` or `int`:
 
 ```mensura
 registry readings {
@@ -302,6 +315,48 @@ explicit-mechanism family and rejects the marker:
   audit refused, and nothing in this slice would consume it that
   `resample` will not discharge by construction.
 
+**The hazard recurs one level up, in the composition this decision
+recommends.**  "Difference per window" is safe within a window; a
+scan *across* windows is not.  `window` emits no row for an empty
+window (decision 1), so `lag` over a bag ordered by `w` means "the
+previous non-empty window", not "the previous `stride`".  A machine
+silent from 10:15 to 11:00 yields `w` values of 10:00 and 11:00
+adjacent in the bag, reading as one stride apart.  Three consequences
+worth stating rather than discovering:
+
+- `cumsum` and `running_max` over `w` are unaffected: a gap
+  contributes nothing to a sum or a running extremum.
+- A rate written `(v - lag v) / (w - lag w)` is *self-correcting*,
+  because `w` is a point and the difference recovers the true
+  interval (ADR 0036 decision 4).  Written `(v - lag v) / stride` it
+  is silently wrong.  The `w`-arithmetic form is the idiom to teach.
+- `count` never yields zero in a windowed view, because the empty
+  windows are not rows.  A filter meant to find sparse windows omits
+  the sparsest ones.
+
+**Over a window grid, and only there, contiguity is decidable.**
+ADR 0035's finding that densely-indexed and irregular series are
+indistinguishable holds of a raw order key, and it is why the second
+bullet above imposes no obligation.  It does not hold of `w`: the
+checker knows `stride`, ADR 0036 decision 5 fixes the origin, and the
+watermark bounds the grid above, so "are these `w` values a
+contiguous run?" is a finite question over the column.  The window
+grid is therefore the one place a contiguity fact can be established
+by a runtime pass in the `completeness_check` idiom, which is
+exactly the standard this decision sets, met rather than deferred.
+
+It is also the cheap case of `resample`, and it is taken up rather
+than deferred:
+`docs/decisions/0038-rectangularization-over-the-window-grid.md`
+ships the window-grid stage.  That ADR fixes what this decision only
+implies: the stage runs after the reduction and after `closed`
+(preserving ADR 0029 decision 4's empty-bag guarantee, with `closed`
+unchanged and supplying the upper bound), a filled row is a reduced
+row whose fill comes from the combiner table's identity column, and
+the two inputs the grid does not fix (the entity population and the
+per-entity lower bound) are required arguments, never inferred.  The
+general case over a raw order key stays deferred here.
+
 ### 7.  `latest` is a reduction, shipped as a builtin
 
 `latest p` keeps, per fiber at the key without `p`, the row with the
@@ -384,7 +439,12 @@ implementation ships the ops):
    to any window with `w + size + lateness <= watermark` is
    unchanged.  A small multiset-filter lemma; it is the soundness of
    decision 4's establishment given the contract, and the finality
-   invariant the refresh slice inherits.
+   invariant the refresh slice inherits.  It rests on ADR 0036
+   decision 9's order-compatibility lemma (translation by a positive
+   difference is strictly increasing), which is what makes both this
+   predicate and decision 1's interval test `w <= p < w + size`
+   well-behaved; `formal/Mensura/Units/Torsor.lean` therefore lands
+   before the window lemmas here.
 3. No new propagation claims anywhere else: decision 5 cites the
    existing `scanl_getLast_eq_foldBag` family, and decision 7 is a
    definition plus the existing `IsArrangement.unique`.  Demands are
@@ -422,10 +482,11 @@ Implementation (the M5 windows slice, not this ADR):
   `expr_check` (`type_scan`); the contract on the resolved schema.
 - `mensura-runtime`: evaluation of the three ops; the high-water-mark
   metadata and its maintenance in `apply`; `lateness` rejection in
-  the decoder path; ADR 0036's `datetime` alongside.
+  the decoder path; ADR 0036's `instant` alongside.
 - Corpus and examples: accept/reject cases per the sketches above;
   the fleet example gains the windowed view and the `latest` views,
-  migrates `taken_at` to `datetime` (ADR 0036), and takes the
+  migrates `Reading.taken_at`, `Slot.taken_at`, and
+  `vibrations.sampled_at` to `instant` (ADR 0036), and takes the
   `reading_trend` fix; the book's scan prose and the
   `a_scan_is_the_window_shape_and_demands_no_completeness` test are
   reconciled.
@@ -489,9 +550,15 @@ Implementation (the M5 windows slice, not this ADR):
 - **Grid origin.**  Window starts anchor at the domain zero.  If a
   consumer needs aligned-but-offset grids (business days, fiscal
   weeks), an explicit origin argument is the natural extension.
-- **`resample`.**  Decision 6 settles the model; the stage's surface,
-  its fill policies, and its interaction with optionality narrowing
-  await a consumer.
+- **`resample`.**  Decision 6 settles the model and points its
+  window-grid case at ADR 0038; the general stage (an arbitrary step
+  over a raw order key), its fill policies, and its interaction with
+  optionality narrowing await a consumer.  Note the fleet's natural
+  lower bound is `machines.commissioned`, a `date` against a `w` of
+  domain `instant`; ADR 0036 defers that conversion as
+  zone-dependent, so "windows since commissioning" is inexpressible
+  until it lands, and it wants precisely the explicit zone the
+  deferral demands.
 - **Parameterized views.**  The iiot sketch's
   `view RULTrainingWindows(size, stride)` wants extents as view
   parameters; no parameter surface exists on views, and the const
@@ -505,7 +572,9 @@ Implementation (the M5 windows slice, not this ADR):
 ## Forward references
 
 - `docs/decisions/0036-temporal-domains-and-torsor-arithmetic.md`
-  (extents and the `datetime` point domain).
+  (the `instant` point domain and its extents; the grid origin of
+  decision 1 comes from its decision 5; the order-compatibility
+  lemma of its decision 9 gates `closedWindow_stable`).
 - `docs/decisions/0029-fold-and-scan.md` and
   `docs/decisions/0031-fold-and-scan-primitives.md` (the combiner
   table; the prefix-scan flag closes per decision 5).
