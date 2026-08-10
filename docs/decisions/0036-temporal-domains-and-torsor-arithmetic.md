@@ -251,6 +251,9 @@ insertion, 37 seconds cumulatively since 1972, and non-accumulating in
 any interval that crosses none, against a DST error that is unbounded
 and proportional to the interval.  A caller requiring TAI semantics
 wants a distinct absolute domain, not a reinterpretation of this one.
+The irregularity enters only through differences that span an
+insertion, never through the encoding: decision 7 rejects the
+`23:59:60` label itself.
 
 ### 5.  Each point domain has an origin, for grids only
 
@@ -282,6 +285,34 @@ specified here rather than left to the decoder.
 
 **Precision.**  An `instant` carries exactly millisecond resolution.
 Finer input is rejected, not truncated.
+
+Millisecond is not a round-number guess; it is the finest grid whose
+differences the chosen difference type can carry exactly.
+`diff(instant)` is `time[real]` (decision 4), ADR 0026 backs `real`
+with binary64, and binary64 holds integers exactly only up to 2^53.
+The representable range below spans about 10^4 years, which is about
+3.2 * 10^14 milliseconds, comfortably inside 2^53 (about 9.0 * 10^15,
+a 28x margin), but about 3.2 * 10^17 microseconds, well outside it.
+At microsecond precision a difference across the range would not be
+an exact integer count in the backing, and every exactness argument
+in this decision collapses.  The precision therefore follows from the
+backing: a finer absolute domain awaits the exact backing ADR 0026
+decision 9 defers, and it arrives as a *sibling* domain in decision
+1's absolute family with its own `diff` (decision 4 is stated
+generically, so the addition is additive); `instant` itself never
+changes precision, because that would be a schema migration in every
+deployed program.
+
+The limitation this buys is real and is owned rather than discovered:
+an event stream sampled above 1 kHz cannot key by `instant` (adjacent
+samples collide on the millisecond grid), and a producer emitting
+finer timestamps cannot ingest them at all, because the decoder
+rejects rather than truncates.  Such a producer either states its own
+truncation policy at the source, where it is a visible measurement
+decision rather than a silent repair, or waits for the finer domain.
+High-frequency waveform capture (vibration spectra in the driving
+application) is out of this domain's reach and is recorded as an open
+question below.
 
 **Range.**  The canonical encoding is fixed-width with a four-digit
 year (decision 7), so the representable range is
@@ -319,18 +350,27 @@ wrong and cheap to state:
 
 - Differences are computed as an exact integer millisecond count and
   converted *once* to the normalized `time[real]` magnitude, never
-  accumulated in floating point.  `t + (u - t) == u` must hold for all
-  representable `t`, `u`; decision 9 makes it a theorem rather than an
-  aspiration.
-- "Whole number of milliseconds" needs a precise predicate.  ADR 0026
-  normalizes magnitudes to the base unit, so a `time[real]` is a count
-  of seconds, and `si.millisecond` is `0.001 * second`, a value with
-  no exact binary representation.  The recommended reading is that the
-  nearest-integer millisecond value must differ from the converted
-  magnitude by no more than one ULP of that magnitude.  The exact
-  predicate is an open question below: it is the one place this ADR's
-  exactness story meets the backing's inexactness, and it belongs with
-  the `precision` library's authors rather than being guessed here.
+  accumulated in floating point.  The single round trip is
+  unconditionally safe on this range: dividing an integer count of at
+  most 3.2 * 10^14 by 1000 and multiplying back accumulates a
+  relative error of at most 2^-52, an absolute error under 0.1 ms
+  against the 0.5 ms nearest-integer threshold, so a
+  difference-produced duration always recovers its exact count.
+  `t + (u - t) == u` therefore holds for all representable `t`, `u`;
+  decision 9 makes the grid-level statement a theorem, and this bound
+  is the implementation obligation that connects the theorem to the
+  binary64 backing (decision 9 states the division of labour).
+- "Whole number of milliseconds" needs a precise predicate, but only
+  for *constructed* durations; difference-produced ones are covered
+  by the bound above.  ADR 0026 normalizes magnitudes to the base
+  unit, so a `time[real]` is a count of seconds, and `si.millisecond`
+  is `0.001 * second`, a value with no exact binary representation.
+  The recommended reading is that the nearest-integer millisecond
+  value must differ from the converted magnitude by no more than one
+  ULP of that magnitude.  The exact predicate is an open question
+  below: it is the one place this ADR's exactness story meets the
+  backing's inexactness, and it belongs with the `precision`
+  library's authors rather than being guessed here.
 
 ### 7.  Encoding: normalized fixed-width UTC text
 
@@ -343,6 +383,20 @@ backend's string comparison and the evaluator's `compare_values`
 remain correct unchanged.  This is the same move as ADR 0026's affine
 units, where a messy presentation form is converted once at ingestion
 and the core only ever sees the normal form.
+
+**Leap-second labels are rejected.**  RFC 3339 admits a seconds field
+of `60` for an inserted leap second; the decoder does not.  Decision 4
+gives `instant` its arithmetic, and decision 2 its key-eligibility,
+via a bijection between labels and the exact millisecond grid, and
+`23:59:60` has no slot in that grid: accepting it would break the
+torsor laws and the lexicographic-equals-chronological property in
+the same stroke.  The seconds field is `00` through `59`, and a
+reading stamped inside an inserted leap second is its producer's to
+clamp or smear, the same producer-converts rule as epoch intake
+below.  The cost is bounded exactly as decision 4's asymmetry
+argument bounds it: at most one second per insertion, none inserted
+since 2016, and the CGPM has resolved to discontinue insertions by
+2035.
 
 As a consequence the `date` decoder tightens to exactly `YYYY-MM-DD`.
 Today any text passes, which makes the ordering convention unenforced
@@ -415,10 +469,17 @@ about `w + size + lateness` against a watermark, both need translation
 to be monotone in the difference.  Sequencing follows: this module
 lands before or with 0037's window lemmas, which depend on it.
 
-Conversion correctness for the decoder's normalization (decision 7) is
-*not* a formal target, matching ADR 0026's treatment of scale-factor
-normalization as an implementation obligation rather than a mechanized
-one.
+Two gaps between the theorems and the implementation are deliberate
+and stated here rather than discovered later.  Conversion correctness
+for the decoder's normalization (decision 7) is *not* a formal
+target, matching ADR 0026's treatment of scale-factor normalization
+as an implementation obligation rather than a mechanized one.
+Likewise, the torsor is mechanized over the exact millisecond grid,
+while the implementation carries a `diff(instant)` through the
+binary64 backing of `time[real]`; the bridge is decision 6's
+round-trip bound, an implementation obligation of the same kind, and
+it is why decision 6 sizes the grid so that every representable
+difference is an exact integer in that backing.
 
 ## Consequences
 
@@ -460,6 +521,13 @@ Negative:
   decision 4's deferral is lifted.  No program in the repository wants
   either today, but the gap is real and should be stated in
   `09-typing-reference.md` rather than discovered.
+- Sub-millisecond event data is out of `instant`'s reach: a stream
+  sampled above 1 kHz collides on the millisecond grid, and finer
+  timestamps are rejected at the decoder (decision 6).  The gap is
+  structural, since the grid is sized to the binary64 backing, and
+  its successor is a finer sibling domain named in the open
+  questions; until it lands, the driving application's waveform-rate
+  captures are inexpressible as `instant`-keyed rows.
 - A new formal module is a slice cost, and 0037's window lemmas now
   carry an ordering dependency on it.
 
@@ -599,10 +667,18 @@ Implementation (with the M5 slice, not this ADR):
   and in particular decides whether calendar units are needed at all.
 - **The exact float predicate for "whole number of milliseconds"**
   (decision 6), against ADR 0026's normalized-magnitude
-  representation.  The likely resolution is a one-ULP tolerance, and
-  it should be settled with the deferred `precision` library
-  (ADR 0026 decision 9, ADR 0028 decision 4) rather than fixed
-  independently here.
+  representation.  The predicate matters only for constructed
+  durations (`15 * si.minute`); difference-produced durations are
+  covered by decision 6's round-trip bound.  The likely resolution is
+  a one-ULP tolerance, and it should be settled with the deferred
+  `precision` library (ADR 0026 decision 9, ADR 0028 decision 4)
+  rather than fixed independently here.
+- **A finer absolute domain** (microsecond or nanosecond instants)
+  for waveform-rate capture, gated on the exact backing of ADR 0026
+  decision 9: binary64 cannot carry a full-range microsecond count
+  exactly (decision 6).  It joins decision 1's absolute family as a
+  sibling domain with its own `diff`, additive under decision 4's
+  generic rule; `instant` never changes precision.
 - **A civil wall-clock domain** (alternative 8), if a consumer
   appears, and its name: `datetime` is now available and would read
   correctly to a SQL audience.
