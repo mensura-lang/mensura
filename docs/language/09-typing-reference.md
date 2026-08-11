@@ -310,9 +310,20 @@ type-checks only when `temperature` is read at one row and is total.
 The scalar domain also gates which operator applies, strictly and without
 coercion (ADR 0014): numeric `number` splits into `int` and `real`; `+ -`
 need matching numeric operands; `< <= > >=` and `min`/`max`
-take the orderable domains (`int`, `real`, `date`); and `== !=` take the
-equatable domains, so they are **not** defined on `real` or any
+take the orderable domains (`int`, `real`, `date`, `instant`); and `== !=`
+take the equatable domains, so they are **not** defined on `real` or any
 `real`-backed domain.
+
+The two temporal domains are different families (ADR 0036): `date` is a
+civil calendar day, `instant` an absolute moment (UTC, millisecond
+precision).  Both are equatable, orderable, and key-eligible; neither is
+numeric, and comparing one against the other is a domain mismatch no
+conversion repairs.  Their arithmetic is the torsor rule of ADR 0036
+decision 4 (`instant - instant : time[real]`, translation by a duration);
+it is **not yet implemented**, pending its formal gate
+(`formal/Mensura/Units/Torsor.lean`), so today `instant` supports
+comparison and equality only, and `date` arithmetic is deferred
+outright.
 
 Dimensions refine the numeric rules (`11-physical-units.md`, ADR 0026).
 A `real`-backed domain carries a dimension exponent vector, with bare

@@ -49,8 +49,9 @@ The rules, all derived from the schema:
   table use
   (`docs/decisions/0032-compound-keys-flatten-to-dotted-columns.md`).
 - **Types.**  Each value is decoded per the column's `ColumnType`:
-  `string`, `int`, `real`, `bool`, `date`, an `enum`, or a dimensioned
-  `D[real]`.  A value of the wrong shape is an error, not a coercion.
+  `string`, `int`, `real`, `bool`, `date`, `instant`, an `enum`, or a
+  dimensioned `D[real]`.  A value of the wrong shape is an error, not a
+  coercion.
   In particular **`int` does not widen to `real`**: a payload `300` for a
   `temperature[real]` column is rejected and must be written `300.0`.
   This is stricter than most JSON tooling, and deliberately so: ADR 0014
@@ -59,6 +60,17 @@ The rules, all derived from the schema:
   A JSON number counts as an `int` only when written with no fraction and
   no exponent.
 - **Enums.**  The value must be one of the type's declared variants.
+- **Temporal columns decode or reject** (ADR 0036 decisions 6 and 7).  A
+  `date` is exactly `YYYY-MM-DD` and a real calendar day.  An `instant`
+  is RFC 3339 with an explicit UTC offset (`Z` or `+HH:MM`/`-HH:MM`),
+  normalized to the fixed-width UTC form `YYYY-MM-DDTHH:MM:SS.sssZ` at
+  the boundary, so lexicographic order in storage is chronological
+  order.  Zone-naive timestamps, sub-millisecond fractions, leap-second
+  labels (`:60`), and years outside 0001-9999 are rejected, never
+  truncated or repaired.  Epoch-encoded intake (`1722420451`) is an
+  input encoding and is deferred to M7's payload contract with the
+  affine-unit hook (ADR 0034 decision 6); until then an epoch-emitting
+  producer converts, exactly as a Celsius-emitting one does.
 - **Optionality.**  A value may be absent only where the column is
   declared optional (`?`).  A missing required field is an error.  An
   absent optional field and an explicitly null one both yield a missing
