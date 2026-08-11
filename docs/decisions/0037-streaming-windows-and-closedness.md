@@ -631,6 +631,35 @@ Implementation (the M5 windows slice, not this ADR):
   windows) is an opt-in, and where the loss policy belongs, is
   deferred to the refresh/serving slices where the operational story
   lives.
+- **A forward-skew bound on the watermark.**  `lateness` bounds how
+  old an accepted point may be; nothing bounds how new.  One device
+  with a clock far ahead advances the global watermark by the whole
+  skew in a single append; the intake then rejects honest traffic
+  older than `watermark - lateness`, and `closed` declares the
+  skewed span of empty windows final, irreversibly under an
+  append-only intake.  The natural fix is a symmetric intake-side
+  bound (rejecting or holding rows implausibly far ahead of intake
+  wall-clock time, which touches nothing in `mensura run`'s purity,
+  since only the batch semantics must be reproducible).  Deferred
+  because the guard's consumer is not yet clear; recorded so the
+  hazard is named before deployment surfaces make it real.
+- **Rejected-batch disposal.**  The mechanism argument needs only
+  "never accepted into the registry table"; whether a rejected batch
+  is destroyed, logged, or quarantined to a dead-letter store is
+  operational policy outside the contract.  Deferred because any
+  answer presupposes a logging policy the toolkit has not defined;
+  when one exists, store-and-forward producers (a gateway flushing
+  an over-age buffer) are the first case to design for.
+- **Evolution of the `lateness` bound.**  `closedWindow_stable`
+  holds while the declared bound never changes.  Decreasing it later
+  is harmless; increasing it reopens previously closed windows
+  (`w + size + lateness > watermark` holds again), retracting
+  results that were emitted as final, so the finality invariant is
+  really "final while `lateness` never grows".  What a registry
+  redeclaration may change, and whether the toolchain migrates or
+  refuses, belongs to the (probably automatic) migration policy of a
+  future `mensura deploy`, which is not yet designed; the two must
+  be settled together.
 - **Grid origin.**  Window starts anchor at the domain zero.  If a
   consumer needs aligned-but-offset grids (business days, fiscal
   weeks), an explicit origin argument is the natural extension.
