@@ -329,7 +329,10 @@ worth stating rather than discovering:
 - A rate written `(v - lag v) / (w - lag w)` is *self-correcting*,
   because `w` is a point and the difference recovers the true
   interval (ADR 0036 decision 4).  Written `(v - lag v) / stride` it
-  is silently wrong.  The `w`-arithmetic form is the idiom to teach.
+  is silently wrong.  The `w`-arithmetic form is the idiom to teach;
+  since `lag` columns are optional, writing it rests on ADR 0039's
+  lifted operators, and the rate is honestly absent on each fiber's
+  first row.
 - `count` never yields zero in a windowed view, because the empty
   windows are not rows.  A filter meant to find sparse windows omits
   the sparsest ones.
@@ -449,6 +452,87 @@ implementation ships the ops):
    existing `scanl_getLast_eq_foldBag` family, and decision 7 is a
    definition plus the existing `IsArrangement.unique`.  Demands are
    conservative and need no proof.
+
+## Worked example
+
+A plant runs a fleet of machines, each with a temperature sensor
+reporting roughly once a minute over MQTT to a plant gateway.  The
+gateway batches readings into JSONL and posts them every few minutes
+through `mensura ingest`; it buffers during outages, and its
+documented delivery bound is ten minutes.
+
+```mensura
+unit Reading {
+  machine_id: string
+  taken_at: instant                       // ADR 0036
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+  lateness { taken_at: 10 * si.minute }   // the gateway's bound, enforced
+}
+```
+
+The `lateness` entry is the gateway's delivery contract made
+type-visible.  The bound is a const expression of type
+`diff(instant) = time[real]`; positivity and whole milliseconds are
+checked at compile time (ADR 0036 decision 6).  At the intake it is
+enforced, not trusted: a batch whose newest row is `10:31:12`
+advances the watermark to `10:31:12`, and a later batch containing a
+row at `10:20:45` is rejected whole, because
+`10:20:45 < 10:31:12 - 10 min`.  The gateway broke its bound, and the
+violation surfaces at the boundary instead of corrupting a window
+already reported as final.
+
+The alerting view wants the peak temperature per machine per quarter
+hour, final on first report:
+
+```mensura
+view machine_peaks {
+  readings |> window w taken_at (15 * si.minute) (15 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+```
+
+Stage by stage:
+
+- `window w taken_at (15 * si.minute) (15 * si.minute)`.  The grid
+  is the multiples of fifteen minutes from the epoch (ADR 0036
+  decision 5), which lands on `:00`, `:15`, `:30`, `:45` past each
+  UTC hour; the alignment is to UTC rather than plant-local time,
+  the absolute family's semantics made visible.  `stride == size`
+  makes the windows tumbling, so the reading
+  `(M-07, 10:07:31.221Z, 351.2 K)` gains exactly one window start,
+  `w = 10:00:00.000Z`.  The key grows to
+  `{machine_id, taken_at, w}`, the grading extends with it, and the
+  checker records the windowing fact (decision 2).
+- `demote taken_at`.  One bag of readings per `(machine_id, w)`.
+  The registry's fine-key completeness is forfeited by the
+  coarsening (ADR 0035); the extended grading survives, so the times
+  inside each window's bag are still unique.
+- `closed`.  Demands the windowing fact and the source contract, and
+  both hold; delete the `lateness` block and this line is a compile
+  error, with `assume { complete }` as the visible fallback.  At run
+  time the watermark is read once.  With watermark `10:31:12`, a
+  window survives iff `w + 15 min + 10 min <= 10:31:12`, so
+  `w = 10:00` survives (its last admissible row could only arrive
+  while the watermark was below `10:25`) and `w = 10:15` is dropped:
+  not an error, an answer that does not exist yet.  On the
+  survivors, `Complete` is established at `{machine_id, w}`.
+- `map_bags`.  A reducing fold, so it demands completeness at the
+  key it folds at (ADR 0023); `closed` discharged it, and the view
+  carries no `assume`.  Output: `singletons` at `{machine_id, w}`
+  with `peak: temperature[real]`.
+
+Rerunning after further ingestion adds the `10:15` row once the
+watermark passes `10:40` and never changes the `10:00` row
+(`closedWindow_stable`), which is what lets alerting treat each row
+as final.  ADR 0038's worked example continues this one: the same
+pipeline plus `dense` answers "how many intervals was each machine
+silent".
 
 ## Consequences
 
