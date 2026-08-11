@@ -10,6 +10,7 @@ pub mod backend;
 pub mod eval;
 pub mod ingest;
 pub mod sqlite;
+pub mod temporal;
 pub mod value;
 
 pub use backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError};
