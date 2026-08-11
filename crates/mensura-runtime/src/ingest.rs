@@ -164,8 +164,13 @@ fn decode_scalar(scalar: &Scalar, ty: &ColumnType) -> Result<Value, ScalarError>
             Scalar::Bool(b) => Ok(Value::Bool(*b)),
             _ => Err(Expected("a boolean")),
         },
+        // Exactly `YYYY-MM-DD` (ADR 0036 decision 7): until this check the
+        // chronological ordering of `date` columns was an unenforced
+        // convention of example style.
         ColumnType::Date => match scalar {
-            Scalar::Text(s) => Ok(Value::Date(s.clone())),
+            Scalar::Text(s) => crate::temporal::validate_date(s)
+                .map(|()| Value::Date(s.clone()))
+                .map_err(Invalid),
             _ => Err(Expected("a date string")),
         },
         // Validated on the millisecond grid and normalized to fixed-width
@@ -380,6 +385,25 @@ mod tests {
         r.insert("status".into(), Scalar::Text("sideways".into()));
         let e = decode_record(&s, &r, 1).expect_err("bad variant");
         assert!(e.message.contains("declared variants"), "{e}");
+    }
+
+    #[test]
+    fn a_malformed_date_is_rejected_rather_than_stored() {
+        // Regression for the hole ADR 0036's context names: before the
+        // tightening, any text passed as a date, so chronological ordering
+        // rested on example style rather than on the decoder.
+        let s = schema(EVERY_TYPE, "rows");
+        for (payload, needle) in [
+            ("July 31, 2026", "YYYY-MM-DD"),
+            ("2026-7-31", "YYYY-MM-DD"),
+            ("2026-02-30", "day out of range"),
+        ] {
+            let mut r = full_record();
+            r.insert("day".into(), Scalar::Text(payload.into()));
+            let e = decode_record(&s, &r, 1).expect_err(payload);
+            assert!(e.message.contains("`day`"), "{e}");
+            assert!(e.message.contains(needle), "{payload}: {e}");
+        }
     }
 
     #[test]
