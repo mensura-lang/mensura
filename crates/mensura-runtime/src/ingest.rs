@@ -157,6 +157,12 @@ fn decode_scalar(scalar: &Scalar, ty: &ColumnType) -> Result<Value, &'static str
             Scalar::Text(s) => Ok(Value::Date(s.clone())),
             _ => Err("a date string"),
         },
+        // Pass-through for now; ADR 0036 decision 7's validation and UTC
+        // normalization land in the next slice of this PR.
+        ColumnType::Instant => match scalar {
+            Scalar::Text(s) => Ok(Value::Instant(s.clone())),
+            _ => Err("an RFC 3339 instant string"),
+        },
         ColumnType::Enum { variants, .. } => match scalar {
             Scalar::Text(s) if variants.iter().any(|v| v == s) => Ok(Value::Enum(s.clone())),
             Scalar::Text(_) => Err("one of the enum's declared variants"),

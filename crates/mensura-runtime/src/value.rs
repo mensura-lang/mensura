@@ -14,8 +14,12 @@ pub enum Value {
     Int(i64),
     Real(f64),
     Bool(bool),
-    /// ISO 8601, as stored.
+    /// ISO 8601 (`YYYY-MM-DD`), as stored.
     Date(String),
+    /// RFC 3339 in the normalized fixed-width UTC form
+    /// `YYYY-MM-DDTHH:MM:SS.sssZ` (ADR 0036 decision 7): one zone and one
+    /// width, so lexicographic order is chronological order.
+    Instant(String),
     /// The variant literal of a named enum.
     Enum(String),
     Missing,

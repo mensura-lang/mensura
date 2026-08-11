@@ -140,7 +140,9 @@ fn key_of(v: &Value) -> Result<KeyVal, EvalError> {
     match v {
         Value::Int(i) => Ok(KeyVal::Int(*i)),
         Value::Bool(b) => Ok(KeyVal::Bool(*b)),
-        Value::String(s) | Value::Date(s) | Value::Enum(s) => Ok(KeyVal::Text(s.clone())),
+        Value::String(s) | Value::Date(s) | Value::Instant(s) | Value::Enum(s) => {
+            Ok(KeyVal::Text(s.clone()))
+        }
         Value::Real(_) => internal("a `real` value as a key"),
         Value::Missing => internal("a missing value as a key"),
     }
@@ -1546,14 +1548,18 @@ fn values_equal(a: &Value, b: &Value) -> Result<bool, EvalError> {
         (Value::Bool(x), Value::Bool(y)) => Ok(x == y),
         (Value::String(x), Value::String(y)) => Ok(x == y),
         (Value::Date(x), Value::Date(y)) => Ok(x == y),
+        // Sound because an instant is an exact point on the millisecond
+        // grid, in one normalized encoding (ADR 0036).
+        (Value::Instant(x), Value::Instant(y)) => Ok(x == y),
         (Value::Enum(x), Value::Enum(y)) => Ok(x == y),
         (Value::Enum(x), Value::String(y)) | (Value::String(x), Value::Enum(y)) => Ok(x == y),
         _ => internal("`==` on values the checker should have rejected"),
     }
 }
 
-/// Ordering on orderable domains: `int`, `real`, and `date` (ISO 8601 text
-/// orders chronologically).
+/// Ordering on orderable domains: `int`, `real`, and the temporal points
+/// `date` and `instant` (both normalized to fixed-width text, so
+/// lexicographic order is chronological order, ADR 0036 decision 7).
 fn compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, EvalError> {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
@@ -1562,6 +1568,7 @@ fn compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, EvalError> {
             None => err("comparison with a NaN value"),
         },
         (Value::Date(x), Value::Date(y)) => Ok(x.cmp(y)),
+        (Value::Instant(x), Value::Instant(y)) => Ok(x.cmp(y)),
         _ => internal("comparison on values the checker should have rejected"),
     }
 }

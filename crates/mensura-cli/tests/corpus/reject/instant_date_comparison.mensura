@@ -1,0 +1,20 @@
+// Rejected at resolve (typing): `instant` and `date` are different temporal
+// families (ADR 0036 decision 1, absolute versus civil), so comparing them
+// is not a same-domain comparison (ADR 0014) and no conversion silently
+// repairs it: resolving a calendar day to a moment needs a zone, which is
+// exactly the information neither value carries.
+unit Machine {
+  id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated: instant
+    commissioned: date
+  }
+}
+
+view bad {
+  machines |> flat_map |_, r| if r.activated < r.commissioned then r else ()
+}

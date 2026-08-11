@@ -241,6 +241,7 @@ fn decode(
     match ty {
         ColumnType::String => cell.as_str().map(|s| Value::String(s.to_string())),
         ColumnType::Date => cell.as_str().map(|s| Value::Date(s.to_string())),
+        ColumnType::Instant => cell.as_str().map(|s| Value::Instant(s.to_string())),
         ColumnType::Enum { .. } => cell.as_str().map(|s| Value::Enum(s.to_string())),
         ColumnType::Int => cell.as_i64().map(Value::Int),
         // A dimensioned column persists its base-unit magnitude as a plain
@@ -256,7 +257,9 @@ fn decode(
 fn encode(value: &Value) -> rusqlite::types::Value {
     use rusqlite::types::Value as Sql;
     match value {
-        Value::String(s) | Value::Date(s) | Value::Enum(s) => Sql::Text(s.clone()),
+        Value::String(s) | Value::Date(s) | Value::Instant(s) | Value::Enum(s) => {
+            Sql::Text(s.clone())
+        }
         Value::Int(i) => Sql::Integer(*i),
         Value::Real(r) => Sql::Real(*r),
         Value::Bool(b) => Sql::Integer(i64::from(*b)),
@@ -355,6 +358,9 @@ fn column_type_sql(ty: &ColumnType, col: &str) -> String {
         ColumnType::Real | ColumnType::Quantity(_) => "REAL".to_string(),
         ColumnType::Bool => "INTEGER".to_string(),
         ColumnType::Date => "TEXT".to_string(),
+        // The normalized fixed-width UTC form (ADR 0036 decision 7): plain
+        // `TEXT`, ordered chronologically by the string comparison above.
+        ColumnType::Instant => "TEXT".to_string(),
         ColumnType::Enum { variants, .. } => {
             let list = variants
                 .iter()

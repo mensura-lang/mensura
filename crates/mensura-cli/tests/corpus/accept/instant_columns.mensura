@@ -1,0 +1,24 @@
+// `instant` is the absolute temporal point domain (ADR 0036): a moment on
+// the physical timeline, UTC, millisecond precision.  It is equatable,
+// orderable, and key-eligible, like `date`, but the two are different
+// temporal families (absolute versus civil) and neither is numeric.
+// Comparison and equality follow from ADR 0014's property matrix; the
+// torsor arithmetic (`instant - instant : time[real]`) is a later slice.
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+registry readings {
+  unit { Reading }
+  attr {
+    started: instant
+    ended: instant
+    confirmed_at: instant?
+    commissioned: date
+  }
+}
+
+view completed {
+  readings |> flat_map |_, r| if r.started < r.ended then r else ()
+}

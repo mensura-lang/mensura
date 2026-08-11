@@ -95,7 +95,14 @@ pub enum ColumnType {
     /// is kept by [`crate::units::Dimension::applied`].
     Quantity(crate::units::Dimension),
     Bool,
+    /// A civil calendar day: no time-of-day, no zone (ADR 0036).
     Date,
+    /// An absolute moment on the physical timeline: UTC, millisecond
+    /// precision (ADR 0036).  Equatable and orderable like `date`, but the
+    /// two are different temporal families, and neither is numeric; their
+    /// arithmetic is the torsor rules of ADR 0036 decision 4 (`instant`'s
+    /// lands with the M5 windows slice, `date`'s is deferred).
+    Instant,
     /// A named enumerated type: its declared name and its string variants.
     Enum {
         name: String,
@@ -111,11 +118,15 @@ impl ColumnType {
     }
 
     /// Has a total order, supporting `< <= > >=` and `min`/`max`: `int`, the
-    /// `real`-backed domains, `date`.
+    /// `real`-backed domains, and the temporal points `date` and `instant`.
     pub fn is_orderable(&self) -> bool {
         matches!(
             self,
-            ColumnType::Int | ColumnType::Real | ColumnType::Quantity(_) | ColumnType::Date
+            ColumnType::Int
+                | ColumnType::Real
+                | ColumnType::Quantity(_)
+                | ColumnType::Date
+                | ColumnType::Instant
         )
     }
 
@@ -244,6 +255,10 @@ mod tests {
         // date: orderable, not numeric, key-eligible.
         assert!(ColumnType::Date.is_orderable() && !ColumnType::Date.is_numeric());
         assert!(ColumnType::Date.is_key_eligible());
+        // instant: same row as date (ADR 0036): orderable, not numeric,
+        // key-eligible (the window-start column `w` requires it).
+        assert!(ColumnType::Instant.is_orderable() && !ColumnType::Instant.is_numeric());
+        assert!(ColumnType::Instant.is_key_eligible());
         // string: equatable, not orderable.
         assert!(ColumnType::String.is_equatable() && !ColumnType::String.is_orderable());
         // enum: the only finite-enumerable domain; key-eligible.

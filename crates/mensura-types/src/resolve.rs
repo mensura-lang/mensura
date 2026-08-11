@@ -1027,7 +1027,7 @@ fn resolve_shape(
         let kind = match p.kind.name.as_str() {
             "Unit" => Some(ParamKind::Unit),
             "string" => Some(ParamKind::Str),
-            "int" | "real" | "bool" | "date" => {
+            "int" | "real" | "bool" | "date" | "instant" => {
                 errors.push(ResolveError::new(
                     format!(
                         "`{}` parameters are not yet supported; use `Unit` or `string`",
@@ -1622,6 +1622,7 @@ pub(crate) fn type_name(ty: &ColumnType) -> String {
         ColumnType::Quantity(dim) => dim.type_name(),
         ColumnType::Bool => "bool".into(),
         ColumnType::Date => "date".into(),
+        ColumnType::Instant => "instant".into(),
         ColumnType::Enum { name, .. } => name.clone(),
     }
 }
@@ -1818,7 +1819,7 @@ fn collect_dim_alias<'a>(
     let builtin = Dimension::base(&name.name).is_some()
         || matches!(
             name.name.as_str(),
-            "string" | "int" | "real" | "bool" | "date"
+            "string" | "int" | "real" | "bool" | "date" | "instant"
         );
     if builtin {
         errors.push(ResolveError::new(
@@ -2013,6 +2014,7 @@ fn eval_tl_name(id: &Ident, env: &TlEnv) -> Result<TlValue, ResolveError> {
         "real" => Ok(TlValue::Plain(ColumnType::Real)),
         "bool" => Ok(TlValue::Plain(ColumnType::Bool)),
         "date" => Ok(TlValue::Plain(ColumnType::Date)),
+        "instant" => Ok(TlValue::Plain(ColumnType::Instant)),
         other if env.enums.contains_key(other) => {
             let e = env.enums[other];
             Ok(TlValue::Plain(ColumnType::Enum {
@@ -2308,6 +2310,34 @@ mod tests {
                         variants: vec!["active".into(), "inactive".into()],
                     },
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn instant_resolves_in_key_and_attribute_positions() {
+        // ADR 0036: `instant` is a contextual built-in type name (no new
+        // token), usable wherever `date` is, `?` included.
+        let src = r#"
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { confirmed_at: instant? }
+            }
+        "#;
+        let schemas = resolve_str(src).expect("should resolve");
+        let readings = schemas.iter().find(|s| s.store == "readings").unwrap();
+        let cols: Vec<(&str, ColumnRole, &ColumnType, bool)> = readings
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.role, &c.ty, c.optional))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                ("machine_id", ColumnRole::Key, &ColumnType::String, false),
+                ("taken_at", ColumnRole::Key, &ColumnType::Instant, false),
+                ("confirmed_at", ColumnRole::Attr, &ColumnType::Instant, true),
             ]
         );
     }

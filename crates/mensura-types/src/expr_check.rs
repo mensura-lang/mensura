@@ -2324,6 +2324,7 @@ fn domain_name(domain: &ColumnType) -> String {
         ColumnType::Quantity(dim) => dim.type_name(),
         ColumnType::Bool => "bool".into(),
         ColumnType::Date => "date".into(),
+        ColumnType::Instant => "instant".into(),
         ColumnType::Enum { .. } => "enum".into(),
     }
 }
