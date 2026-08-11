@@ -54,7 +54,13 @@ shape Tabular[U: Unit] {
 store machines : Commissioned {
   unit { Machine }
   attr {
+    // The civil/absolute split (ADR 0036) on one store: `commissioned` is a
+    // calendar day someone wrote on paperwork, so it stays `date`;
+    // `activated` is the moment the machine's telemetry came online, a
+    // machine-generated event on the physical timeline, so it is an
+    // `instant`.  Neither converts to the other without a zone.
     commissioned: date
+    activated: instant
     status: MachineStatus
     // Optional value (`?`): a machine never serviced has no last-service
     // date.  The value is missing, not absent; the row still exists
@@ -79,9 +85,14 @@ view attention_needed : Tabular[Machine] {
 // order by `taken_at` with no claim.  The alternative shape is an
 // entity-keyed bag (`attr*`, ADR 0022), which trades that derivation
 // for `assume { arranged }` at every window; `book/src/examples/` shows it.
+// `taken_at` is an `instant` (ADR 0036): a reading is a moment on the
+// physical timeline, and at minute cadence a calendar-day key would
+// collide.  The decoder accepts RFC 3339 with an explicit offset and
+// stores the normalized UTC form, so ordering by `taken_at` is
+// chronological by construction.
 unit Reading {
   machine_id: string
-  taken_at: date
+  taken_at: instant
 }
 
 // A **registry**, not a store (ADR 0033, `13-registries.md`): a reading is
@@ -216,7 +227,7 @@ unit Vibration {
 registry vibrations {
   unit { Vibration }
   attr* {
-    sampled_at: date
+    sampled_at: instant
     amplitude:  real
   }
 }
@@ -245,7 +256,7 @@ view overheating {
 // totality is the load-bearing detail below.
 unit Slot {
   machine_id: string
-  taken_at: date
+  taken_at: instant
 }
 
 registry paired_readings {
