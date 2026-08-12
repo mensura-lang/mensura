@@ -1,7 +1,9 @@
 // Accepted: the cardinality operator and the four operators ADR 0031 adds
 // (Decisions 6 and 9).  `#` counts a bag without demanding a total one, since
 // its mapper discards the element; `<<`/`>>` are the binary minimum and
-// maximum at one orderable domain; the tacks return their named side.
+// maximum at one orderable domain; the tacks return their named side.  The
+// clamp parenthesizes its two bounds: the tacks are unranked (ADR 0040), so
+// a mixed chain refuses to parse bare.
 unit Machine {
   id: string
 }
@@ -25,7 +27,7 @@ view summary {
 
 view clamped {
   readings |> flat_map |k, r| ((
-    .clamped = r.temperature << 100.0 >> 0.0,
+    .clamped = (r.temperature << 100.0) >> 0.0,
     .left = r.temperature <: 1.0,
     .right = r.temperature :> 1.0
   ))

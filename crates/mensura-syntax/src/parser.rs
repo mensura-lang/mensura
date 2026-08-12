@@ -746,12 +746,14 @@ impl<'a> Parser<'a> {
         self.parse_pipe()
     }
 
-    /// `pipe_expr = or_expr { "|>" or_expr }`, left-associative.
+    /// `pipe_expr = logic_expr { "|>" logic_expr }`, left-associative.  The
+    /// pipe is structural and loosest, so it accepts an unparenthesized glue
+    /// result (ADR 0040): a stage ending in a discharge needs no parens.
     fn parse_pipe(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_or()?;
+        let mut lhs = self.parse_logic()?;
         while self.check(&TokenKind::PipeArrow) {
             self.pos += 1;
-            let rhs = self.parse_or()?;
+            let rhs = self.parse_logic()?;
             self.record_pipe_op(&rhs);
             lhs = self.binary(BinOp::Pipe, lhs, rhs);
         }
@@ -772,49 +774,74 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `or_expr = and_expr { "or" and_expr }`.
-    fn parse_or(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_and()?;
-        while self.at_keyword("or") {
+    /// `logic_expr = not_expr { logic_word not_expr }`: `and` and `or` share
+    /// one homogeneous level (ADR 0040, Decision 2).  The chain commits to
+    /// its first word, so `a and b and c` folds left while `a and b or c` is
+    /// a parse error asking for parentheses.  An operand carrying an
+    /// unparenthesized glue operator is also an error (Decision 3):
+    /// `a ?? b and c` must be written `(a ?? b) and c`.
+    fn parse_logic(&mut self) -> Result<Expr, ParseError> {
+        let (mut lhs, lhs_glue) = self.parse_not()?;
+        let word = if self.at_keyword("and") {
+            "and"
+        } else if self.at_keyword("or") {
+            "or"
+        } else {
+            return Ok(lhs);
+        };
+        if let Some(glue) = lhs_glue {
+            return Err(self.mixing_error(glue, word));
+        }
+        let op = if word == "and" { BinOp::And } else { BinOp::Or };
+        while self.at_keyword(word) {
             self.bump_keyword();
-            let rhs = self.parse_and()?;
-            lhs = self.binary(BinOp::Or, lhs, rhs);
+            let (rhs, rhs_glue) = self.parse_not()?;
+            if let Some(glue) = rhs_glue {
+                return Err(self.mixing_error(glue, word));
+            }
+            lhs = self.binary(op, lhs, rhs);
+        }
+        let other = if word == "and" { "or" } else { "and" };
+        if self.at_keyword(other) {
+            return Err(self.mixing_error(word, other));
         }
         Ok(lhs)
     }
 
-    /// `and_expr = not_expr { "and" not_expr }`.
-    fn parse_and(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_not()?;
-        while self.at_keyword("and") {
-            self.bump_keyword();
-            let rhs = self.parse_not()?;
-            lhs = self.binary(BinOp::And, lhs, rhs);
-        }
-        Ok(lhs)
-    }
-
-    /// `not_expr = "not" not_expr | cmp_expr`.
-    fn parse_not(&mut self) -> Result<Expr, ParseError> {
+    /// `not_expr = "not" not_expr | cmp_expr`.  Alongside the expression it
+    /// reports an unparenthesized glue operator at its top (through any
+    /// `not` prefixes), so `parse_logic` can enforce the ADR 0040 meeting
+    /// rule on its operands.
+    fn parse_not(&mut self) -> Result<(Expr, Option<&'static str>), ParseError> {
         if self.at_keyword("not") {
             let start = self.cur_span().start;
             self.bump_keyword();
-            let inner = self.parse_not()?;
+            let (inner, glue) = self.parse_not()?;
             let span = Span::new(start, inner.span.end);
-            Ok(Expr {
-                kind: ExprKind::Unary(UnOp::Not, Box::new(inner)),
-                span,
-            })
+            Ok((
+                Expr {
+                    kind: ExprKind::Unary(UnOp::Not, Box::new(inner)),
+                    span,
+                },
+                glue,
+            ))
         } else {
             self.parse_cmp()
         }
     }
 
-    /// `cmp_expr = coalesce_expr [ cmp_op coalesce_expr | "is" presence ]`.
-    /// Non-associative: at most one comparison or presence test.
-    fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_coalesce()?;
+    /// `cmp_expr = glue_expr [ cmp_op glue_expr | "is" presence ]`.
+    /// Non-associative: at most one comparison or presence test.  The glue
+    /// operators have no rank against the comparisons (ADR 0040,
+    /// Decision 3), so an unparenthesized glue chain on either side of a
+    /// consumed comparison or `is` is a parse error; when no comparison is
+    /// consumed the flag propagates for `parse_logic` to check.
+    fn parse_cmp(&mut self) -> Result<(Expr, Option<&'static str>), ParseError> {
+        let (lhs, lhs_glue) = self.parse_glue()?;
         if self.at_keyword("is") {
+            if let Some(glue) = lhs_glue {
+                return Err(self.mixing_error(glue, "is"));
+            }
             self.bump_keyword();
             let pres = if self.at_keyword("known") {
                 self.bump_keyword();
@@ -827,72 +854,100 @@ impl<'a> Parser<'a> {
             };
             let end = self.tokens[self.pos - 1].span.end;
             let span = Span::new(lhs.span.start, end);
-            return Ok(Expr {
-                kind: ExprKind::Presence(Box::new(lhs), pres),
-                span,
-            });
+            return Ok((
+                Expr {
+                    kind: ExprKind::Presence(Box::new(lhs), pres),
+                    span,
+                },
+                None,
+            ));
         }
         let op = match self.cur_kind() {
-            TokenKind::EqEq => Some(BinOp::Eq),
-            TokenKind::BangEq => Some(BinOp::Ne),
-            TokenKind::Lt => Some(BinOp::Lt),
-            TokenKind::LtEq => Some(BinOp::Le),
-            TokenKind::Gt => Some(BinOp::Gt),
-            TokenKind::GtEq => Some(BinOp::Ge),
-            TokenKind::Ident(s) if s == "in" => Some(BinOp::In),
+            TokenKind::EqEq => Some((BinOp::Eq, "==")),
+            TokenKind::BangEq => Some((BinOp::Ne, "!=")),
+            TokenKind::Lt => Some((BinOp::Lt, "<")),
+            TokenKind::LtEq => Some((BinOp::Le, "<=")),
+            TokenKind::Gt => Some((BinOp::Gt, ">")),
+            TokenKind::GtEq => Some((BinOp::Ge, ">=")),
+            TokenKind::Ident(s) if s == "in" => Some((BinOp::In, "in")),
             _ => None,
         };
         match op {
-            Some(op) => {
+            Some((op, spelling)) => {
+                if let Some(glue) = lhs_glue {
+                    return Err(self.mixing_error(glue, spelling));
+                }
                 self.pos += 1;
-                let rhs = self.parse_coalesce()?;
-                Ok(self.binary(op, lhs, rhs))
+                let (rhs, rhs_glue) = self.parse_glue()?;
+                if let Some(glue) = rhs_glue {
+                    return Err(self.mixing_error(glue, spelling));
+                }
+                Ok((self.binary(op, lhs, rhs), None))
             }
-            None => Ok(lhs),
+            None => Ok((lhs, lhs_glue)),
         }
     }
 
-    /// `coalesce_expr = tack_expr [ "??" coalesce_expr ]`,
-    /// right-associative by same-level recursion on the right (ADR 0039,
-    /// Decision 2): a chain discharges at its first present value, so
-    /// `a ?? b ?? c` is `a ?? (b ?? c)`.  Tighter than the comparisons and
-    /// looser than the tacks, so a value discharge sits inside a comparison
-    /// unparenthesized (`r.peak ?? limit < t` is `(r.peak ?? limit) < t`)
-    /// and a boolean policy discharge is written with parens,
-    /// `(a < b) ?? false`, which reads as the deliberate statement it is.
-    fn parse_coalesce(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_tack()?;
-        if self.check(&TokenKind::QuestionQuestion) {
+    /// `glue_expr = add_expr [ glue_op add_expr { glue_op add_expr } ]`: the
+    /// unranked level (ADR 0040, Decision 3).  `??` and the four tacks share
+    /// it, and a chain is one operator, committed at the first glue token:
+    /// `??` is right-associative (a chain discharges at its first present
+    /// value, ADR 0039) and each tack folds left (ADR 0031).  A different
+    /// glue operator mid-chain is a parse error asking for parentheses, and
+    /// the returned flag lets the comparison and logic levels reject an
+    /// unparenthesized meeting on their side.
+    fn parse_glue(&mut self) -> Result<(Expr, Option<&'static str>), ParseError> {
+        let lhs = self.parse_add()?;
+        let Some((op, spelling)) = self.glue_op() else {
+            return Ok((lhs, None));
+        };
+        let mut operands = vec![lhs];
+        while let Some((next, _)) = self.glue_op() {
+            if next != op {
+                break;
+            }
             self.pos += 1;
-            let rhs = self.parse_coalesce()?;
-            Ok(self.binary(BinOp::Coalesce, lhs, rhs))
+            operands.push(self.parse_add()?);
+        }
+        if let Some((_, other)) = self.glue_op() {
+            return Err(self.mixing_error(spelling, other));
+        }
+        let expr = if op == BinOp::Coalesce {
+            let mut rev = operands.into_iter().rev();
+            let mut acc = rev.next().expect("the chain holds at least the lhs");
+            for operand in rev {
+                acc = self.binary(op, operand, acc);
+            }
+            acc
         } else {
-            Ok(lhs)
+            let mut fwd = operands.into_iter();
+            let mut acc = fwd.next().expect("the chain holds at least the lhs");
+            for operand in fwd {
+                acc = self.binary(op, acc, operand);
+            }
+            acc
+        };
+        Ok((expr, Some(spelling)))
+    }
+
+    /// The glue tokens: `??` (ADR 0039) and the four tacks (ADR 0031).
+    fn glue_op(&self) -> Option<(BinOp, &'static str)> {
+        match self.cur_kind() {
+            TokenKind::QuestionQuestion => Some((BinOp::Coalesce, "??")),
+            TokenKind::LtLt => Some((BinOp::Min, "<<")),
+            TokenKind::GtGt => Some((BinOp::Max, ">>")),
+            TokenKind::LtColon => Some((BinOp::KeepLeft, "<:")),
+            TokenKind::ColonGt => Some((BinOp::KeepRight, ":>")),
+            _ => None,
         }
     }
 
-    /// `tack_expr = add_expr { ("<<" | ">>" | "<:" | ":>") add_expr }`,
-    /// left-associative (ADR 0031, Decision 6).  Looser than `+ -` and
-    /// tighter than the comparisons, so `a + b << c` is `(a + b) << c` and
-    /// `a << b < c` is `(a << b) < c`.  All four share one level: they are
-    /// the same shape of operation (a binary choice between two operands of
-    /// one domain), and no mixed expression has a reading worth
-    /// distinguishing.
-    fn parse_tack(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_add()?;
-        loop {
-            let op = match self.cur_kind() {
-                TokenKind::LtLt => BinOp::Min,
-                TokenKind::GtGt => BinOp::Max,
-                TokenKind::LtColon => BinOp::KeepLeft,
-                TokenKind::ColonGt => BinOp::KeepRight,
-                _ => break,
-            };
-            self.pos += 1;
-            let rhs = self.parse_add()?;
-            lhs = self.binary(op, lhs, rhs);
-        }
-        Ok(lhs)
+    /// The ADR 0040 meeting diagnostic: two operators with no relative rank
+    /// met without parentheses.
+    fn mixing_error(&self, left: &str, right: &str) -> ParseError {
+        self.error(format!(
+            "mixing `{left}` with `{right}` needs parentheses (ADR 0040)"
+        ))
     }
 
     /// `add_expr = mul_expr { ("+" | "-") mul_expr }`.
@@ -1089,21 +1144,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `if_expr = "if" or_expr "then" or_expr "else" or_expr` (ADR 0015).
+    /// `if_expr = "if" logic_expr "then" logic_expr "else" logic_expr`
+    /// (ADR 0015).
     fn parse_if(&mut self) -> Result<Expr, ParseError> {
         let start = self.cur_span().start;
         self.bump_keyword(); // `if`
-        let cond = self.parse_or()?;
+        let cond = self.parse_logic()?;
         if !self.at_keyword("then") {
             return Err(self.error("expected `then` after the `if` condition"));
         }
         self.bump_keyword(); // `then`
-        let then = self.parse_or()?;
+        let then = self.parse_logic()?;
         if !self.at_keyword("else") {
             return Err(self.error("expected `else` after the `then` branch"));
         }
         self.bump_keyword(); // `else`
-        let els = self.parse_or()?;
+        let els = self.parse_logic()?;
         let end = els.span.end;
         Ok(Expr {
             kind: ExprKind::If {
@@ -1115,9 +1171,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `lambda = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr`.  The
-    /// body is an `or_expr`, so a top-level `|>` inside a lambda must be
-    /// parenthesized.
+    /// `lambda = "|" [ ident { "," ident } ] "|" [ ":" type ] logic_expr`.
+    /// The body is a `logic_expr`, so a top-level `|>` inside a lambda must
+    /// be parenthesized.
     fn parse_lambda(&mut self) -> Result<Expr, ParseError> {
         let start = self.cur_span().start;
         self.pos += 1; // opening `|`
@@ -1134,7 +1190,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let body = self.parse_or()?;
+        let body = self.parse_logic()?;
         let span = Span::new(start, body.span.end);
         Ok(Expr {
             kind: ExprKind::Lambda {
@@ -2050,7 +2106,7 @@ mod tests {
         // The expression operators (`or`, `and`, `not`, `is`, `known`,
         // `missing`) and the statement keywords (`let`, `assert`) are recorded
         // like the declaration keywords, so a highlighter colors them.
-        let src = "view v { let t = a and b or not c; assert t is known; assert c is missing }";
+        let src = "view v { let t = (a and b) or not c; assert t is known; assert c is missing }";
         let tokens = tokenize(src).expect("should lex");
         let parsed = parse_with_meta(&tokens).expect("should parse");
         let words: Vec<&str> = parsed.keyword_spans.iter().map(|s| s.slice(src)).collect();
@@ -2195,35 +2251,73 @@ mod tests {
     }
 
     #[test]
-    fn tacks_sit_between_arithmetic_and_the_comparisons() {
-        // ADR 0031, Decision 6: looser than `+ -`, tighter than the
-        // comparisons.  Both operand slots of `parse_cmp` must route through
-        // the new level, so the right-hand assertion is as load-bearing as
-        // the left-hand one.
+    fn glue_operators_bind_looser_than_arithmetic() {
+        // ADR 0040, Decision 3: a glue operand is arithmetic-or-tighter, so
+        // a computed bound or default needs no parens on either side.
         assert_eq!(sexpr(&expr("a + b << c")), "(<< (+ a b) c)");
         assert_eq!(sexpr(&expr("a << b + c")), "(<< a (+ b c))");
-        assert_eq!(sexpr(&expr("a << b < c")), "(< (<< a b) c)");
-        assert_eq!(sexpr(&expr("a < b << c")), "(< a (<< b c))");
-        // Left-associative, and all four share the one level.
-        assert_eq!(sexpr(&expr("a << b >> c")), "(>> (<< a b) c)");
-        assert_eq!(sexpr(&expr("a <: b :> c")), "(:> (<: a b) c)");
+        assert_eq!(sexpr(&expr("a ?? b + c")), "(?? a (+ b c))");
+        assert_eq!(sexpr(&expr("a + b ?? c")), "(?? (+ a b) c)");
     }
 
     #[test]
-    fn coalesce_sits_between_the_tacks_and_the_comparisons() {
-        // ADR 0039, Decision 2: `??` is tighter than the comparisons, so a
-        // value discharge sits inside a comparison unparenthesized; both
-        // operand slots of `parse_cmp` route through the new level.
-        assert_eq!(sexpr(&expr("a ?? b < c")), "(< (?? a b) c)");
-        assert_eq!(sexpr(&expr("a < b ?? c")), "(< a (?? b c))");
-        // Looser than the tacks and arithmetic, so a computed default needs
-        // no parens: `a ?? b + c` is `a ?? (b + c)`.
-        assert_eq!(sexpr(&expr("a ?? b + c")), "(?? a (+ b c))");
-        assert_eq!(sexpr(&expr("a ?? b << c")), "(?? a (<< b c))");
-        // Right-associative: a chain discharges at its first present value.
+    fn glue_self_chains_keep_their_associativity() {
+        // ADR 0040, Decision 3: a chain is one operator.  `??` discharges
+        // right (its first present value wins, ADR 0039); a tack folds left
+        // (ADR 0031).
         assert_eq!(sexpr(&expr("a ?? b ?? c")), "(?? a (?? b c))");
-        // The boolean policy discharge takes parens, and they parse.
+        assert_eq!(sexpr(&expr("a << b << c")), "(<< (<< a b) c)");
+        assert_eq!(sexpr(&expr("a :> b :> c")), "(:> (:> a b) c)");
+    }
+
+    #[test]
+    fn mixed_glue_operators_need_parens() {
+        // ADR 0040, Decision 3: the glue operators have no rank against
+        // each other, so any mixed meeting is an error naming both.
+        for src in ["a << b >> c", "a ?? b << c", "a <: b :> c"] {
+            let err = expr_err(src);
+            assert!(err.message.contains("mixing"), "{src}: {}", err.message);
+            assert!(err.message.contains("ADR 0040"), "{src}: {}", err.message);
+        }
+        let err = expr_err("a << b >> c");
+        assert!(err.message.contains("`<<`"), "{}", err.message);
+        assert!(err.message.contains("`>>`"), "{}", err.message);
+        // Parenthesized, the clamp idiom parses.
+        assert_eq!(sexpr(&expr("(a << b) >> c")), "(>> (<< a b) c)");
+    }
+
+    #[test]
+    fn glue_meeting_a_comparison_needs_parens() {
+        // ADR 0040, Decision 3: no rank against the comparisons or `is`,
+        // on either side.
+        for src in ["a ?? b < c", "a < b ?? c", "a << b < c", "a ?? b is known"] {
+            let err = expr_err(src);
+            assert!(err.message.contains("mixing"), "{src}: {}", err.message);
+        }
+        let err = expr_err("a ?? b < c");
+        assert!(err.message.contains("`??`"), "{}", err.message);
+        assert!(err.message.contains("`<`"), "{}", err.message);
+        // Parenthesized, both readings are available.
+        assert_eq!(sexpr(&expr("(a ?? b) < c")), "(< (?? a b) c)");
         assert_eq!(sexpr(&expr("(a < b) ?? false")), "(?? (< a b) false)");
+        assert_eq!(sexpr(&expr("(a ?? b) is known")), "(is-known (?? a b))");
+    }
+
+    #[test]
+    fn glue_meeting_a_logic_word_needs_parens() {
+        // ADR 0040, Decisions 2 and 3: a logic word takes no
+        // unparenthesized glue operand, on either side, and the flag rides
+        // through a `not` prefix.
+        for src in ["a ?? b and c", "a and b ?? c", "not a ?? b and c"] {
+            let err = expr_err(src);
+            assert!(err.message.contains("mixing"), "{src}: {}", err.message);
+        }
+        let err = expr_err("a ?? b and c");
+        assert!(err.message.contains("`??`"), "{}", err.message);
+        assert!(err.message.contains("`and`"), "{}", err.message);
+        assert_eq!(sexpr(&expr("(a ?? b) and c")), "(and (?? a b) c)");
+        // The pipe is structural and accepts a glue result bare.
+        assert_eq!(sexpr(&expr("a ?? b |> f")), "(|> (?? a b) f)");
     }
 
     #[test]
@@ -2289,8 +2383,21 @@ mod tests {
     fn boolean_and_comparison_layering() {
         // `not` sits below the comparisons: `not a == b` is `not (a == b)`.
         assert_eq!(sexpr(&expr("not a == b")), "(not (== a b))");
-        // `and` binds tighter than `or`.
-        assert_eq!(sexpr(&expr("a or b and c")), "(or a (and b c))");
+        // A conjunction of comparisons needs no parens.
+        assert_eq!(sexpr(&expr("a < b and c < d")), "(and (< a b) (< c d))");
+        // ADR 0040, Decision 2: the logic level is homogeneous.  One word
+        // chains; mixing the two words is an error naming both.
+        assert_eq!(sexpr(&expr("a and b and c")), "(and (and a b) c)");
+        assert_eq!(sexpr(&expr("a or b or c")), "(or (or a b) c)");
+        for src in ["a or b and c", "a and b or c"] {
+            let err = expr_err(src);
+            assert!(err.message.contains("mixing"), "{src}: {}", err.message);
+            assert!(err.message.contains("ADR 0040"), "{src}: {}", err.message);
+        }
+        let err = expr_err("a and b or c");
+        assert!(err.message.contains("`and`"), "{}", err.message);
+        assert!(err.message.contains("`or`"), "{}", err.message);
+        assert_eq!(sexpr(&expr("(a and b) or c")), "(or (and a b) c)");
     }
 
     #[test]

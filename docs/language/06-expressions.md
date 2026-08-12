@@ -158,17 +158,16 @@ conditional is the introduction site for the deferred `is known` narrowing.
 
 ## Operators and precedence
 
-The operators, from loosest-binding to tightest:
+The precedence order is **partial** (ADR 0040).  The rule fits in a
+breath: school math chains, one logic word chains, and everything else
+takes parentheses.  The ordered spine, from loosest-binding to tightest:
 
 | Operators | Associativity | Notes |
 |---|---|---|
-| `\|>` | left | the pipe; its consumers are pipelines |
-| `or` | left | |
-| `and` | left | |
+| `\|>` | left | the pipe; loosest, accepts anything |
+| `or`, `and` | left | one homogeneous level: a chain is one word |
 | `not` | prefix | |
 | `== != < <= > >=`, `in`, `is known`, `is missing` | non-associative | |
-| `??` | right | the coalescing discharge (ADR 0039) |
-| `<< >>`, `<: :>` | left | binary minimum and maximum; keep-left and keep-right |
 | `+ -` | left | |
 | `* /` | left | |
 | `-` | prefix (unary) | |
@@ -177,13 +176,28 @@ The operators, from loosest-binding to tightest:
 | `#` | prefix | cardinality; its operand is a member access |
 | `.` | postfix | member access, tightest |
 
-Most operators use tokens the lexer already emits; ADR 0031 adds `#`, `<<`,
-`>>`, `<:`, and `:>`, and ADR 0039 adds `??`.  A few rules the layering
-implies:
+One level is **unranked**: `??` (the coalescing discharge, ADR 0039)
+and the tacks `<< >>`, `<: :>` (ADR 0031).  Its operands are
+arithmetic-or-tighter, so `a + b << c` is `(a + b) << c` and
+`r.previous ?? 0.0 * kelvin` needs no parens; a self-chain keeps its
+associativity (`??` discharges right, a tack folds left); and any other
+meeting, with a different unranked operator, a comparison, `is`, or a
+logic word, is a parse error naming both operators and the fix
+(`(a << hi) >> lo`, `(a ?? b) < c`, `(a < b) ?? false`).  The ladder is
+closed: a future operator is born unranked, and a rank must be earned
+by decision record (ADR 0040, Decision 4).
+
+Most operators use tokens the lexer already emits; ADR 0031 adds `#`,
+`<<`, `>>`, `<:`, and `:>`, and ADR 0039 adds `??`.  A few rules the
+layering implies:
 
 - **Comparisons do not chain.**  `a < b < c` is rejected; a conjunction
   (`a < b and b < c`) says it instead.  This keeps the comparison level
   non-associative and unambiguous.
+- **`and` and `or` do not mix bare.**  `a and b or c` is rejected;
+  `(a and b) or c` says which way it groups.  A chain of one word needs
+  no parens, and neither does a conjunction of comparisons,
+  `a < b and c < d`.
 - **`not` sits below the comparisons**, so `not a == b` is
   `not (a == b)`, matching the common reading.
 - **Unary minus and `^`.**  `^` binds tighter than unary minus, so
@@ -193,13 +207,6 @@ implies:
   negated argument.  `f - x` is subtraction; a negated argument must be
   parenthesized, `f (-x)`.  This is the one ambiguity juxtaposition
   introduces, and it is resolved in favour of the binary reading.
-- **`<<` and `>>` sit between arithmetic and the comparisons**, so
-  `a + b << c` is `(a + b) << c` and `a << b < c` is `(a << b) < c`.
-- **`??` sits between the tacks and the comparisons**, so a value
-  discharge sits inside a comparison unparenthesized
-  (`r.peak ?? limit < t` is `(r.peak ?? limit) < t`) while a boolean
-  policy discharge is written with parens, `(a < b) ?? false`, which
-  reads as the deliberate statement it is.
 - **`#` binds looser than `.` and tighter than the comparisons**, so
   `#b.x` is `#(b.x)` and `#b > 3` reads as written.  It also sits inside
   the application spine, so `f #b` is `f (#b)`.

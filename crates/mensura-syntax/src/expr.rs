@@ -109,12 +109,12 @@ pub enum BinOp {
     In,
     /// `??`, the coalescing discharge (ADR 0039, Decision 2): the left
     /// operand's value when present, the default otherwise.
-    /// Right-associative; tighter than the comparisons, looser than
-    /// `<< >>`, so `a ?? d < c` is `(a ?? d) < c` and a boolean policy
-    /// discharge is written with parens, `(a < b) ?? false`.
+    /// Right-associative self-chains; unranked (ADR 0040), so meeting a
+    /// comparison, another glue operator, or a logic word takes
+    /// parentheses: `(a ?? d) < c`, `(a < b) ?? false`.
     Coalesce,
-    /// `<<`, binary minimum (ADR 0031, Decision 6).  Looser than `+ -`,
-    /// tighter than the comparisons.
+    /// `<<`, binary minimum (ADR 0031, Decision 6).  Looser than `+ -`;
+    /// unranked against everything else (ADR 0040).
     Min,
     /// `>>`, binary maximum.
     Max,

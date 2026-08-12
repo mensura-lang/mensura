@@ -1,0 +1,17 @@
+// Rejected at parse: the tacks are unranked (ADR 0040, Decision 3), so a
+// chain is one operator and `<<` meeting `>>` bare is an error asking for
+// parentheses.  The clamp is written `(r.temperature << 100.0) >> 0.0`.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr {
+    temperature: real
+  }
+}
+
+view bad {
+  readings |> flat_map |k, r| ((.clamped = r.temperature << 100.0 >> 0.0))
+}

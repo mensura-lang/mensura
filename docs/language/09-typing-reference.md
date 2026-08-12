@@ -279,18 +279,16 @@ are curried, so partial application is an ordinary value (this is what lets
 pipeline stages compose under `|>`).  The pipe is reversed application
 (`x |> g` means `g x`); the checker routes both forms through one path, per
 `docs/toolkit/01-application-checking.md`.  Application binds tighter than every
-infix operator and looser than member access.  Operator precedence, loosest to
-tightest (`06`, "Operators and precedence"; grammar in `04-grammar.md`):
+infix operator and looser than member access.  Operator precedence is
+partial (ADR 0040; `06`, "Operators and precedence"; grammar in
+`04-grammar.md`).  The ordered spine, loosest to tightest:
 
 | Operators | Assoc. | Notes |
 | --- | --- | --- |
-| `\|>` | left | the pipe |
-| `or` | left | |
-| `and` | left | |
+| `\|>` | left | the pipe; accepts anything |
+| `or`, `and` | left | one homogeneous level: a chain is one word |
 | `not` | prefix | sits below the comparisons |
 | `== != < <= > >=`, `in`, `is known`, `is missing` | non-assoc. | do not chain |
-| `??` | right | the coalescing discharge (ADR 0039) |
-| `<< >>`, `<: :>` | left | binary minimum/maximum; the tacks (ADR 0031) |
 | `+ -` | left | |
 | `* /` | left | |
 | `-` (unary) | prefix | |
@@ -298,8 +296,17 @@ tightest (`06`, "Operators and precedence"; grammar in `04-grammar.md`):
 | application | left | juxtaposition |
 | `.` | postfix | member access, tightest |
 
-Comparisons do not chain (`a < b < c` is rejected).  `-` between two atoms is
-subtraction; a negated argument must be parenthesized, `f (-x)`.
+`??` (ADR 0039) and the tacks `<< >>`, `<: :>` (ADR 0031) are
+**unranked**, one level between the comparisons and `+ -`: operands are
+arithmetic-or-tighter, self-chains keep their associativity (`??`
+discharges right, a tack folds left), and meeting anything else, a
+different unranked operator, a comparison, `is`, or a logic word, is a
+parse error asking for parentheses.  In one breath: school math chains,
+one logic word chains, parenthesize the rest.
+
+Comparisons do not chain (`a < b < c` is rejected), and `and`/`or` do not
+mix bare (`(a and b) or c`).  `-` between two atoms is subtraction; a
+negated argument must be parenthesized, `f (-x)`.
 
 ### 5.3  The scalar rule: one known value
 
