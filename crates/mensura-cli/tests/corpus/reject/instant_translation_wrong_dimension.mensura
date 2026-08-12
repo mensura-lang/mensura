@@ -1,0 +1,20 @@
+// Rejected at resolve (typing): translation moves an instant by a
+// `time[real]` duration and nothing else (ADR 0036 decision 4), so a
+// kelvin quantity in the duration slot is the same compile error as any
+// other dimension mismatch.
+unit Machine {
+  id: string
+}
+
+registry cycles {
+  unit { Machine }
+  attr* {
+    started: instant
+    temperature: temperature[real]
+  }
+}
+
+view bad {
+  cycles |> flat_map |_, r|
+    if r.started + r.temperature > r.started then r else ()
+}

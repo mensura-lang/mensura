@@ -223,6 +223,37 @@ A backtick-quoted operator (`` `+` ``, `` `<<` ``, `` `:>` ``) is a
 operators is closed, so an unknown combiner is an error naming the table;
 it extends by decision record, never by assertion at a call site.
 
+### Temporal arithmetic (ADR 0036)
+
+The temporal point domains carry torsor arithmetic, not numeric
+arithmetic: a point and a duration are different things, and the
+operator rules keep them apart.  Three rows, gated by
+`formal/Mensura/Units/Torsor.lean` (ADR 0021):
+
+- `instant - instant : time[real]`.  The difference of two absolute
+  points is an ordinary duration, usable wherever a quantity is:
+  `r.ended - r.started > 10.0 * si.minute` is a plain dimensioned
+  comparison.
+- `instant + time[real] : instant` and `instant - time[real] : instant`.
+  A duration translates a point, and the point is written first; nothing
+  else moves a point.
+
+Nothing else types.  Two instants do not add (a point is not a
+quantity, ADR 0036 decision 3), a point never scales, `date` has no
+arithmetic at all until `diff(date)` is settled (decision 4), and
+`instant` never mixes with `date`: the two are different temporal
+families, and no conversion relates them without a zone.
+
+**Translation is exact-or-error.**  The duration operand must be a
+whole number of milliseconds, `instant`'s resolution: translating by
+`0.0001 * second` (a tenth of a millisecond) is an evaluation error,
+never a rounding.  Silent rounding could send equal points to unequal
+ones (breaking key identity) and would drift a window grid slowly and
+invisibly; an error at the first evaluation is the honest failure.  A
+result outside the representable range (years 0001-9999) is likewise an
+error.  The extents that matter most are const expressions, so the M5
+windows slice moves their check to compile time (ADR 0030).
+
 ## Cardinality and missing values
 
 A table keys a **multiset of nested rows**: at a key there may be no row

@@ -143,6 +143,95 @@ pub fn validate_date(s: &str) -> Result<(), String> {
     check_civil_date(year, month, day)
 }
 
+/// Milliseconds since the epoch of a *canonical* instant: the fixed-width
+/// UTC form `normalize_instant` produces and storage holds.  Anything else
+/// errs; the storage contract is the normal form, so a mismatch here is
+/// data corruption rather than input to repair.
+pub fn instant_to_ms(s: &str) -> Result<i64, String> {
+    let b = s.as_bytes();
+    let bad = || format!("`{s}` is not a normalized instant (`YYYY-MM-DDTHH:MM:SS.sssZ`)");
+    let field = |at: usize, n: usize| num(b, at, n).map_err(|()| bad());
+    let year = field(0, 4)?;
+    let month = field(5, 2)?;
+    let day = field(8, 2)?;
+    let hour = field(11, 2)?;
+    let minute = field(14, 2)?;
+    let second = field(17, 2)?;
+    let milli = field(20, 3)?;
+    let seps = lit(b, 4, b'-')
+        .and_then(|()| lit(b, 7, b'-'))
+        .and_then(|()| lit(b, 10, b'T'))
+        .and_then(|()| lit(b, 13, b':'))
+        .and_then(|()| lit(b, 16, b':'))
+        .and_then(|()| lit(b, 19, b'.'))
+        .and_then(|()| lit(b, 23, b'Z'));
+    if seps.is_err() || b.len() != 24 {
+        return Err(bad());
+    }
+    if check_civil_date(year, month, day).is_err() || hour > 23 || minute > 59 || second > 59 {
+        return Err(bad());
+    }
+    Ok(days_from_civil(year, month, day) * 86_400_000
+        + hour * 3_600_000
+        + minute * 60_000
+        + second * 1_000
+        + milli)
+}
+
+/// The canonical text of a millisecond count.  Errs when the point leaves
+/// the representable range (years 0001-9999, ADR 0036 decision 6), which is
+/// how a translation past either end fails.
+pub fn ms_to_instant(ms: i64) -> Result<String, String> {
+    let (year, month, day) = civil_from_days(ms.div_euclid(86_400_000));
+    if !(1..=9999).contains(&year) {
+        return Err("the result leaves the representable range (years 0001-9999, ADR 0036)".into());
+    }
+    let in_day = ms.rem_euclid(86_400_000);
+    let (hour, minute, second, milli) = (
+        in_day / 3_600_000,
+        in_day / 60_000 % 60,
+        in_day / 1_000 % 60,
+        in_day % 1_000,
+    );
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{milli:03}Z"
+    ))
+}
+
+/// The whole-millisecond predicate of ADR 0036 decision 6: a `time[real]`
+/// magnitude (a count of seconds) converts to an exact integer millisecond
+/// count, or the operation is rejected.  It never rounds: silent rounding
+/// can break key identity and drifts a window grid invisibly.
+///
+/// The tolerance is one ULP of the converted magnitude (approximated as
+/// `|ms| * EPSILON`, within a factor of two of the true ULP for normal
+/// values).  This is the ADR's recommended reading; the exact predicate is
+/// its open question, owned by the deferred `precision` library, so this is
+/// deliberately the simplest faithful implementation.
+pub fn whole_milliseconds(seconds: f64) -> Result<i64, String> {
+    if !seconds.is_finite() {
+        return Err(format!("{seconds} is not a finite duration"));
+    }
+    let ms = seconds * 1000.0;
+    let nearest = ms.round();
+    if (ms - nearest).abs() > ms.abs() * f64::EPSILON {
+        return Err(format!(
+            "{seconds} s is not a whole number of milliseconds: translation is \
+             exact-or-error (ADR 0036 decision 6), so the duration is rejected, \
+             not rounded"
+        ));
+    }
+    // Past 2^53 adjacent integer counts are no longer exactly representable,
+    // and no in-range translation needs one.
+    if nearest.abs() >= 9.007_199_254_740_992e15 {
+        return Err(format!(
+            "duration out of range: {seconds} s exceeds the exactly representable \
+             millisecond counts"
+        ));
+    }
+    Ok(nearest as i64)
+}
+
 /// Read `n` ASCII digits at `at` as a number; `Err` on anything else.
 fn num(b: &[u8], at: usize, n: usize) -> Result<i64, ()> {
     let slice = b.get(at..at + n).ok_or(())?;
@@ -306,6 +395,51 @@ mod tests {
             let e = validate_date(input).expect_err(input);
             assert!(e.contains(needle), "{input}: {e}");
         }
+    }
+
+    #[test]
+    fn instant_ms_round_trips_the_canonical_form() {
+        assert_eq!(instant_to_ms("1970-01-01T00:00:00.000Z"), Ok(0));
+        assert_eq!(instant_to_ms("1970-01-01T00:00:01.500Z"), Ok(1500));
+        assert_eq!(instant_to_ms("1969-12-31T23:59:59.999Z"), Ok(-1));
+        for s in [
+            "0001-01-01T00:00:00.000Z",
+            "1969-12-31T23:59:59.999Z",
+            "2026-08-12T08:07:31.221Z",
+            "9999-12-31T23:59:59.999Z",
+        ] {
+            let ms = instant_to_ms(s).expect(s);
+            assert_eq!(ms_to_instant(ms).as_deref(), Ok(s), "{s}");
+        }
+        // Only the canonical form converts: this path reads storage, where
+        // anything else is corruption, not input.
+        assert!(instant_to_ms("2026-08-12T08:07:31Z").is_err());
+        assert!(instant_to_ms("2026-08-12t08:07:31.221z").is_err());
+        // Translation past either end of the range errs (ADR 0036).
+        let last = instant_to_ms("9999-12-31T23:59:59.999Z").unwrap();
+        assert!(ms_to_instant(last + 1).is_err());
+        let first = instant_to_ms("0001-01-01T00:00:00.000Z").unwrap();
+        assert!(ms_to_instant(first - 1).is_err());
+    }
+
+    #[test]
+    fn whole_milliseconds_is_exact_or_error() {
+        // Whole counts pass, including the zero and negative ones.
+        assert_eq!(whole_milliseconds(900.0), Ok(900_000));
+        assert_eq!(whole_milliseconds(0.0), Ok(0));
+        assert_eq!(whole_milliseconds(-1.5), Ok(-1500));
+        assert_eq!(whole_milliseconds(0.001), Ok(1));
+        // A fraction of a millisecond is rejected, not rounded (ADR 0036
+        // decision 6): rounding would drift a window grid invisibly.
+        assert!(
+            whole_milliseconds(0.0001)
+                .unwrap_err()
+                .contains("not rounded")
+        );
+        assert!(whole_milliseconds(1.0005).is_err());
+        assert!(whole_milliseconds(f64::NAN).is_err());
+        assert!(whole_milliseconds(f64::INFINITY).is_err());
+        assert!(whole_milliseconds(1.0e16).is_err());
     }
 
     #[test]

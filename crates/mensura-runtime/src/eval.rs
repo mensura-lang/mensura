@@ -18,6 +18,7 @@ use mensura_syntax::{BinOp, Expr, ExprKind, Presence, Stmt, UnOp};
 use mensura_types::{ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
 
 use crate::backend::{StorageBackend, StorageError};
+use crate::temporal;
 use crate::value::{Row, Value};
 
 /// A processing-layer failure.
@@ -1609,6 +1610,33 @@ fn arithmetic(op: BinOp, a: Value, b: Value) -> Result<Value, EvalError> {
             Ok(exp) => Ok(Value::Real(x.powi(exp))),
             Err(_) => err("`^` exponent out of range"),
         },
+        // The torsor difference (ADR 0036 decision 4): `instant - instant`
+        // is a `time[real]`, computed as an exact integer millisecond count
+        // and converted *once* to the normalized seconds magnitude
+        // (decision 6), never accumulated in floating point.
+        (Value::Instant(x), Value::Instant(y)) if op == BinOp::Sub => {
+            let xm = temporal::instant_to_ms(&x).map_err(|message| EvalError { message })?;
+            let ym = temporal::instant_to_ms(&y).map_err(|message| EvalError { message })?;
+            Ok(Value::Real((xm - ym) as f64 / 1000.0))
+        }
+        // Torsor translation: `instant +/- time[real]`, exact-or-error
+        // (ADR 0036 decision 6): the duration must be a whole number of
+        // milliseconds, and the result must stay in the representable range.
+        (Value::Instant(t), Value::Real(d)) if matches!(op, BinOp::Add | BinOp::Sub) => {
+            let ms = temporal::whole_milliseconds(d).map_err(|message| EvalError { message })?;
+            let base = temporal::instant_to_ms(&t).map_err(|message| EvalError { message })?;
+            let moved = match op {
+                BinOp::Add => base.checked_add(ms),
+                BinOp::Sub => base.checked_sub(ms),
+                _ => unreachable!(),
+            };
+            let Some(moved) = moved else {
+                return err("translation overflows the millisecond grid");
+            };
+            temporal::ms_to_instant(moved)
+                .map(Value::Instant)
+                .map_err(|message| EvalError { message })
+        }
         _ => internal("arithmetic on values the checker should have rejected"),
     }
 }
@@ -1680,6 +1708,47 @@ pub fn materialize_views<B: StorageBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instant_arithmetic_follows_the_torsor() {
+        // ADR 0036 decision 4 at runtime: difference is a seconds magnitude
+        // computed from an exact millisecond count, and translation is
+        // exact-or-error (decision 6).
+        let t = Value::Instant("2026-08-12T08:00:00.000Z".into());
+        let u = Value::Instant("2026-08-12T08:15:00.000Z".into());
+        assert_eq!(
+            arithmetic(BinOp::Sub, u.clone(), t.clone()),
+            Ok(Value::Real(900.0))
+        );
+        assert_eq!(
+            arithmetic(BinOp::Add, t.clone(), Value::Real(900.0)),
+            Ok(u.clone())
+        );
+        assert_eq!(
+            arithmetic(BinOp::Sub, u.clone(), Value::Real(900.0)),
+            Ok(t.clone())
+        );
+        // `t + (u - t) == u` across the whole representable range: the
+        // round-trip property decision 9 proves on the grid, exercised here
+        // through the one seconds<->milliseconds float conversion whose
+        // safety decision 6's bound states.
+        let first = Value::Instant("0001-01-01T00:00:00.000Z".into());
+        let last = Value::Instant("9999-12-31T23:59:59.999Z".into());
+        let diff = arithmetic(BinOp::Sub, last.clone(), first.clone()).expect("subtracts");
+        assert_eq!(arithmetic(BinOp::Add, first, diff), Ok(last));
+    }
+
+    #[test]
+    fn translation_is_exact_or_error() {
+        let t = Value::Instant("2026-08-12T08:00:00.000Z".into());
+        // A tenth of a millisecond is rejected, not rounded.
+        let e = arithmetic(BinOp::Add, t.clone(), Value::Real(0.0001)).expect_err("sub-ms");
+        assert!(e.message.contains("whole number of milliseconds"), "{e}");
+        // A translation past the representable range is an error, not a wrap.
+        let last = Value::Instant("9999-12-31T23:59:59.999Z".into());
+        let e = arithmetic(BinOp::Add, last, Value::Real(0.001)).expect_err("range");
+        assert!(e.message.contains("representable range"), "{e}");
+    }
 
     /// Resolve a source and return its program (the test frontend).
     fn program(src: &str) -> ResolvedProgram {
