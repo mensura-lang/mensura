@@ -1725,19 +1725,9 @@ fn type_to_real(ctx: &Context, arg: &Expr) -> Result<Ty, Vec<TypeError>> {
 
 fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     match op {
-        // `+`/`-` require *equal* domains, dimension included (ADR 0026):
-        // `meter + second`, and `meter + 1.0`, are rejected by the match.
-        BinOp::Add | BinOp::Sub => {
-            let domain = matching_operands(
-                ctx,
-                lhs,
-                rhs,
-                ColumnType::is_numeric,
-                "arithmetic",
-                "a number",
-            )?;
-            Ok(total(domain))
-        }
+        // `+`/`-` require *equal* numeric domains, dimension included
+        // (ADR 0026), plus the three torsor rows of ADR 0036 decision 4.
+        BinOp::Add | BinOp::Sub => type_add_sub(ctx, op, lhs, rhs),
         BinOp::Mul => type_mul(ctx, lhs, rhs),
         BinOp::Div => type_div(ctx, lhs, rhs),
         BinOp::Pow => type_pow(ctx, lhs, rhs),
@@ -1797,6 +1787,105 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
         }
         BinOp::In => type_membership(ctx, lhs, rhs),
         BinOp::Pipe => apply_value(ctx, rhs, Some(lhs)),
+    }
+}
+
+/// `+`/`-` (ADR 0014, ADR 0026, ADR 0036).  Matching numeric domains,
+/// dimension included, so `meter + second` and `meter + 1.0` are rejected;
+/// plus the three torsor rows of ADR 0036 decision 4, gated by
+/// `formal/Mensura/Units/Torsor.lean`:
+///
+/// * `instant - instant : time[real]` (difference),
+/// * `instant + time[real] : instant` and `instant - time[real] : instant`
+///   (translation; the whole-millisecond exactness of decision 6 is checked
+///   at evaluation for data-dependent durations).
+///
+/// Nothing else: points do not add, a point never scales, and the temporal
+/// families never mix (decision 1: `instant - date` is a category error no
+/// conversion silently repairs).  `diff(date)` is deferred, so `date`
+/// supports no arithmetic at all.  The rejections below are spelled per
+/// case, because each has a different fix and the generic "expects a
+/// number" would send the author the wrong way.
+fn type_add_sub(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    // Type the operands with no domain predicate up front: which pairs are
+    // admissible is decided by the match below, so a torsor operand is not
+    // prematurely rejected as "not a number".
+    let mut errs = Vec::new();
+    let ld = operand_domain(ctx, lhs, |_| true, "arithmetic", "a value", &mut errs);
+    let rd = operand_domain(ctx, rhs, |_| true, "arithmetic", "a value", &mut errs);
+    let (Some(ld), Some(rd)) = (ld, rd) else {
+        return Err(errs);
+    };
+    let duration = Dimension::base("time")
+        .expect("time is a base dimension")
+        .applied();
+    let reject = |message: String| Err(vec![TypeError::new(message, lhs.span)]);
+    match (op, &ld, &rd) {
+        // Difference: `instant - instant : time[real]`.
+        (BinOp::Sub, ColumnType::Instant, ColumnType::Instant) => Ok(total(duration)),
+        // Points do not add (ADR 0036 decision 3).
+        (BinOp::Add, ColumnType::Instant, ColumnType::Instant) => reject(
+            "two instants do not add: points are not quantities (ADR 0036); \
+             subtract them for a `time[real]` duration, or translate one by a \
+             duration"
+                .into(),
+        ),
+        // Translation: `instant +/- time[real] : instant`.
+        (_, ColumnType::Instant, rd) if *rd == duration => Ok(total(ColumnType::Instant)),
+        // Translation writes the point on the left; a duration does not
+        // left-translate (decision 4 has exactly two operation families).
+        (BinOp::Add, rd, ColumnType::Instant) if *rd == duration => reject(
+            "translation writes the point first: `instant + duration`, not \
+             `duration + instant` (ADR 0036)"
+                .into(),
+        ),
+        // The families never mix (decision 1).
+        (_, ColumnType::Instant, ColumnType::Date) | (_, ColumnType::Date, ColumnType::Instant) => {
+            reject(
+                "`instant` and `date` are different temporal families (absolute \
+                 versus civil, ADR 0036): no conversion relates them without a \
+                 zone, so they never share an operator"
+                    .into(),
+            )
+        }
+        // `diff(date)` is deferred (ADR 0036 decision 4).
+        (_, ColumnType::Date, _) | (_, _, ColumnType::Date) => reject(
+            "`date` supports no arithmetic: its difference type is deferred \
+             (ADR 0036 decision 4) until a consumer settles it"
+                .into(),
+        ),
+        // Any other instant pairing: name what the domain does support.
+        (_, ColumnType::Instant, other) | (_, other, ColumnType::Instant) => reject(format!(
+            "`instant` subtracts another instant (giving `time[real]`) or \
+             translates by a `time[real]` duration (ADR 0036); found {}",
+            domain_name(other)
+        )),
+        // The numeric rule (ADR 0026): equal domains, dimension included.
+        _ => {
+            for (domain, operand) in [(&ld, lhs), (&rd, rhs)] {
+                if !domain.is_numeric() {
+                    errs.push(TypeError::new(
+                        format!(
+                            "arithmetic expects a number, found a {}",
+                            domain_name(domain)
+                        ),
+                        operand.span,
+                    ));
+                }
+            }
+            if !errs.is_empty() {
+                return Err(errs);
+            }
+            if ld == rd {
+                Ok(total(ld))
+            } else {
+                reject(format!(
+                    "arithmetic expects operands of the same type, found {} and {}",
+                    domain_name(&ld),
+                    domain_name(&rd)
+                ))
+            }
+        }
     }
 }
 
@@ -2373,6 +2462,8 @@ mod tests {
                     ColumnRole::Attr,
                     false,
                 ),
+                scol("started", ColumnType::Instant, ColumnRole::Attr, false),
+                scol("ended", ColumnType::Instant, ColumnRole::Attr, false),
             ],
             cardinality: crate::table::Cardinality::Singletons,
             foreign_keys: Vec::new(),
@@ -2414,6 +2505,40 @@ mod tests {
             ambient.insert(name.to_string(), Ty::Record(members));
         }
         ambient
+    }
+
+    #[test]
+    fn torsor_rows_type_instant_arithmetic() {
+        // ADR 0036 decision 4, gated by `formal/Mensura/Units/Torsor.lean`:
+        // difference is a `time[real]` duration, translation returns the
+        // point, and nothing else types.
+        let ctx = row_ctx();
+        let duration = total(Dimension::base("time").unwrap().applied());
+        assert_eq!(ty_of(&ctx, "r.ended - r.started"), Ok(duration));
+        assert_eq!(
+            ty_of(&ctx, "r.started + (r.ended - r.started)"),
+            Ok(total(ColumnType::Instant))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.ended - (r.ended - r.started)"),
+            Ok(total(ColumnType::Instant))
+        );
+    }
+
+    #[test]
+    fn torsor_rejections_name_their_rule() {
+        let ctx = row_ctx();
+        let msg = |src: &str| ty_of(&ctx, src).expect_err(src)[0].message.clone();
+        // Points do not add (decision 3).
+        assert!(msg("r.started + r.ended").contains("points are not quantities"));
+        // The families never mix (decision 1); `r.at` is a `date`.
+        assert!(msg("r.started - r.at").contains("different temporal families"));
+        // `diff(date)` is deferred (decision 4).
+        assert!(msg("r.at - r.at").contains("deferred"));
+        // Translation is by a `time[real]` only, and writes the point first.
+        assert!(msg("r.started + r.kelvin_reading").contains("time[real]"));
+        assert!(msg("r.started + 1.0").contains("time[real]"));
+        assert!(msg("(r.ended - r.started) + r.started").contains("point first"));
     }
 
     #[test]

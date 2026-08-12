@@ -1,0 +1,18 @@
+// Rejected at resolve (typing): points are not quantities (ADR 0036
+// decision 3), so two instants do not add.  Only their differences are
+// quantities, and only durations translate.
+unit Machine {
+  id: string
+}
+
+registry cycles {
+  unit { Machine }
+  attr* {
+    started: instant
+    ended: instant
+  }
+}
+
+view bad {
+  cycles |> map_bags |k, b| (.nonsense = fold `+` (|r| r.started + r.ended) b)
+}

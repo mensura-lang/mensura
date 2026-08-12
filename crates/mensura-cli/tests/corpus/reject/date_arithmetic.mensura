@@ -1,0 +1,20 @@
+// Rejected at resolve (typing): `diff(date)` is deferred (ADR 0036
+// decision 4), so `date` supports no arithmetic at all until a consumer
+// settles its difference type (`period`, an exact whole-day civil
+// quantity, is the named successor).
+unit Machine {
+  id: string
+}
+
+registry services {
+  unit { Machine }
+  attr* {
+    commissioned: date
+    last_service: date
+  }
+}
+
+view bad {
+  services
+    |> map_bags |k, b| (.gap = fold `+` (|r| r.last_service - r.commissioned) b)
+}

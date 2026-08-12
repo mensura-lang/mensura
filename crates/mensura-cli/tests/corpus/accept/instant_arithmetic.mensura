@@ -1,0 +1,36 @@
+// The torsor rows of ADR 0036 decision 4, gated by
+// `formal/Mensura/Units/Torsor.lean`: two instants subtract to a
+// `time[real]` duration, a duration translates an instant, and the results
+// flow into dimensioned comparison and aggregation like any quantity.
+import si
+
+unit Machine {
+  id: string
+}
+
+registry cycles {
+  unit { Machine }
+  attr* {
+    started: instant
+    ended: instant
+  }
+}
+
+// The difference is an ordinary `time[real]`: compare it against an `si`
+// duration, and translate the start to test against a deadline.
+view long_cycles {
+  cycles |> flat_map |_, r|
+    if r.ended - r.started > 10.0 * si.minute then r else ()
+}
+
+view overran_grace {
+  cycles |> flat_map |_, r|
+    if r.ended > r.started + 30.0 * second then r else ()
+}
+
+// Durations aggregate like any quantity: the fold that was rejected while
+// `instant` had no arithmetic now types at `time[real]`.  The bag registry
+// reduces at its own key with no `assume` (ADR 0033).
+view machine_runtime {
+  cycles |> map_bags |k, b| (.total = fold `+` (|r| r.ended - r.started) b)
+}
