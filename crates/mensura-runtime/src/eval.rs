@@ -1436,10 +1436,14 @@ fn apply_value_fn(scope: &Scope, head: &Expr, args: &[&Expr]) -> Result<RtVal, E
     }
     match (name.as_str(), eval_scalar(scope, arg)?) {
         ("to_real", RtVal::V(Value::Int(i))) => Ok(RtVal::V(Value::Real(i as f64))),
+        // `to_real` lifts over the missing axis (ADR 0039): absent in,
+        // absent out, at the value and at each bag element.
+        ("to_real", RtVal::V(Value::Missing)) => Ok(RtVal::V(Value::Missing)),
         ("to_real", RtVal::Bag(vs)) => Ok(RtVal::Bag(
             vs.into_iter()
                 .map(|v| match v {
                     Value::Int(i) => Ok(Value::Real(i as f64)),
+                    Value::Missing => Ok(Value::Missing),
                     _ => internal("`to_real` on a non-int bag element"),
                 })
                 .collect::<Result<_, _>>()?,
@@ -1470,6 +1474,8 @@ fn eval_unary(scope: &Scope, op: UnOp, operand: &Expr) -> Result<RtVal, EvalErro
     }
     let v = eval_value(scope, operand)?;
     let out = match (op, v) {
+        // Absence absorbs through the unary operators too (ADR 0039).
+        (_, Value::Missing) => Value::Missing,
         (UnOp::Not, Value::Bool(b)) => Value::Bool(!b),
         (UnOp::Neg, Value::Int(i)) => Value::Int(match i.checked_neg() {
             Some(n) => n,
@@ -1482,28 +1488,32 @@ fn eval_unary(scope: &Scope, op: UnOp, operand: &Expr) -> Result<RtVal, EvalErro
 }
 
 fn eval_binary(scope: &Scope, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<RtVal, EvalError> {
-    match op {
-        // Short-circuit before evaluating the right side.
-        BinOp::And => {
-            let out = eval_bool(scope, lhs)? && eval_bool(scope, rhs)?;
-            return Ok(RtVal::V(Value::Bool(out)));
-        }
-        BinOp::Or => {
-            let out = eval_bool(scope, lhs)? || eval_bool(scope, rhs)?;
-            return Ok(RtVal::V(Value::Bool(out)));
-        }
-        // `x |> op` is `op x` (ADR 0018).
-        BinOp::Pipe => {
-            let (head, mut args) = flatten_app(rhs);
-            args.push(lhs);
-            return apply_value_fn(scope, head, &args);
-        }
-        _ => {}
+    // `x |> op` is `op x` (ADR 0018).
+    if op == BinOp::Pipe {
+        let (head, mut args) = flatten_app(rhs);
+        args.push(lhs);
+        return apply_value_fn(scope, head, &args);
     }
 
     let a = eval_value(scope, lhs)?;
     let b = eval_value(scope, rhs)?;
+    // Absence absorbs (ADR 0039 decision 1): a missing operand makes every
+    // lifted operator's result missing.  This is why `and`/`or` evaluate
+    // both sides rather than short-circuiting: `false and missing` is
+    // missing, not false (three-valued logic was rejected), and evaluating
+    // the discarded side is the tacks' precedent anyway.  `??` is the one
+    // exception, being the discharge itself.
+    if op != BinOp::Coalesce && (matches!(a, Value::Missing) || matches!(b, Value::Missing)) {
+        return Ok(RtVal::V(Value::Missing));
+    }
     let out = match op {
+        BinOp::And | BinOp::Or => match (&a, &b) {
+            (Value::Bool(x), Value::Bool(y)) => Value::Bool(match op {
+                BinOp::And => *x && *y,
+                _ => *x || *y,
+            }),
+            _ => return internal("a boolean operator on non-boolean values"),
+        },
         BinOp::Eq => Value::Bool(values_equal(&a, &b)?),
         BinOp::Ne => Value::Bool(!values_equal(&a, &b)?),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -1546,7 +1556,7 @@ fn eval_binary(scope: &Scope, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<RtVal
         BinOp::In => {
             return err("`in` is not yet executable (docs/toolkit/04-processing-layer.md)");
         }
-        BinOp::And | BinOp::Or | BinOp::Pipe => unreachable!("handled above"),
+        BinOp::Pipe => unreachable!("handled above"),
     };
     Ok(RtVal::V(out))
 }
@@ -1846,6 +1856,73 @@ mod tests {
                 Value::Missing,
                 Value::Enum("degraded".into()),
             ]]
+        );
+    }
+
+    #[test]
+    fn absence_absorbs_through_the_lifted_operators() {
+        // ADR 0039 decision 1 at runtime: a missing operand makes every
+        // lifted operator's result missing.  The third column pins the
+        // absorbing (not Kleene) reading: `false and missing` is missing.
+        let rows = eval(
+            r#"view lifted {
+                 machines |> flat_map |_, r| (
+                   .same = r.last_service == r.last_service,
+                   .and_true  = (r.hours > 0) and (r.last_service == r.last_service),
+                   .and_false = (r.hours < 0) and (r.last_service == r.last_service),
+                   .negated   = not (r.last_service == r.last_service)
+                 )
+               }"#,
+            vec![
+                machine("m1", "operational", 10, Some("2026-01-01")),
+                machine("m2", "degraded", 20, None),
+            ],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    Value::String("m1".into()),
+                    Value::Bool(true),
+                    Value::Bool(true),
+                    Value::Bool(false),
+                    Value::Bool(false),
+                ],
+                vec![
+                    Value::String("m2".into()),
+                    Value::Missing,
+                    Value::Missing,
+                    Value::Missing,
+                    Value::Missing,
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn to_real_lifts_over_a_missing_value() {
+        // Regression: `to_real` was already lifted in the checker, but the
+        // evaluator crashed on a missing operand before ADR 0039.
+        let rows = eval_over(
+            r#"
+                unit K { id: string }
+                store counts { unit { K } attr { n: int? } }
+            "#,
+            r#"view reals { counts |> flat_map |_, r| (.x = to_real r.n) }"#,
+            &[(
+                "counts",
+                vec![
+                    vec![Value::String("k1".into()), Value::Int(3)],
+                    vec![Value::String("k2".into()), Value::Missing],
+                ],
+            )],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![Value::String("k1".into()), Value::Real(3.0)],
+                vec![Value::String("k2".into()), Value::Missing],
+            ]
         );
     }
 

@@ -628,16 +628,23 @@ fn schema_to_content(schema: RowSchema) -> (Vec<Column>, Totality) {
     (columns, totality)
 }
 
-/// Require an expression to be a known boolean (an `if` condition), returning any
-/// diagnostics.
+/// Require an expression to be a *total* boolean (an `if` condition): the
+/// branching boundary of ADR 0039 decision 3.
 fn require_known_bool(ctx: &Context, cond: &Expr) -> Vec<TypeError> {
     match type_expr(ctx, cond) {
         Err(e) => e,
-        Ok(Ty::Bool) => Vec::new(),
         Ok(Ty::Value {
             domain: ColumnType::Bool,
             opt: Optionality::Total,
         }) => Vec::new(),
+        Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt: Optionality::Optional,
+        }) => error(
+            "an `if` condition may be missing; state the absent-row policy \
+             with `?? true` or `?? false` (ADR 0039)",
+            cond.span,
+        ),
         Ok(_) => error("an `if` condition must be a known boolean", cond.span),
     }
 }
@@ -806,8 +813,17 @@ fn op_split(
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "split", 1, span)?;
     let ctx = Context::key(&sources.ambient, params[0], &table);
-    if type_expr(&ctx, body)? != Ty::Bool {
-        return Err(error("`split`'s predicate must be a boolean", body.span));
+    if !matches!(
+        type_expr(&ctx, body)?,
+        Ty::Value {
+            domain: ColumnType::Bool,
+            opt: Optionality::Total,
+        }
+    ) {
+        return Err(error(
+            "`split`'s predicate must be a known boolean",
+            body.span,
+        ));
     }
     let id = SplitId(span.start as u32);
     let (left, right) = table.qualifiers.lineage.split(id);
@@ -931,7 +947,6 @@ fn lambda_params<'a>(
 fn column_of(ty: &Ty) -> Option<(ColumnType, Optionality)> {
     match ty {
         Ty::Value { domain, opt } => Some((domain.clone(), *opt)),
-        Ty::Bool => Some((ColumnType::Bool, Optionality::Total)),
         Ty::Bag { .. } | Ty::Rows(_) | Ty::Record(_) | Ty::Desc(_) | Ty::Fn(_) | Ty::Builtin(_) => {
             None
         }
@@ -1783,10 +1798,11 @@ mod tests {
     #[test]
     fn map_propagates_field_errors() {
         let s = sample_sources();
-        // `peak` is optional, so a scalar on it is rejected by expr_check.
+        // `peak` is a `real?`, so `+ 1` is an int/real mismatch: optionality
+        // lifts (ADR 0039), the domain rule still rejects.
         let errs =
-            pipe_ty(&s, "readings |> flat_map |k, r| (.x = r.peak + 1)").expect_err("optional");
-        assert!(errs[0].message.contains("known value"));
+            pipe_ty(&s, "readings |> flat_map |k, r| (.x = r.peak + 1)").expect_err("mismatch");
+        assert!(errs[0].message.contains("same type"));
     }
 
     #[test]
@@ -1910,7 +1926,7 @@ mod tests {
     fn split_rejects_non_bool_predicate() {
         let s = sample_sources();
         let errs = pipe_ty(&s, "readings |> split |k| k.ts").expect_err("non-bool");
-        assert!(errs[0].message.contains("must be a boolean"));
+        assert!(errs[0].message.contains("must be a known boolean"));
     }
 
     #[test]

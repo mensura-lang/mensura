@@ -1,0 +1,19 @@
+// Rejected at resolve (typing): a fold accumulates total values (ADR 0039
+// decision 3), so a mapper that may produce a missing value is refused; no
+// aggregate skips absent values silently, the way SQL's do.  The fix is a
+// visible discharge (`??`) upstream, or a filter.  `#b` is unaffected: it
+// counts rows, never values.
+unit Machine {
+  id: string
+}
+
+registry samples {
+  unit { Machine }
+  attr* {
+    amplitude: real?
+  }
+}
+
+view bad {
+  samples |> map_bags |k, b| (.total = fold `+` (|r| r.amplitude) b)
+}

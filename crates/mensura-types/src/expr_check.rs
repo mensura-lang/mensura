@@ -47,8 +47,6 @@ pub enum Ty {
         domain: ColumnType,
         opt: Optionality,
     },
-    /// A boolean: the result of a predicate, comparison, or presence test.
-    Bool,
     /// The **fiber**: the bag of rows at one key (ADR 0031, Decision 1).  This
     /// is the type of the `b` in `map_bags |k, b| ...`, and it matches
     /// `formal/Mensura/Core/Defs.lean`'s `rows : K -> Multiset (Row H σ)`
@@ -780,7 +778,7 @@ pub fn type_expr(ctx: &Context, expr: &Expr) -> Result<Ty, Vec<TypeError>> {
         ExprKind::Int(_) => Ok(total(ColumnType::Int)),
         ExprKind::Float(_) => Ok(total(ColumnType::Real)),
         ExprKind::Str(_) => Ok(total(ColumnType::String)),
-        ExprKind::Bool(_) => Ok(Ty::Bool),
+        ExprKind::Bool(_) => Ok(total(ColumnType::Bool)),
         ExprKind::Name(name) => type_name(ctx, name, expr.span),
         ExprKind::Member(base, field) => type_member(ctx, base, field),
         ExprKind::Binary(op, lhs, rhs) => type_binary(ctx, *op, lhs, rhs),
@@ -1332,7 +1330,6 @@ fn type_fold(
 fn accumulator_domain(mapped: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<TypeError>> {
     let (domain, opt) = match mapped {
         Ty::Value { domain, opt } => (domain.clone(), *opt),
-        Ty::Bool => (ColumnType::Bool, Optionality::Total),
         other => {
             return Err(vec![TypeError::new(
                 format!(
@@ -1345,7 +1342,10 @@ fn accumulator_domain(mapped: &Ty, what: &str, span: Span) -> Result<ColumnType,
     };
     if opt == Optionality::Optional {
         return Err(vec![TypeError::new(
-            format!("{what} requires a total bag; this mapper may produce a missing value"),
+            format!(
+                "{what} requires a total bag; this mapper may produce a missing value, \
+                 so discharge it with `??` upstream (ADR 0039)"
+            ),
             span,
         )]);
     }
@@ -1475,7 +1475,7 @@ fn require_orderable_key(key_ty: &Ty, what: &str, span: Span) -> Result<(), Vec<
                     format!(
                         "{what}'s order key may produce a missing value, which \
                          has no position in the order; filter the bag or \
-                         coalesce the key first"
+                         discharge the key with `??` first (ADR 0039)"
                     ),
                     span,
                 )]);
@@ -1630,10 +1630,6 @@ fn type_map(ctx: &Context, mapper: &Ty, bag: &Ty, span: Span) -> Result<Ty, Vec<
     let element = element_of(bag, "`map`", span)?;
     match apply_mapper(ctx, mapper, element, "`map`", span)? {
         Ty::Value { domain, opt } => Ok(Ty::Bag { domain, opt }),
-        Ty::Bool => Ok(Ty::Bag {
-            domain: ColumnType::Bool,
-            opt: Optionality::Total,
-        }),
         other => Err(vec![TypeError::new(
             format!(
                 "`map`'s mapper must produce a value, found {}",
@@ -1649,7 +1645,6 @@ fn ty_name(ty: &Ty) -> String {
     match ty {
         Ty::Value { domain, .. } => domain_name(domain),
         Ty::Bag { domain, .. } => format!("bag of {}", domain_name(domain)),
-        Ty::Bool => "bool".to_string(),
         Ty::Rows(_) => "bag of rows".to_string(),
         Ty::Record(_) => "record".to_string(),
         Ty::Desc(inner) => format!("descending {}", ty_name(inner)),
@@ -1732,7 +1727,7 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
         BinOp::Div => type_div(ctx, lhs, rhs),
         BinOp::Pow => type_pow(ctx, lhs, rhs),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            matching_operands(
+            let (_, opt) = matching_operands(
                 ctx,
                 lhs,
                 rhs,
@@ -1740,7 +1735,10 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
                 "a comparison",
                 "an orderable value (int, real, or date)",
             )?;
-            Ok(Ty::Bool)
+            Ok(Ty::Value {
+                domain: ColumnType::Bool,
+                opt,
+            })
         }
         // `<<`/`>>` (binary minimum and maximum, ADR 0031 Decision 6) take
         // both operands of *one* orderable domain, dimension included, and
@@ -1748,7 +1746,7 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
         // temperatures both work.  Same operand rule as the comparisons; only
         // the result differs (the domain, not `bool`).
         BinOp::Min | BinOp::Max => {
-            let domain = matching_operands(
+            let (domain, opt) = matching_operands(
                 ctx,
                 lhs,
                 rhs,
@@ -1756,16 +1754,18 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
                 "a minimum or maximum",
                 "an orderable value (int, real, or date)",
             )?;
-            Ok(total(domain))
+            Ok(Ty::Value { domain, opt })
         }
         // `<:`/`:>` (keep-left and keep-right) take both operands of one
         // domain and return it.  They demand no property *of* the domain,
         // only that the two agree: the operation discards a value rather than
         // inspecting it, so there is nothing to require.  In particular
         // `real` is admissible here though it is not equatable (ADR 0014),
-        // since keeping a value never compares it.
+        // since keeping a value never compares it.  Lifting is uniform
+        // (ADR 0039): an absent operand makes the result absent even on the
+        // discarded side.
         BinOp::KeepLeft | BinOp::KeepRight => {
-            let domain = matching_operands(
+            let (domain, opt) = matching_operands(
                 ctx,
                 lhs,
                 rhs,
@@ -1773,18 +1773,23 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
                 "keep-left or keep-right",
                 "a value",
             )?;
-            Ok(total(domain))
+            Ok(Ty::Value { domain, opt })
         }
         BinOp::Coalesce => type_coalesce(ctx, lhs, rhs),
         BinOp::Eq | BinOp::Ne => type_equality(ctx, lhs, rhs),
         BinOp::And | BinOp::Or => {
-            let mut errs = require_bool(ctx, lhs, "a boolean operator");
-            errs.extend(require_bool(ctx, rhs, "a boolean operator"));
-            if errs.is_empty() {
-                Ok(Ty::Bool)
-            } else {
-                Err(errs)
-            }
+            let (_, opt) = matching_operands(
+                ctx,
+                lhs,
+                rhs,
+                |d| *d == ColumnType::Bool,
+                "a boolean operator",
+                "a boolean",
+            )?;
+            Ok(Ty::Value {
+                domain: ColumnType::Bool,
+                opt,
+            })
         }
         BinOp::In => type_membership(ctx, lhs, rhs),
         BinOp::Pipe => apply_value(ctx, rhs, Some(lhs)),
@@ -1805,16 +1810,8 @@ fn type_coalesce(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeEr
     let (Some(lt), Some(rt)) = (lt, rt) else {
         return Err(errs);
     };
-    let as_value = |ty: &Ty, span: Span| match ty {
-        Ty::Value { domain, opt } => Ok((domain.clone(), *opt)),
-        Ty::Bool => Ok((ColumnType::Bool, Optionality::Total)),
-        other => Err(vec![TypeError::new(
-            format!("`??` expects a value, found {}", describe_ty(other)),
-            span,
-        )]),
-    };
-    let (ld, lo) = as_value(&lt, lhs.span)?;
-    let (rd, ro) = as_value(&rt, rhs.span)?;
+    let (ld, lo) = as_value(&lt, "`??`", lhs.span)?;
+    let (rd, ro) = as_value(&rt, "`??`", rhs.span)?;
     if ld != rd {
         return Err(vec![TypeError::new(
             format!(
@@ -1855,16 +1852,21 @@ fn type_add_sub(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, 
     let mut errs = Vec::new();
     let ld = operand_domain(ctx, lhs, |_| true, "arithmetic", "a value", &mut errs);
     let rd = operand_domain(ctx, rhs, |_| true, "arithmetic", "a value", &mut errs);
-    let (Some(ld), Some(rd)) = (ld, rd) else {
+    let (Some((ld, lo)), Some((rd, ro))) = (ld, rd) else {
         return Err(errs);
     };
+    // The result's optionality is the join of the operands' (ADR 0039):
+    // absence flows through the torsor rows exactly as through the numeric
+    // ones.
+    let opt = join_opt(lo, ro);
+    let lifted = |domain: ColumnType| Ok(Ty::Value { domain, opt });
     let duration = Dimension::base("time")
         .expect("time is a base dimension")
         .applied();
     let reject = |message: String| Err(vec![TypeError::new(message, lhs.span)]);
     match (op, &ld, &rd) {
         // Difference: `instant - instant : time[real]`.
-        (BinOp::Sub, ColumnType::Instant, ColumnType::Instant) => Ok(total(duration)),
+        (BinOp::Sub, ColumnType::Instant, ColumnType::Instant) => lifted(duration),
         // Points do not add (ADR 0036 decision 3).
         (BinOp::Add, ColumnType::Instant, ColumnType::Instant) => reject(
             "two instants do not add: points are not quantities (ADR 0036); \
@@ -1873,7 +1875,7 @@ fn type_add_sub(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, 
                 .into(),
         ),
         // Translation: `instant +/- time[real] : instant`.
-        (_, ColumnType::Instant, rd) if *rd == duration => Ok(total(ColumnType::Instant)),
+        (_, ColumnType::Instant, rd) if *rd == duration => lifted(ColumnType::Instant),
         // Translation writes the point on the left; a duration does not
         // left-translate (decision 4 has exactly two operation families).
         (BinOp::Add, rd, ColumnType::Instant) if *rd == duration => reject(
@@ -1919,7 +1921,7 @@ fn type_add_sub(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, 
                 return Err(errs);
             }
             if ld == rd {
-                Ok(total(ld))
+                lifted(ld)
             } else {
                 reject(format!(
                     "arithmetic expects operands of the same type, found {} and {}",
@@ -1953,12 +1955,16 @@ fn type_mul(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>>
         "a number",
         &mut errs,
     );
-    let (Some(ld), Some(rd)) = (ld, rd) else {
+    let (Some((ld, lo)), Some((rd, ro))) = (ld, rd) else {
         return Err(errs);
     };
+    let opt = join_opt(lo, ro);
     match (ld.dimension(), rd.dimension()) {
-        (Some(a), Some(b)) => Ok(total((a * b).applied())),
-        _ if ld == rd => Ok(total(ld)),
+        (Some(a), Some(b)) => Ok(Ty::Value {
+            domain: (a * b).applied(),
+            opt,
+        }),
+        _ if ld == rd => Ok(Ty::Value { domain: ld, opt }),
         _ => Err(vec![TypeError::new(
             format!(
                 "arithmetic expects operands of the same type, found {} and {}",
@@ -1977,13 +1983,16 @@ fn type_div(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>>
     let ok = |d: &ColumnType| matches!(d, ColumnType::Real | ColumnType::Quantity(_));
     let ld = operand_domain(ctx, lhs, ok, "`/`", "a real (`/` is real only)", &mut errs);
     let rd = operand_domain(ctx, rhs, ok, "`/`", "a real (`/` is real only)", &mut errs);
-    let (Some(ld), Some(rd)) = (ld, rd) else {
+    let (Some((ld, lo)), Some((rd, ro))) = (ld, rd) else {
         return Err(errs);
     };
     let (Some(a), Some(b)) = (ld.dimension(), rd.dimension()) else {
         unreachable!("`/` operands are real-backed, so both carry a dimension");
     };
-    Ok(total((a / b).applied()))
+    Ok(Ty::Value {
+        domain: (a / b).applied(),
+        opt: join_opt(lo, ro),
+    })
 }
 
 /// `^` (ADR 0026, `11-physical-units.md`): on a dimensionless base the
@@ -2001,7 +2010,7 @@ fn type_pow(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>>
         "a number",
         &mut errs,
     );
-    let Some(ld) = ld else {
+    let Some((ld, lo)) = ld else {
         return Err(errs);
     };
     if let ColumnType::Quantity(dim) = ld {
@@ -2018,7 +2027,10 @@ fn type_pow(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>>
                 rhs.span,
             )]);
         };
-        return Ok(total(dim.pow(n).applied()));
+        return Ok(Ty::Value {
+            domain: dim.pow(n).applied(),
+            opt: lo,
+        });
     }
     let rd = operand_domain(
         ctx,
@@ -2028,11 +2040,14 @@ fn type_pow(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>>
         "a number",
         &mut errs,
     );
-    let Some(rd) = rd else {
+    let Some((rd, ro)) = rd else {
         return Err(errs);
     };
     if ld == rd {
-        Ok(total(ld))
+        Ok(Ty::Value {
+            domain: ld,
+            opt: join_opt(lo, ro),
+        })
     } else {
         Err(vec![TypeError::new(
             format!(
@@ -2058,8 +2073,11 @@ fn int_literal(e: &Expr) -> Option<i64> {
     }
 }
 
-/// Type both operands as known values whose domain satisfies `ok` and that match
-/// each other; return the common domain. `label`/`expected` shape the messages.
+/// Type both operands as values whose domain satisfies `ok` and that match
+/// each other; return the common domain and the joined optionality
+/// (ADR 0039: an optional operand is accepted and its absence propagates,
+/// so the result is optional when either operand is).  `label`/`expected`
+/// shape the messages.
 fn matching_operands(
     ctx: &Context,
     lhs: &Expr,
@@ -2067,15 +2085,15 @@ fn matching_operands(
     ok: fn(&ColumnType) -> bool,
     label: &str,
     expected: &str,
-) -> Result<ColumnType, Vec<TypeError>> {
+) -> Result<(ColumnType, Optionality), Vec<TypeError>> {
     let mut errs = Vec::new();
     let ld = operand_domain(ctx, lhs, ok, label, expected, &mut errs);
     let rd = operand_domain(ctx, rhs, ok, label, expected, &mut errs);
-    let (Some(ld), Some(rd)) = (ld, rd) else {
+    let (Some((ld, lo)), Some((rd, ro))) = (ld, rd) else {
         return Err(errs);
     };
     if ld == rd {
-        Ok(ld)
+        Ok((ld, join_opt(lo, ro)))
     } else {
         Err(vec![TypeError::new(
             format!(
@@ -2095,19 +2113,19 @@ fn operand_domain(
     label: &str,
     expected: &str,
     errs: &mut Vec<TypeError>,
-) -> Option<ColumnType> {
+) -> Option<(ColumnType, Optionality)> {
     match type_expr(ctx, operand) {
         Err(e) => {
             errs.extend(e);
             None
         }
-        Ok(ty) => match as_known_value(&ty, label, operand.span) {
+        Ok(ty) => match as_value(&ty, label, operand.span) {
             Err(e) => {
                 errs.extend(e);
                 None
             }
-            Ok(domain) if ok(&domain) => Some(domain),
-            Ok(domain) => {
+            Ok((domain, opt)) if ok(&domain) => Some((domain, opt)),
+            Ok((domain, _)) => {
                 errs.push(TypeError::new(
                     format!(
                         "{label} expects {expected}, found a {}",
@@ -2121,8 +2139,11 @@ fn operand_domain(
     }
 }
 
-/// `value in bag` (section 5.4): the left side a known value matching the bag's
-/// element domain; the right side a bag. Returns `Bool`.
+/// `value in bag` (section 5.4): the left side a value matching the bag's
+/// element domain; the right side a bag of *total* elements, since
+/// membership quantifies over the bag's values the way a fold does
+/// (ADR 0039 decision 3).  An optional left side lifts, so the result is
+/// then an optional boolean.
 fn type_membership(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     let mut errs = Vec::new();
     let lt = collect_ty(type_expr(ctx, lhs), &mut errs);
@@ -2131,15 +2152,29 @@ fn type_membership(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<Type
         return Err(errs);
     };
     let elem = match rt {
-        Ty::Bag { domain, .. } => domain,
+        Ty::Bag {
+            domain,
+            opt: Optionality::Total,
+        } => domain,
+        Ty::Bag { .. } => {
+            errs.push(TypeError::new(
+                "`in` quantifies over the bag's values, so it requires a total \
+                 bag; discharge the elements with `??` upstream (ADR 0039)",
+                rhs.span,
+            ));
+            return Err(errs);
+        }
         _ => {
             errs.push(TypeError::new("`in` expects a bag on the right", rhs.span));
             return Err(errs);
         }
     };
-    match as_known_value(&lt, "`in`", lhs.span) {
-        Ok(domain) if domain == elem => Ok(Ty::Bool),
-        Ok(domain) => Err(vec![TypeError::new(
+    match as_value(&lt, "`in`", lhs.span) {
+        Ok((domain, opt)) if domain == elem => Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt,
+        }),
+        Ok((domain, _)) => Err(vec![TypeError::new(
             format!(
                 "`in` expects a {} value to match the bag, found a {}",
                 domain_name(&elem),
@@ -2154,11 +2189,12 @@ fn type_membership(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<Type
     }
 }
 
-/// `is known` / `is missing` (section 5.6): apply to a value, yield `Bool`.
-/// Narrowing is deferred, so `is known` does not change the value's totality.
+/// `is known` / `is missing` (section 5.6): apply to a value, yield a total
+/// boolean.  Narrowing is deferred (ADR 0039 alternative 4), so `is known`
+/// does not change the value's totality.
 fn type_presence(ctx: &Context, base: &Expr, span: Span) -> Result<Ty, Vec<TypeError>> {
     match type_expr(ctx, base)? {
-        Ty::Value { .. } => Ok(Ty::Bool),
+        Ty::Value { .. } => Ok(total(ColumnType::Bool)),
         _ => Err(vec![TypeError::new(
             "`is known` / `is missing` apply to a value",
             span,
@@ -2179,16 +2215,25 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr) -> Result<Ty, Vec<TypeErr
                 &mut errs,
             );
             match d {
-                Some(domain) if errs.is_empty() => Ok(total(domain)),
+                Some((domain, opt)) if errs.is_empty() => Ok(Ty::Value { domain, opt }),
                 _ => Err(errs),
             }
         }
+        // `not` lifts like the binary boolean operators (ADR 0039): the
+        // negation of an absent boolean is absent.
         UnOp::Not => {
-            let errs = require_bool(ctx, operand, "`not`");
-            if errs.is_empty() {
-                Ok(Ty::Bool)
-            } else {
-                Err(errs)
+            let mut errs = Vec::new();
+            let d = operand_domain(
+                ctx,
+                operand,
+                |d| *d == ColumnType::Bool,
+                "`not`",
+                "a boolean",
+                &mut errs,
+            );
+            match d {
+                Some((domain, opt)) if errs.is_empty() => Ok(Ty::Value { domain, opt }),
+                _ => Err(errs),
             }
         }
         // `#` (cardinality, ADR 0031 Decision 9): `#e == fold `+` (|_| 1) e`,
@@ -2211,9 +2256,11 @@ fn type_unary(ctx: &Context, op: UnOp, operand: &Expr) -> Result<Ty, Vec<TypeErr
     }
 }
 
-/// `==` / `!=` (equatable, ADR 0014): both sides known values of the same
+/// `==` / `!=` (equatable, ADR 0014): both sides values of the same
 /// equatable domain (so `real` is rejected), with the enum-vs-string-literal
-/// exception of section 5.7.
+/// exception of section 5.7.  Optional operands lift (ADR 0039): the
+/// comparison is then an optional boolean, absent when either side is,
+/// never a three-valued "missing equals missing".
 fn type_equality(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
     let mut errs = Vec::new();
     let lt = collect_ty(type_expr(ctx, lhs), &mut errs);
@@ -2229,13 +2276,16 @@ fn type_equality(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeEr
         return res;
     }
 
-    let ld = known_equatable(&lt, lhs.span, &mut errs);
-    let rd = known_equatable(&rt, rhs.span, &mut errs);
-    let (Some(ld), Some(rd)) = (ld, rd) else {
+    let ld = equatable_value(&lt, lhs.span, &mut errs);
+    let rd = equatable_value(&rt, rhs.span, &mut errs);
+    let (Some((ld, lo)), Some((rd, ro))) = (ld, rd) else {
         return Err(errs);
     };
     if ld == rd {
-        Ok(Ty::Bool)
+        Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt: join_opt(lo, ro),
+        })
     } else {
         Err(vec![TypeError::new(
             format!(
@@ -2248,14 +2298,18 @@ fn type_equality(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeEr
     }
 }
 
-fn known_equatable(ty: &Ty, span: Span, errs: &mut Vec<TypeError>) -> Option<ColumnType> {
-    match as_known_value(ty, "`==`/`!=`", span) {
+fn equatable_value(
+    ty: &Ty,
+    span: Span,
+    errs: &mut Vec<TypeError>,
+) -> Option<(ColumnType, Optionality)> {
+    match as_value(ty, "`==`/`!=`", span) {
         Err(e) => {
             errs.extend(e);
             None
         }
-        Ok(domain) if domain.is_equatable() => Some(domain),
-        Ok(domain) => {
+        Ok((domain, opt)) if domain.is_equatable() => Some((domain, opt)),
+        Ok((domain, _)) => {
             errs.push(TypeError::new(
                 format!("`==`/`!=` is not defined on {}", domain_name(&domain)),
                 span,
@@ -2277,11 +2331,12 @@ fn collect_ty(result: Result<Ty, Vec<TypeError>>, errs: &mut Vec<TypeError>) -> 
 
 /// The section 5.7 exception: an enum value compared to a string literal,
 /// validating the literal against the variant set. `None` if `value` is not an
-/// enum or `other` is not a string literal.
+/// enum or `other` is not a string literal.  An optional enum lifts like any
+/// other operand (ADR 0039): the comparison is then an optional boolean.
 fn enum_vs_literal(value: &Ty, other: &Expr) -> Option<Result<Ty, Vec<TypeError>>> {
     let Ty::Value {
         domain: ColumnType::Enum { name, variants },
-        opt: Optionality::Total,
+        opt,
     } = value
     else {
         return None;
@@ -2290,7 +2345,10 @@ fn enum_vs_literal(value: &Ty, other: &Expr) -> Option<Result<Ty, Vec<TypeError>
         return None;
     };
     if variants.iter().any(|v| v == lit) {
-        Some(Ok(Ty::Bool))
+        Some(Ok(Ty::Value {
+            domain: ColumnType::Bool,
+            opt: *opt,
+        }))
     } else {
         Some(Err(vec![TypeError::new(
             format!("`{lit}` is not a variant of `{name}`"),
@@ -2299,27 +2357,15 @@ fn enum_vs_literal(value: &Ty, other: &Expr) -> Option<Result<Ty, Vec<TypeError>
     }
 }
 
-/// The domain of `ty` if it is a single known value, else a located error
-/// (the scalar rule, section 5.3).
-fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<TypeError>> {
+/// The domain and optionality of `ty` as a single value, else a located
+/// error (the scalar rule, section 5.3, under ADR 0039's lifting: the
+/// cardinality axis is still hard, but an optional value is accepted and
+/// its absence propagates through the operator).
+fn as_value(ty: &Ty, what: &str, span: Span) -> Result<(ColumnType, Optionality), Vec<TypeError>> {
     match ty {
-        Ty::Value {
-            domain,
-            opt: Optionality::Total,
-        } => Ok(domain.clone()),
-        Ty::Value {
-            opt: Optionality::Optional,
-            ..
-        } => Err(vec![TypeError::new(
-            format!("{what} expects a known value; this value may be missing"),
-            span,
-        )]),
+        Ty::Value { domain, opt } => Ok((domain.clone(), *opt)),
         Ty::Bag { .. } => Err(vec![TypeError::new(
             format!("{what} expects a single value, found a bag"),
-            span,
-        )]),
-        Ty::Bool => Err(vec![TypeError::new(
-            format!("{what} expects a value, found a boolean"),
             span,
         )]),
         // Bare `b` was a type error before ADR 0031 (a record is not a value)
@@ -2350,9 +2396,7 @@ fn as_known_value(ty: &Ty, what: &str, span: Span) -> Result<ColumnType, Vec<Typ
     }
 }
 
-/// Require `operand` to be a known boolean (section 5.3). Accepts both a
-/// predicate result and a total `bool` column read.
-/// `if c then a else b` (section 5, ADR 0015): `c` is a known boolean and the
+/// `if c then a else b` (section 5, ADR 0015): `c` is a total boolean and the
 /// two branches unify to one value type, which is the result.
 fn type_if(
     ctx: &Context,
@@ -2417,7 +2461,6 @@ fn describe_ty(ty: &Ty) -> String {
     match ty {
         Ty::Value { domain, .. } => format!("a {}", domain_name(domain)),
         Ty::Bag { domain, .. } => format!("a bag of {}", domain_name(domain)),
-        Ty::Bool => "a bool".to_string(),
         Ty::Rows(_) => "a bag of rows".to_string(),
         Ty::Record(_) => "a record".to_string(),
         Ty::Desc(inner) => format!("a descending {}", ty_name(inner)),
@@ -2425,10 +2468,13 @@ fn describe_ty(ty: &Ty) -> String {
     }
 }
 
+/// Require `operand` to be a *total* boolean: the branching boundary of
+/// ADR 0039 decision 3.  Absence may flow through values, never past a
+/// decision unconsulted, so an optional boolean is rejected with the
+/// policy the author must state.
 fn require_bool(ctx: &Context, operand: &Expr, what: &str) -> Vec<TypeError> {
     match type_expr(ctx, operand) {
         Err(errs) => errs,
-        Ok(Ty::Bool) => Vec::new(),
         Ok(Ty::Value {
             domain: ColumnType::Bool,
             opt: Optionality::Total,
@@ -2437,7 +2483,10 @@ fn require_bool(ctx: &Context, operand: &Expr, what: &str) -> Vec<TypeError> {
             domain: ColumnType::Bool,
             opt: Optionality::Optional,
         }) => vec![TypeError::new(
-            format!("{what} expects a known value; this value may be missing"),
+            format!(
+                "{what} may be missing; state the absent-row policy with \
+                 `?? true` or `?? false` (ADR 0039)"
+            ),
             operand.span,
         )],
         Ok(_) => vec![TypeError::new(
@@ -2506,6 +2555,7 @@ mod tests {
                 ),
                 scol("started", ColumnType::Instant, ColumnRole::Attr, false),
                 scol("ended", ColumnType::Instant, ColumnRole::Attr, false),
+                scol("confirmed", ColumnType::Instant, ColumnRole::Attr, true),
             ],
             cardinality: crate::table::Cardinality::Singletons,
             foreign_keys: Vec::new(),
@@ -2547,6 +2597,69 @@ mod tests {
             ambient.insert(name.to_string(), Ty::Record(members));
         }
         ambient
+    }
+
+    #[test]
+    fn operators_lift_over_optional_operands() {
+        // ADR 0039 decision 1: any optional operand makes the result
+        // optional; the domain and dimension rules are unchanged, applied
+        // under the `?`.
+        let ctx = row_ctx();
+        let opt = |domain: ColumnType| Ty::Value {
+            domain,
+            opt: Optionality::Optional,
+        };
+        // Comparisons and equality yield an optional boolean.
+        assert_eq!(ty_of(&ctx, "r.peak > 1.0"), Ok(opt(ColumnType::Bool)));
+        assert_eq!(ty_of(&ctx, "r.note == \"x\""), Ok(opt(ColumnType::Bool)));
+        // The torsor rows lift: an optional instant's difference is an
+        // optional duration, and translating by it stays optional.
+        let duration = Dimension::base("time").unwrap().applied();
+        assert_eq!(
+            ty_of(&ctx, "r.ended - r.confirmed"),
+            Ok(opt(duration.clone()))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.started + (r.ended - r.confirmed)"),
+            Ok(opt(ColumnType::Instant))
+        );
+        // `not` and `and` lift through an optional boolean.
+        assert_eq!(ty_of(&ctx, "not (r.peak > 1.0)"), Ok(opt(ColumnType::Bool)));
+        assert_eq!(
+            ty_of(&ctx, "r.flag and (r.peak > 1.0)"),
+            Ok(opt(ColumnType::Bool))
+        );
+        // Dimension arithmetic under the `?`: optional real times a kelvin
+        // quantity is an optional quantity.
+        assert_eq!(
+            ty_of(&ctx, "r.peak * r.kelvin_reading"),
+            Ok(opt(ColumnType::Quantity(
+                Dimension::base("temperature").unwrap()
+            )))
+        );
+        // The bool representations are one (the Ty::Bool collapse): a bool
+        // column compares against a literal.
+        assert_eq!(ty_of(&ctx, "r.flag == true"), Ok(total(ColumnType::Bool)));
+    }
+
+    #[test]
+    fn decision_boundaries_demand_total() {
+        // ADR 0039 decision 3: absence flows through values, never past a
+        // decision unconsulted.
+        let ctx = row_ctx();
+        // An optional condition names the policy in its rejection.
+        let errs = ty_of(&ctx, "if r.peak > 1.0 then 1 else 0").expect_err("optional cond");
+        assert!(errs[0].message.contains("?? true"), "{}", errs[0].message);
+        // Discharged, it types; the branches still unify.
+        assert_eq!(
+            ty_of(&ctx, "if (r.peak > 1.0) ?? false then 1 else 0"),
+            Ok(total(ColumnType::Int))
+        );
+        // A presence test applies to a lifted result and stays total.
+        assert_eq!(
+            ty_of(&ctx, "(r.peak + 1.0) is known"),
+            Ok(total(ColumnType::Bool))
+        );
     }
 
     #[test]
@@ -2640,7 +2753,7 @@ mod tests {
         assert_eq!(ty_of(&ctx, "42"), Ok(total(ColumnType::Int)));
         assert_eq!(ty_of(&ctx, "3.5"), Ok(total(ColumnType::Real)));
         assert_eq!(ty_of(&ctx, "\"hi\""), Ok(total(ColumnType::String)));
-        assert_eq!(ty_of(&ctx, "true"), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "true"), Ok(total(ColumnType::Bool)));
     }
 
     #[test]
@@ -2676,8 +2789,15 @@ mod tests {
         assert!(errs[0].message.contains("same type"));
         // arithmetic on a non-number.
         assert!(ty_of(&ctx, "k.machine + 1").is_err());
-        // optional operand.
-        assert!(ty_of(&ctx, "r.peak + 1.0").is_err());
+        // An optional operand lifts (ADR 0039): the sum is optional, absent
+        // when `peak` is.
+        assert_eq!(
+            ty_of(&ctx, "r.peak + 1.0"),
+            Ok(Ty::Value {
+                domain: ColumnType::Real,
+                opt: Optionality::Optional
+            })
+        );
     }
 
     #[test]
@@ -2694,9 +2814,12 @@ mod tests {
     #[test]
     fn ordering_is_orderable_including_date() {
         let ctx = row_ctx();
-        assert_eq!(ty_of(&ctx, "r.temperature > 30.0"), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "r.size < 2"), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "r.at < r.at"), Ok(Ty::Bool)); // date is orderable
+        assert_eq!(
+            ty_of(&ctx, "r.temperature > 30.0"),
+            Ok(total(ColumnType::Bool))
+        );
+        assert_eq!(ty_of(&ctx, "r.size < 2"), Ok(total(ColumnType::Bool)));
+        assert_eq!(ty_of(&ctx, "r.at < r.at"), Ok(total(ColumnType::Bool))); // date is orderable
         let errs = ty_of(&ctx, "k.machine < \"z\"").expect_err("string not orderable");
         assert!(errs[0].message.contains("orderable"));
     }
@@ -2704,10 +2827,16 @@ mod tests {
     #[test]
     fn equality_excludes_real_and_validates_enum() {
         let ctx = row_ctx();
-        assert_eq!(ty_of(&ctx, "r.size == 1"), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "k.machine == \"m1\""), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "r.status == \"active\""), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "r.at == r.at"), Ok(Ty::Bool));
+        assert_eq!(ty_of(&ctx, "r.size == 1"), Ok(total(ColumnType::Bool)));
+        assert_eq!(
+            ty_of(&ctx, "k.machine == \"m1\""),
+            Ok(total(ColumnType::Bool))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.status == \"active\""),
+            Ok(total(ColumnType::Bool))
+        );
+        assert_eq!(ty_of(&ctx, "r.at == r.at"), Ok(total(ColumnType::Bool)));
         let errs = ty_of(&ctx, "r.temperature == 30.0").expect_err("real equality");
         assert!(errs[0].message.contains("not defined on real"));
         let errs = ty_of(&ctx, "r.status == \"activ\"").expect_err("bad variant");
@@ -3252,9 +3381,15 @@ mod tests {
     #[test]
     fn presence_is_bool_and_collects_errors() {
         let ctx = row_ctx();
-        assert_eq!(ty_of(&ctx, "r.note is missing"), Ok(Ty::Bool));
-        assert_eq!(ty_of(&ctx, "r.temperature is known"), Ok(Ty::Bool));
-        let errs = ty_of(&ctx, "r.bogus + r.note").expect_err("two errors");
+        assert_eq!(
+            ty_of(&ctx, "r.note is missing"),
+            Ok(total(ColumnType::Bool))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.temperature is known"),
+            Ok(total(ColumnType::Bool))
+        );
+        let errs = ty_of(&ctx, "r.bogus + r.gone").expect_err("two errors");
         assert_eq!(errs.len(), 2);
     }
 
@@ -3355,7 +3490,10 @@ mod tests {
     fn dimensions_gate_comparison_and_equality() {
         let ctx = row_ctx();
         // Same dimension: orderable.
-        assert_eq!(ty_of(&ctx, "r.kelvin_reading > kelvin"), Ok(Ty::Bool));
+        assert_eq!(
+            ty_of(&ctx, "r.kelvin_reading > kelvin"),
+            Ok(total(ColumnType::Bool))
+        );
         // Cross-dimension comparison is a mismatch.
         assert!(ty_of(&ctx, "meter < second").is_err());
         assert!(ty_of(&ctx, "r.kelvin_reading > 30.0").is_err());
