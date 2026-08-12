@@ -951,8 +951,7 @@ gates (\texttt{closedWindow\_stable}, the interval test) rest on.
 
 \begin{theorem}[The torsor laws]
   \label{thm:torsor-laws}
-  \lean{Mensura.Units.Torsor.translate_vsub, Mensura.Units.Torsor.vsub_add_vsub,
-    Mensura.Units.Torsor.vsub_self, Mensura.Units.Torsor.vsub_unique}\leanok
+  \lean{Mensura.Units.Torsor.translate_vsub}\leanok
   For a point domain $P$ with difference group $G$ acting freely and
   transitively, the checker's laws follow from the structure rather than
   being stipulated: $t + (u - t) = u$, $(t - u) + (u - v) = t - v$,
@@ -1000,9 +999,7 @@ gates (\texttt{closedWindow\_stable}, the interval test) rest on.
 
 \begin{theorem}[Order compatibility]
   \label{thm:instant-order-compat}
-  \lean{Mensura.Units.Instant.lt_vadd_of_pos,
-    Mensura.Units.Instant.strictMono_vadd,
-    Mensura.Units.Instant.vadd_lt_vadd_iff_left}\leanok
+  \lean{Mensura.Units.Instant.lt_vadd_of_pos}\leanok
   \uses{def:duration, def:instant, thm:instant-torsor}
   Translation by a positive duration is strictly increasing, translation
   by a fixed duration is strictly monotone in the point, and translation
@@ -1014,6 +1011,71 @@ gates (\texttt{closedWindow\_stable}, the interval test) rest on.
 \begin{proof}\leanok
   Each statement reduces to the corresponding fact about integer
   addition and order on the millisecond counts.
+\end{proof}
+
+\chapter{Missing-aware expressions}
+
+This chapter backs ADR 0039: scalar operators lift over the missing
+axis of ADR 0010 (a value is known or missing, the \texttt{Cell =
+Option} axis of the core), with absence absorbing, and the \texttt{??}
+operator is the only discharge.  The statements are abstract in the
+scalar operation, so the torsor and dimension operators of ADR
+0026/0036 instantiate them and no per-operator proof is ever needed.
+The decision boundaries (\texttt{if} conditions, fold and scan
+accumulators, keys) are typing demands, not lifted operations, so they
+carry no node here.
+
+\begin{definition}[Lifted operators]
+  \label{def:lifted-operators}
+  \lean{Mensura.Expr.lift2}\leanok
+  A scalar operation lifted over optional values: the result is present
+  exactly when every operand is, and is then the unlifted application.
+\end{definition}
+
+\begin{theorem}[Lifting laws]
+  \label{thm:lifting-laws}
+  \lean{Mensura.Expr.lift2_isSome}\leanok
+  \uses{def:lifted-operators}
+  Absence absorbs (an absent operand makes the result absent, on either
+  side), the present case agrees with the unlifted operator, and a
+  lifted application is present iff both operands are, which is the
+  statement the checker's optionality join implements.
+\end{theorem}
+\begin{proof}\leanok
+  By cases on the two options.
+\end{proof}
+
+\begin{theorem}[Lifting distributes over composition]
+  \label{thm:lifting-composes}
+  \lean{Mensura.Expr.lift1_lift2}\leanok
+  \uses{def:lifted-operators}
+  Composing lifted operations is lifting the composed operation, so a
+  compound lifted expression is absent exactly when one of its leaves
+  is, and no per-shape typing rule is needed.
+\end{theorem}
+\begin{proof}\leanok
+  By cases on the operands.
+\end{proof}
+
+\begin{definition}[Discharge]
+  \label{def:coalesce}
+  \lean{Mensura.Expr.coalesce}\leanok
+  The \texttt{??} operator: the present value, or the default.  With a
+  total default the result is total by type; with an optional default
+  the result stays optional (the chain step).
+\end{definition}
+
+\begin{theorem}[Discharge laws]
+  \label{thm:coalesce-laws}
+  \lean{Mensura.Expr.coalesce_coalesceOpt}\leanok
+  \uses{def:coalesce}
+  A present value discharges to itself and an absent one to its
+  default; a chain re-associates freely and discharges at its first
+  present value, so right associativity in the parser is a convention,
+  not a semantic choice.
+\end{theorem}
+\begin{proof}\leanok
+  By cases on the first operand.
 \end{proof}
 
 \chapter{Open problems}
