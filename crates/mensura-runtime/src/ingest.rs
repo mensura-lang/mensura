@@ -106,12 +106,15 @@ pub fn decode_record(schema: &Schema, record: &Record, at: usize) -> Result<Row,
                     )));
                 }
             }
-            Some(scalar) => decode_scalar(scalar, &col.ty).map_err(|expected| {
-                err(format!(
-                    "field `{}`: expected {expected}, found {}",
-                    col.name,
-                    scalar.what()
-                ))
+            Some(scalar) => decode_scalar(scalar, &col.ty).map_err(|e| {
+                err(match e {
+                    ScalarError::Expected(expected) => format!(
+                        "field `{}`: expected {expected}, found {}",
+                        col.name,
+                        scalar.what()
+                    ),
+                    ScalarError::Invalid(why) => format!("field `{}`: {why}", col.name),
+                })
             })?,
         };
         row.push(value);
@@ -130,37 +133,59 @@ pub fn decode_records(schema: &Schema, records: &[Record]) -> Result<Vec<Row>, I
         .collect()
 }
 
-/// Check one scalar against a column type.  On mismatch, returns what the
-/// column wanted, for the caller to phrase.
-fn decode_scalar(scalar: &Scalar, ty: &ColumnType) -> Result<Value, &'static str> {
+/// Why one scalar failed its column type: the column wanted a different
+/// kind of scalar, or the text was the right kind but invalid for its
+/// domain (a rejected timestamp, ADR 0036).
+enum ScalarError {
+    Expected(&'static str),
+    Invalid(String),
+}
+
+/// Check one scalar against a column type.
+fn decode_scalar(scalar: &Scalar, ty: &ColumnType) -> Result<Value, ScalarError> {
+    use ScalarError::{Expected, Invalid};
     match ty {
         ColumnType::String => match scalar {
             Scalar::Text(s) => Ok(Value::String(s.clone())),
-            _ => Err("a string"),
+            _ => Err(Expected("a string")),
         },
         ColumnType::Int => match scalar {
             Scalar::Int(n) => Ok(Value::Int(*n)),
-            _ => Err("an integer"),
+            _ => Err(Expected("an integer")),
         },
         // `int` does not widen to `real`: the domains stay apart at the
         // boundary exactly as they do in expressions (ADR 0014).  A JSON
         // `300` for a `real` column is a mistake worth naming.
         ColumnType::Real | ColumnType::Quantity(_) => match scalar {
             Scalar::Real(x) => Ok(Value::Real(*x)),
-            _ => Err("a real number (with a decimal point)"),
+            _ => Err(Expected("a real number (with a decimal point)")),
         },
         ColumnType::Bool => match scalar {
             Scalar::Bool(b) => Ok(Value::Bool(*b)),
-            _ => Err("a boolean"),
+            _ => Err(Expected("a boolean")),
         },
+        // Exactly `YYYY-MM-DD` (ADR 0036 decision 7): until this check the
+        // chronological ordering of `date` columns was an unenforced
+        // convention of example style.
         ColumnType::Date => match scalar {
-            Scalar::Text(s) => Ok(Value::Date(s.clone())),
-            _ => Err("a date string"),
+            Scalar::Text(s) => crate::temporal::validate_date(s)
+                .map(|()| Value::Date(s.clone()))
+                .map_err(Invalid),
+            _ => Err(Expected("a date string")),
+        },
+        // Validated on the millisecond grid and normalized to fixed-width
+        // UTC, so equality and lexicographic order downstream are sound
+        // (ADR 0036 decisions 6 and 7).
+        ColumnType::Instant => match scalar {
+            Scalar::Text(s) => crate::temporal::normalize_instant(s)
+                .map(Value::Instant)
+                .map_err(Invalid),
+            _ => Err(Expected("an RFC 3339 timestamp string")),
         },
         ColumnType::Enum { variants, .. } => match scalar {
             Scalar::Text(s) if variants.iter().any(|v| v == s) => Ok(Value::Enum(s.clone())),
-            Scalar::Text(_) => Err("one of the enum's declared variants"),
-            _ => Err("a string naming an enum variant"),
+            Scalar::Text(_) => Err(Expected("one of the enum's declared variants")),
+            _ => Err(Expected("a string naming an enum variant")),
         },
     }
 }
@@ -251,6 +276,7 @@ mod tests {
             ratio:  real
             flag:   bool
             day:    date
+            at:     instant
             status: Status
             note:   string?
           }
@@ -264,6 +290,10 @@ mod tests {
             ("ratio".into(), Scalar::Real(0.5)),
             ("flag".into(), Scalar::Bool(true)),
             ("day".into(), Scalar::Text("2026-07-31".into())),
+            (
+                "at".into(),
+                Scalar::Text("2026-07-31T10:07:31.221+02:00".into()),
+            ),
             ("status".into(), Scalar::Text("ok".into())),
             ("note".into(), Scalar::Text("hi".into())),
         ])
@@ -281,10 +311,32 @@ mod tests {
                 Value::Real(0.5),
                 Value::Bool(true),
                 Value::Date("2026-07-31".into()),
+                // The zoned payload lands normalized to fixed-width UTC
+                // (ADR 0036 decision 7).
+                Value::Instant("2026-07-31T08:07:31.221Z".into()),
                 Value::Enum("ok".into()),
                 Value::String("hi".into()),
             ]
         );
+    }
+
+    #[test]
+    fn an_instant_is_rejected_with_its_rule_named() {
+        // Decode-or-reject (ADR 0034) meets the millisecond grid
+        // (ADR 0036): the diagnostic names the field and the rule.
+        let s = schema(EVERY_TYPE, "rows");
+        for (payload, needle) in [
+            ("2026-07-31T10:07:31.221", "missing UTC offset"),
+            ("2026-07-31T10:07:31.0001Z", "sub-millisecond"),
+            ("2016-12-31T23:59:60Z", "leap-second"),
+            ("1722420451", "RFC 3339"),
+        ] {
+            let mut r = full_record();
+            r.insert("at".into(), Scalar::Text(payload.into()));
+            let e = decode_record(&s, &r, 1).expect_err(payload);
+            assert!(e.message.contains("`at`"), "{e}");
+            assert!(e.message.contains(needle), "{payload}: {e}");
+        }
     }
 
     #[test]
@@ -336,6 +388,25 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_date_is_rejected_rather_than_stored() {
+        // Regression for the hole ADR 0036's context names: before the
+        // tightening, any text passed as a date, so chronological ordering
+        // rested on example style rather than on the decoder.
+        let s = schema(EVERY_TYPE, "rows");
+        for (payload, needle) in [
+            ("July 31, 2026", "YYYY-MM-DD"),
+            ("2026-7-31", "YYYY-MM-DD"),
+            ("2026-02-30", "day out of range"),
+        ] {
+            let mut r = full_record();
+            r.insert("day".into(), Scalar::Text(payload.into()));
+            let e = decode_record(&s, &r, 1).expect_err(payload);
+            assert!(e.message.contains("`day`"), "{e}");
+            assert!(e.message.contains(needle), "{payload}: {e}");
+        }
+    }
+
+    #[test]
     fn an_int_does_not_widen_to_a_real() {
         // ADR 0014 keeps the domains apart, at the boundary as in
         // expressions, so `300` for a `real` column is named as a mistake.
@@ -381,15 +452,15 @@ mod tests {
     fn jsonl_reads_a_batch_and_skips_blank_lines() {
         let s = schema(EVERY_TYPE, "rows");
         let src = "\
-{\"id\":\"k-1\",\"count\":1,\"ratio\":0.5,\"flag\":true,\"day\":\"2026-07-31\",\"status\":\"ok\",\"note\":null}
+{\"id\":\"k-1\",\"count\":1,\"ratio\":0.5,\"flag\":true,\"day\":\"2026-07-31\",\"at\":\"2026-07-31T08:00:00Z\",\"status\":\"ok\",\"note\":null}
 
-{\"id\":\"k-2\",\"count\":2,\"ratio\":1.5,\"flag\":false,\"day\":\"2026-08-01\",\"status\":\"bad\",\"note\":\"x\"}
+{\"id\":\"k-2\",\"count\":2,\"ratio\":1.5,\"flag\":false,\"day\":\"2026-08-01\",\"at\":\"2026-08-01T08:00:00Z\",\"status\":\"bad\",\"note\":\"x\"}
 ";
         let rows = decode_jsonl(&s, src).expect("decodes");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][0], Value::String("k-1".into()));
-        assert_eq!(rows[0][6], Value::Missing);
-        assert_eq!(rows[1][5], Value::Enum("bad".into()));
+        assert_eq!(rows[0][7], Value::Missing);
+        assert_eq!(rows[1][6], Value::Enum("bad".into()));
     }
 
     #[test]

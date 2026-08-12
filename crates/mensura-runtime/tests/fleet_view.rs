@@ -25,35 +25,38 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
     for schema in &program.schemas {
         db.ensure_store(schema).unwrap();
     }
+    // Temporal columns hold what the decoder would have produced: `date`
+    // stays `YYYY-MM-DD`, and the `instant` columns (ADR 0036) hold the
+    // normalized fixed-width UTC form.
     db.execute_sql(
         r#"INSERT INTO "machines" VALUES
-             ('m1', '2020-01-01', 'operational', NULL),
-             ('m2', '2021-06-15', 'degraded', '2025-12-01'),
-             ('m3', '2022-03-10', 'failure', NULL);
+             ('m1', '2020-01-01', '2020-01-05T08:00:00.000Z', 'operational', NULL),
+             ('m2', '2021-06-15', '2021-06-20T09:30:00.000Z', 'degraded', '2025-12-01'),
+             ('m3', '2022-03-10', '2022-03-15T14:00:00.000Z', 'failure', NULL);
            -- `m1`'s two readings are inserted out of order under `taken_at`.
            -- The store scan orders by the full key, so they arrive sorted
            -- anyway; the scan-order discrimination for the window operators
            -- lives in the evaluator's unit tests.
            INSERT INTO "readings" VALUES
-             ('m1', '2025-01-02', 302.5),
-             ('m1', '2025-01-01', 300.0),
-             ('m2', '2025-01-01', 299.0),
-             ('m3', '2025-01-01', 371.5);
+             ('m1', '2025-01-02T10:00:00.000Z', 302.5),
+             ('m1', '2025-01-01T10:00:00.000Z', 300.0),
+             ('m2', '2025-01-01T10:00:00.000Z', 299.0),
+             ('m3', '2025-01-01T10:00:00.000Z', 371.5);
            -- The wide sensor table the reshape views fold and spread
            -- (ADR 0020).  Both columns are total, which is what makes
            -- `unpivot` establish `exhaustive(sensor)`.
            INSERT INTO "paired_readings" VALUES
-             ('m1', '2025-01-01', 300.0, 291.0),
-             ('m2', '2025-01-01', 299.0, 288.5);
+             ('m1', '2025-01-01T10:00:00.000Z', 300.0, 291.0),
+             ('m2', '2025-01-01T10:00:00.000Z', 299.0, 288.5);
            -- The entity-keyed bag registry (ADR 0022): many samples per
            -- machine, and the bag is whole by mechanism, which is what lets
            -- `machine_vibration` reduce with no `assume { complete }`.
            -- An unkeyed table, so the key columns repeat.
            INSERT INTO "vibrations" ("machine_id", "sampled_at", "amplitude")
              VALUES
-             ('m1', '2025-01-01', 0.4),
-             ('m1', '2025-01-02', 0.9),
-             ('m2', '2025-01-01', 0.2);"#,
+             ('m1', '2025-01-01T10:00:00.000Z', 0.4),
+             ('m1', '2025-01-02T10:00:00.000Z', 0.9),
+             ('m2', '2025-01-01T10:00:00.000Z', 0.2);"#,
     )
     .unwrap();
     db
@@ -91,11 +94,12 @@ fn attention_needed_materializes_the_degraded_machines() {
         .expect("the example declares attention_needed");
     let rows = db.scan(&view.shape()).unwrap();
     // The whole-row `flat_map` body yields the attributes in checker
-    // (alphabetical) order: commissioned, last_service, status.
+    // (alphabetical) order: activated, commissioned, last_service, status.
     assert_eq!(
         rows,
         vec![vec![
             Value::String("m2".into()),
+            Value::Instant("2021-06-20T09:30:00.000Z".into()),
             Value::Date("2021-06-15".into()),
             Value::Date("2025-12-01".into()),
             Value::Enum("degraded".into()),
@@ -225,7 +229,7 @@ fn overheating_compares_against_the_lowered_const() {
         rows,
         vec![vec![
             Value::String("m3".into()),
-            Value::Date("2025-01-01".into()),
+            Value::Instant("2025-01-01T10:00:00.000Z".into()),
             Value::Real(371.5),
         ]]
     );

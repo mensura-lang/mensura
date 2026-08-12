@@ -47,8 +47,8 @@ fn ingesting_the_fleet_registry_feeds_its_views() {
     let machines = table(&program, "machines");
     let rows = decode_jsonl(
         machines,
-        r#"{"machine_id":"m-01","commissioned":"2026-01-05","status":"operational","last_service":null}
-{"machine_id":"m-02","commissioned":"2026-02-11","status":"degraded","last_service":"2026-06-01"}
+        r#"{"machine_id":"m-01","commissioned":"2026-01-05","activated":"2026-01-09T08:00:00Z","status":"operational","last_service":null}
+{"machine_id":"m-02","commissioned":"2026-02-11","activated":"2026-02-15T09:30:00Z","status":"degraded","last_service":"2026-06-01"}
 "#,
     )
     .expect("machines decode");
@@ -59,12 +59,14 @@ fn ingesting_the_fleet_registry_feeds_its_views() {
         2
     );
 
+    // The producer emits a local offset; the decoder stores normalized UTC
+    // (ADR 0036 decision 7), and the views below order by the stored form.
     let readings = table(&program, "readings");
     let rows = decode_jsonl(
         readings,
-        r#"{"machine_id":"m-01","taken_at":"2026-07-30","temperature":300.0}
-{"machine_id":"m-01","taken_at":"2026-07-31","temperature":312.5}
-{"machine_id":"m-02","taken_at":"2026-07-31","temperature":355.0}
+        r#"{"machine_id":"m-01","taken_at":"2026-07-30T12:00:00+02:00","temperature":300.0}
+{"machine_id":"m-01","taken_at":"2026-07-31T12:00:00+02:00","temperature":312.5}
+{"machine_id":"m-02","taken_at":"2026-07-31T12:00:00+02:00","temperature":355.0}
 "#,
     )
     .expect("readings decode");
@@ -124,8 +126,8 @@ fn a_bad_record_stops_the_batch_before_anything_is_written() {
 
     let err = decode_jsonl(
         readings,
-        r#"{"machine_id":"m-01","taken_at":"2026-07-30","temperature":300.0}
-{"machine_id":"m-02","taken_at":"2026-07-31","temperature":"warm"}
+        r#"{"machine_id":"m-01","taken_at":"2026-07-30T12:00:00Z","temperature":300.0}
+{"machine_id":"m-02","taken_at":"2026-07-31T12:00:00Z","temperature":"warm"}
 "#,
     )
     .expect_err("the second record's temperature is not a number");
@@ -145,8 +147,8 @@ fn a_batch_that_fails_at_the_write_rolls_back() {
 
     let rows = decode_jsonl(
         machines,
-        r#"{"machine_id":"m-01","commissioned":"2026-01-05","status":"operational","last_service":null}
-{"machine_id":"m-01","commissioned":"2026-03-09","status":"failure","last_service":null}
+        r#"{"machine_id":"m-01","commissioned":"2026-01-05","activated":"2026-01-09T08:00:00Z","status":"operational","last_service":null}
+{"machine_id":"m-01","commissioned":"2026-03-09","activated":"2026-03-13T08:00:00Z","status":"failure","last_service":null}
 "#,
     )
     .expect("both records decode; the clash is a key one");
