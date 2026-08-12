@@ -45,6 +45,11 @@ Module flatMap (each file imports only what it builds on):
                      instantiation on the exact millisecond grid, and the
                      order-compatibility lemma ADR 0037's window gates rest
                      on (ADR 0036)
+  Expr/
+    Missing          scalar operators lifted over the missing axis and the
+                     `??` discharge: absorption, agreement with the unlifted
+                     operator, distribution over composition, and the chain
+                     laws (ADR 0039); abstract in the scalar operations
 
 The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
@@ -65,3 +70,4 @@ import Mensura.Completeness.PivotAttr
 import Mensura.Completeness.CompleteOver
 import Mensura.Units.Dimension
 import Mensura.Units.Torsor
+import Mensura.Expr.Missing

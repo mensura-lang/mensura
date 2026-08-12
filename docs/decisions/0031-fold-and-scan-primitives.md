@@ -294,7 +294,9 @@ operators **uniformly**, with no wordy residents:
   of two dates and the smaller of two temperatures both work), the
   result of that domain.  They bind looser than `+ -` and tighter than
   the comparisons, so `a + b << c` is `(a + b) << c` and `a << b < c`
-  is `(a << b) < c`.  Independently useful at the surface (clamping,
+  is `(a << b) < c`.  (The ranking against the comparisons is
+  superseded: ADR 0040 makes the tacks unranked, so that meeting now
+  takes parentheses.)  Independently useful at the surface (clamping,
   earlier-of-two-dates); in the table they are the rows the aggregate
   `min`/`max` derive from.
 - **`a <: b` and `a :> b`** are keep-left and keep-right, APL's tacks:

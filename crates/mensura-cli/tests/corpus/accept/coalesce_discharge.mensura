@@ -1,0 +1,33 @@
+// `??` is the only exit from optionality (ADR 0039 decision 2): the
+// present value, or the default.  The default's domain must match,
+// dimension included; a chain discharges at its first present value and
+// is total exactly when its final default is
+// (`formal/Mensura/Expr/Missing.lean`).
+import series
+
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+}
+
+// `series.lag` yields an optional column (each group's first row has no
+// predecessor); the next stage discharges it with a dimensioned default,
+// so the served column is total.  The second field chains through an
+// optional step before the total default ends it.
+view padded_trend {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b,
+         .next     = series.lead (|r| r.temperature) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| (
+         .previous = r.previous ?? 0.0 * kelvin,
+         .neighbor = r.previous ?? r.next ?? 0.0 * kelvin
+       )
+}

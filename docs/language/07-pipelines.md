@@ -42,8 +42,7 @@ checker rejects a pipeline that would violate one of them:
 - **Totality** (column-scoped qualifier): whether each non-key value is
   known or may be missing (`Cell = Option`).  A value is total unless its
   type is marked `?` (ADR 0010); `lookup` makes its right columns
-  optional, and a default, an aggregate, or an `is known` narrowing makes a
-  column total again.
+  optional, and the `??` discharge makes a column total again (ADR 0039).
 - **Completeness** (table-scoped qualifier): whether a partition is fully
   present, that is, whether every key's bag has all of its rows.
   Completeness is what makes a per-bag fold faithful.  It is established
@@ -383,8 +382,9 @@ reduction brings a many-row bag down to one value (`fold` is the primitive,
 `scan` is its ordered sibling, `#` counts, `in` tests membership, and the
 named reductions and windows are `bag` and `series` module
 bindings such as `bag.sum` and `series.cumsum`, with `mean` derived as
-`bag.sum b.x / to_real (#b.x)`; ADR 0031); and a missing value is made known
-by a default, a reduction, or an `is known` narrowing.  At the pipeline
+`bag.sum b.x / to_real (#b.x)`; ADR 0031); and a missing value propagates
+through the scalar operators and is made known by the `??` discharge
+(ADR 0039).  At the pipeline
 level `pivot` is
 admitted only at `singletons` (at most one row per key).
 ADR 0010 settles the total/optional axis and its `?` marker; how

@@ -158,16 +158,16 @@ conditional is the introduction site for the deferred `is known` narrowing.
 
 ## Operators and precedence
 
-The operators, from loosest-binding to tightest:
+The precedence order is **partial** (ADR 0040).  The rule fits in a
+breath: school math chains, one logic word chains, and everything else
+takes parentheses.  The ordered spine, from loosest-binding to tightest:
 
 | Operators | Associativity | Notes |
 |---|---|---|
-| `\|>` | left | the pipe; its consumers are pipelines |
-| `or` | left | |
-| `and` | left | |
+| `\|>` | left | the pipe; loosest, accepts anything |
+| `or`, `and` | left | one homogeneous level: a chain is one word |
 | `not` | prefix | |
 | `== != < <= > >=`, `in`, `is known`, `is missing` | non-associative | |
-| `<< >>`, `<: :>` | left | binary minimum and maximum; keep-left and keep-right |
 | `+ -` | left | |
 | `* /` | left | |
 | `-` | prefix (unary) | |
@@ -176,12 +176,28 @@ The operators, from loosest-binding to tightest:
 | `#` | prefix | cardinality; its operand is a member access |
 | `.` | postfix | member access, tightest |
 
-Most operators use tokens the lexer already emits; ADR 0031 adds `#`, `<<`,
-`>>`, `<:`, and `:>`.  A few rules the layering implies:
+One level is **unranked**: `??` (the coalescing discharge, ADR 0039)
+and the tacks `<< >>`, `<: :>` (ADR 0031).  Its operands are
+arithmetic-or-tighter, so `a + b << c` is `(a + b) << c` and
+`r.previous ?? 0.0 * kelvin` needs no parens; a self-chain keeps its
+associativity (`??` discharges right, a tack folds left); and any other
+meeting, with a different unranked operator, a comparison, `is`, or a
+logic word, is a parse error naming both operators and the fix
+(`(a << hi) >> lo`, `(a ?? b) < c`, `(a < b) ?? false`).  The ladder is
+closed: a future operator is born unranked, and a rank must be earned
+by decision record (ADR 0040, Decision 4).
+
+Most operators use tokens the lexer already emits; ADR 0031 adds `#`,
+`<<`, `>>`, `<:`, and `:>`, and ADR 0039 adds `??`.  A few rules the
+layering implies:
 
 - **Comparisons do not chain.**  `a < b < c` is rejected; a conjunction
   (`a < b and b < c`) says it instead.  This keeps the comparison level
   non-associative and unambiguous.
+- **`and` and `or` do not mix bare.**  `a and b or c` is rejected;
+  `(a and b) or c` says which way it groups.  A chain of one word needs
+  no parens, and neither does a conjunction of comparisons,
+  `a < b and c < d`.
 - **`not` sits below the comparisons**, so `not a == b` is
   `not (a == b)`, matching the common reading.
 - **Unary minus and `^`.**  `^` binds tighter than unary minus, so
@@ -191,8 +207,6 @@ Most operators use tokens the lexer already emits; ADR 0031 adds `#`, `<<`,
   negated argument.  `f - x` is subtraction; a negated argument must be
   parenthesized, `f (-x)`.  This is the one ambiguity juxtaposition
   introduces, and it is resolved in favour of the binary reading.
-- **`<<` and `>>` sit between arithmetic and the comparisons**, so
-  `a + b << c` is `(a + b) << c` and `a << b < c` is `(a << b) < c`.
 - **`#` binds looser than `.` and tighter than the comparisons**, so
   `#b.x` is `#(b.x)` and `#b > 3` reads as written.  It also sits inside
   the application spine, so `f #b` is `f (#b)`.
@@ -272,15 +286,36 @@ state what they accept on each axis, and the language never silently
 bridges either gap:
 
 - **Scalar operators** (`+ - * / ^`, the comparisons, `and`/`or`/`not`)
-  require **a single known value**: cardinality 1 and not missing.
-  Applying one to a bag, or to a value that may be missing, is a **hard
-  type error**, not an implicit fold or default.  `r.temperature > 30.0`
-  is well-typed only when `temperature` is read at one row and is total
-  (known).  Numeric splits into `int` and `real`, and operators are gated
-  by the scalar domain (ADR 0014): operands must match with no coercion,
-  `/` is `real`-only, `==`/`!=` is not defined on `real`, and ordering
-  (`< <= > >=`) and `min`/`max` apply to the orderable domains (`int`,
-  `real`, `date`).
+  require **a single value**: cardinality 1.  Applying one to a bag is a
+  **hard type error**, not an implicit fold.  Numeric splits into `int`
+  and `real`, and operators are gated by the scalar domain (ADR 0014):
+  operands must match with no coercion, `/` is `real`-only, `==`/`!=` is
+  not defined on `real`, and ordering (`< <= > >=`) and `min`/`max`
+  apply to the orderable domains (`int`, `real`, `date`, `instant`).
+- **The missing axis lifts** (ADR 0039).  An optional operand is
+  accepted, and the result is then optional: absent when any operand is
+  absent, the ordinary application otherwise, with the domain and
+  dimension rules unchanged under the `?`
+  (`formal/Mensura/Expr/Missing.lean`).  So `r.previous + 1.0` over a
+  `real?` is a `real?`, and `r.temp > r.previous` is an **optional
+  boolean**.  There is no three-valued logic: `false and missing` is
+  missing, not false, because absence absorbs uniformly.  (For the same
+  reason `and`/`or` evaluate both operands rather than short-circuiting,
+  like the tacks: a diagnostic in the discarded side still surfaces.)
+- **Decision boundaries stay total** (ADR 0039 decision 3).  Absence
+  flows through values; it never flows past a decision unconsulted.  An
+  `if` condition (and therefore a `flat_map` filter) demands a total
+  boolean, so an optional comparison must state its absent-row policy:
+  `(r.temp > r.previous) ?? false`.  A fold or scan accumulates total
+  values, so a mapper over an optional column is rejected until it is
+  discharged; no aggregate skips absent values silently.  Keys are total
+  (ADR 0010).  `#` counts rows, never values, and is unaffected.
+- **`??` is the only exit from optionality**: `e ?? d` is the present
+  value or the default, whose domain must match, dimension included
+  (`?? 0.0 * kelvin`, not `?? 0`).  Right-associative: a chain
+  discharges at its first present value and is total exactly when its
+  final default is.  Every `??` is a grep-able policy statement; there
+  is no implicit collapse anywhere else in the language.
 - **Reduction** is the explicit way to consume a bag.  `fold` is the
   primitive (`fold `+` (|v| v) b.credits`), `#` counts (`#b.credits`), and
   membership `v in b.tags` tests.  The named reductions (`bag.sum`,
@@ -292,24 +327,28 @@ bridges either gap:
 
 So a bag is always collapsed deliberately, by reduction
 (`bag.max b.readings > 30.0`, or `fold `>>` (|v| v) b.readings` written
-out) and never by accident.  A possibly missing value is
-eliminated just as deliberately, by a default or coalesce, by an
-aggregate defined over missingness, or by narrowing (below); it never
-silently propagates.  Values are **total** (always known) by default; an
+out) and never by accident.  A possibly missing value *propagates
+honestly and is discharged deliberately*: carry the `?` as far as it
+goes and write `??` only where the default is a true statement about
+the domain (**discharge late**, ADR 0039 decision 4).  The fleet
+example's `reading_rate` is the worked case: the rate is honestly
+absent on each machine's first reading, and the serving layer renders
+the absence.  Values are **total** (always known) by default; an
 **optional** value, one that may be missing, is written with a `?` on
 its type (ADR 0010).
 
 ### Known and missing values, and the row
 
 `is missing` tests whether a value is **missing**, `is known` whether it
-is present.  They apply to values only.  An **optional** value is the one
-place either may hold; on a **total** value `is known` is always true.
+is present.  They apply to values only, lifted results included
+(`(r.a + r.b) is known`), and always return a *total* boolean.  An
+**optional** value is the one place either may hold; on a **total**
+value `is known` is always true.
 
-`is known` **narrows**: inside the branch guarded by `r.x is known`, and
-on every row a `flat_map` keeps with `if r.x is known then r else ()`, the optional
-`x` is treated as total, so a scalar operator may then use it.  This is
-the third way to establish that a value is known, alongside a default or
-coalesce and an aggregate defined over missingness (ADR 0010).
+`is known` does **not** narrow: the guarded branch still sees the
+optional type, because flow-sensitive narrowing is deferred (ADR 0039
+alternative 4; `??` subsumes the common cases and is forward-compatible
+with it).  The discharge is `??`, above.
 
 A *row* (an entity) being absent is a different thing: it is the key
 having no rows at all (`card 0`), "not sampled."  A value-scoped

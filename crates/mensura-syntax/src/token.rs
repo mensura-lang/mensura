@@ -62,6 +62,11 @@ pub enum TokenKind {
     Semi,
     Dot,
     Question,
+    /// `??`, the coalescing discharge (ADR 0039, Decision 2).  A
+    /// maximal-munch token: two adjacent `?` are always the operator, never
+    /// two optional markers (`parse_type` takes at most one `?`, so `T??`
+    /// was already unparseable).
+    QuestionQuestion,
     At,
     /// `#`, the cardinality prefix (ADR 0031, Decision 9).  Free as a token:
     /// comments are `//`.

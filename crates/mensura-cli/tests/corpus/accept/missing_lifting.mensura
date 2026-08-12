@@ -1,0 +1,40 @@
+// Scalar operators lift over optional operands (ADR 0039 decision 1): the
+// result is optional, absent when any operand is absent, and the domain and
+// dimension rules are unchanged, applied under the `?`.  The lifted torsor
+// difference and the lifted dimensioned division below are what make the
+// rate idiom of ADR 0037 decision 6 expressible, honestly absent on each
+// group's first row; the filter discharges its optional comparison with an
+// explicit policy (decision 3).
+import series
+
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+}
+
+view heating_rate {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .at       = b.taken_at,
+         .temp     = b.temperature,
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b,
+         .prev_at  = series.lag (|r| r.taken_at) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| (.rate = (r.temp - r.previous) / (r.at - r.prev_at))
+}
+
+view warming {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .temp     = b.temperature,
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| if (r.temp > r.previous) ?? false then r else ()
+}

@@ -1,0 +1,26 @@
+// Rejected at resolve (typing): an `if` condition demands a *total*
+// boolean (ADR 0039 decision 3).  A comparison over an optional column is
+// an optional boolean, and absence may flow through values but never past
+// a decision unconsulted: the author states the absent-row policy with
+// `?? true` or `?? false`, and the diagnostic says so.
+import series
+
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+}
+
+view bad {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .temp     = b.temperature,
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| if r.temp > r.previous then r else ()
+}

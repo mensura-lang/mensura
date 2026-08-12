@@ -1,0 +1,19 @@
+// Rejected at parse: the logic level is homogeneous (ADR 0040, Decision 2).
+// A chain is one word, so `and` meeting `or` bare is an error asking for
+// parentheses: `(r.hot and r.loud) or r.old` says which way it groups.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr {
+    hot: bool
+    loud: bool
+    old: bool
+  }
+}
+
+view bad {
+  readings |> flat_map |k, r| if r.hot and r.loud or r.old then r else ()
+}

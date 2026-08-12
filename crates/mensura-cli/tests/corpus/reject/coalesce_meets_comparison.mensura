@@ -1,0 +1,18 @@
+// Rejected at parse: `??` has no rank against the comparisons (ADR 0040,
+// Decision 3), so a bare meeting is an error asking for parentheses.  Both
+// readings are one paren pair away: `(r.peak ?? 0.0) < 1.0` compares the
+// discharged value, `(r.peak < 1.0) ?? false` states the absent-row policy.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr {
+    peak: real?
+  }
+}
+
+view bad {
+  readings |> flat_map |k, r| if r.peak ?? 0.0 < 1.0 then r else ()
+}

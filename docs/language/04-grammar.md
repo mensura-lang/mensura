@@ -189,7 +189,9 @@ tl_factor     = ident [ "[" ident "]" ]
   marker preserves LL(1).  The `?` is a punctuation token the lexer
   emits, and `parse_type` carries it on the `TypeExpr`; the resolver
   rejects `?` on a key field (whether a row exists is cardinality, a
-  separate axis) and threads totality onto each resolved column.
+  separate axis) and threads totality onto each resolved column.  Two
+  adjacent `?` lex as the `??` operator (ADR 0039), so `T??` is a
+  lexical rejection; it was never grammatical.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -213,14 +215,14 @@ disjoint from them:
 | --- | --- | --- |
 | a `unit` field / `attr` entry | next field `ident`/`template`, `}` | yes |
 | a `let` / record-field ascription | `=` | yes |
-| a lambda return ascription `\|x\| : T body` | FIRST(or_expr): idents, literals, `-`, `(`, `\|`, `{` | yes: `-` only follows `^`, and `(` only starts a factor (after `*`, `/`, or at the head), never follows a completed factor |
+| a lambda return ascription `\|x\| : T body` | FIRST(logic_expr): idents, literals, `-`, `(`, `\|`, `{` | yes: `-` only follows `^`, and `(` only starts a factor (after `*`, `/`, or at the head), never follows a completed factor |
 
 The lambda-return row is the one genuinely hazardous context: the body
 begins immediately after the type, so the type must not be able to
 swallow a body-starting token.  It cannot: a completed `tl_expr` can only
 be continued by `*`, `/`, `^`, or `[`, none of which starts an
 expression (`\|>` is a distinct token from `\|`, and unary minus appears
-in FIRST(or_expr) but a bare `-` is not a type continuation).  So
+in FIRST(logic_expr) but a bare `-` is not a type continuation).  So
 `|x| : speed[real] x / s` parses the type as `speed[real]` and the body
 as `x / s`.
 
@@ -378,15 +380,15 @@ result type, neither of which is syntax.
 ```ebnf
 expr        = pipe_expr ;
 
-pipe_expr   = or_expr  { "|>" or_expr } ;
-or_expr     = and_expr { "or" and_expr } ;
-and_expr    = not_expr { "and" not_expr } ;
+pipe_expr   = logic_expr { "|>" logic_expr } ;
+logic_expr  = not_expr { logic_word not_expr } ;  (* one word per chain *)
+logic_word  = "or" | "and" ;
 not_expr    = "not" not_expr | cmp_expr ;
-cmp_expr    = tack_expr [ cmp_op tack_expr | "is" presence ] ;
+cmp_expr    = glue_expr [ cmp_op glue_expr | "is" presence ] ;
 cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" ;
 presence    = "known" | "missing" ;
-tack_expr   = add_expr { tack_op add_expr } ;
-tack_op     = "<<" | ">>" | "<:" | ":>" ;
+glue_expr   = add_expr { glue_op add_expr } ;  (* one operator per chain *)
+glue_op     = "??" | "<<" | ">>" | "<:" | ":>" ;
 add_expr    = mul_expr { ( "+" | "-" ) mul_expr } ;
 mul_expr    = unary_expr { ( "*" | "/" ) unary_expr } ;
 unary_expr  = "-" unary_expr | pow_expr ;
@@ -397,8 +399,8 @@ postfix     = primary { "." ident } ;
 primary     = number | string | ident | combiner | lambda | conditional
             | paren | block ;
 combiner    = template ;
-lambda      = "|" [ ident { "," ident } ] "|" [ ":" type ] or_expr ;
-conditional = "if" or_expr "then" or_expr "else" or_expr ;
+lambda      = "|" [ ident { "," ident } ] "|" [ ":" type ] logic_expr ;
+conditional = "if" logic_expr "then" logic_expr "else" logic_expr ;
 
 paren       = "(" ( record_body | collection_body ) ")" ;
 record_body = field { "," field } ;
@@ -442,7 +444,12 @@ tokens.  ADR 0031 adds five: `#` (free, since comments are `//`) plus
 `<<`, `>>`, `<:`, and `:>`.  Those four collide with nothing, and maximal
 munch settles them: the lexer has no shift tokens, no production puts a `>`
 after a `:`, and none puts a `:` after a `<` (there is no generic-argument
-syntax, so `<` is only ever a comparison).  (An `NxE` measured literal
+syntax, so `<` is only ever a comparison).  ADR 0039 adds one more, `??`,
+by maximal munch on `?`: two adjacent `?` are always the coalesce operator,
+which collides with nothing because the optional marker is a single `?`
+taken at most once, so `T??` was already unparseable and is now merely
+rejected one stage earlier (by the lexer's tokenization rather than the
+type grammar).  (An `NxE` measured literal
 (`10x3`) was once reserved here for physical units; ADR 0026 supersedes
 it.  Units need no literal form, and a measured-precision literal is
 deferred with the precision library.)
@@ -466,24 +473,35 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
 - **Precedence is layered, not recovered by backtracking.**  Each level is a
   left-recursion-free loop (`{ op operand }`) or a single optional
   (`[ op operand ]`) over the next-tighter level, so the operator token at
-  hand decides whether to continue.  From loosest to tightest: `|>`, `or`,
-  `and`, `not`, the comparisons, `<< >> <: :>`, `+ -`, `* /`, unary `-`, `^`,
-  application, `#`, member access.
+  hand decides whether to continue.  The order is partial (ADR 0040): the
+  spine runs, loosest to tightest, `|>`, the logic words `or`/`and` (one
+  homogeneous level), `not`, the comparisons, `+ -`, `* /`, unary `-`, `^`,
+  application, `#`, member access; the glue operators (`??` and the tacks)
+  sit between the comparisons and `+ -` as one unranked level whose only
+  legal chains are self-chains.
 - **`not_expr`**: the ident `not` selects the prefix branch; any other token
   starts `cmp_expr`.  One token decides.
 - **`cmp_expr`**: after the left operand, a comparison operator (or the ident
   `in`) opens the comparison branch and the ident `is` opens the presence
   branch; any other token ends the production, so comparisons do not chain.
   `in` and `is` are distinct idents, so one token picks the branch.  Both
-  operand slots are `tack_expr`, so the level below is reachable from either
-  side of a comparison.
-- **`tack_expr`**: a loop over four distinct tokens (`<<`, `>>`, `<:`, `:>`),
-  each one token of lookahead, none of which begins any other production at
-  this point; any other token ends the loop.  All four share one level
-  because they are one shape of operation, so no mixed expression needs a
-  reading the layering does not give it.  Sitting between the comparisons and
-  `+ -` is what makes `a + b << c` read `(a + b) << c` and `a << b < c` read
-  `(a << b) < c` (ADR 0031, Decision 6).
+  operand slots are `glue_expr`, so the level below is reachable from
+  either side of a comparison; an operand that *used* its glue level bare
+  is rejected by the meeting check (side condition 2 below).
+- **`logic_expr`**: a loop over the two logic words, each an ident, one
+  token of lookahead.  The chain commits to its first word (side
+  condition 1 below): `a and b and c` folds left, and `a and b or c` is a
+  parse error asking for parentheses (ADR 0040, Decision 2).
+- **`glue_expr`**: a loop over five distinct tokens (`??`, `<<`, `>>`,
+  `<:`, `:>`), each one token of lookahead, none of which begins any other
+  production at this point; any other token ends the loop.  The chain
+  commits to its first operator (side condition 1): a self-chain keeps its
+  associativity (`a ?? b ?? c` is `a ?? (b ?? c)`, a chain discharging at
+  its first present value, ADR 0039; each tack folds left, ADR 0031), and
+  a different glue operator mid-chain is a parse error.  The operands are
+  `add_expr`, so `a + b << c` reads `(a + b) << c` and a computed default
+  needs no parens; against the comparisons and the logic words the level
+  is unranked, and the meeting takes parentheses (ADR 0040, Decision 3).
 - **`card_expr`**: `#` selects the prefix branch and recurses; any other
   token starts a `postfix`.  Placing it *inside* the application spine, with
   a `postfix` operand, is what gives `#` its two documented bindings at once:
@@ -511,7 +529,7 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   with `unit`'s two roles.
 - **`conditional`**: the reserved ident `if` selects it; `then` and `else`
   are reserved idents that fix the two branch boundaries, so each sub-expression
-  (an `or_expr`) is delimited by one token of lookahead.
+  (a `logic_expr`) is delimited by one token of lookahead.
 - **`paren`**: after `(`, the next token chooses the body - `.` opens a
   `record_body` (labeled fields), anything else begins a `collection_body` whose
   first element is an expression; then `,` continues the collection and `)` ends
@@ -527,7 +545,7 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   reached from a different parser state and never confused with a block.
 - **`lambda`**: `|` opens it, an optional comma-separated ident list gives the
   parameters, a closing `|` ends them, then an optional `: Type` return
-  ascription, then the body, an `or_expr`.  The `:` after the closing `|`
+  ascription, then the body, a `logic_expr`.  The `:` after the closing `|`
   decides whether a return type is present; the `type` grammar never starts
   with `(` or `{`, so it cannot swallow the body.  The body deliberately
   excludes a top-level `|>`, so `data |> flat_map |k, r| r.x |> next g` composes as
@@ -542,9 +560,9 @@ discharges the `ROADMAP.md` M0 condition explicitly: no left recursion, disjoint
 FIRST sets at every choice, and FIRST/FOLLOW disjoint at every nullable
 production.
 
-**No left recursion.**  The expression grammar is a precedence cascade: each
-non-terminal references only strictly tighter levels (`pipe_expr` -> `or_expr`
--> ... -> `primary`), and repetition is written as a right-iterative loop
+**No left recursion.**  The expression grammar is a precedence cascade:
+each non-terminal references only strictly tighter levels (`pipe_expr` ->
+`logic_expr` -> ... -> `primary`), and repetition is a right-iterative loop
 `{ op operand }`, never as `A = A op B`.  `unary_expr = "-" unary_expr | ...`
 and `not_expr = "not" not_expr | ...` recurse only after consuming a terminal
 (`-`, `not`), so they are not left-recursive.  No production can derive itself
@@ -565,9 +583,9 @@ points and their checks:
 
 | nullable / optional | FIRST(optional part) | FOLLOW (what ends it) | disjoint? |
 | --- | --- | --- | --- |
-| `cmp_expr` tail `[ cmp_op tack_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
+| `cmp_expr` tail `[ cmp_op glue_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
 | `pow_expr` tail `[ "^" unary_expr ]` | `^` | everything looser than `^` | yes (`^` is not in FOLLOW) |
-| each loop `{ op operand }` (`\|>`, `or`, `and`, `<< >> <: :>`, `+ -`, `* /`) | that level's operator token(s) | the next looser operator or a terminator | yes (operators are partitioned by level) |
+| each loop `{ op operand }` (`\|>`, the logic words, the glue operators, `+ -`, `* /`) | that level's operator token(s) | the next looser operator or a terminator | yes (operators are partitioned by level) |
 | `app_expr = card_expr { card_expr }` | `number string template ident( non-reserved ) ( \| { #` | any infix operator, `\|>`, `) , then else ; }` | yes (no infix operator or terminator starts a `card_expr`) |
 | `lambda` params `[ ident { "," ident } ]` | `ident` | `\|` (closing bar) | yes |
 | return / field / let ascription `[ ":" type ]` | `:` | lambda body start, `=`, `}` | yes (`:` is distinct) |
@@ -575,9 +593,25 @@ points and their checks:
 | `block` body `[ stmt { ";" stmt } ]` | `FIRST(stmt)` | `}` | yes (`stmt` never starts with `}`) |
 
 Every choice is settled by one token of lookahead and no nullable production can
-be confused with what follows it, so the expression sublanguage is LL(1).  With
-the declaration grammar (proven above), the whole core grammar meets the M0
-freeze condition.
+be confused with what follows it, so the expression sublanguage is LL(1).
+
+**Two parser-enforced side conditions** (ADR 0040, Decision 5) sit beside
+the grammar rather than in it.  Both are single-token checks on
+already-parsed structure, so neither disturbs the decidability argument:
+
+1. **Homogeneous-chain commit.**  The `logic_expr` and `glue_expr` loops
+   admit any word or operator of their level grammatically; the parser
+   commits each chain to its *first* word or operator and rejects a
+   different same-level one mid-chain (`a and b or c`, `a << b >> c`),
+   naming both operators and the parenthesized fix.
+2. **The meeting check.**  An unparenthesized `glue_expr` that consumed a
+   glue operator may not be an operand of a comparison, an `is` test, or a
+   logic word (`a ?? b < c`, `a ?? b is known`, `a ?? b and c`).
+   Parentheses clear the condition, since a parenthesized expression
+   re-enters through `primary`.
+
+With the declaration grammar (proven above), the whole core grammar meets
+the M0 freeze condition.
 
 ### Reserved words in expressions
 

@@ -77,8 +77,9 @@ had a value in every row), and `pivot` spreads them back total.  A long table
 that is *sparse*, missing some `(key, variant)` rows, is not exhaustive, so its
 pivoted columns are optional: the wide form faithfully records that some cells
 were never observed rather than inventing a value.  Totality is not lost
-silently; it is tracked, and a downstream scalar operation on an optional column
-must supply a default or narrow with `is known` first.
+silently; it is tracked: a downstream scalar operation on an optional column
+carries the optionality along, and a `??` discharge with an honest default
+makes it total again.
 
 So the pair is a true inverse precisely because value-missing in the wide table
 and row-absent in the long table carry the same information.  A sparse long

@@ -3,7 +3,8 @@
 //
 // This rule is forced by the implementation rather than stated in ADR 0031, and
 // it is the ordered analogue of `fold` refusing a mapper that may produce a
-// missing value.  The fix is upstream: filter the bag, or coalesce the key.
+// missing value (both are ADR 0039 decision 3 boundaries).  The fix is
+// upstream: filter the bag, or discharge the key with `??`.
 unit Machine {
   id: string
 }
