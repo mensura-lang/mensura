@@ -320,9 +320,9 @@ precision).  Both are equatable, orderable, and key-eligible; neither is
 numeric, and comparing one against the other is a domain mismatch no
 conversion repairs.  Their arithmetic is the torsor rule of ADR 0036
 decision 4 (`instant - instant : time[real]`, translation by a duration);
-it is **not yet implemented**, pending its formal gate
-(`formal/Mensura/Units/Torsor.lean`), so today `instant` supports
-comparison and equality only, and `date` arithmetic is deferred
+its formal gate is in place (`formal/Mensura/Units/Torsor.lean`, ADR 0021)
+and the checker rules land with the M5 windows slice, so today `instant`
+supports comparison and equality only, and `date` arithmetic is deferred
 outright.
 
 Dimensions refine the numeric rules (`11-physical-units.md`, ADR 0026).

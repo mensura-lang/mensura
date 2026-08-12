@@ -939,6 +939,83 @@ neither depends on nor changes the table algebra above.
   its own axis and zero on the others.
 \end{proof}
 
+\chapter{Temporal torsors}
+
+This chapter backs ADR 0036's torsor arithmetic for temporal point
+domains (decision 9).  The abstract laws are stated over any additive
+torsor, so neither a later exact backing (ADR 0026 decision 9) nor the
+deferred civil instantiation (\texttt{diff(date)}) reopens them; the
+concrete instantiation is the absolute point on the exact millisecond
+grid.  The order-compatibility result is the lemma ADR 0037's window
+gates (\texttt{closedWindow\_stable}, the interval test) rest on.
+
+\begin{theorem}[The torsor laws]
+  \label{thm:torsor-laws}
+  \lean{Mensura.Units.Torsor.translate_vsub, Mensura.Units.Torsor.vsub_add_vsub,
+    Mensura.Units.Torsor.vsub_self, Mensura.Units.Torsor.vsub_unique}\leanok
+  For a point domain $P$ with difference group $G$ acting freely and
+  transitively, the checker's laws follow from the structure rather than
+  being stipulated: $t + (u - t) = u$, $(t - u) + (u - v) = t - v$,
+  $t - t = 0$, and $u - t$ is the unique translation carrying $t$ to $u$.
+\end{theorem}
+\begin{proof}\leanok
+  Each is a one-line consequence of the torsor axioms (the cancellation
+  pair), instantiated from mathlib's \texttt{AddTorsor}.
+\end{proof}
+
+\begin{definition}[Duration]
+  \label{def:duration}\lean{Mensura.Units.Duration}\leanok
+  \uses{def:dimension}
+  A duration on the exact millisecond grid: an integer count of
+  milliseconds, forming a linearly ordered abelian group.  Its physical
+  dimension is the \texttt{time} axis of the dimension group, which is how
+  the torsor extends ADR 0026's structure rather than sitting beside it.
+  The checker-level difference type is \texttt{time[real]}; the bridge to
+  the binary64 backing is ADR 0036 decision 6's round-trip bound, an
+  implementation obligation rather than a formal target.
+\end{definition}
+
+\begin{definition}[Instant]
+  \label{def:instant}\lean{Mensura.Units.Instant}\leanok
+  An absolute temporal point: a count of milliseconds from the epoch
+  (ADR 0036 decision 5), linearly ordered by that count.  A structure
+  rather than an integer synonym, so no numeric operation is available on
+  points themselves (decision 3): every operation flows through the torsor
+  interface.
+\end{definition}
+
+\begin{theorem}[Instant is a torsor over the millisecond durations]
+  \label{thm:instant-torsor}
+  \lean{Mensura.Units.Instant.addTorsor}\leanok
+  \uses{def:duration, def:instant, thm:torsor-laws}
+  Translation and difference on the exact millisecond grid satisfy the
+  torsor axioms, so every law of \ref{thm:torsor-laws} holds at
+  \texttt{instant}, with no assumption that the backing is real
+  (ADR 0036 decision 9, item 2).
+\end{theorem}
+\begin{proof}\leanok
+  Both cancellation axioms reduce to integer arithmetic on the
+  millisecond counts.
+\end{proof}
+
+\begin{theorem}[Order compatibility]
+  \label{thm:instant-order-compat}
+  \lean{Mensura.Units.Instant.lt_vadd_of_pos,
+    Mensura.Units.Instant.strictMono_vadd,
+    Mensura.Units.Instant.vadd_lt_vadd_iff_left}\leanok
+  \uses{def:duration, def:instant, thm:instant-torsor}
+  Translation by a positive duration is strictly increasing, translation
+  by a fixed duration is strictly monotone in the point, and translation
+  of a fixed point is strictly monotone in the duration (ADR 0036
+  decision 9, item 3).  This is the lemma ADR 0037's interval test
+  $w \le p < w + \mathit{size}$ and its \texttt{closedWindow\_stable}
+  gate rest on, so this chapter lands before the window lemmas.
+\end{theorem}
+\begin{proof}\leanok
+  Each statement reduces to the corresponding fact about integer
+  addition and order on the millisecond counts.
+\end{proof}
+
 \chapter{Open problems}
 
 The white nodes below are planned, not yet formalized; the Lean names

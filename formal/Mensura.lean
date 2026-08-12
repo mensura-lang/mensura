@@ -40,6 +40,11 @@ Module flatMap (each file imports only what it builds on):
     Dimension        physical dimensions as the free abelian group over the
                      seven SI base dimensions, with decidable equality
                      (ADR 0026); standalone, independent of the table algebra
+    Torsor           temporal point domains as additive torsors over their
+                     difference groups: the abstract laws, the Instant
+                     instantiation on the exact millisecond grid, and the
+                     order-compatibility lemma ADR 0037's window gates rest
+                     on (ADR 0036)
 
 The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
@@ -59,3 +64,4 @@ import Mensura.Completeness.Verbs
 import Mensura.Completeness.PivotAttr
 import Mensura.Completeness.CompleteOver
 import Mensura.Units.Dimension
+import Mensura.Units.Torsor
