@@ -68,7 +68,9 @@ wherever a `peak` is absent, which is the honest answer.
 and `T?` when `d` is itself optional.  Right-associative, so a chain
 discharges at its first present value and is total exactly when its
 last default is.  One two-character operator token; the precedence
-slot lands in `04-grammar.md` with the implementation.
+slot lands in `04-grammar.md` with the implementation.  (Resolved by
+ADR 0040: `??` is unranked, and meeting a comparison or logic word
+takes parentheses.)
 
 Every `??` is a visible, grep-able policy statement: "when this
 value is absent, this default is the true answer."  There is no
