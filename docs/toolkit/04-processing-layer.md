@@ -129,11 +129,12 @@ trailing expression is the result.
   0015 restricted to collection size at most 1, which is all the current
   surface can express.
 - **Scalar expressions** inside a body (literals, field access, arithmetic,
-  comparisons, boolean operators, `if`/`then`/`else`, `is known`, record
-  literals) follow `docs/language/06-expressions.md` over `Value`s.  The
-  checker has already enforced domain rules (for example, no `==` on
+  comparisons, boolean operators, `if`/`then`/`else`, `is known`, `??`,
+  record literals) follow `docs/language/06-expressions.md` over `Value`s.
+  The checker has already enforced domain rules (for example, no `==` on
   `real`), so the evaluator implements each operator only on the variants
-  it can meet.
+  it can meet; a `Value::Missing` operand makes any lifted operator's
+  result missing (ADR 0039).
 
 Later Tier A operations slot into the same shape: each is a function from
 input row batches to an output row batch, with its property effects already

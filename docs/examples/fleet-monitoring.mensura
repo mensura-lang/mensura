@@ -176,6 +176,49 @@ view reading_trend {
   )
 }
 
+// The taught rate idiom (ADR 0037 decision 6), expressible because the
+// scalar operators lift over optional operands (ADR 0039): both lag columns
+// are optional, so the torsor difference `r.at - r.prev_at` is an optional
+// `time[real]` (ADR 0036), the division is an optional `temperature/time`
+// quantity, and the rate is **honestly absent** on each machine's first
+// reading rather than zero-padded.  Discharge late (ADR 0039 decision 4):
+// the `?` rides to the end and the serving layer renders absence; a `??`
+// belongs only where its default is a true statement about the domain.
+//
+// Written `(v - lag v) / interval_constant` this would be silently wrong
+// across the gaps the comment above describes; the point difference
+// recovers the true elapsed time, which is what makes the form
+// self-correcting.
+view reading_rate {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .at       = b.taken_at,
+         .temp     = b.temperature,
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b,
+         .prev_at  = series.lag (|r| r.taken_at) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| (
+         .at   = r.at,
+         .rate = (r.temp - r.previous) / (r.at - r.prev_at)
+       )
+}
+
+// A boundary discharge (ADR 0039 decision 3): a comparison over an optional
+// column is an optional boolean, and a filter must state the absent-row
+// policy in the program.  `?? false` keeps each machine's first reading out
+// of the warming set, which is the honest policy: no predecessor, no claim.
+view warming {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .at       = b.taken_at,
+         .temp     = b.temperature,
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| if (r.temp > r.previous) ?? false then r else ()
+}
+
 // Reducing folds each machine's readings, which is silently wrong on a
 // partial bag, so the reducing `map_bags` demands completeness (ADR 0023).
 // The registry's by-mechanism fact does not reach here: it holds at the

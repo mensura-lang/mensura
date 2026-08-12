@@ -75,6 +75,12 @@ fn attention_needed_materializes_the_degraded_machines() {
             // The window view emits one row per reading, not one per machine:
             // four readings in, four rows out (ADR 0031, Decision 7).
             ("reading_trend".to_string(), 4),
+            // The rate view keeps every row too; the rate column is absent
+            // on each machine's first reading (ADR 0039).
+            ("reading_rate".to_string(), 4),
+            // The `?? false` policy keeps first readings out: only `m1`'s
+            // second reading is warmer than its predecessor.
+            ("warming".to_string(), 1),
             ("machine_temperature".to_string(), 3),
             // The bag registry reduces at its own key with no `assume`
             // (ADR 0033): three samples across two machines, two rows out.
@@ -207,6 +213,48 @@ fn reading_trend_scans_each_machine_in_key_order() {
     // neighbours are absent.
     assert_eq!(m3[2], Value::Missing);
     assert_eq!(m3[3], Value::Missing);
+}
+
+#[test]
+fn reading_rate_is_absent_on_first_readings_and_exact_after() {
+    // The taught idiom end to end (ADR 0036 + ADR 0039): the lifted torsor
+    // difference recovers the true elapsed seconds, the lifted division
+    // yields the dimensioned rate, and each machine's first reading carries
+    // an honest NULL instead of a fabricated zero.
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
+    materialize_views(&mut db, &program).unwrap();
+
+    let view = program
+        .views
+        .iter()
+        .find(|v| v.name == "reading_rate")
+        .expect("the example declares reading_rate");
+    let rows = db.scan(&view.shape()).unwrap();
+    assert_eq!(rows.len(), 4, "one output row per input reading");
+
+    // `m1` warmed from 300.0 K to 302.5 K over exactly one day.
+    let m1: Vec<&Vec<Value>> = rows
+        .iter()
+        .filter(|r| r[0] == Value::String("m1".into()))
+        .collect();
+    let first = m1
+        .iter()
+        .find(|r| r[1] == Value::Instant("2025-01-01T10:00:00.000Z".into()))
+        .expect("the earlier reading");
+    assert_eq!(first[2], Value::Missing, "no predecessor, no rate");
+    let later = m1
+        .iter()
+        .find(|r| r[1] == Value::Instant("2025-01-02T10:00:00.000Z".into()))
+        .expect("the later reading");
+    assert_eq!(later[2], Value::Real(2.5 / 86400.0));
+
+    // Single-reading machines have no rate anywhere.
+    let m3 = rows
+        .iter()
+        .find(|r| r[0] == Value::String("m3".into()))
+        .expect("m3 has a reading");
+    assert_eq!(m3[2], Value::Missing);
 }
 
 #[test]

@@ -81,7 +81,7 @@ through it and surface on the view:
   `bag`.
 - **Totality** (column-scoped qualifier): a value is total unless an operation
   made it optional (a `lookup` leaves its added columns optional until a
-  default or an `is known` narrowing restores them; ADR 0010).
+  `??` discharge restores them; ADR 0010, ADR 0039).
 - **Completeness** and **lineage** (table-scoped qualifiers): carried as the
   Tier A operations carry them (`09-typing-reference.md`, sections 8 and 9).
 

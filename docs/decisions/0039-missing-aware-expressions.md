@@ -170,9 +170,12 @@ Implementation:
 
 ## Open questions
 
-- **A presence predicate** (`is missing` or similar), whose first
-  consumers are count-of-present-values (decision 3) and flow
-  narrowing (alternative 4).
+- **A presence predicate.**  Resolved before it opened: `is known` /
+  `is missing` already existed at the surface (typed and evaluated,
+  `06-expressions.md`), which this ADR's survey missed.  They return a
+  total boolean and do not narrow, so count-of-present-values was
+  already expressible; only flow narrowing (alternative 4) remains
+  open.
 - **Fill policies on `dense`** (ADR 0038): carry-forward narrows
   `T?` to `T` by a mechanism; whether it lowers to a scan plus `??`
   or stays a distinct surface is decided there, with a consumer.

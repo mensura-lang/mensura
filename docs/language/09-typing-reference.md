@@ -289,6 +289,8 @@ tightest (`06`, "Operators and precedence"; grammar in `04-grammar.md`):
 | `and` | left | |
 | `not` | prefix | sits below the comparisons |
 | `== != < <= > >=`, `in`, `is known`, `is missing` | non-assoc. | do not chain |
+| `??` | right | the coalescing discharge (ADR 0039) |
+| `<< >>`, `<: :>` | left | binary minimum/maximum; the tacks (ADR 0031) |
 | `+ -` | left | |
 | `* /` | left | |
 | `-` (unary) | prefix | |
@@ -301,11 +303,20 @@ subtraction; a negated argument must be parenthesized, `f (-x)`.
 
 ### 5.3  The scalar rule: one known value
 
-A **scalar operator** (`+ - * / ^`, the comparisons, `and`/`or`/`not`) requires
-**a single known value**: `card 1` and not missing.  Applying one to a bag, or
-to a value that may be missing, is a hard type error, never an implicit fold or
-default (`06`, "Cardinality and missing values").  So `r.temperature > 30.0`
-type-checks only when `temperature` is read at one row and is total.
+A **scalar operator** (`+ - * / ^`, the comparisons, `and`/`or`/`not`)
+requires **a single value**: `card 1`.  Applying one to a bag is a hard
+type error, never an implicit fold (`06`, "Cardinality and missing
+values").  The missing axis **lifts** (ADR 0039, gated by
+`formal/Mensura/Expr/Missing.lean`): an optional operand is accepted, the
+result is optional, absent when any operand is absent, and the domain
+rules below apply unchanged under the `?`.  A comparison over an optional
+value is therefore an optional boolean (there is no three-valued logic:
+absence absorbs, so `false and missing` is missing), and `??` is the only
+discharge: `e ?? d` with a same-domain default, dimension included, total
+exactly when the (chained) default is.  The decision boundaries stay
+total: an `if` condition demands a total boolean (state the policy,
+`?? false`), a fold or scan accumulates total values, `in` requires a
+total bag, and keys are total (ADR 0010).
 
 The scalar domain also gates which operator applies, strictly and without
 coercion (ADR 0014): numeric `number` splits into `int` and `real`; `+ -`
@@ -529,17 +540,17 @@ through it: it is the fiber's type, constructible only where groups are, it
 never enters a column, and it is not writable in type position.  Bare `b` in a
 value position is a type error, as it was when `b` was a record.
 
-### 5.6  `is known` narrows
+### 5.6  `is known` and the `??` discharge
 
-`is missing` / `is known` apply to values only and test the optional axis.  On a
-total value `is known` is always true.  `is known` **narrows**: inside a branch
-guarded by `r.x is known`, and on every row a `flat_map` keeps with
-`if r.x is known then r else ()`, the optional `x` is treated as total, so a
-scalar operator may then use it.
-This is one of the three ways to make an optional value known, alongside a
-default/coalesce and an aggregate defined over missingness (ADR 0010).  Testing
-a *row* for absence (`card 0`) is not an expression-level operation for now
-(`06`, "Known and missing values").
+`is missing` / `is known` apply to values only, lifted results included, and
+test the optional axis, returning a *total* boolean.  On a total value
+`is known` is always true.  They do **not** narrow: flow-sensitive narrowing
+is deferred (ADR 0039 alternative 4), and the way to make an optional value
+total is the `??` discharge: `e ?? d`, the present value or the default,
+same domain, dimension included; right-associative, so a chain discharges at
+its first present value and is total exactly when its final default is.
+Testing a *row* for absence (`card 0`) is not an expression-level operation
+for now (`06`, "Known and missing values").
 
 ### 5.7  Enumerated values
 
@@ -550,13 +561,14 @@ is a compile error (`06`, "Enumerated values").
 
 ### 5.8  Conditionals
 
-`if c then a else b` (ADR 0015): the condition `c` is a known `bool`, and the
-two branches type to the same `Ty`, which is the result; if either branch is
-optional the result is optional.  A non-`bool` condition or mismatched branches
-is a type error.  The conditional is an ordinary value, valid in a field value
+`if c then a else b` (ADR 0015): the condition `c` is a *total* `bool` (the
+branching boundary of ADR 0039 decision 3: an optional comparison must state
+its absent-row policy, `(...) ?? false` or `?? true`), and the two branches
+type to the same `Ty`, which is the result; if either branch is optional the
+result is optional.  A non-`bool` condition or mismatched branches is a type
+error.  The conditional is an ordinary value, valid in a field value
 (`.flag = if r.hot then 1 else 0`) and as a `flat_map` body branch
-(`if c then r else ()`); it is the introduction site for the deferred `is
-known` narrowing.
+(`if c then r else ()`).
 
 ### 5.9  Const functions (ADR 0030)
 
@@ -1142,8 +1154,10 @@ suite itself is M1 work (`ROADMAP.md`, M1).
   `demote` (ADR 0023, ADR 0035).
 - A disjointness-demanding site fed two tables that are not structurally
   disjoint and were neither asserted nor assumed.
-- A scalar operator applied to a bag, or to an optional value without narrowing
-  (`r.x > 30` where `x` is optional or read at a `bag`).
+- A scalar operator applied to a bag (`r.x > 30` where `x` is read at a
+  `bag`); an optional operand *lifts* instead (ADR 0039), but an optional
+  boolean reaching an `if` condition, or an optional mapper reaching a fold
+  or scan, is rejected until discharged with `??`.
 - Comparison chaining (`a < b < c`); a mixed positional/labeled `( )`.
 - A `flat_map` body that names a key column in its output record, or one that
   always drops (`flat_map |k, r| ()`, no schema to infer); an `if` with a non-`bool`
