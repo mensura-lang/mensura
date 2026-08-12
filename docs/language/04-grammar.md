@@ -189,7 +189,9 @@ tl_factor     = ident [ "[" ident "]" ]
   marker preserves LL(1).  The `?` is a punctuation token the lexer
   emits, and `parse_type` carries it on the `TypeExpr`; the resolver
   rejects `?` on a key field (whether a row exists is cardinality, a
-  separate axis) and threads totality onto each resolved column.
+  separate axis) and threads totality onto each resolved column.  Two
+  adjacent `?` lex as the `??` operator (ADR 0039), so `T??` is a
+  lexical rejection; it was never grammatical.
 
 No production is left-recursive, and no nullable production creates a
 FIRST/FOLLOW clash, so the freeze condition in `ROADMAP.md` M0 holds for this
@@ -382,9 +384,10 @@ pipe_expr   = or_expr  { "|>" or_expr } ;
 or_expr     = and_expr { "or" and_expr } ;
 and_expr    = not_expr { "and" not_expr } ;
 not_expr    = "not" not_expr | cmp_expr ;
-cmp_expr    = tack_expr [ cmp_op tack_expr | "is" presence ] ;
+cmp_expr    = coalesce_expr [ cmp_op coalesce_expr | "is" presence ] ;
 cmp_op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" ;
 presence    = "known" | "missing" ;
+coalesce_expr = tack_expr [ "??" coalesce_expr ] ;
 tack_expr   = add_expr { tack_op add_expr } ;
 tack_op     = "<<" | ">>" | "<:" | ":>" ;
 add_expr    = mul_expr { ( "+" | "-" ) mul_expr } ;
@@ -442,7 +445,12 @@ tokens.  ADR 0031 adds five: `#` (free, since comments are `//`) plus
 `<<`, `>>`, `<:`, and `:>`.  Those four collide with nothing, and maximal
 munch settles them: the lexer has no shift tokens, no production puts a `>`
 after a `:`, and none puts a `:` after a `<` (there is no generic-argument
-syntax, so `<` is only ever a comparison).  (An `NxE` measured literal
+syntax, so `<` is only ever a comparison).  ADR 0039 adds one more, `??`,
+by maximal munch on `?`: two adjacent `?` are always the coalesce operator,
+which collides with nothing because the optional marker is a single `?`
+taken at most once, so `T??` was already unparseable and is now merely
+rejected one stage earlier (by the lexer's tokenization rather than the
+type grammar).  (An `NxE` measured literal
 (`10x3`) was once reserved here for physical units; ADR 0026 supersedes
 it.  Units need no literal form, and a measured-precision literal is
 deferred with the precision library.)
@@ -467,16 +475,25 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   left-recursion-free loop (`{ op operand }`) or a single optional
   (`[ op operand ]`) over the next-tighter level, so the operator token at
   hand decides whether to continue.  From loosest to tightest: `|>`, `or`,
-  `and`, `not`, the comparisons, `<< >> <: :>`, `+ -`, `* /`, unary `-`, `^`,
-  application, `#`, member access.
+  `and`, `not`, the comparisons, `??`, `<< >> <: :>`, `+ -`, `* /`,
+  unary `-`, `^`, application, `#`, member access.
 - **`not_expr`**: the ident `not` selects the prefix branch; any other token
   starts `cmp_expr`.  One token decides.
 - **`cmp_expr`**: after the left operand, a comparison operator (or the ident
   `in`) opens the comparison branch and the ident `is` opens the presence
   branch; any other token ends the production, so comparisons do not chain.
   `in` and `is` are distinct idents, so one token picks the branch.  Both
-  operand slots are `tack_expr`, so the level below is reachable from either
-  side of a comparison.
+  operand slots are `coalesce_expr`, so the level below is reachable from
+  either side of a comparison.
+- **`coalesce_expr`**: a single optional `??` tail whose right operand is
+  the *same* level, which is how a plain infix production gets right
+  associativity (`a ?? b ?? c` is `a ?? (b ?? c)`: a chain discharges at
+  its first present value, ADR 0039).  One token decides.  Sitting between
+  the comparisons and the tacks is what makes a value discharge sit inside
+  a comparison unparenthesized (`r.peak ?? limit < t` is
+  `(r.peak ?? limit) < t`) while a boolean policy discharge is written
+  with parens, `(a < b) ?? false`, which reads as the deliberate statement
+  it is.
 - **`tack_expr`**: a loop over four distinct tokens (`<<`, `>>`, `<:`, `:>`),
   each one token of lookahead, none of which begins any other production at
   this point; any other token ends the loop.  All four share one level
@@ -565,7 +582,8 @@ points and their checks:
 
 | nullable / optional | FIRST(optional part) | FOLLOW (what ends it) | disjoint? |
 | --- | --- | --- | --- |
-| `cmp_expr` tail `[ cmp_op tack_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
+| `cmp_expr` tail `[ cmp_op coalesce_expr \| "is" presence ]` | `== != < <= > >=`, `in`, `is` | `and or \|> ) , ; } then else` | yes |
+| `coalesce_expr` tail `[ "??" coalesce_expr ]` | `??` | the comparison operators, `is`, and everything looser | yes (`??` is not in FOLLOW) |
 | `pow_expr` tail `[ "^" unary_expr ]` | `^` | everything looser than `^` | yes (`^` is not in FOLLOW) |
 | each loop `{ op operand }` (`\|>`, `or`, `and`, `<< >> <: :>`, `+ -`, `* /`) | that level's operator token(s) | the next looser operator or a terminator | yes (operators are partitioned by level) |
 | `app_expr = card_expr { card_expr }` | `number string template ident( non-reserved ) ( \| { #` | any infix operator, `\|>`, `) , then else ; }` | yes (no infix operator or terminator starts a `card_expr`) |

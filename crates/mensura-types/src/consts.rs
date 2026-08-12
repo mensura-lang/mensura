@@ -771,6 +771,10 @@ fn op_name(op: BinOp) -> &'static str {
         BinOp::Max => ">>",
         BinOp::KeepLeft => "<:",
         BinOp::KeepRight => ":>",
+        // `??` is scalar-only and const values are total by construction
+        // (ADR 0039), so a const `??` is dead code and stays undefined here;
+        // this arm only names it in the diagnostic.
+        BinOp::Coalesce => "??",
         _ => "operator",
     }
 }

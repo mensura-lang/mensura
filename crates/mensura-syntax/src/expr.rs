@@ -107,6 +107,12 @@ pub enum BinOp {
     Ge,
     /// `in`, bag membership
     In,
+    /// `??`, the coalescing discharge (ADR 0039, Decision 2): the left
+    /// operand's value when present, the default otherwise.
+    /// Right-associative; tighter than the comparisons, looser than
+    /// `<< >>`, so `a ?? d < c` is `(a ?? d) < c` and a boolean policy
+    /// discharge is written with parens, `(a < b) ?? false`.
+    Coalesce,
     /// `<<`, binary minimum (ADR 0031, Decision 6).  Looser than `+ -`,
     /// tighter than the comparisons.
     Min,

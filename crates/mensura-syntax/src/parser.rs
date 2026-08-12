@@ -810,10 +810,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `cmp_expr = tack_expr [ cmp_op tack_expr | "is" presence ]`.
+    /// `cmp_expr = coalesce_expr [ cmp_op coalesce_expr | "is" presence ]`.
     /// Non-associative: at most one comparison or presence test.
     fn parse_cmp(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_tack()?;
+        let lhs = self.parse_coalesce()?;
         if self.at_keyword("is") {
             self.bump_keyword();
             let pres = if self.at_keyword("known") {
@@ -845,10 +845,29 @@ impl<'a> Parser<'a> {
         match op {
             Some(op) => {
                 self.pos += 1;
-                let rhs = self.parse_tack()?;
+                let rhs = self.parse_coalesce()?;
                 Ok(self.binary(op, lhs, rhs))
             }
             None => Ok(lhs),
+        }
+    }
+
+    /// `coalesce_expr = tack_expr [ "??" coalesce_expr ]`,
+    /// right-associative by same-level recursion on the right (ADR 0039,
+    /// Decision 2): a chain discharges at its first present value, so
+    /// `a ?? b ?? c` is `a ?? (b ?? c)`.  Tighter than the comparisons and
+    /// looser than the tacks, so a value discharge sits inside a comparison
+    /// unparenthesized (`r.peak ?? limit < t` is `(r.peak ?? limit) < t`)
+    /// and a boolean policy discharge is written with parens,
+    /// `(a < b) ?? false`, which reads as the deliberate statement it is.
+    fn parse_coalesce(&mut self) -> Result<Expr, ParseError> {
+        let lhs = self.parse_tack()?;
+        if self.check(&TokenKind::QuestionQuestion) {
+            self.pos += 1;
+            let rhs = self.parse_coalesce()?;
+            Ok(self.binary(BinOp::Coalesce, lhs, rhs))
+        } else {
+            Ok(lhs)
         }
     }
 
@@ -2102,6 +2121,7 @@ mod tests {
                     BinOp::Gt => ">",
                     BinOp::Ge => ">=",
                     BinOp::In => "in",
+                    BinOp::Coalesce => "??",
                     BinOp::Min => "<<",
                     BinOp::Max => ">>",
                     BinOp::KeepLeft => "<:",
@@ -2187,6 +2207,23 @@ mod tests {
         // Left-associative, and all four share the one level.
         assert_eq!(sexpr(&expr("a << b >> c")), "(>> (<< a b) c)");
         assert_eq!(sexpr(&expr("a <: b :> c")), "(:> (<: a b) c)");
+    }
+
+    #[test]
+    fn coalesce_sits_between_the_tacks_and_the_comparisons() {
+        // ADR 0039, Decision 2: `??` is tighter than the comparisons, so a
+        // value discharge sits inside a comparison unparenthesized; both
+        // operand slots of `parse_cmp` route through the new level.
+        assert_eq!(sexpr(&expr("a ?? b < c")), "(< (?? a b) c)");
+        assert_eq!(sexpr(&expr("a < b ?? c")), "(< a (?? b c))");
+        // Looser than the tacks and arithmetic, so a computed default needs
+        // no parens: `a ?? b + c` is `a ?? (b + c)`.
+        assert_eq!(sexpr(&expr("a ?? b + c")), "(?? a (+ b c))");
+        assert_eq!(sexpr(&expr("a ?? b << c")), "(?? a (<< b c))");
+        // Right-associative: a chain discharges at its first present value.
+        assert_eq!(sexpr(&expr("a ?? b ?? c")), "(?? a (?? b c))");
+        // The boolean policy discharge takes parens, and they parse.
+        assert_eq!(sexpr(&expr("(a < b) ?? false")), "(?? (< a b) false)");
     }
 
     #[test]

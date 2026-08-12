@@ -1,0 +1,26 @@
+// Rejected at resolve (typing): the default of `??` must be of the same
+// scalar domain as the value it discharges, dimension included (ADR 0039
+// decision 2).  A bare `0.0` in a `temperature[real]` slot is the same
+// compile error as any other dimension mismatch; the honest default is
+// `0.0 * kelvin`, and only if zero kelvin is a true statement about the
+// domain.
+import series
+
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+}
+
+view bad {
+  readings
+    |> demote taken_at
+    |> map_bags |k, b| (
+         .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b
+       )
+    |> flat_map |_, r| (.previous = r.previous ?? 0.0)
+}

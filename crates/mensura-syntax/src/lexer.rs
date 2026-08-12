@@ -284,7 +284,14 @@ impl<'a> Lexer<'a> {
             ',' => TokenKind::Comma,
             ';' => TokenKind::Semi,
             '.' => TokenKind::Dot,
-            '?' => TokenKind::Question,
+            '?' => {
+                if self.peek() == Some('?') {
+                    self.bump();
+                    TokenKind::QuestionQuestion
+                } else {
+                    TokenKind::Question
+                }
+            }
             '@' => TokenKind::At,
             '#' => TokenKind::Hash,
             '|' => {
@@ -513,6 +520,29 @@ mod tests {
         assert_eq!(
             kinds("date?"),
             vec![TokenKind::Ident("date".into()), TokenKind::Question]
+        );
+    }
+
+    #[test]
+    fn double_question_munches_to_the_coalesce_operator() {
+        // `??` is one token (ADR 0039): two adjacent `?` are always the
+        // operator, never two optional markers, and a spaced pair stays two
+        // `?` tokens.
+        assert_eq!(
+            kinds("a ?? b"),
+            vec![
+                TokenKind::Ident("a".into()),
+                TokenKind::QuestionQuestion,
+                TokenKind::Ident("b".into()),
+            ]
+        );
+        assert_eq!(
+            kinds("? ?? ?"),
+            vec![
+                TokenKind::Question,
+                TokenKind::QuestionQuestion,
+                TokenKind::Question,
+            ]
         );
     }
 

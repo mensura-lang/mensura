@@ -1775,6 +1775,7 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
             )?;
             Ok(total(domain))
         }
+        BinOp::Coalesce => type_coalesce(ctx, lhs, rhs),
         BinOp::Eq | BinOp::Ne => type_equality(ctx, lhs, rhs),
         BinOp::And | BinOp::Or => {
             let mut errs = require_bool(ctx, lhs, "a boolean operator");
@@ -1788,6 +1789,47 @@ fn type_binary(ctx: &Context, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Ty, V
         BinOp::In => type_membership(ctx, lhs, rhs),
         BinOp::Pipe => apply_value(ctx, rhs, Some(lhs)),
     }
+}
+
+/// `??` (ADR 0039 decision 2): the coalescing discharge, the one exit from
+/// optionality.  The left operand may be optional (accepting one is this
+/// operator's purpose); the default must be of the same scalar domain,
+/// dimension included, so `r.peak ?? 0.0` on a `temperature[real]?` is the
+/// same compile error as any other dimension mismatch.  The result is total
+/// exactly when the (chained) default is; a total left operand is legal and
+/// simply makes the default unreachable.
+fn type_coalesce(ctx: &Context, lhs: &Expr, rhs: &Expr) -> Result<Ty, Vec<TypeError>> {
+    let mut errs = Vec::new();
+    let lt = collect_ty(type_expr(ctx, lhs), &mut errs);
+    let rt = collect_ty(type_expr(ctx, rhs), &mut errs);
+    let (Some(lt), Some(rt)) = (lt, rt) else {
+        return Err(errs);
+    };
+    let as_value = |ty: &Ty, span: Span| match ty {
+        Ty::Value { domain, opt } => Ok((domain.clone(), *opt)),
+        Ty::Bool => Ok((ColumnType::Bool, Optionality::Total)),
+        other => Err(vec![TypeError::new(
+            format!("`??` expects a value, found {}", describe_ty(other)),
+            span,
+        )]),
+    };
+    let (ld, lo) = as_value(&lt, lhs.span)?;
+    let (rd, ro) = as_value(&rt, rhs.span)?;
+    if ld != rd {
+        return Err(vec![TypeError::new(
+            format!(
+                "`??` expects a default of the same type, found {} and {}",
+                domain_name(&ld),
+                domain_name(&rd)
+            ),
+            rhs.span,
+        )]);
+    }
+    let opt = match lo {
+        Optionality::Total => Optionality::Total,
+        Optionality::Optional => ro,
+    };
+    Ok(Ty::Value { domain: ld, opt })
 }
 
 /// `+`/`-` (ADR 0014, ADR 0026, ADR 0036).  Matching numeric domains,
@@ -2505,6 +2547,57 @@ mod tests {
             ambient.insert(name.to_string(), Ty::Record(members));
         }
         ambient
+    }
+
+    #[test]
+    fn coalesce_discharges_optionality() {
+        // ADR 0039 decision 2: `??` is the exit from optionality.  A total
+        // default makes the result total; an optional default keeps the
+        // chain optional; a total left operand is legal.
+        let ctx = row_ctx();
+        assert_eq!(ty_of(&ctx, "r.peak ?? 0.0"), Ok(total(ColumnType::Real)));
+        assert_eq!(
+            ty_of(&ctx, "r.peak ?? r.temperature"),
+            Ok(total(ColumnType::Real))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.peak ?? r.peak"),
+            Ok(Ty::Value {
+                domain: ColumnType::Real,
+                opt: Optionality::Optional
+            })
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.peak ?? r.peak ?? 0.0"),
+            Ok(total(ColumnType::Real))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.note ?? \"unnamed\""),
+            Ok(total(ColumnType::String))
+        );
+        assert_eq!(
+            ty_of(&ctx, "r.temperature ?? 0.0"),
+            Ok(total(ColumnType::Real))
+        );
+        // A parenthesized comparison discharges to a total boolean.
+        assert_eq!(
+            ty_of(&ctx, "(r.temperature > 1.0) ?? true"),
+            Ok(total(ColumnType::Bool))
+        );
+    }
+
+    #[test]
+    fn coalesce_demands_a_matching_default() {
+        let ctx = row_ctx();
+        let msg = |src: &str| ty_of(&ctx, src).expect_err(src)[0].message.clone();
+        // The default's domain must match, dimension included (the `0.0`
+        // here is a bare real against a temperature).
+        assert!(msg("r.peak ?? 1").contains("same type"));
+        assert!(msg("r.kelvin_reading ?? 0.0").contains("same type"));
+        // A bag is not a value; the cardinality axis is untouched.
+        let bag = bag_ctx();
+        let e = ty_of(&bag, "b.peak ?? 0.0").expect_err("bag operand");
+        assert!(e[0].message.contains("value"), "{}", e[0].message);
     }
 
     #[test]

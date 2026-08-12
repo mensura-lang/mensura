@@ -1531,6 +1531,17 @@ fn eval_binary(scope: &Scope, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<RtVal
         // evaluated, so a diagnostic in the discarded one still surfaces.
         BinOp::KeepLeft => a,
         BinOp::KeepRight => b,
+        // `??` (ADR 0039 decision 2): the present value, or the default.
+        // Both operands are evaluated, like the tacks: the default is
+        // ordinarily a literal, and a diagnostic in a computed one should
+        // surface whether or not this row needed it.
+        BinOp::Coalesce => {
+            if matches!(a, Value::Missing) {
+                b
+            } else {
+                a
+            }
+        }
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => arithmetic(op, a, b)?,
         BinOp::In => {
             return err("`in` is not yet executable (docs/toolkit/04-processing-layer.md)");
@@ -1835,6 +1846,40 @@ mod tests {
                 Value::Missing,
                 Value::Enum("degraded".into()),
             ]]
+        );
+    }
+
+    #[test]
+    fn coalesce_takes_the_present_value_or_the_default() {
+        // ADR 0039 decision 2 at runtime: `??` returns the left value when
+        // present and the default otherwise; an optional default keeps the
+        // chain optional, so a missing left and missing default stay missing.
+        let rows = eval(
+            r#"view svc {
+                 machines |> flat_map |_, r| (
+                   .svc  = r.last_service ?? r.last_service,
+                   .busy = (r.hours > 15) ?? false
+                 )
+               }"#,
+            vec![
+                machine("m1", "operational", 10, Some("2026-01-01")),
+                machine("m2", "degraded", 20, None),
+            ],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    Value::String("m1".into()),
+                    Value::Date("2026-01-01".into()),
+                    Value::Bool(false),
+                ],
+                vec![
+                    Value::String("m2".into()),
+                    Value::Missing,
+                    Value::Bool(true),
+                ],
+            ]
         );
     }
 
