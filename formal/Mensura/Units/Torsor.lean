@@ -192,6 +192,18 @@ theorem lt_vadd_of_pos {d : Duration} (h : 0 < d) (t : Instant) : t < d +ᵥ t :
 theorem strictMono_vadd (d : Duration) : StrictMono (fun t : Instant ↦ d +ᵥ t) :=
   fun _ _ h ↦ (vadd_lt_vadd_iff_right d).mpr h
 
+/-- Order compatibility packaged for typeclass consumers: translation is
+covariant in the point under the strict order.  ADR 0037's
+`closedWindow_stable` gate consumes the lemma through this instance. -/
+instance : CovariantClass Duration Instant (· +ᵥ ·) (· < ·) :=
+  ⟨fun d _ _ h ↦ (vadd_lt_vadd_iff_right d).mpr h⟩
+
+/-- The non-strict companion. -/
+instance : CovariantClass Duration Instant (· +ᵥ ·) (· ≤ ·) :=
+  ⟨fun d t u h ↦ by
+    simp only [le_iff_ms_le, msSinceEpoch_vadd] at h ⊢
+    omega⟩
+
 end Instant
 
 /-- ADR 0036 decision 4's degenerate case: for the numeric domains the point
