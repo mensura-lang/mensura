@@ -53,6 +53,11 @@ view daily_peak_trend {
     |> map_bags |k, b| (.peak = bag.max b.temperature)
     // Back to a bag keyed by the machine, with the timestamp as the tag.
     |> demote taken_at
+    // The reduction's `singletons` output re-derived completeness, but the
+    // coarsening just forfeited it again (ADR 0035), and `running_max` is a
+    // scan at a fold-admitting combiner, so it demands the fact its
+    // contained reduction rests on (ADR 0037 decision 5).
+    |> assume { complete }
     |> map_bags |k, b| (
       // No `assume { arranged }`: the grading covers `taken_at`.
       .running_peak = series.running_max (|r| r.peak) (|r| r.taken_at) b

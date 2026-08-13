@@ -2641,21 +2641,54 @@ mod tests {
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
     }
 
-    /// A scan is the window shape, so it needs no completeness fact: one output
-    /// row per input row is faithful on a partial bag, and only a *reduction* is
-    /// silently wrong on one (ADR 0023).
+    /// **The completeness demand is per combiner, not per output shape**
+    /// (ADR 0037 decision 5, settling ADR 0029's flag; this test's ancestor
+    /// was named for the shape rule the decision retired).  A fold-admitting
+    /// scan contains its reduction (`Mensura.scanl_getLast_eq_foldBag`), so
+    /// over a genuinely coarsened bag it is rejected exactly as the reducing
+    /// shape is, and `assume { complete }` is the visible discharge; the
+    /// output is still the window shape (a bag) once the fact holds.
     #[test]
-    fn a_scan_is_the_window_shape_and_demands_no_completeness() {
+    fn a_fold_admitting_scan_demands_completeness_like_a_reducer() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> promote machine |> demote ts \
+             |> map_bags |k, b| (.run = series.running_max (|r| r.temperature) (|r| r.ts) b)",
+        )
+        .expect_err("running_max contains bag.max");
+        assert!(
+            errs[0].message.contains("contains its reduction"),
+            "unexpected: {}",
+            errs[0].message
+        );
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> promote machine |> demote ts |> assume { complete } \
+                 |> map_bags |k, b| (.run = series.running_max (|r| r.temperature) (|r| r.ts) b)",
+            )
+            .expect("discharged"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+    }
+
+    /// The keep combiners stay ceremony-free at the very same fiber: their
+    /// outputs are claims about adjacency among *present* rows, which a
+    /// partial bag represents honestly (ADR 0037 decision 5).
+    #[test]
+    fn a_keep_combiner_scan_demands_no_completeness() {
         let s = sample_sources();
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> promote machine |> demote machine \
-                 |> map_bags |k, b| (.run = series.running_max (|r| r.temperature) (|r| r.taken_at) b)",
+                "readings |> promote machine |> demote ts \
+                 |> map_bags |k, b| (.prev = series.lag (|r| r.temperature) (|r| r.ts) b)",
             )
             .expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert!(t.qualifiers.totality.is_optional("prev"));
     }
 
     /// **`series.lag` yields an optional column**, with no pipe-layer rule to

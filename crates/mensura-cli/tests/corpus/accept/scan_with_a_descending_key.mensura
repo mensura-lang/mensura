@@ -35,6 +35,11 @@ store readings {
 view ranked {
   readings
     |> assume { arranged }
+    // `rank` and the `>>`-scan are fold-admitting, so both demand
+    // completeness over the current key (ADR 0037 decision 5).  A
+    // presence-relative rank over a bag store remains expressible,
+    // deliberately, under exactly this visible claim.
+    |> assume { complete }
     |> map_bags |k, b| (
       // A descending `rank` needs no binding of its own: it is the ones-scan
       // over a `desc` key at the call site (Decision 8).

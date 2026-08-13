@@ -39,6 +39,10 @@ shape Lagged {
 view deltas : Lagged {
   history
     |> demote taken_at
+    // For `running_peak` only: a fold-admitting scan contains its reduction,
+    // so it demands the completeness the `demote` forfeited (ADR 0037
+    // decision 5).  `lag` demands nothing.
+    |> assume { complete }
     |> map_bags |k, b| (
       // Optional: the first row under the order has no predecessor.
       .previous = series.lag (|r| r.temperature) (|r| r.taken_at) b,
