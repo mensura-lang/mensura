@@ -50,6 +50,11 @@ Module flatMap (each file imports only what it builds on):
                      `??` discharge: absorption, agreement with the unlifted
                      operator, distribution over composition, and the chain
                      laws (ADR 0039); abstract in the scalar operations
+  Window/
+    Defs             streaming windows as a derived form (flatMap then
+                     promote): split-safety by composition, the grading
+                     extension, `closedWindow_stable`, and the concrete
+                     stride-grid placement at `Instant` (ADR 0037)
 
 The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
@@ -71,3 +76,4 @@ import Mensura.Completeness.CompleteOver
 import Mensura.Units.Dimension
 import Mensura.Units.Torsor
 import Mensura.Expr.Missing
+import Mensura.Window.Defs

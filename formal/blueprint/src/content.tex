@@ -1078,6 +1078,108 @@ carry no node here.
   By cases on the first operand.
 \end{proof}
 
+\chapter{Streaming windows}
+
+This chapter backs ADR 0037's window operation and its closedness
+mechanism (decision 8's formal gates).  The operation is specified as a
+derived form, a replicating row-wise map followed by a key extension, so
+split-safety and disjointness come from the existing composition lemmas
+rather than a new argument; the two genuinely new statements are the
+grading extension and the finality of closed windows, which is the
+soundness of the \texttt{closed} stage given the enforced
+\texttt{lateness} contract and the invariant the refresh slice inherits.
+
+\begin{definition}[Window]
+  \label{def:window}\lean{Mensura.window}\leanok
+  \uses{def:flatMap, def:promote}
+  ADR 0037 decision 1: replicate each row into one tagged copy per
+  window start containing its point (a flatMap), then promote the start
+  column into the key.  Generic in the placement function; the concrete
+  grid placement is \ref{def:window-starts}.
+\end{definition}
+
+\begin{theorem}[Window is split-safe]
+  \label{thm:window-splitsafe}\lean{Mensura.window_splitSafe}\leanok
+  \uses{def:window, def:splitsafe, thm:splitsafe-comp,
+        thm:flatMap-splitsafe, thm:promote-splitsafe}
+  With no new argument: it is a composition of two split-safe
+  operations, which is what ``specified as a derived form'' buys.
+\end{theorem}
+\begin{proof}\leanok
+  Composition of \ref{thm:flatMap-splitsafe} and
+  \ref{thm:promote-splitsafe} under \ref{thm:splitsafe-comp}.
+\end{proof}
+
+\begin{theorem}[The grading extension]
+  \label{thm:window-grading}\lean{Mensura.window_functional}\leanok
+  \uses{def:window, def:functional}
+  ADR 0037 decision 2: the replication is injective on (input identity,
+  window start), because placement never lands one row twice in one
+  window.  A table functional at its key therefore windows to a table
+  functional at the window-extended key: every tracked grading extends
+  to the window column rather than resetting, which is what keeps a
+  downstream scan's tie-freedom derivable inside a window fiber.
+\end{theorem}
+\begin{proof}\leanok
+  The fiber at $(k, w)$ holds the rows of key $k$ whose point lands in
+  the window at $w$, each at most once; a fiber of at most one row
+  contributes at most one.
+\end{proof}
+
+\begin{theorem}[Closed windows are final]
+  \label{thm:closed-window-stable}\lean{Mensura.closedWindow_stable}\leanok
+  \uses{def:window, def:union}
+  ADR 0037 decision 8, gate 2.  Extend a table by appended rows every
+  one of whose points beats $\mathit{watermark} - \mathit{lateness}$,
+  exactly the rows the enforced intake contract still admits.  Then the
+  fiber of any window with
+  $w + \mathit{size} + \mathit{lateness} \le \mathit{watermark}$, any
+  window \texttt{closed} keeps, is unchanged.  This is the soundness of
+  \texttt{closed}'s establishment of completeness (decision 4) and the
+  retraction-freedom the refresh slice inherits: reruns add newly
+  closed windows and never change one already emitted as final.
+\end{theorem}
+\begin{proof}\leanok
+  A multiset-filter argument: an appended row's point is too late to
+  satisfy the interval test's upper bound against a closed window's
+  start, by covariance of translation in the point.
+\end{proof}
+
+\begin{definition}[Grid placement]
+  \label{def:window-starts}\lean{Mensura.Units.Instant.windowStarts}\leanok
+  \uses{def:instant, def:duration}
+  The window starts containing a point, on the stride grid anchored at
+  the epoch (ADR 0036 decision 5): the integer multiples of the stride
+  in the half-open interval $(p - \mathit{size},\, p]$.
+\end{definition}
+
+\begin{theorem}[Placement is the interval test on the grid]
+  \label{thm:window-placement}
+  \lean{Mensura.Units.Instant.mem_windowStarts}\leanok
+  \uses{def:window-starts, thm:instant-order-compat}
+  For a positive stride, $w$ is a start containing $p$ iff $w$ is a
+  grid multiple of the stride from the epoch and
+  $w \le p < w + \mathit{size}$ (ADR 0037 decision 1): placement is
+  deterministic, with no declaration and no data dependence.
+\end{theorem}
+\begin{proof}\leanok
+  Integer division against the grid indices, in both directions.
+\end{proof}
+
+\begin{theorem}[Closed windows are final on the concrete grid]
+  \label{thm:closed-window-stable-instant}
+  \lean{Mensura.Units.Instant.closedWindow_stable}\leanok
+  \uses{thm:closed-window-stable, thm:window-placement,
+        thm:instant-order-compat}
+  The statement the checker's \texttt{closed} stage cites for
+  \texttt{instant}-pointed windows: the abstract finality theorem with
+  its placement hypothesis discharged by \ref{thm:window-placement} and
+  its order hypothesis by \ref{thm:instant-order-compat}.
+\end{theorem}
+\begin{proof}\leanok
+  Instantiation.
+\end{proof}
+
 \chapter{Open problems}
 
 The white nodes below are planned, not yet formalized; the Lean names
