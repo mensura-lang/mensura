@@ -22,7 +22,7 @@ use std::sync::Arc;
 use mensura_syntax::{BinOp, Expr, ExprKind, Ident, Span, UnOp};
 
 use crate::model::ColumnType;
-use crate::table::{Arranged, TableType};
+use crate::table::{Arranged, Cardinality, Completeness, TableType};
 use crate::units::{BASE_UNITS, Dimension};
 
 /// The optional axis of a single value (`09` section 3.3 / 5.3). Distinct from
@@ -524,10 +524,12 @@ pub struct Context {
     ambient: BTreeMap<String, Ty>,
     /// Function-application nesting depth; see [`MAX_FN_DEPTH`].
     fn_depth: u32,
-    /// What the enclosing table knows about tie-freedom, for a scan's order key
-    /// (ADR 0029 Decision 11's tier 1).  `None` outside a group lambda, since
-    /// only there is a fiber in scope to arrange.
-    tie_facts: Option<TieFacts>,
+    /// What the enclosing table knows about its fibers, for a scan's two
+    /// demands: tie-freedom of the order key (ADR 0029 Decision 11's tier 1)
+    /// and completeness under a fold-admitting combiner (ADR 0037
+    /// decision 5).  `None` outside a group lambda, since only there is a
+    /// fiber in scope.
+    fiber_facts: Option<FiberFacts>,
     /// Whether the expression being typed came from a bundled module's source
     /// rather than the file being checked; see [`TyClosure::foreign`].  Set
     /// while typing a foreign closure's body, so a lambda that body creates
@@ -535,22 +537,23 @@ pub struct Context {
     foreign: bool,
 }
 
-/// The evidence a scan's order key can be discharged against.
+/// The evidence a scan's demands can be discharged against.
 ///
 /// A scan is deterministic only when its key is injective *on each fiber*
-/// (`Mensura.IsArrangement.unique`).  That is a property of the data, so the
-/// checker cannot decide it in general; what it can do is look up the fact the
-/// table already carries.
+/// (`Mensura.IsArrangement.unique`), and under a fold-admitting combiner it is
+/// honest only when the fiber is whole (ADR 0037 decision 5).  Both are
+/// properties of the data, so the checker cannot decide them in general; what
+/// it can do is look up the facts the table already carries.
 ///
-/// The tracked fact is a **grading** (ADR 0024): a column set over which the
-/// flat table is known functional.  A projection key `|r| r.c` is injective on
-/// the fiber exactly when `key + {c}` contains a grading, because then two rows
-/// of one fiber agreeing on `c` agreed on a full grading and are the same row.
-/// `Mensura.keyInjOn_demote_tag` is that argument, and it is why the common
-/// window shape (a history keyed by entity and time, projected to the entity)
-/// needs no ceremony: `demote` carries gradings unchanged.
+/// The tracked tie fact is a **grading** (ADR 0024): a column set over which
+/// the flat table is known functional.  A projection key `|r| r.c` is
+/// injective on the fiber exactly when `key + {c}` contains a grading, because
+/// then two rows of one fiber agreeing on `c` agreed on a full grading and are
+/// the same row.  `Mensura.keyInjOn_demote_tag` is that argument, and it is
+/// why the common window shape (a history keyed by entity and time, projected
+/// to the entity) needs no ceremony: `demote` carries gradings unchanged.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TieFacts {
+pub struct FiberFacts {
     /// The current key's column names.
     pub key: BTreeSet<String>,
     /// The column sets over which the flat table is known functional.
@@ -559,9 +562,15 @@ pub struct TieFacts {
     /// covers (`assume { arranged }`).  The escape hatch of ADR 0029
     /// Decision 11's tier 3, which had no home until this rule needed one.
     pub assumed: bool,
+    /// Whether every fiber of the enclosing table is known whole: `Complete`
+    /// at the current key, or a `singletons` cardinality (a present key's
+    /// single row is its whole fiber, `fiberCompleteWrt_of_functional`).
+    /// Exactly the fact a reducing `map_bags` consumes (ADR 0023); the
+    /// fold-admitting scans consume it too (ADR 0037 decision 5).
+    pub complete: bool,
 }
 
-impl TieFacts {
+impl FiberFacts {
     /// Whether adding `column` to the key completes a grading, i.e. whether a
     /// projection key on it is injective within each fiber.
     fn grades(&self, column: &str) -> bool {
@@ -588,7 +597,7 @@ impl Context {
             ),
             ambient: ambient.clone(),
             fn_depth: 0,
-            tie_facts: None,
+            fiber_facts: None,
             foreign: false,
         }
     }
@@ -607,10 +616,12 @@ impl Context {
             names: bind2(ambient, kname, key_record(table), bname, fiber(table)),
             ambient: ambient.clone(),
             fn_depth: 0,
-            tie_facts: Some(TieFacts {
+            fiber_facts: Some(FiberFacts {
                 key: table.key_names(),
                 gradings: table.qualifiers.functional.clone(),
                 assumed: table.qualifiers.arranged == Arranged::Assumed,
+                complete: table.qualifiers.cardinality == Cardinality::Singletons
+                    || table.qualifiers.completeness == Completeness::Complete,
             }),
             foreign: false,
         }
@@ -623,7 +634,7 @@ impl Context {
             names: bind(ambient, param, key_record(table)),
             ambient: ambient.clone(),
             fn_depth: 0,
-            tie_facts: None,
+            fiber_facts: None,
             foreign: false,
         }
     }
@@ -649,11 +660,12 @@ impl Context {
             names,
             ambient: self.ambient.clone(),
             fn_depth: self.fn_depth + 1,
-            // Tie facts describe the *enclosing table*, not the name scope, so
-            // they survive into a closure body: `series.cumsum f k b` applies
-            // the module's lambda, and the key `k` it forwards must still be
-            // checked against the fiber it will arrange.
-            tie_facts: self.tie_facts.clone(),
+            // Fiber facts describe the *enclosing table*, not the name scope,
+            // so they survive into a closure body: `series.cumsum f k b`
+            // applies the module's lambda, and the key `k` it forwards must
+            // still be checked against the fiber it will arrange (and the
+            // fiber's completeness against the combiner it will fold).
+            fiber_facts: self.fiber_facts.clone(),
             // A module's body stays foreign however deeply it curries.
             foreign: self.foreign || closure.foreign,
         }
@@ -1405,8 +1417,22 @@ fn require_combiner_domain(
 /// corresponding fold, and `scanFiber_splitSafe`.
 ///
 /// The result is a **bag**, not a value: a scan emits one row per input row, so
-/// it is the window shape of `map_bags` rather than the reducing one, and it
-/// therefore demands no completeness fact (`07-pipelines.md`).
+/// it is the window shape of `map_bags` rather than the reducing one.
+///
+/// # Completeness
+///
+/// The completeness demand is **per combiner row**, not per output shape
+/// (ADR 0037 decision 5).  Under a fold-admitting combiner a scan *contains*
+/// its reduction: the last entry of the inclusive scan is the fold
+/// (`Mensura.scanl_getLast_eq_foldBag`), and every output row folds a prefix,
+/// so a missing early row corrupts every later output.  It therefore demands
+/// the same fiber-completeness fact a reducing `map_bags` demands (ADR 0023);
+/// exempting it would make `` scan `+` `` a loophole recomputing `` fold `+` ``
+/// without the obligation.  The keep combiners' outputs are claims about
+/// adjacency among *present* rows ("the previous reading in this bag"), which
+/// a partial bag represents honestly, so they demand nothing.  The demand axis
+/// is "does any output row's claim quantify over absent rows", and the closed
+/// table's `folds` column is that line.
 ///
 /// # Optionality
 ///
@@ -1445,6 +1471,7 @@ fn type_scan(
     let key_ty = apply_mapper(ctx, key, element, &format!("{what}'s order key"), span)?;
     require_orderable_key(&key_ty, &what, span)?;
     require_tie_free_key(ctx, key, &what, span)?;
+    require_complete_fiber(ctx, row, &what, span)?;
     let opt = if which == Builtin::Prescan && !row.has_identity {
         Optionality::Optional
     } else {
@@ -1544,7 +1571,7 @@ fn require_tie_free_key(
     what: &str,
     span: Span,
 ) -> Result<(), Vec<TypeError>> {
-    let Some(facts) = &ctx.tie_facts else {
+    let Some(facts) = &ctx.fiber_facts else {
         // No fiber in scope, so nothing to arrange.  Unreachable through
         // `type_scan` (its bag argument came from a group lambda), but the
         // conservative branch is to demand nothing rather than to invent a fact.
@@ -1574,6 +1601,46 @@ fn require_tie_free_key(
             span,
         )]),
     }
+}
+
+/// **The per-combiner completeness demand** (ADR 0037 decision 5, settling
+/// ADR 0029's flag): under a fold-admitting combiner a scan contains its
+/// reduction, so it demands the fiber-completeness fact a reducing `map_bags`
+/// demands (ADR 0023), discharged the same two ways (`Complete` at the current
+/// key, or a `singletons` cardinality whose present fiber is trivially whole).
+/// The keep combiners demand nothing: their outputs are claims about adjacency
+/// among *present* rows, which a partial bag represents honestly.  The line is
+/// the closed table's own admission column, so this is a lookup, not an
+/// analysis.
+fn require_complete_fiber(
+    ctx: &Context,
+    row: &CombinerRow,
+    what: &str,
+    span: Span,
+) -> Result<(), Vec<TypeError>> {
+    if !row.folds {
+        return Ok(());
+    }
+    let Some(facts) = &ctx.fiber_facts else {
+        // No fiber in scope, so no bag to be partial: the same conservative
+        // branch as the tie demand above.
+        return Ok(());
+    };
+    if facts.complete {
+        return Ok(());
+    }
+    Err(vec![TypeError::new(
+        format!(
+            "{what} at `` `{}` `` contains its reduction (every output row \
+             folds a prefix of the bag, and its last row is the fold itself), \
+             so it needs completeness over the current key like any reducer \
+             (ADR 0037 decision 5); establish it with \
+             `completeness_check {{ ... }}` or `assume {{ complete }}` first, \
+             after any `demote` (the fact does not survive a key coarsening)",
+            row.spelling
+        ),
+        span,
+    )])
 }
 
 /// The column a key lambda projects, if it is a bare projection (`|r| r.c`,
@@ -3234,10 +3301,13 @@ mod tests {
     }
 
     /// A bag-cardinality fiber whose only grading is `{machine, at}`: the shape
-    /// `demote` leaves behind, and the one a real window has.
+    /// `demote` leaves behind, and the one a real window has.  Completeness is
+    /// pinned `Complete` so these fixtures isolate the *tie* axis; the
+    /// completeness axis has its own fixtures below (ADR 0037 decision 5).
     fn bag_ctx_graded_by(gradings: &[&[&str]]) -> Context {
         let mut table = sample_table();
         table.qualifiers.cardinality = crate::table::Cardinality::Bag;
+        table.qualifiers.completeness = crate::table::Completeness::Complete;
         table.qualifiers.functional = gradings
             .iter()
             .map(|g| g.iter().map(|c| c.to_string()).collect())
@@ -3285,6 +3355,87 @@ mod tests {
             "unexpected: {}",
             errs[0].message
         );
+    }
+
+    /// The demoted-bag shape with **no completeness fact**: graded, so the tie
+    /// demand discharges and what remains is ADR 0037 decision 5's axis.
+    fn incomplete_bag_ctx() -> Context {
+        let mut table = sample_table();
+        table.qualifiers.cardinality = crate::table::Cardinality::Bag;
+        table.qualifiers.completeness = crate::table::Completeness::Incomplete;
+        table.qualifiers.functional = [["machine", "at"]]
+            .iter()
+            .map(|g| g.iter().map(|c| c.to_string()).collect())
+            .collect();
+        Context::bag(&test_ambient(), "k", "b", &table)
+    }
+
+    /// **The completeness demand is per combiner row, not per output shape**
+    /// (ADR 0037 decision 5, settling ADR 0029's flag).  A fold-admitting scan
+    /// contains its reduction (`Mensura.scanl_getLast_eq_foldBag`), so over a
+    /// bag with no completeness fact it is rejected exactly as the fold it
+    /// contains would be; the keep combiners' outputs are claims about
+    /// adjacency among *present* rows, which a partial bag represents
+    /// honestly, so they stay ceremony-free at the very same fiber.
+    #[test]
+    fn a_fold_admitting_scan_demands_completeness() {
+        let ctx = incomplete_bag_ctx();
+        let errs = ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b")
+            .expect_err("scan `+` contains the fold");
+        assert!(
+            errs[0].message.contains("contains its reduction"),
+            "unexpected: {}",
+            errs[0].message
+        );
+        // The diagnostic names both establishments and the placement rule.
+        assert!(errs[0].message.contains("assume { complete }"));
+        assert!(errs[0].message.contains("demote"));
+        // The exclusive form reads the same prefixes.
+        assert!(ty_of(&ctx, "prescan `+` (|r| r.temperature) (|r| r.at) b").is_err());
+        // The orderable pair is fold-admitting too, identity or not.
+        assert!(ty_of(&ctx, "scan `>>` (|r| r.temperature) (|r| r.at) b").is_err());
+        // The tacks demand nothing at the very same fiber.
+        assert!(ty_of(&ctx, "prescan `:>` (|r| r.temperature) (|r| r.at) b").is_ok());
+        assert!(ty_of(&ctx, "scan `<:` (|r| r.temperature) (|r| r.at) b").is_ok());
+    }
+
+    /// The two discharges mirror the reducing `map_bags` (ADR 0023): a
+    /// completeness fact at the current key, or a `singletons` cardinality
+    /// whose present fiber is trivially whole.
+    #[test]
+    fn the_scan_demand_discharges_like_the_reducers() {
+        // `bag_ctx_graded_by` pins `Complete` on a bag cardinality.
+        let ctx = bag_ctx_graded_by(&[&["machine", "at"]]);
+        assert!(ty_of(&ctx, "scan `+` (|r| r.temperature) (|r| r.at) b").is_ok());
+        // `bag_ctx` is the singletons store: trivially whole fibers.
+        assert!(ty_of(&bag_ctx(), "scan `+` (|r| r.temperature) (|r| r.at) b").is_ok());
+    }
+
+    /// The bundled `series` bindings ripple with no per-binding exemption
+    /// (ADR 0037 decision 5): the scans at `+`/`>>` demand the fact, the
+    /// prescan/scan at the tacks do not.
+    #[test]
+    fn series_bindings_ripple_per_combiner() {
+        let ctx = incomplete_bag_ctx();
+        for rejected in [
+            "series.cumsum (|r| r.temperature) (|r| r.at) b",
+            "series.running_max (|r| r.temperature) (|r| r.at) b",
+            "series.rank (|r| r.at) b",
+        ] {
+            let errs = ty_of(&ctx, rejected).expect_err("fold-admitting");
+            assert!(
+                errs[0].message.contains("contains its reduction"),
+                "unexpected for `{rejected}`: {}",
+                errs[0].message
+            );
+        }
+        for accepted in [
+            "series.lag (|r| r.temperature) (|r| r.at) b",
+            "series.lead (|r| r.temperature) (|r| r.at) b",
+            "series.first_value (|r| r.temperature) (|r| r.at) b",
+        ] {
+            assert!(ty_of(&ctx, accepted).is_ok(), "`{accepted}` should pass");
+        }
     }
 
     #[test]

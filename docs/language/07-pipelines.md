@@ -146,9 +146,12 @@ of the current body language, not of `map_bags` in general (see the open
 questions).  Over a `singletons` input the
 obligation discharges trivially, since a present key's single row is the
 identity's whole fiber (`fiberCompleteWrt_of_functional`); the demand bites
-only where a present key's bag can be partial, that is, on a `bag` input.  The
-window shape demands nothing (one output row per input row is faithful on a
-partial bag).  Tier A (`fiberMap_splitSafe`).
+only where a present key's bag can be partial, that is, on a `bag` input.  A
+window-shaped return demands the same fact when its scan's combiner is
+fold-admitting, because such a scan contains its reduction: its last row is
+the fold, and every row folds a prefix (ADR 0037 decision 5).  The keep
+combiners demand nothing: one output row per input row relating *present*
+rows is faithful on a partial bag.  Tier A (`fiberMap_splitSafe`).
 
 Window-style returns (a bag, one row per input row, such as a running total or
 a rank) additionally require an **ordering** within the bag.  That ordering is

@@ -1,0 +1,31 @@
+// Reject: resolve, on ADR 0037 decision 5's per-combiner line.  A scan at a
+// fold-admitting combiner contains its reduction: its last row *is*
+// `bag.max` (`Mensura.scanl_getLast_eq_foldBag`), and every row folds a
+// prefix, silently wrong on a partial bag in exactly ADR 0023's sense.  The
+// registry's completeness holds at the reading's own key only, and `demote
+// taken_at` forfeits it (ADR 0035), so `running_max` here computes the same
+// number `bag.max` would compute three lines away without stating the same
+// claim; exempting it would make the scan a loophole around the reducer's
+// obligation.  Add `assume { complete }` after the `demote` and this is
+// `accept/singletons_registry_scan_discharge.mensura`.  The keep combiners
+// (`series.lag`, `series.lead`) demand nothing at this very fiber: their
+// outputs are claims about adjacency among present rows.
+import series
+
+unit Reading {
+  machine_id: string
+  taken_at:   date
+}
+
+registry readings {
+  unit { Reading }
+  attr {
+    kelvin: real
+  }
+}
+
+view reading_trend {
+  readings |> demote taken_at |> map_bags |k, b| (
+    .running_peak = series.running_max (|r| r.kelvin) (|r| r.taken_at) b
+  )
+}

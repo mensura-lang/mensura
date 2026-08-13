@@ -13,7 +13,11 @@ store history {
 }
 
 view reading_trend {
-  history |> demote taken_at |> map_bags |k, b| (
+  history |> demote taken_at
+          // For `running_peak`, whose last row is the fold itself; `previous`
+          // demands nothing.
+          |> assume { complete }
+          |> map_bags |k, b| (
     .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
     .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b
   )

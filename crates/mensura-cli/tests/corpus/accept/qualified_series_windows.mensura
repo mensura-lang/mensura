@@ -3,9 +3,14 @@
 // partial application of `scan` or `prescan` at one row of the closed combiner
 // table, gated by ADR 0029's Stage 2 (`formal/Mensura/Arranged.lean`).
 //
-// A window is the *other* `map_bags` shape: one output row per input row, so
-// unlike a reduction it needs no completeness fact.  A reduction over a
-// partial bag is silently wrong; a window over one is faithful.
+// A window is the *other* `map_bags` shape: one output row per input row.
+// The completeness demand is nonetheless **per combiner row**, not per
+// shape (ADR 0037 decision 5): `running_max`, `cumsum`, and `rank` are
+// scans at fold-admitting combiners, so each contains its reduction and
+// demands the fact the reducer would (ADR 0023), which the
+// `assume { complete }` below states after the `demote` forfeits the fine
+// key's fact (ADR 0035).  `first_value` is a scan at keep-left and demands
+// nothing: its output is a claim about present rows only.
 //
 // Both lambdas take a row.  One extracts the value to accumulate, the other
 // the key to order by, because sorting values by a sibling column requires
@@ -26,6 +31,7 @@ store history {
 view trend {
   history
     |> demote taken_at
+    |> assume { complete }
     |> map_bags |k, b| (
       .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
       .cumulative = series.cumsum (|r| r.temperature) (|r| r.taken_at) b,
@@ -42,6 +48,7 @@ view trend {
 view direct {
   history
     |> demote taken_at
+    |> assume { complete }
     |> map_bags |k, b| (
       .peak = scan `>>` (|r| r.temperature) (|r| r.taken_at) b
     )

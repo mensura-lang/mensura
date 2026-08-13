@@ -402,9 +402,16 @@ total order), unverifiable on a lambda.  In `formal/` it is Mathlib's
 `OrderDual`, so the arrangement absorbs it at no proof cost.
 
 **A scan's result is a bag, so it is the window shape**, one output row per
-input row.  Unlike the reducing shape it demands no completeness fact: a
-window is faithful on a partial bag, and only a reduction is silently wrong on
-one (section 6.2, ADR 0023).
+input row.  Its completeness demand is nonetheless per **combiner row**, not
+per shape (ADR 0037 decision 5, settling ADR 0029's flag): under a
+fold-admitting combiner a scan *contains* its reduction (its last entry is
+the fold, `Mensura.scanl_getLast_eq_foldBag`, and every entry folds a
+prefix), so it demands the fiber-completeness fact a reducing `map_bags`
+demands (section 6.2, ADR 0023), discharged the same two ways.  The keep
+combiners (`<:`, `:>`) demand nothing: their outputs are claims about
+adjacency among *present* rows, which a partial bag represents honestly.
+The demand axis is "does any output row's claim quantify over absent rows",
+and the closed table's admission column is the line.
 
 **Optionality follows the combiner's identity.**
 
@@ -665,7 +672,10 @@ future body preserves this is an open question of `07-pipelines.md`.  Over a
 single row is the identity's whole fiber (`fiberCompleteWrt_of_functional`)
 -- so the checker recognizes that base case from the input cardinality and
 the ordinary aggregation over a plain store needs no establishment step.
-The window shape demands nothing.  Lineage: preserved.  Tier A
+The window shape's demand follows its combiner, not its shape: a
+fold-admitting scan contains its reduction and demands the same fact, and
+the keep combiners demand nothing (section 5.4, ADR 0037 decision 5).
+Lineage: preserved.  Tier A
 (`fiberMap_splitSafe`, `fiberMap_preservesDisjoint`; a monoid fold's case is
 `foldFiber_splitSafe`, and a scan's is `scanFiber_splitSafe`).  Window-shaped
 returns (`series.rank`, `series.cumsum`) additionally need an ordering, which
@@ -1159,6 +1169,11 @@ suite itself is M1 work (`ROADMAP.md`, M1).
   no `@complete_over`, no `assume`); e.g. `demote` then an aggregate
   with no establish step, or with the establish step placed *before* the
   `demote` (ADR 0023, ADR 0035).
+- A `scan`/`prescan` at a **fold-admitting** combiner over the same
+  fact-less `bag` (`series.cumsum`, `series.running_max`, `series.rank`
+  included): the scan contains its reduction, so it carries the reducer's
+  demand; the keep combiners (`series.lag`, `series.lead`,
+  `series.first_value`) stay accepted there (ADR 0037 decision 5).
 - A disjointness-demanding site fed two tables that are not structurally
   disjoint and were neither asserted nor assumed.
 - A scalar operator applied to a bag (`r.x > 30` where `x` is read at a

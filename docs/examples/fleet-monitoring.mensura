@@ -158,9 +158,23 @@ registry readings {
 // scope (ADR 0024).  That is inert here, because nothing downstream
 // re-joins a `split`.
 //
-// This is the *window* shape of `map_bags`: one output row per input row, so
-// unlike the reducing view below it demands no completeness fact.  A window
-// is faithful on a partial bag; only a reduction is silently wrong on one.
+// This is the *window* shape of `map_bags`: one output row per input row.
+// The completeness demand is nonetheless **per combiner, not per shape**
+// (ADR 0037 decision 5).  `running_max` is a scan at a fold-admitting
+// combiner, so it *contains* its reduction: its last row is the `bag.max`
+// that `machine_temperature` computes below, and every row folds a prefix,
+// silently wrong on a partial bag in exactly the reducer's sense (ADR 0023).
+// So it demands the identical fact for the identical number, and the
+// `assume { complete }` here mirrors the one three declarations down.  It
+// was incoherent for `bag.max` to carry the obligation while `running_max`'s
+// last row computed the same value without it.
+//
+// `lag` and `lead` demand nothing: a keep combiner's output is a claim about
+// adjacency among *present* rows ("the previous reading in this bag"), which
+// a partial bag represents honestly.  Splitting this view would keep them
+// ceremony-free; they share `running_peak`'s view here, so they ride under
+// its claim.  `reading_rate` below is the split's other half in practice:
+// all keeps, no `assume`.
 //
 // `previous` is optional and the others are not.  That is not a choice made
 // here: `series.lag` is a `prescan` at keep-right, keep-right has no identity,
@@ -168,7 +182,9 @@ registry readings {
 // earliest reading in each machine's group has no predecessor to report
 // (`Mensura.prescanBag`).
 view reading_trend {
-  readings |> demote taken_at |> map_bags |k, b| (
+  readings |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (
     .running_peak = series.running_max (|r| r.temperature) (|r| r.taken_at) b,
     .previous     = series.lag         (|r| r.temperature) (|r| r.taken_at) b,
     // `lead` is `lag` at the dual key, so the last reading is the missing one.
@@ -189,6 +205,11 @@ view reading_trend {
 // across the gaps the comment above describes; the point difference
 // recovers the true elapsed time, which is what makes the form
 // self-correcting.
+//
+// Every window here is a keep combiner, so the view carries no
+// `assume { complete }` (ADR 0037 decision 5): `lag`'s output is a claim
+// about the rows present, and the rate is a rate between recorded readings
+// whether or not readings were lost upstream.
 view reading_rate {
   readings
     |> demote taken_at

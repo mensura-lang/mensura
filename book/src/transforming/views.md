@@ -87,12 +87,18 @@ Both lambdas take a row: one pulls out the value to accumulate, the other the
 key to sort by.  You need both from the same row, which is why the trailing
 argument is the bag of rows `b` rather than a single projected column.
 
-**A window demands no completeness fact.**  This is the reverse of the
-reduction above, and for a reason worth stating: one output row per input row
-is faithful on a partial bag.  If a machine's readings have gaps, its running
-maximum is still the running maximum *of the readings you have*.  A fold is
-what goes silently wrong on a partial bag, so only a fold has to consume the
-claim.
+**Completeness follows the combiner, not the shape.**  `running_peak` needs
+the same fact the reduction above consumed, and for the same reason: a
+running maximum's last row *is* the maximum, and every one of its rows folds
+the readings so far, so a gap early in the bag corrupts every later output
+exactly as it corrupts a fold.  The `assume { complete }` in the example is
+that demand made visible; it would be incoherent for `max` to carry the
+obligation while a running maximum computed the same number without it.
+`previous` is different: "the reading before this one" is a claim about the
+readings you *have*, honest whether or not some were lost, so `lag` (and
+`lead`, and `first_value`) demand nothing.  The line is per combiner: a scan
+that contains its reduction carries the reduction's obligation, and one that
+only relates neighbouring present rows does not.
 
 **But a window demands something a fold does not: the order must be
 unambiguous.**  If two readings share a `taken_at`, there is no single right
@@ -112,13 +118,17 @@ When the order genuinely can tie, say so:
 ```mensura,ignore
 readings
   |> assume { arranged }
+  |> assume { complete }
   |> map_bags |k, b| (.hottest = series.rank (|r| desc r.temperature) b)
 ```
 
 Ranking by temperature is ambiguous on purpose here, so the claim is the
-honest thing to write, exactly as `assume { complete }` is when a bag's
-wholeness cannot be checked.  An order the compiler can neither prove nor see
-claimed is an error, not a guess.
+honest thing to write.  An order the compiler can neither prove nor see
+claimed is an error, not a guess.  The second claim is the completeness rule
+from above wearing a different hat: a rank is a running count, so it is a
+scan that contains its reduction, and a rank over a bag whose wholeness
+nobody vouched for is a rank among the rows that happened to arrive.  Both
+assumptions are visible, which is the point.
 
 **`previous` is optional and the others are not.**  Nobody wrote a rule for
 that.  `series.lag` is an *exclusive* scan: each row sees the fold of the rows

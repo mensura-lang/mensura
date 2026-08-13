@@ -706,7 +706,15 @@ separate document.
   every later output.  `scan` may therefore sit on the reducing side of ADR
   0023's line despite being window-shaped, which would show that the
   reducing/windowing distinction is not the same distinction as the
-  aggregate-shape/window-shape one.  Flagged, not decided.
+  aggregate-shape/window-shape one.  *Settled:*
+  `docs/decisions/0037-streaming-windows-and-closedness.md` decision 5
+  resolves the flag to yes, per combiner row: under the six fold-admitting
+  combiners a scan or prescan demands the reducer's fiber-completeness fact
+  (`Mensura.scanl_getLast_eq_foldBag` makes it contain the reduction), and
+  under the keep combiners it demands nothing (their outputs are claims
+  about present rows only).  The demand line is the closed table's own
+  admission column, exactly the shape this ADR's Decision 6 predicted gated
+  semantics would take.
 - **Where the combiner token lives grammatically**: an operator section, a
   reserved word, or a name resolved from the closed table, and how that
   interacts with the keyword-free lexer.  *Settled:* ADR 0031, a backticked
