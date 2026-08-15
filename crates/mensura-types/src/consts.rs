@@ -186,6 +186,29 @@ pub(crate) fn eval_const_bindings(
     (ev.done, ev.errors)
 }
 
+/// Evaluate one expression as a const, against already-evaluated bindings
+/// and the imported modules.  The consumer is a declaration-level const
+/// expression outside any `let`, which ADR 0030 anticipated and ADR 0037's
+/// `lateness` bound is the first of.
+pub(crate) fn eval_const_expr(
+    e: &Expr,
+    consts: &BTreeMap<String, ConstValue>,
+    modules: &BTreeMap<String, &'static ModuleEnv>,
+) -> Result<ConstValue, Vec<ResolveError>> {
+    let mut ev = Evaluator {
+        decls: BTreeMap::new(),
+        modules,
+        done: consts.clone(),
+        in_progress: Vec::new(),
+        depth: 0,
+        errors: Vec::new(),
+    };
+    match ev.eval_expr(e, &mut Vec::new()) {
+        Some(v) if ev.errors.is_empty() => Ok(v),
+        _ => Err(ev.errors),
+    }
+}
+
 /// The maximum function-application nesting depth.  The definitional cycle
 /// detector cannot catch dynamic recursion (`let f { |x| f x }` evaluates
 /// to a closure without touching `f`), and the language has no loop

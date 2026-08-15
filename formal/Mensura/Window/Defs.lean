@@ -144,11 +144,14 @@ variable {G : Type _} [AddCommMonoid G] [Preorder P] [AddAction G P]
 variable [CovariantClass G P (· +ᵥ ·) (· < ·)]
 
 /-- **Closed windows are final** (ADR 0037 decision 8, gate 2).  Extend a
-table by appended rows every one of whose points beats
-`watermark - lateness`, stated action-side as `watermark < lateness + p`:
+table by appended rows every one of whose points is no older than
+`watermark - lateness`, stated action-side as `watermark <= lateness + p`:
 exactly the rows the `lateness` contract still admits through the intake
-(decision 4).  Then the fiber of any window with
-`w + size + lateness <= watermark`, any window `closed` keeps, is unchanged.
+(decision 4, where "older than" is strict, so the boundary point is
+admissible).  Then the fiber of any window with
+`w + size + lateness <= watermark`, any window `closed` keeps, is
+unchanged; the boundary row is harmless because the window interval's
+upper bound is strict.
 
 This is the soundness of `closed`'s establishment: given the enforced
 contract, "no row of this window can still arrive" is a theorem about the
@@ -159,7 +162,7 @@ ADR 0036 decision 9 does its work. -/
 theorem closedWindow_stable {starts : P → Finset P} {size : G}
     (hspec : ∀ ⦃w p : P⦄, w ∈ starts p → p < size +ᵥ w)
     (point : K → Row H σ → P) {T A : Table K H σ} {watermark : P} {lateness : G}
-    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark < lateness +ᵥ point k f)
+    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark ≤ lateness +ᵥ point k f)
     {w : P} (hclosed : (size + lateness) +ᵥ w ≤ watermark) (k : K) :
     (window starts point (union T A)).rows (k, w) =
       (window starts point T).rows (k, w) := by
@@ -175,7 +178,7 @@ theorem closedWindow_stable {starts : P → Finset P} {size : G}
       have hlt : lateness +ᵥ point k f < lateness +ᵥ (size +ᵥ w) :=
         CovariantClass.elim lateness (hspec hmem)
       rwa [← add_vadd, add_comm lateness size] at hlt
-    exact absurd (hlate k f hf) (lt_asymm (lt_of_lt_of_le hp hclosed))
+    exact absurd (lt_of_lt_of_le hp hclosed) (not_lt_of_ge (hlate k f hf))
   rw [Multiset.bind_congr hA, Multiset.bind_zero, add_zero]
 
 end Closedness
@@ -248,7 +251,7 @@ discharges its placement hypothesis. -/
 theorem closedWindow_stable {size stride : Duration} (hstride : 0 < stride)
     (point : K → Row H σ → Instant) {T A : Table K H σ} {watermark : Instant}
     {lateness : Duration}
-    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark < lateness +ᵥ point k f)
+    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark ≤ lateness +ᵥ point k f)
     {w : Instant} (hclosed : (size + lateness) +ᵥ w ≤ watermark) (k : K) :
     (window (windowStarts size stride) point (union T A)).rows (k, w) =
       (window (windowStarts size stride) point T).rows (k, w) :=

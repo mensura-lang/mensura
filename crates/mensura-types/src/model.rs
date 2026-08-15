@@ -29,6 +29,25 @@ pub struct Schema {
     /// One entry per `domain` entry: where each unit-reference field
     /// resolves (ADR 0032).
     pub foreign_keys: Vec<ForeignKey>,
+    /// One entry per `lateness` entry (ADR 0037 decision 4): the intake
+    /// contracts this registry declares.  Always empty on a plain store.
+    pub lateness: Vec<Lateness>,
+    pub span: Span,
+}
+
+/// One resolved `lateness` entry (ADR 0037 decision 4): once the intake's
+/// watermark on `column` has passed `point + bound`, no row with that point
+/// will ever be accepted.  The intake enforces it: a batch containing a row
+/// older than `watermark - bound` is rejected whole.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lateness {
+    /// The contracted point column (total, of domain `instant` or `int`).
+    pub column: String,
+    /// The bound in the column's storage difference grain: whole
+    /// milliseconds for an `instant` column, a plain count for `int`.
+    /// Positive by the resolver's check.
+    pub bound: i64,
+    /// The `lateness` entry's source span.
     pub span: Span,
 }
 
@@ -206,6 +225,10 @@ pub struct TableShape {
     /// The store's resolved `domain` entries (ADR 0032), emitted as
     /// `FOREIGN KEY` clauses.  Always empty for a view.
     pub foreign_keys: Vec<ForeignKey>,
+    /// The intake contracts (ADR 0037 decision 4), enforced by the backend
+    /// at `apply` time against the watermark it maintains.  Always empty
+    /// for a view or a plain store.
+    pub lateness: Vec<Lateness>,
 }
 
 impl Schema {
@@ -219,6 +242,7 @@ impl Schema {
             columns: self.columns.clone(),
             keyed: self.cardinality == Cardinality::Singletons,
             foreign_keys: self.foreign_keys.clone(),
+            lateness: self.lateness.clone(),
         }
     }
 }
@@ -232,6 +256,7 @@ impl ViewPlan {
             columns: self.columns.clone(),
             keyed: self.cardinality == Cardinality::Singletons,
             foreign_keys: Vec::new(),
+            lateness: Vec::new(),
         }
     }
 }

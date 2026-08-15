@@ -95,6 +95,20 @@ pub enum StorageError {
     DuplicateKey {
         table: String,
     },
+    /// A batch broke the registry's `lateness` contract (ADR 0037
+    /// decision 4): it contains a row whose contracted point is older than
+    /// `watermark - bound`.  The batch is rejected whole, like any decode
+    /// failure; the producer broke its declared delivery bound, and the
+    /// violation surfaces at the boundary instead of corrupting a window
+    /// already reported as final.
+    Lateness {
+        table: String,
+        column: String,
+        /// The offending row's point, rendered in the column's own form.
+        point: String,
+        /// The oldest still-admissible point, `watermark - bound`.
+        limit: String,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -124,6 +138,19 @@ impl fmt::Display for StorageError {
                 "`{table}` holds at most one row per key, and this batch \
                  repeats one"
             ),
+            StorageError::Lateness {
+                table,
+                column,
+                point,
+                limit,
+            } => write!(
+                f,
+                "a row of `{table}` arrived too late: its `{column}` is \
+                 {point}, older than the oldest still-admissible point \
+                 {limit} under the declared `lateness` bound, so the batch \
+                 was rejected whole (ADR 0037); the producer broke its \
+                 delivery contract"
+            ),
         }
     }
 }
@@ -134,7 +161,8 @@ impl std::error::Error for StorageError {
             StorageError::Sqlite(e) => Some(e),
             StorageError::Decode(_)
             | StorageError::ForeignKey { .. }
-            | StorageError::DuplicateKey { .. } => None,
+            | StorageError::DuplicateKey { .. }
+            | StorageError::Lateness { .. } => None,
         }
     }
 }

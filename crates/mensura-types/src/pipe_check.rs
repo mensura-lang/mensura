@@ -1625,6 +1625,7 @@ mod tests {
             columns,
             cardinality: Cardinality::Singletons,
             foreign_keys: Vec::new(),
+            lateness: Vec::new(),
             span: Span::new(0, 0),
         })
     }
@@ -2253,6 +2254,7 @@ mod tests {
                 ],
                 cardinality: Cardinality::Singletons,
                 foreign_keys: Vec::new(),
+                lateness: Vec::new(),
                 span: Span::new(0, 0),
             }),
         )
@@ -2310,6 +2312,7 @@ mod tests {
                 ],
                 cardinality: Cardinality::Singletons,
                 foreign_keys: Vec::new(),
+                lateness: Vec::new(),
                 span: Span::new(0, 0),
             }),
         );
@@ -2390,6 +2393,7 @@ mod tests {
             ],
             cardinality,
             foreign_keys: Vec::new(),
+            lateness: Vec::new(),
             span: Span::new(0, 0),
         })
     }

@@ -81,11 +81,13 @@ shape_ref     = ident [ args ] ;
 args          = "[" arg { "," arg } "]" ;
 arg           = ident | string ;
 unit_clause   = "unit" "{" ident "}" ;
-store_block   = attr_block | domain_block ;
+store_block   = attr_block | domain_block | lateness_block ;
 attr_block    = "attr" [ "*" ] "{" { store_attr } "}" ;
 store_attr    = ident ":" type ;
 domain_block  = "domain" "{" { domain_entry } "}" ;
 domain_entry  = ident ":" ident ;
+lateness_block = "lateness" "{" lateness_entry "}" ;
+lateness_entry = ident ":" expr ;
 
 registry_decl = "registry" ident [ conforms ] "{" unit_clause { store_block } "}" ;
 
@@ -164,8 +166,15 @@ tl_factor     = ident [ "[" ident "]" ]
 - **`shape_decl` body**: the optional `unit_clause` is taken when the body
   opens with the `unit` keyword, and skipped otherwise.  One token decides.
 - **`store_block` loop**: at each turn the next token is either `}` (end the
-  store or registry body) or one of the introducers `attr` / `domain`,
-  distinct words.  One token decides.
+  store or registry body) or one of the introducers `attr` / `domain` /
+  `lateness`, distinct words.  One token decides.
+- **`lateness_block` holds one entry** (ADR 0037 decision 4; the block is
+  meaningful only on a `registry`, which the resolver checks).  The bound
+  is an `expr`, and the expression grammar applies by juxtaposition, so a
+  second `ident ":"` after a bound would parse as an application argument
+  of the bound; no LL(1) lookahead can end the entry instead.  Several
+  contracts are therefore several blocks, merged in source order exactly
+  as repeated `attr` blocks are.
 - **`attr_block` cardinality marker**: after the `attr` word the next token
   is either `*` (an `attr*` block, whose attributes are bag-valued,
   ADR 0022) or `{` (a plain block).  One token decides.  The `*` is the
@@ -650,9 +659,11 @@ identifiers, as the keyword-free lexer intends.
   new grammar.
 - `view` declarations host a pipeline and are specified in
   `10-views.md` (the `view_decl` production above is their grammar).
-  Transforms, which also host or feed pipelines, and the streaming
-  operations (`sliding_window`, `latest`), each get their own section
-  here.  (`registry` declarations have landed: the `registry_decl`
-  production above is their grammar, specified in `13-registries.md`.
-  `device` is not coming: ADR 0005 eliminated it in favour of roles,
-  `auth {}`, and `registry`.)
+  Transforms, which also host or feed pipelines, get their own section
+  here.  The streaming operations (`window`, `closed`, `latest`,
+  ADR 0037) are pipeline operations in the existing application grammar
+  and add no productions; their declaration-level half, the
+  `lateness_block`, has landed above.  (`registry` declarations have
+  landed: the `registry_decl` production above is their grammar,
+  specified in `13-registries.md`.  `device` is not coming: ADR 0005
+  eliminated it in favour of roles, `auth {}`, and `registry`.)

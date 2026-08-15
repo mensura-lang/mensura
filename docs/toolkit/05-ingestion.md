@@ -149,6 +149,36 @@ same setting.  And turning it on enforces constraints on databases
 created before this slice, which is intended but is a behaviour change
 for an existing file.
 
+## The `lateness` contract is enforced
+
+A registry's `lateness` entries (`13-registries.md`,
+`docs/decisions/0037-streaming-windows-and-closedness.md` decision 4)
+ride the same `apply` transaction.  The backend keeps one **watermark**
+per contracted column, the maximum point value the intake has ever
+accepted, as registry metadata in the reserved table
+`mensura_watermarks` (per store and column, in the column's storage
+grain: epoch milliseconds for `instant`, the plain count for `int`).
+The name is reserved the way the storage mapping reserves nothing else;
+a store of that name would collide.
+
+On each batch, every inserted row's point is checked against the
+watermark **as of intake**: a row older than `watermark - bound` rejects
+the batch whole, in the same transaction, so nothing lands and the
+watermark does not move.  The boundary point `watermark - bound` itself
+is still admissible ("older than" is strict), and the strict upper bound
+of the window interval test is what keeps that safe for `closed`
+(`Mensura.closedWindow_stable`).  An accepted batch advances the
+watermark to its own maximum before commit, so acceptance and the
+advance are atomic.  An empty registry has no watermark and its first
+batch is unconstrained; rows within one batch are never checked against
+each other, because the watermark is the contract's clock and a batch is
+the unit the producer delivered.
+
+Because the check runs in `apply`, any future transport that calls the
+same decoder and write path (`ADR 0034`'s design) inherits the contract
+with no work.  A plain store has no contracts to enforce, and none can
+be declared on one; its intake accepts arbitrarily late rows.
+
 ## CLI behavior
 
 ```
@@ -200,6 +230,10 @@ decoder's format-independence it is not a load-bearing choice.
 - Constraint coverage: a duplicate key against a `singletons` target, a
   repeated key accepted by a `bag` target, and a violated `domain`
   reference producing the typed foreign-key error.
+- Lateness coverage: an unconstrained first batch, a late batch rejected
+  whole with the watermark unmoved, the boundary point accepted, an
+  `int`-grain contract, and the same late rows accepted by a plain
+  store.
 
 ## Forward references
 

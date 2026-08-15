@@ -18,12 +18,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use mensura_syntax::{
     Attr, Block, EnumDecl, Expr, ExprKind, Field, Ident, Item, LetKind, NameSeg, NameTemplate,
-    Program, ShapeArg, ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, TypeExpr, TypeKind, UnitDecl,
-    ViewDecl, is_identifier,
+    Program, ShapeArg, ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, StoreKind, TypeExpr, TypeKind,
+    UnitDecl, ViewDecl, is_identifier,
 };
 
-use crate::consts::{ConstDecl, eval_const_bindings};
-use crate::model::{Column, ColumnRole, ColumnType, ForeignKey, ResolvedProgram, Schema, ViewPlan};
+use crate::consts::{ConstDecl, ConstValue, eval_const_bindings, eval_const_expr};
+use crate::model::{
+    Column, ColumnRole, ColumnType, ForeignKey, Lateness, ResolvedProgram, Schema, ViewPlan,
+};
 use crate::modules::ModuleEnv;
 use crate::pipe_check::{Sources, type_view};
 use crate::table::{Cardinality, TableType};
@@ -419,8 +421,9 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     let mut pending_refs: Vec<(&StoreDecl, Vec<PendingRef>)> = Vec::new();
     for s in &stores {
         match resolve_store(s, &units, &enums, &dim_aliases, &flat_units) {
-            Ok((schema, pending)) => {
+            Ok((mut schema, pending)) => {
                 check_conformance(s, &schema, &shapes, &resolved_shapes, &units, &mut errors);
+                resolve_lateness(s, &mut schema, &const_values, &modules, &mut errors);
                 schemas.push(schema);
                 pending_refs.push((s, pending));
             }
@@ -758,12 +761,167 @@ fn resolve_store(
                 columns,
                 cardinality,
                 foreign_keys: Vec::new(),
+                // Filled by `resolve_lateness` once the const environment
+                // has evaluated each declared bound (ADR 0037 decision 4).
+                lateness: Vec::new(),
                 span: s.span,
             },
             pending,
         ))
     } else {
         Err(errors)
+    }
+}
+
+/// Resolve a declaration's `lateness` block onto its schema (ADR 0037
+/// decision 4).  The contract belongs to a `registry`, because the argument
+/// that makes `closed`'s establishment mechanism-grade is the sole
+/// append-only intake; each entry names a total column whose domain has a
+/// difference type (`instant` or `int`, ADR 0036 decision 4), and its bound
+/// is a const expression of that difference type, positive, and (for
+/// `instant`) a whole number of milliseconds, checked here so the intake
+/// only ever sees an exact integer bound.
+fn resolve_lateness(
+    s: &StoreDecl,
+    schema: &mut Schema,
+    consts: &BTreeMap<String, ConstValue>,
+    modules: &BTreeMap<String, &'static ModuleEnv>,
+    errors: &mut Vec<ResolveError>,
+) {
+    if s.lateness.is_empty() {
+        return;
+    }
+    if s.kind != StoreKind::Registry {
+        errors.push(ResolveError::new(
+            "`lateness` is an intake contract, so it belongs to a `registry`: \
+             the sole append-only intake is what makes the bound enforceable, \
+             while a store's rows can be revised by anyone (ADR 0037)",
+            s.lateness[0].span,
+        ));
+        return;
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    for entry in &s.lateness {
+        let column = entry.column.name.as_str();
+        if !seen.insert(column) {
+            errors.push(ResolveError::new(
+                format!("`lateness` names `{column}` more than once"),
+                entry.column.span,
+            ));
+            continue;
+        }
+        let Some(col) = schema.columns.iter().find(|c| c.name == column) else {
+            errors.push(ResolveError::new(
+                format!(
+                    "`lateness` names `{column}`, which is not a column of \
+                     `{}`",
+                    schema.store
+                ),
+                entry.column.span,
+            ));
+            continue;
+        };
+        if col.optional {
+            errors.push(ResolveError::new(
+                format!(
+                    "`lateness` on `{column}` needs a total column: the intake \
+                     compares every accepted row's point against the \
+                     watermark, and a missing point has no position"
+                ),
+                entry.column.span,
+            ));
+            continue;
+        }
+        let value = match eval_const_expr(&entry.bound, consts, modules) {
+            Ok(v) => v,
+            Err(errs) => {
+                errors.extend(errs);
+                continue;
+            }
+        };
+        // The bound's type is `diff(domain(column))` (ADR 0036 decision 4):
+        // `time[real]` for an `instant` point, `int` for `int`.
+        let bound = match (&col.ty, &value) {
+            (ColumnType::Instant, ConstValue::Real { magnitude, dim })
+                if *dim == Dimension::base("time").expect("time is a base axis") =>
+            {
+                // Positivity and whole milliseconds are compile-time checks
+                // (ADR 0036 decision 6): the intake only ever sees an exact
+                // integer count on the millisecond grid.
+                match crate::temporal::whole_milliseconds(*magnitude) {
+                    Ok(ms) if ms > 0 => ms,
+                    Ok(_) => {
+                        errors.push(ResolveError::new(
+                            format!("`lateness` on `{column}` must be positive"),
+                            entry.bound.span,
+                        ));
+                        continue;
+                    }
+                    Err(message) => {
+                        errors.push(ResolveError::new(message, entry.bound.span));
+                        continue;
+                    }
+                }
+            }
+            (ColumnType::Instant, other) => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "`lateness` on `{column}` must be a duration \
+                         (`time[real]`, the difference type of `instant`), \
+                         found `{}`",
+                        other.describe()
+                    ),
+                    entry.bound.span,
+                ));
+                continue;
+            }
+            (ColumnType::Int, ConstValue::Int(n)) if *n > 0 => *n,
+            (ColumnType::Int, ConstValue::Int(_)) => {
+                errors.push(ResolveError::new(
+                    format!("`lateness` on `{column}` must be positive"),
+                    entry.bound.span,
+                ));
+                continue;
+            }
+            (ColumnType::Int, other) => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "`lateness` on `{column}` must be an `int` (the \
+                         difference type of `int`), found `{}`",
+                        other.describe()
+                    ),
+                    entry.bound.span,
+                ));
+                continue;
+            }
+            (ColumnType::Date, _) => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "`lateness` on `{column}` is not yet supported: \
+                         `diff(date)` is deferred (ADR 0036 decision 4)"
+                    ),
+                    entry.column.span,
+                ));
+                continue;
+            }
+            (other, _) => {
+                errors.push(ResolveError::new(
+                    format!(
+                        "`lateness` needs an orderable point column whose \
+                         domain has a difference type (`instant` or `int`), \
+                         and `{column}` is `{}`",
+                        type_name(other)
+                    ),
+                    entry.column.span,
+                ));
+                continue;
+            }
+        };
+        schema.lateness.push(Lateness {
+            column: column.to_string(),
+            bound,
+            span: entry.span,
+        });
     }
 }
 
@@ -2192,6 +2350,113 @@ mod tests {
           machines |> flat_map |_, r| if r.status == "degraded" then r else ()
         }
     "#;
+
+    /// The `lateness` contract resolves onto the schema (ADR 0037
+    /// decision 4): the bound is a const expression of the column's
+    /// difference type, held as an exact integer count in the column's
+    /// storage grain so the intake compares whole milliseconds.
+    #[test]
+    fn a_lateness_bound_resolves_to_whole_milliseconds() {
+        let schemas = resolve_str(
+            r#"
+            import si
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+              lateness { taken_at: 10.0 * si.minute }
+            }
+            "#,
+        )
+        .expect("should resolve");
+        assert_eq!(schemas[0].lateness.len(), 1);
+        assert_eq!(schemas[0].lateness[0].column, "taken_at");
+        assert_eq!(schemas[0].lateness[0].bound, 600_000);
+        // `diff(int) = int`: a count-based bound needs no unit machinery.
+        let schemas = resolve_str(
+            r#"
+            unit Tick { seq: int }
+            registry ticks {
+              unit { Tick }
+              attr { level: real }
+              lateness { seq: 5 }
+            }
+            "#,
+        )
+        .expect("should resolve");
+        assert_eq!(schemas[0].lateness[0].bound, 5);
+    }
+
+    /// Each way a `lateness` entry can be wrong is its own diagnostic.
+    #[test]
+    fn lateness_rejections_name_their_rule() {
+        for (body, needle) in [
+            // The mechanism argument needs the sole append-only intake.
+            (
+                "store readings { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 10.0 * si.minute } }",
+                "belongs to a `registry`",
+            ),
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { bogus: 10.0 * si.minute } }",
+                "not a column",
+            ),
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 10.0 * si.minute } \
+                 lateness { taken_at: 5.0 * si.minute } }",
+                "more than once",
+            ),
+            // The bound's type is the column's difference type.
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 10 } }",
+                "must be a duration",
+            ),
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 10.0 * kelvin } }",
+                "must be a duration",
+            ),
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 0.0 * si.minute } }",
+                "must be positive",
+            ),
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 0.0001 * second } }",
+                "not rounded",
+            ),
+            // A point column, not any column.
+            (
+                "registry readings { unit { Reading } attr { t: real } \
+                 lateness { t: 10.0 * si.minute } }",
+                "difference type",
+            ),
+            (
+                "registry readings { unit { Reading } attr { day: date } \
+                 lateness { day: 10.0 * si.minute } }",
+                "deferred",
+            ),
+            (
+                "registry readings { unit { Reading } attr { note: string? } \
+                 lateness { note: 10.0 * si.minute } }",
+                "total column",
+            ),
+        ] {
+            let src = format!(
+                "import si\nunit Reading {{ machine_id: string  taken_at: instant }}\n{body}"
+            );
+            let errs = errors(&src);
+            assert!(
+                errs.iter().any(|e| e.message.contains(needle)),
+                "`{needle}` not found in {:?}",
+                errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
+    }
 
     #[test]
     fn view_lowers_to_a_plan() {

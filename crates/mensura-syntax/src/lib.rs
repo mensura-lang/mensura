@@ -12,9 +12,9 @@ pub mod parser;
 pub mod token;
 
 pub use ast::{
-    Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LetDecl, LetKind, NameSeg,
-    NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StoreKind, StrLit,
-    TypeExpr, TypeKind, UnitDecl, ViewDecl,
+    Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LatenessEntry, LetDecl, LetKind,
+    NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl,
+    StoreKind, StrLit, TypeExpr, TypeKind, UnitDecl, ViewDecl,
 };
 pub use expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 pub use lexer::{LexError, Lexed, is_identifier, lex, tokenize};

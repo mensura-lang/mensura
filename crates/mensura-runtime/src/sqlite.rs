@@ -3,10 +3,11 @@
 use std::path::Path;
 
 use mensura_types::{ColumnRole, ColumnType, Schema, TableShape};
-use rusqlite::Connection;
 use rusqlite::types::ValueRef;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError};
+use crate::temporal::{instant_to_ms, ms_to_instant};
 use crate::value::{Row, Value};
 
 /// A store backend that materializes schemas as SQLite tables.
@@ -137,8 +138,12 @@ impl StorageBackend for SqliteBackend {
 
     fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError> {
         // One transaction for the batch: every change lands or none does
-        // (ADR 0034 decision 4).
+        // (ADR 0034 decision 4).  The `lateness` check and the watermark
+        // advance ride the same transaction, so a rejected batch leaves the
+        // watermark untouched and an accepted one can never land without
+        // advancing it.
         let tx = self.conn.transaction()?;
+        enforce_lateness(&tx, table, delta)?;
         let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
 
         let mut applied = Applied::default();
@@ -183,6 +188,102 @@ impl StorageBackend for SqliteBackend {
         tx.commit()?;
         Ok(applied)
     }
+}
+
+/// Enforce the table's `lateness` contracts and advance its watermarks
+/// (ADR 0037 decision 4), inside the caller's transaction.
+///
+/// The watermark is the maximum point value the intake has ever accepted on
+/// the contracted column, kept as registry metadata in
+/// `mensura_watermarks` (per table and column, in the column's storage
+/// grain: epoch milliseconds for `instant`, the plain count for `int`).
+/// A batch containing a row whose point is *older than*
+/// `watermark - bound` is rejected whole; the boundary point
+/// `watermark - bound` itself is still admissible, and the strict window
+/// upper bound is what keeps that safe for `closed`
+/// (`Mensura.closedWindow_stable`).  Rows are checked against the
+/// watermark as of intake, so a batch is judged as the unit the producer
+/// delivered; its own maximum then advances the watermark.  Deletes never
+/// move a watermark: the contract governs what may still arrive.
+fn enforce_lateness(
+    tx: &rusqlite::Transaction<'_>,
+    table: &TableShape,
+    delta: &Delta,
+) -> Result<(), StorageError> {
+    if table.lateness.is_empty() || delta.inserts.is_empty() {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS \"mensura_watermarks\" (\n  \
+           \"store\" TEXT NOT NULL,\n  \
+           \"column\" TEXT NOT NULL,\n  \
+           \"watermark\" INTEGER NOT NULL,\n  \
+           PRIMARY KEY (\"store\", \"column\")\n);",
+    )?;
+    for contract in &table.lateness {
+        let Some(idx) = table.columns.iter().position(|c| c.name == contract.column) else {
+            return Err(StorageError::Decode(format!(
+                "`{}` has no column `{}` for its lateness contract",
+                table.name, contract.column
+            )));
+        };
+        let ty = &table.columns[idx].ty;
+        // The point of one insert row, in the column's storage grain.
+        let point_of = |row: &Row| -> Result<i64, StorageError> {
+            match &row[idx] {
+                Value::Instant(s) => instant_to_ms(s).map_err(StorageError::Decode),
+                Value::Int(n) => Ok(*n),
+                other => Err(StorageError::Decode(format!(
+                    "`{}.{}` carries {other:?} where its lateness contract \
+                     expects a point",
+                    table.name, contract.column
+                ))),
+            }
+        };
+        // Render a grain value the way the column writes it.
+        let render = |grain: i64| -> String {
+            match ty {
+                ColumnType::Instant => {
+                    ms_to_instant(grain).unwrap_or_else(|_| format!("{grain} ms from the epoch"))
+                }
+                _ => grain.to_string(),
+            }
+        };
+        let mut oldest = point_of(&delta.inserts[0])?;
+        let mut newest = oldest;
+        for row in &delta.inserts[1..] {
+            let p = point_of(row)?;
+            oldest = oldest.min(p);
+            newest = newest.max(p);
+        }
+        let watermark: Option<i64> = tx
+            .query_row(
+                "SELECT \"watermark\" FROM \"mensura_watermarks\" \
+                 WHERE \"store\" = ?1 AND \"column\" = ?2",
+                rusqlite::params![table.name, contract.column],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(w) = watermark {
+            let limit = w - contract.bound;
+            if oldest < limit {
+                return Err(StorageError::Lateness {
+                    table: table.name.clone(),
+                    column: contract.column.clone(),
+                    point: render(oldest),
+                    limit: render(limit),
+                });
+            }
+        }
+        let advanced = watermark.map_or(newest, |w| w.max(newest));
+        tx.execute(
+            "INSERT INTO \"mensura_watermarks\" (\"store\", \"column\", \"watermark\") \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT (\"store\", \"column\") DO UPDATE SET \"watermark\" = ?3",
+            rusqlite::params![table.name, contract.column, advanced],
+        )?;
+    }
+    Ok(())
 }
 
 /// Translate a constraint failure into a diagnostic that names what the
@@ -687,6 +788,7 @@ mod tests {
             columns: schema(PERSONS, "persons").columns,
             keyed: true,
             foreign_keys: Vec::new(),
+            lateness: Vec::new(),
         };
         let mut db = SqliteBackend::open_in_memory().unwrap();
 
@@ -922,5 +1024,98 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
             .unwrap();
         assert_eq!(on, 1);
+    }
+
+    /// The `lateness` contract at the intake (ADR 0037 decision 4): the
+    /// watermark is the maximum accepted point, a batch containing a row
+    /// older than `watermark - bound` is rejected whole in the same
+    /// transaction, the boundary point is still admissible, and an empty
+    /// registry has no watermark, so its first batch is unconstrained.
+    #[test]
+    fn lateness_rejects_a_late_batch_whole() {
+        let src = r#"
+            import si
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+              lateness { taken_at: 10.0 * si.minute }
+            }
+        "#;
+        let schema = schema(src, "readings");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().expect("open");
+        db.ensure_store(&schema).expect("create");
+        let row = |m: &str, at: &str| -> Row {
+            vec![
+                Value::String(m.into()),
+                Value::Instant(at.into()),
+                Value::Real(300.0),
+            ]
+        };
+        // No watermark yet: the first batch is unconstrained, and internal
+        // skew is legal either way, because rows are checked against the
+        // watermark as of intake, never against each other.
+        db.apply(
+            &shape,
+            &Delta::appending(vec![
+                row("M-07", "2026-08-10T10:31:12.000Z"),
+                row("M-07", "2026-08-10T09:00:00.000Z"),
+            ]),
+        )
+        .expect("the first batch is unconstrained");
+        // Watermark 10:31:12, bound ten minutes: the oldest admissible point
+        // is 10:21:12, and one late row rejects the whole batch (the fresh
+        // 10:32:00 row must not land either, ADR 0034 decision 4).
+        let err = db
+            .apply(
+                &shape,
+                &Delta::appending(vec![
+                    row("M-08", "2026-08-10T10:32:00.000Z"),
+                    row("M-08", "2026-08-10T10:20:45.000Z"),
+                ]),
+            )
+            .expect_err("one late row rejects the whole batch");
+        assert!(matches!(err, StorageError::Lateness { .. }));
+        let msg = err.to_string();
+        assert!(msg.contains("2026-08-10T10:20:45.000Z"), "{msg}");
+        assert!(msg.contains("2026-08-10T10:21:12.000Z"), "{msg}");
+        assert_eq!(db.scan(&shape).expect("scan").len(), 2);
+        // The rejected batch advanced nothing: the boundary point of the
+        // *old* watermark is still admissible, exactly `watermark - bound`.
+        db.apply(
+            &shape,
+            &Delta::appending(vec![row("M-08", "2026-08-10T10:21:12.000Z")]),
+        )
+        .expect("the boundary point is admissible");
+        assert_eq!(db.scan(&shape).expect("scan").len(), 3);
+    }
+
+    /// `diff(int) = int` (ADR 0036 decision 4): a count-based contract runs
+    /// through the same watermark with no unit machinery.
+    #[test]
+    fn lateness_counts_apply_to_int_points() {
+        let src = r#"
+            unit Tick { seq: int }
+            registry ticks {
+              unit { Tick }
+              attr { level: real }
+              lateness { seq: 5 }
+            }
+        "#;
+        let schema = schema(src, "ticks");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().expect("open");
+        db.ensure_store(&schema).expect("create");
+        let row = |seq: i64| -> Row { vec![Value::Int(seq), Value::Real(1.0)] };
+        db.apply(&shape, &Delta::appending(vec![row(10)]))
+            .expect("first batch");
+        let err = db
+            .apply(&shape, &Delta::appending(vec![row(4)]))
+            .expect_err("4 < 10 - 5");
+        let msg = err.to_string();
+        assert!(msg.contains("`seq` is 4"), "{msg}");
+        db.apply(&shape, &Delta::appending(vec![row(5)]))
+            .expect("the boundary count is admissible");
     }
 }

@@ -123,6 +123,17 @@ registry readings {
     // is a compile error.
     temperature: temperature[real]
   }
+  // The gateway's documented delivery bound, made type-visible and
+  // *enforced* at the intake (ADR 0037 decision 4): once the watermark
+  // (the newest `taken_at` ever accepted) passes `t + 10 min`, no reading
+  // at `t` will ever be accepted, and a batch that breaks the bound is
+  // rejected whole.  A gateway that buffers through an outage and flushes
+  // an over-age buffer surfaces here, at the boundary, instead of
+  // corrupting a window already reported as final; this is the contract
+  // M5's `closed` stage turns into completeness.  Registry-only: a store
+  // has no sole intake to enforce it, so there the block is a compile
+  // error.
+  lateness { taken_at: 10.0 * si.minute }
 }
 
 // A windowed feature view (ADR 0031, Decision 7): the ordered siblings of the

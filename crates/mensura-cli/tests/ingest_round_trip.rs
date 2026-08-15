@@ -161,6 +161,63 @@ fn a_batch_that_fails_at_the_write_rolls_back() {
 }
 
 #[test]
+fn a_lateness_contract_rejects_late_batches_and_a_store_never_does() {
+    // ADR 0037 decision 4: the `lateness` contract belongs to the registry,
+    // because the sole append-only intake is what makes it enforceable.  The
+    // contrast with a store is double: *declaring* `lateness` on a store is
+    // a compile error (see `resolve`'s tests and the corpus), and a store's
+    // intake carries no watermark, so it accepts arbitrarily late rows
+    // silently.  A store accumulates observations with gaps and revisions;
+    // only the registry can promise finality.
+    let src = r#"
+        import si
+        unit Reading { machine_id: string  taken_at: instant }
+        registry readings {
+          unit { Reading }
+          attr { temperature: real }
+          lateness { taken_at: 10.0 * si.minute }
+        }
+        store observations {
+          unit { Reading }
+          attr { temperature: real }
+        }
+    "#;
+    let program = resolve(src);
+    let mut db = seeded(&program);
+    let readings = table(&program, "readings");
+    let observations = table(&program, "observations");
+
+    let fresh = r#"{"machine_id":"m-01","taken_at":"2026-08-10T10:31:12Z","temperature":300.0}
+"#;
+    let late = r#"{"machine_id":"m-02","taken_at":"2026-08-10T10:20:45Z","temperature":301.0}
+"#;
+
+    // The registry: the first batch sets the watermark to 10:31:12, so the
+    // 10:20:45 record is older than `watermark - lateness` (10:21:12) and
+    // its batch is rejected whole.
+    let rows = decode_jsonl(readings, fresh).expect("decodes");
+    db.apply(&readings.shape(), &Delta::appending(rows))
+        .expect("the first batch is unconstrained");
+    let rows = decode_jsonl(readings, late).expect("decodes: lateness is an intake concern");
+    let err = db
+        .apply(&readings.shape(), &Delta::appending(rows))
+        .expect_err("the gateway broke its ten-minute bound");
+    let shown = err.to_string();
+    assert!(shown.contains("arrived too late"), "{shown}");
+    assert!(shown.contains("2026-08-10T10:21:12.000Z"), "{shown}");
+    assert_eq!(db.scan(&readings.shape()).expect("scan").len(), 1);
+
+    // The same two records into the store, in the same order: both land,
+    // because no contract exists and none can be declared.
+    for payload in [fresh, late] {
+        let rows = decode_jsonl(observations, payload).expect("decodes");
+        db.apply(&observations.shape(), &Delta::appending(rows))
+            .expect("a store accepts late rows");
+    }
+    assert_eq!(db.scan(&observations.shape()).expect("scan").len(), 2);
+}
+
+#[test]
 fn a_reference_to_a_missing_row_is_rejected_by_name() {
     // Foreign keys are enforced (ADR 0034 decision 5), and the diagnostic
     // names the `domain` entry rather than a SQLite code.

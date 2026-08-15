@@ -659,7 +659,20 @@ Implementation (the M5 windows slice, not this ADR):
   redeclaration may change, and whether the toolchain migrates or
   refuses, belongs to the (probably automatic) migration policy of a
   future `mensura deploy`, which is not yet designed; the two must
-  be settled together.
+  be settled together.  *Direction settled (owner, 2026-08-15), the
+  surface deferred with `deploy`:* **tightening** a bound (a smaller
+  `lateness`) is an ordinary migration, permitted silently, because
+  it only ever closes windows earlier and every result already
+  emitted as final stays final.  **Relaxing** one (a larger
+  `lateness`) is not, because it retracts published finality, so it
+  must require an explicit annotation at the redeclaration, whose job
+  is to say what happens to the already-emitted rows the change
+  invalidates.  What that annotation is called, and whether it
+  recomputes, quarantines, or merely records the inconsistency,
+  is designed with `deploy`; only the asymmetry is fixed here.  The
+  intake enforces neither today: a redeclaration simply takes effect,
+  since nothing yet persists a program's previous text to compare
+  against.
 - **Grid origin.**  Window starts anchor at the domain zero.  If a
   consumer needs aligned-but-offset grids (business days, fiscal
   weeks), an explicit origin argument is the natural extension.

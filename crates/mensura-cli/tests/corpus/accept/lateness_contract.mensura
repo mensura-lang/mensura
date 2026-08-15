@@ -1,0 +1,35 @@
+// Accepted: the `lateness` intake contract (ADR 0037 decision 4).  A
+// registry may bound how late a row on an orderable point column can
+// arrive; the bound is a const expression of the column's difference type
+// (`time[real]` for an `instant` point, `int` for an `int` point,
+// ADR 0036 decision 4), positive, and, for `instant`, a whole number of
+// milliseconds, all checked at compile time.  The intake *enforces* it:
+// once the watermark passes `t + lateness`, a batch containing a row at
+// `t` is rejected whole.  Declared on the registry rather than passed to
+// a stage, so the establishment `closed` later builds on it is
+// mechanism-grade (the sole append-only intake), not claim-grade; on a
+// plain store the same block is `reject/lateness_on_a_store.mensura`.
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+unit Tick {
+  seq: int
+}
+
+// `diff(int) = int`: a count-based bound needs no unit machinery, which is
+// also what count-based windows ride on (ADR 0037 decision 3).
+registry ticks {
+  unit { Tick }
+  attr { level: real }
+  lateness { seq: 5 }
+}
