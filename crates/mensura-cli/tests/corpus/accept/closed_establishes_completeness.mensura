@@ -1,0 +1,47 @@
+// Accepted, and **with no `assume` anywhere**: the canonical M5 program
+// (ADR 0037's worked example).  Every fact here is established by a
+// mechanism and consumed by a demand, which is the language's whole
+// pitch, so this file is the one to read if you want to see the claim
+// made good.
+//
+// Stage by stage:
+//
+//   `window`  replicates each reading into the quarter-hour window
+//             containing it and adds `w` to the key; the grading extends
+//             with it, so the times stay unique inside each window.
+//   `demote`  leaves one bag of readings per `(machine_id, w)`.  The
+//             registry's fine-key completeness is forfeited by the
+//             coarsening (ADR 0035), which is what would otherwise force
+//             an `assume { complete }` here.
+//   `closed`  re-establishes it, by mechanism: a window survives iff
+//             `w + 15 min + 10 min <= watermark`, and the `lateness`
+//             block is what makes that a theorem about the intake rather
+//             than a claim.  Delete the block and this becomes
+//             `reject/closed_without_a_contract.mensura`.
+//   `map_bags` reduces, consuming exactly the fact `closed` established
+//             (ADR 0023).
+//
+// The watermark is per grain (ADR 0041): the grain here is
+// `{machine_id}`, so a machine whose gateway is behind does not have its
+// windows closed by a faster machine's traffic.  That is why `closed`
+// also demands the grain columns still be in the key.
+import bag
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view machine_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}

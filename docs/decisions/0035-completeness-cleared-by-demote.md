@@ -381,6 +381,21 @@ misreported as authoritative.
   `07-pipelines.md` should not imply that a discharged `arranged` makes
   a window faithful.
 
+  *Settled:* `docs/decisions/0037-streaming-windows-and-closedness.md`
+  decision 6 adopts the explicit-mechanism family and **rejects the
+  marker**, for exactly the reason recorded above: it would be a claim
+  about the data with no establishing mechanism.  Interval windows are
+  the gap-aware vocabulary (a `window` selects rows by key interval, not
+  by position, so a rate per window is a rate over the window's stated
+  extent), the positional vocabulary keeps its present-rows reading with
+  no contiguity obligation, and contiguity is established by a mechanism
+  where it is decidable at all:
+  `docs/decisions/0038-rectangularization-over-the-window-grid.md` ships
+  that mechanism over the window grid, where the stride and origin are
+  known and closedness bounds the grid above.  The general case over a
+  raw order key stays deferred, on this ADR's own finding that a dense
+  and an irregular series are indistinguishable there.
+
 ## Forward references
 
 - `docs/language/09-typing-reference.md` sections 3.4, 6.3, 7, 8, 10

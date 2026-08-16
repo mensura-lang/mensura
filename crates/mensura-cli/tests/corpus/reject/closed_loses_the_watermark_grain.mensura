@@ -1,0 +1,34 @@
+// Reject: resolve.  A watermark serves one **grain**, the declared key
+// minus the contracted column (ADR 0041 decision 2), which here is
+// `{machine_id}`: each machine is measured against its own delivery, so
+// a fast reporter cannot close a slow one's windows.
+//
+// That only works if `closed` can tell which grain a row belongs to, and
+// after `demote machine_id` it cannot: the machine is in the fiber, and
+// one output row can no longer name the producer it came from.  Rather
+// than fall back to the minimum watermark across all machines, which is
+// sound but would silently let one stalled gateway hold back every
+// window in the view, the stage refuses and names the missing column.
+//
+// Close first and coarsen after: `closed` before `demote machine_id`
+// gives the same rollup with the fact established.
+import bag
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view fleet_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at machine_id
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}

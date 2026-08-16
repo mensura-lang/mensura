@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 
 use mensura_syntax::{BinOp, Expr, ExprKind, Presence, Stmt, UnOp};
-use mensura_types::{ColumnRole, ColumnType, ResolvedProgram, Schema, ViewPlan};
+use mensura_types::{ColumnRole, ColumnType, Lateness, ResolvedProgram, Schema, ViewPlan};
 
-use crate::backend::{StorageBackend, StorageError};
+use crate::backend::{StorageBackend, StorageError, Watermarks};
 use crate::temporal;
 use crate::value::{Row, Value};
 
@@ -71,6 +71,16 @@ pub struct SourceTable {
     key: Vec<Col>,
     attrs: Vec<Col>,
     rows: Vec<Row>,
+    /// The store these rows came from, while they still unambiguously come
+    /// from one.  `closed` needs it to find the intake contract and the
+    /// watermarks (ADR 0037 decision 4); a join or a union makes it `None`,
+    /// the same conservative rule the checker applies to the facts.
+    origin: Option<String>,
+    /// What `window` built, mirroring the checker's window facts so the
+    /// evaluator can filter without re-deriving them from the syntax: the
+    /// window column, its point, and its extent in the point's storage
+    /// grain.
+    windows: BTreeMap<String, (String, i64)>,
 }
 
 impl SourceTable {
@@ -86,7 +96,13 @@ impl SourceTable {
                 ColumnRole::Attr => attrs.push(entry),
             }
         }
-        SourceTable { key, attrs, rows }
+        SourceTable {
+            key,
+            attrs,
+            rows,
+            origin: Some(schema.store.clone()),
+            windows: BTreeMap::new(),
+        }
     }
 
     fn key_len(&self) -> usize {
@@ -154,6 +170,7 @@ fn key_of(v: &Value) -> Result<KeyVal, EvalError> {
 pub fn eval_view(
     plan: &ViewPlan,
     sources: &BTreeMap<String, SourceTable>,
+    contracts: &Contracts,
 ) -> Result<Vec<Row>, EvalError> {
     let mut env: BTreeMap<String, TableVal> = sources
         .iter()
@@ -164,10 +181,10 @@ pub fn eval_view(
     for (i, stmt) in plan.body.stmts.iter().enumerate() {
         match stmt {
             Stmt::Let { name, value, .. } => {
-                let table = eval_pipeline(&env, value)?;
+                let table = eval_pipeline(&env, contracts, value)?;
                 env.insert(name.name.clone(), table);
             }
-            Stmt::Expr(e) if i == last => result = Some(eval_pipeline(&env, e)?),
+            Stmt::Expr(e) if i == last => result = Some(eval_pipeline(&env, contracts, e)?),
             _ => return internal("view body statement the checker should have rejected"),
         }
     }
@@ -212,29 +229,33 @@ fn align(plan: &ViewPlan, table: SourceTable) -> Result<Vec<Row>, EvalError> {
 
 /// Evaluate a pipeline expression to a table value.  Mirrors the checker's
 /// `type_pipeline`.
-fn eval_pipeline(env: &BTreeMap<String, TableVal>, expr: &Expr) -> Result<TableVal, EvalError> {
+fn eval_pipeline(
+    env: &BTreeMap<String, TableVal>,
+    contracts: &Contracts,
+    expr: &Expr,
+) -> Result<TableVal, EvalError> {
     match &expr.kind {
         ExprKind::Name(name) => match env.get(name) {
             Some(table) => Ok(table.clone()),
             None => internal(format!("unknown source `{name}`")),
         },
         ExprKind::Tuple(items) if items.len() == 2 => {
-            let a = expect_table(eval_pipeline(env, &items[0])?)?;
-            let b = expect_table(eval_pipeline(env, &items[1])?)?;
+            let a = expect_table(eval_pipeline(env, contracts, &items[0])?)?;
+            let b = expect_table(eval_pipeline(env, contracts, &items[1])?)?;
             Ok(TableVal::Pair(a, b))
         }
         ExprKind::Binary(BinOp::Pipe, lhs, rhs) => {
-            let input = eval_pipeline(env, lhs)?;
+            let input = eval_pipeline(env, contracts, lhs)?;
             let (head, args) = flatten_app(rhs);
-            apply_op(env, head, &args, input)
+            apply_op(env, contracts, head, &args, input)
         }
         ExprKind::App(..) => {
             let (head, mut args) = flatten_app(expr);
             let Some(last) = args.pop() else {
                 return internal("pipeline application without an input");
             };
-            let input = eval_pipeline(env, last)?;
-            apply_op(env, head, &args, input)
+            let input = eval_pipeline(env, contracts, last)?;
+            apply_op(env, contracts, head, &args, input)
         }
         _ => internal("expression is not a pipeline"),
     }
@@ -245,6 +266,7 @@ fn eval_pipeline(env: &BTreeMap<String, TableVal>, expr: &Expr) -> Result<TableV
 /// compile time and trusted here (`ROADMAP.md` M2).
 fn apply_op(
     env: &BTreeMap<String, TableVal>,
+    contracts: &Contracts,
     head: &Expr,
     args: &[&Expr],
     input: TableVal,
@@ -275,6 +297,10 @@ fn apply_op(
         "assume" | "completeness_check" => Ok(TableVal::Table(expect_table(input)?)),
         "demote" => Ok(TableVal::Table(eval_demote(expect_table(input)?, args)?)),
         "window" => Ok(TableVal::Table(eval_window(expect_table(input)?, args)?)),
+        "closed" => Ok(TableVal::Table(eval_closed(
+            expect_table(input)?,
+            contracts,
+        )?)),
         other => err(format!(
             "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
         )),
@@ -408,6 +434,10 @@ fn eval_flat_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
         key: input.key,
         attrs: schema,
         rows,
+        // The body computes a fresh row, so a window's point is gone and
+        // the grid with it; the checker resets the same facts here.
+        origin: None,
+        windows: BTreeMap::new(),
     })
 }
 
@@ -667,6 +697,8 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
         key: input.key,
         attrs,
         rows,
+        origin: None,
+        windows: BTreeMap::new(),
     })
 }
 
@@ -868,11 +900,94 @@ fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
     }
     let mut key = input.key;
     key.push(col(w.clone(), point_ty));
+    let mut windows = input.windows;
+    windows.insert(w.clone(), (p.clone(), size));
     Ok(SourceTable {
         key,
         attrs: input.attrs,
         rows,
+        origin: input.origin,
+        windows,
     })
+}
+
+// ---------------------------------------------------------------------------
+// closed
+
+/// The intake contracts and their watermarks, read once before evaluation
+/// and keyed by store (ADR 0037 decision 4, ADR 0041).
+///
+/// Reading them once per run is what makes a batch run deterministic and
+/// pure: two runs over the same database agree, and wall-clock time never
+/// enters the semantics.
+pub type Contracts = BTreeMap<String, Vec<(Lateness, Watermarks)>>;
+
+/// `closed` (ADR 0037 decision 4): drop every window that can still receive
+/// a row, and keep the rest.
+///
+/// The predicate is `w + size + lateness <= effective`, per row, against the
+/// watermark of *that row's grain* (ADR 0041 decision 2): a slow producer is
+/// measured against itself.  A row whose grain has no watermark at all
+/// (nothing accepted, no floor) is dropped, because nothing licenses calling
+/// any of its windows closed.
+///
+/// This runs before any grouping, since `demote` is a column-role move and
+/// the fibers are not formed until `map_bags`; the stage is therefore a
+/// cheap per-row filter rather than a regrouping.
+fn eval_closed(mut table: SourceTable, contracts: &Contracts) -> Result<SourceTable, EvalError> {
+    let nkeys = table.key.len();
+    let Some((at, window, point, size)) = table.key.iter().enumerate().find_map(|(i, c)| {
+        table
+            .windows
+            .get(&c.name)
+            .map(|(p, s)| (i, c.name.clone(), p.clone(), *s))
+    }) else {
+        return internal("`closed` without a window column the checker required");
+    };
+    let Some(origin) = table.origin.clone() else {
+        return internal("`closed` on a table with no source the checker required");
+    };
+    let Some((contract, watermarks)) = contracts
+        .get(&origin)
+        .and_then(|cs| cs.iter().find(|(c, _)| c.column == point))
+    else {
+        return internal("`closed` without the intake contract the checker required");
+    };
+
+    // The grain columns sit in the key, which is what the checker demands so
+    // that each row can name the producer it came from.
+    let grain_at: Vec<usize> = contract
+        .grain
+        .iter()
+        .filter_map(|g| table.key.iter().position(|c| &c.name == g))
+        .collect();
+    if grain_at.len() != contract.grain.len() {
+        return internal("`closed` without the watermark grain the checker required");
+    }
+
+    let mut kept = Vec::new();
+    for row in table.rows {
+        let start = match &row[at] {
+            Value::Instant(s) => {
+                temporal::instant_to_ms(s).map_err(|message| EvalError { message })?
+            }
+            Value::Int(n) => *n,
+            _ => return internal("a window column holding something that is not a point"),
+        };
+        let grain: Vec<String> = grain_at.iter().map(|&i| row[i].grain_key()).collect();
+        let Some(effective) = watermarks.effective(&grain) else {
+            continue;
+        };
+        // The window is final once nothing it could hold may still arrive.
+        // An open window is not an error: it is a window whose answer does
+        // not exist yet, and its absence is the honest representation.
+        if start + size + contract.bound <= effective {
+            kept.push(row);
+        }
+    }
+    table.rows = kept;
+    let _ = (window, nkeys);
+    Ok(table)
 }
 
 // ---------------------------------------------------------------------------
@@ -900,11 +1015,15 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
         key: input.key.clone(),
         attrs: input.attrs.clone(),
         rows: left_rows,
+        origin: None,
+        windows: BTreeMap::new(),
     };
     let right = SourceTable {
         key: input.key,
         attrs: input.attrs,
         rows: right_rows,
+        origin: None,
+        windows: BTreeMap::new(),
     };
     Ok(TableVal::Pair(left, right))
 }
@@ -919,7 +1038,13 @@ fn eval_bind(input: TableVal) -> Result<SourceTable, EvalError> {
     let attrs = unify_cols(a.attrs, b.attrs)?;
     let mut rows = a.rows;
     rows.extend(b.rows);
-    Ok(SourceTable { key, attrs, rows })
+    Ok(SourceTable {
+        key,
+        attrs,
+        rows,
+        origin: None,
+        windows: BTreeMap::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1109,8 @@ fn eval_join(
         key: input.key,
         attrs,
         rows,
+        origin: None,
+        windows: BTreeMap::new(),
     })
 }
 
@@ -1039,7 +1166,13 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
             rows.push(out);
         }
     }
-    Ok(SourceTable { key, attrs, rows })
+    Ok(SourceTable {
+        key,
+        attrs,
+        rows,
+        origin: None,
+        windows: BTreeMap::new(),
+    })
 }
 
 /// `pivot name value` (section 6.6, ADR 0020): the inverse of `unpivot`.
@@ -1127,7 +1260,13 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
             key
         })
         .collect();
-    Ok(SourceTable { key, attrs, rows })
+    Ok(SourceTable {
+        key,
+        attrs,
+        rows,
+        origin: None,
+        windows: BTreeMap::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1810,6 +1949,7 @@ pub fn materialize_views<B: StorageBackend>(
     let mut out = Vec::new();
     for plan in &program.views {
         let mut sources = BTreeMap::new();
+        let mut contracts = Contracts::new();
         for name in &plan.sources {
             let Some(schema) = program.schemas.iter().find(|s| &s.store == name) else {
                 return Err(EvalError {
@@ -1821,9 +1961,22 @@ pub fn materialize_views<B: StorageBackend>(
                 .into());
             };
             let rows = backend.scan(&schema.shape())?;
+            // The intake contracts and their watermarks, read once per run
+            // *before* evaluation (ADR 0037 decision 4).  Reading them here
+            // rather than mid-pipeline is what keeps `eval_view` a pure
+            // function of its inputs, so two runs over one database agree.
+            if !schema.lateness.is_empty() {
+                let shape = schema.shape();
+                let mut per_store = Vec::new();
+                for contract in &schema.lateness {
+                    let marks = backend.watermarks(&shape, contract)?;
+                    per_store.push((contract.clone(), marks));
+                }
+                contracts.insert(name.clone(), per_store);
+            }
             sources.insert(name.clone(), SourceTable::from_store(schema, rows));
         }
-        let rows = eval_view(plan, &sources)?;
+        let rows = eval_view(plan, &sources, &contracts)?;
         backend.materialize_view(&plan.shape(), &rows)?;
         out.push((plan.name.clone(), rows.len()));
     }
@@ -1931,7 +2084,7 @@ mod tests {
                 SourceTable::from_store(schema, rows.clone()),
             );
         }
-        eval_view(plan, &sources)
+        eval_view(plan, &sources, &Contracts::new())
     }
 
     fn eval(src_view: &str, rows: Vec<Row>) -> Vec<Row> {

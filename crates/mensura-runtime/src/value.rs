@@ -25,5 +25,25 @@ pub enum Value {
     Missing,
 }
 
+impl Value {
+    /// This value as a grain key (ADR 0041 decision 2): the text a
+    /// watermark map is keyed by.
+    ///
+    /// Injective where it is used, because a grain column is a key column,
+    /// hence equatable and never `real` (the domain matrix of
+    /// `09-typing-reference.md`).  Shared by the intake, which builds the
+    /// map, and the evaluator, which reads it, so the two cannot disagree
+    /// on what names a grain.
+    pub fn grain_key(&self) -> String {
+        match self {
+            Value::String(s) | Value::Date(s) | Value::Instant(s) | Value::Enum(s) => s.clone(),
+            Value::Int(n) => n.to_string(),
+            Value::Real(x) => x.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Missing => "(missing)".to_string(),
+        }
+    }
+}
+
 /// One table row: values in the table's column order.
 pub type Row = Vec<Value>;

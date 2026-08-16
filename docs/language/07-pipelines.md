@@ -353,6 +353,70 @@ is the sibling of `unpivot`'s `exhaustive(axis)`, established by the
 operation's construction and consumed downstream by `closed`
 (`13-registries.md`, ADR 0037 decision 4).
 
+### `closed` - keep the windows that can no longer change
+
+```
+readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+         |> demote taken_at
+         |> closed
+         |> map_bags |k, b| (.peak = bag.max b.temperature)
+```
+
+`closed` drops every window that is still open and **establishes
+completeness** at the current key on the survivors (ADR 0037 decision 4).
+It is not a new qualifier: it is a new *establishment mechanism* for the
+existing completeness fact, joining `completeness_check`/`assume`, the
+registry rule, and the exhaustive-axis rule.
+
+The establishment is mechanism-grade rather than a claim.  The windowing
+fact supplies `size` and the source's `lateness` declaration supplies the
+bound, both enforced at the intake, so "no row of this window can still
+arrive" is a theorem about the intake rather than something the author
+asserts.  A window survives when
+
+```
+w + size + lateness <= watermark
+```
+
+against the watermark of **that row's grain** (the declared key minus the
+contracted column, ADR 0041), so a machine whose gateway is behind does
+not have its windows closed by a faster machine's traffic.
+
+Like `completeness_check`, `closed` is a checked stage rather than a new
+algebra primitive; unlike it, `closed` **drops** rows instead of
+asserting over them, because an open window is not an error, it is a
+window whose answer does not exist yet.  Its absence from the output is
+the honest representation, and it is what makes the design refresh-ready:
+**closed windows are final** (`closedWindow_stable`), so rerunning after
+further ingestion adds newly closed windows and never changes one already
+emitted.
+
+Four demands, each with a diagnostic naming its fix:
+
+- a window column in the current key, carrying a live windowing fact;
+- its point demoted **into the fiber**, since a window is only whole once
+  its points are grouped into it;
+- a `lateness` contract on that point.  Without one there is no
+  mechanism, and the author falls back to `assume { complete }`, locally
+  and visibly, as ever;
+- the contract's **watermark grain** still in the key, since a row can
+  only be measured against the producer it came from.
+
+What the fact does and does not say: `closed` re-establishes exactly the
+*arrival*-completeness a registry gives at its own key, transported to
+the window key.  Whether a device's silence was a genuinely absent
+reading or a reading lost before the intake is a deployment property
+outside the type system, the same boundary `13-registries.md` draws.
+
+What clears it: nothing new.  Tier A preserves it, and a further genuine
+coarsening (`demote w`) clears it, ADR 0035 unchanged.
+
+A machine that has stopped reporting never advances its own watermark, so
+its last windows would never close on the data alone.  That is what the
+declared **closure floor** is for (`13-registries.md`): it raises every
+grain's effective watermark, so silence becomes observable rather than
+indefinite.
+
 ## Completeness: establish, clear, consume
 
 Two operations are Tier B: **`demote`** and **`pivot`**.  Both change

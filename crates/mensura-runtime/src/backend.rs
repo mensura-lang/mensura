@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use mensura_types::{Schema, TableShape};
+use mensura_types::{Lateness, Schema, TableShape};
 
 use crate::value::Row;
 
@@ -29,6 +29,53 @@ pub trait StorageBackend {
     /// Apply a batch of row changes to a table in one transaction: every
     /// change lands or none does (`docs/toolkit/05-ingestion.md`, ADR 0034).
     fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError>;
+
+    /// The effective watermark of every grain under one intake contract
+    /// (ADR 0041 decision 3): `max(observed, floor)`, where the observed
+    /// half is derived from the table and the floor is the declared state
+    /// beside it.
+    ///
+    /// Read once per run, before evaluation, which is what makes a batch
+    /// run deterministic and pure: two runs over the same database agree,
+    /// and wall-clock time never enters the semantics (ADR 0037
+    /// decision 4).
+    fn watermarks(
+        &self,
+        table: &TableShape,
+        contract: &Lateness,
+    ) -> Result<Watermarks, StorageError>;
+}
+
+/// The effective watermarks of one contract, by grain (ADR 0041).
+///
+/// Grains are keyed by [`crate::value::Value::grain_key`], the same
+/// rendering the intake uses, so the two sides cannot disagree about what
+/// names a grain.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Watermarks {
+    observed: std::collections::BTreeMap<Vec<String>, i64>,
+    floor: Option<i64>,
+}
+
+impl Watermarks {
+    pub fn new(
+        observed: std::collections::BTreeMap<Vec<String>, i64>,
+        floor: Option<i64>,
+    ) -> Watermarks {
+        Watermarks { observed, floor }
+    }
+
+    /// The effective watermark of one grain, in the point column's storage
+    /// grain.  `None` where the grain has neither rows nor a floor, which
+    /// is a grain nothing has ever been accepted for and no deployment has
+    /// spoken about: no window of it can be called closed.
+    pub fn effective(&self, grain: &[String]) -> Option<i64> {
+        match (self.observed.get(grain), self.floor) {
+            (Some(&observed), Some(floor)) => Some(observed.max(floor)),
+            (Some(&observed), None) => Some(observed),
+            (None, floor) => floor,
+        }
+    }
 }
 
 /// A batch of row changes against one table (ADR 0034 decision 2).

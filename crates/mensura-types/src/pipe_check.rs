@@ -207,12 +207,13 @@ fn dispatch_op(
         "assume" => op_assume(input, args, span),
         "completeness_check" => op_completeness_check(sources, input, args, span),
         "window" => op_window(sources, input, args, span),
+        "closed" => op_closed(input, args, span),
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
             // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
             // row, `map_bags` receives the bag") instead of the generic
             // edit-distance suggestion below.
-            const OPS: [&str; 13] = [
+            const OPS: [&str; 14] = [
                 "promote",
                 "demote",
                 "flat_map",
@@ -226,6 +227,7 @@ fn dispatch_op(
                 "assume",
                 "completeness_check",
                 "window",
+                "closed",
             ];
             let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
             Err(error(
@@ -242,7 +244,7 @@ fn dispatch_op(
     // its own output cardinality, the conservative rule until the per-op
     // transport table is mechanized.
     Ok(match op {
-        "promote" | "demote" | "assume" | "completeness_check" | "window" => result,
+        "promote" | "demote" | "assume" | "completeness_check" | "window" | "closed" => result,
         _ => sync_functional(result),
     })
 }
@@ -1203,6 +1205,123 @@ fn op_window(
     // The key changed, so the rectangle fact goes the way it does under the
     // other key moves.
     table.qualifiers.exhaustive.clear();
+    Ok(PipeTy::Table(table))
+}
+
+/// `closed` (section 6.7, ADR 0037 decision 4): drop every window that is
+/// still open and establish `Complete` at the current key on the survivors.
+///
+/// Not a new qualifier and not a new algebra primitive: a **new
+/// establishment mechanism** for the existing completeness fact, joining
+/// `completeness_check`/`assume` (ADR 0017), the registry rule (ADR 0033),
+/// and the exhaustive-axis rule (ADR 0035).  Like `completeness_check` it is
+/// a checked stage; unlike it, it *drops* rows rather than asserting over
+/// them, because an open window is not an error, it is a window whose answer
+/// does not exist yet, and absence is the honest representation.
+///
+/// The establishment is mechanism-grade: the windowing fact supplies `size`
+/// and the source contract supplies `lateness`, both enforced, so "no row of
+/// this window can still arrive" is a theorem about the intake
+/// (`Mensura.closedWindow_stable`) rather than a claim.  Without a
+/// `lateness` declaration there is no mechanism and the stage is rejected,
+/// leaving `assume { complete }` as the visible fallback.
+fn op_closed(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    if !args.is_empty() {
+        return Err(error(
+            "`closed` takes no arguments: the extent comes from the `window` \
+             stage and the lateness bound from the source's declaration",
+            args[0].span,
+        ));
+    }
+
+    // A live window column in the current key, whose point has been demoted
+    // into the fiber.  That is the shape the stage is specified over, and it
+    // is what makes the window a reduction target.
+    let key = table.key_names();
+    let live: Vec<&String> = table
+        .qualifiers
+        .windows
+        .columns()
+        .filter(|w| key.contains(*w))
+        .collect();
+    let [window] = live.as_slice() else {
+        if live.len() > 1 {
+            return Err(error(
+                "`closed` needs exactly one window column in the key, and this \
+                 table has several; close one grid at a time",
+                span,
+            ));
+        }
+        return Err(error(
+            "`closed` needs a window column in the key, established by a \
+             `window` stage upstream (ADR 0037): there is none here, so there \
+             is no grid whose windows could be open or closed",
+            span,
+        ));
+    };
+    let window = (*window).clone();
+    let fact = table
+        .qualifiers
+        .windows
+        .get(&window)
+        .expect("the column came from the fact map")
+        .clone();
+
+    if table.content.key.iter().any(|c| c.name == fact.point) {
+        return Err(error(
+            format!(
+                "`closed` needs `{}` in the fiber, not in the key: the window \
+                 is only whole once its points are grouped into it, so \
+                 `demote {}` first",
+                fact.point, fact.point
+            ),
+            span,
+        ));
+    }
+
+    let Some(contract) = &fact.contract else {
+        return Err(error(
+            format!(
+                "`closed` needs a `lateness` contract on `{}` to know when a \
+                 window can no longer receive a row; the source declares \
+                 none, so there is no mechanism here and the claim must be \
+                 made visibly with `assume {{ complete }}` instead (ADR 0037)",
+                fact.point
+            ),
+            span,
+        ));
+    };
+
+    // A watermark serves one grain (ADR 0041 decision 2), so a row can only
+    // be tested against its own grain's.  The grain columns therefore have
+    // to be identifiable per row, which at this point means in the key.
+    let missing: Vec<&String> = contract
+        .grain
+        .iter()
+        .filter(|g| !key.contains(*g))
+        .collect();
+    if !missing.is_empty() {
+        let names: Vec<String> = missing.iter().map(|g| format!("`{g}`")).collect();
+        return Err(error(
+            format!(
+                "`closed` needs the contract's watermark grain in the key, and \
+                 {} {} no longer there: a watermark is per grain (ADR 0041), so \
+                 without it a row cannot be measured against the producer it \
+                 came from",
+                names.join(", "),
+                if missing.len() == 1 { "is" } else { "are" }
+            ),
+            span,
+        ));
+    }
+
+    // The establishment.  It is the *arrival*-completeness the registry
+    // mechanism gives at its own key, transported to the window key: every
+    // row the intake will ever accept for this window is present.  Whether a
+    // device's silence was a genuinely absent reading or one lost before the
+    // intake is outside the type system, the same boundary ADR 0033 draws.
+    table.qualifiers.completeness = Completeness::Complete;
     Ok(PipeTy::Table(table))
 }
 
@@ -3570,6 +3689,91 @@ mod tests {
         let s = windowed_sources(true);
         let t = table_of(pipe_ty(&s, "readings |> window w seq 100 10").expect("ok"));
         assert_eq!(t.content.key[2].domain, ColumnType::Int);
+    }
+
+    /// The canonical M5 program (ADR 0037's worked example) carries **no
+    /// `assume` at all**: every fact is established by a mechanism and
+    /// consumed by a demand, which is the language's whole pitch.
+    #[test]
+    fn closed_establishes_completeness_for_the_reducer() {
+        let s = windowed_sources(true);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at \
+                 |> closed \
+                 |> map_bags |k, b| (.peak = bag.max b.temperature)",
+            )
+            .expect("no assume anywhere"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        assert_eq!(
+            t.content
+                .key
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["machine_id", "w"]
+        );
+        // Without `closed` the same pipeline is the ADR 0023 rejection: the
+        // coarsening cleared the registry's fine-key fact.
+        let errs = pipe_ty(
+            &s,
+            "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+             |> demote taken_at \
+             |> map_bags |k, b| (.peak = bag.max b.temperature)",
+        )
+        .expect_err("no establishment");
+        assert!(errs[0].message.contains("needs completeness"));
+    }
+
+    #[test]
+    fn closed_rejections_name_their_rule() {
+        let contracted = windowed_sources(true);
+        let bare = windowed_sources(false);
+        for (s, src, needle) in [
+            // No grid at all.
+            (
+                &contracted,
+                "readings |> closed",
+                "needs a window column in the key",
+            ),
+            // The point is still in the key, so the window is not yet whole.
+            (
+                &contracted,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) |> closed",
+                "in the fiber, not in the key",
+            ),
+            // No contract: no mechanism, so the claim must be visible.
+            (
+                &bare,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at |> closed",
+                "assume { complete }",
+            ),
+            // The watermark grain must survive to the point of the filter
+            // (ADR 0041 decision 2).
+            (
+                &contracted,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at machine_id |> closed",
+                "watermark grain",
+            ),
+            (
+                &contracted,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at |> closed w",
+                "takes no arguments",
+            ),
+        ] {
+            let errs = pipe_ty(s, src).expect_err(src);
+            assert!(
+                errs.iter().any(|e| e.message.contains(needle)),
+                "`{needle}` not found for `{src}`: {:?}",
+                errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

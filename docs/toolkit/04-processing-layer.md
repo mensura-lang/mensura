@@ -136,9 +136,41 @@ trailing expression is the result.
   it can meet; a `Value::Missing` operand makes any lifted operator's
   result missing (ADR 0039).
 
+- **`window w p size stride`** replicates each row into every window
+  containing its point, splicing the window start into the key block.
+  The extents are const expressions the checker has already validated;
+  lowering substitutes their const names, so the evaluator folds them in
+  an empty scope and converts through the same exact-or-error
+  millisecond predicate the checker used.  Grid arithmetic is euclidean,
+  so a pre-epoch point does not shift by a stride.
+- **`closed`** filters rows whose window can still receive one.  It runs
+  before any grouping, since `demote` is a column-role move and fibers
+  are not formed until `map_bags`, so it is a cheap per-row predicate.
+
 Later Tier A operations slot into the same shape: each is a function from
 input row batches to an output row batch, with its property effects already
 discharged at compile time.
+
+## Watermarks reach the evaluator by prefetch
+
+`closed` is the first operation needing something the row batches do not
+carry: the effective watermark of each grain (ADR 0037 decision 4,
+ADR 0041).  The evaluator stays a pure function of its inputs, and
+`materialize_views` reads the watermarks **once per run** through
+`StorageBackend::watermarks`, before evaluating, alongside the source
+scans.
+
+That placement is the ADR's requirement rather than a convenience: a
+batch run must be deterministic and reproducible, so the watermark is
+read once and wall-clock time never enters the semantics.  Two runs over
+the same database agree.
+
+Because the qualifier row does not cross the view boundary IR (only
+columns, cardinality, and the body do), the evaluator maintains its own
+lightweight mirror of the facts it needs while walking the pipeline: which
+column is a window column, over which point and at what extent, and which
+store the rows still unambiguously come from.  A join or a union clears
+both, exactly as the checker clears its own facts there.
 
 ## Materializing the result
 
