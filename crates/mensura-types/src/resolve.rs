@@ -845,14 +845,21 @@ fn resolve_lateness(
             (ColumnType::Instant, ConstValue::Real { magnitude, dim })
                 if *dim == Dimension::base("time").expect("time is a base axis") =>
             {
-                // Positivity and whole milliseconds are compile-time checks
+                // Sign and whole milliseconds are compile-time checks
                 // (ADR 0036 decision 6): the intake only ever sees an exact
-                // integer count on the millisecond grid.
+                // integer count on the millisecond grid.  Zero is legal and
+                // means monotone intake within a grain (ADR 0041 decision
+                // 5); a negative bound would demand every row be strictly
+                // *ahead* of the watermark and has no consumer.
                 match crate::temporal::whole_milliseconds(*magnitude) {
-                    Ok(ms) if ms > 0 => ms,
+                    Ok(ms) if ms >= 0 => ms,
                     Ok(_) => {
                         errors.push(ResolveError::new(
-                            format!("`lateness` on `{column}` must be positive"),
+                            format!(
+                                "`lateness` on `{column}` must not be negative \
+                                 (zero is the monotone contract: no row older \
+                                 than the newest already accepted)"
+                            ),
                             entry.bound.span,
                         ));
                         continue;
@@ -875,10 +882,14 @@ fn resolve_lateness(
                 ));
                 continue;
             }
-            (ColumnType::Int, ConstValue::Int(n)) if *n > 0 => *n,
+            (ColumnType::Int, ConstValue::Int(n)) if *n >= 0 => *n,
             (ColumnType::Int, ConstValue::Int(_)) => {
                 errors.push(ResolveError::new(
-                    format!("`lateness` on `{column}` must be positive"),
+                    format!(
+                        "`lateness` on `{column}` must not be negative (zero \
+                         is the monotone contract: no row older than the \
+                         newest already accepted)"
+                    ),
                     entry.bound.span,
                 ));
                 continue;
@@ -917,9 +928,22 @@ fn resolve_lateness(
                 continue;
             }
         };
+        // The watermark grain (ADR 0041 decision 2): the declared key
+        // minus the contracted column, in key order.  It is a consequence
+        // of the unit rather than a separate declaration, which is why it
+        // is computed here and not written by the author.  Empty when the
+        // point *is* the whole key: one grain, ADR 0037's global
+        // watermark recovered as the degenerate case.
+        let grain = schema
+            .columns
+            .iter()
+            .filter(|c| c.role == ColumnRole::Key && c.name != column)
+            .map(|c| c.name.clone())
+            .collect();
         schema.lateness.push(Lateness {
             column: column.to_string(),
             bound,
+            grain,
             span: entry.span,
         });
     }
@@ -2372,6 +2396,9 @@ mod tests {
         assert_eq!(schemas[0].lateness.len(), 1);
         assert_eq!(schemas[0].lateness[0].column, "taken_at");
         assert_eq!(schemas[0].lateness[0].bound, 600_000);
+        // The grain is the key minus the contracted column (ADR 0041
+        // decision 2): one watermark per machine, not one per registry.
+        assert_eq!(schemas[0].lateness[0].grain, vec!["machine_id".to_string()]);
         // `diff(int) = int`: a count-based bound needs no unit machinery.
         let schemas = resolve_str(
             r#"
@@ -2385,6 +2412,55 @@ mod tests {
         )
         .expect("should resolve");
         assert_eq!(schemas[0].lateness[0].bound, 5);
+        // The point *is* the whole key, so there is exactly one grain:
+        // ADR 0037's global watermark recovered as the degenerate case.
+        assert!(schemas[0].lateness[0].grain.is_empty());
+    }
+
+    /// The grain of an attribute-borne point is the whole key, which for
+    /// the two fleet shapes is the same `{machine_id}` a key-borne point
+    /// gives (ADR 0041 decision 2).  The attribute-versus-key choice
+    /// changes gradings and duplicate handling, not the intake's grain.
+    #[test]
+    fn an_attribute_point_grains_by_the_whole_key() {
+        let schemas = resolve_str(
+            r#"
+            import si
+            unit Sensor { machine_id: string }
+            registry vibrations {
+              unit { Sensor }
+              attr* {
+                sampled_at: instant
+                amplitude:  real
+              }
+              lateness { sampled_at: 30.0 * second }
+            }
+            "#,
+        )
+        .expect("should resolve");
+        assert_eq!(schemas[0].lateness[0].bound, 30_000);
+        assert_eq!(schemas[0].lateness[0].grain, vec!["machine_id".to_string()]);
+    }
+
+    /// Zero is legal and means monotone intake within a grain (ADR 0041
+    /// decision 5): no row older than the newest already accepted.  It is
+    /// the family's endpoint, not a new spelling.
+    #[test]
+    fn a_zero_bound_is_the_monotone_contract() {
+        let schemas = resolve_str(
+            r#"
+            import si
+            unit MeterRead { machine_id: string  read_at: instant }
+            registry meter_reads {
+              unit { MeterRead }
+              attr { kwh: real }
+              lateness { read_at: 0.0 * second }
+            }
+            "#,
+        )
+        .expect("should resolve");
+        assert_eq!(schemas[0].lateness[0].bound, 0);
+        assert_eq!(schemas[0].lateness[0].grain, vec!["machine_id".to_string()]);
     }
 
     /// Each way a `lateness` entry can be wrong is its own diagnostic.
@@ -2419,10 +2495,19 @@ mod tests {
                  lateness { taken_at: 10.0 * kelvin } }",
                 "must be a duration",
             ),
+            // Zero is legal (ADR 0041 decision 5); negative is not, since
+            // it would demand every row be ahead of the watermark.
             (
                 "registry readings { unit { Reading } attr { t: real } \
-                 lateness { taken_at: 0.0 * si.minute } }",
-                "must be positive",
+                 lateness { taken_at: -1.0 * si.minute } }",
+                "must not be negative",
+            ),
+            (
+                "registry ticks { unit { Reading } attr { t: real } \
+                 lateness { taken_at: 0.0 * si.minute  } }
+                 registry more { unit { Reading } attr { seq: int } \
+                 lateness { seq: -1 } }",
+                "must not be negative",
             ),
             (
                 "registry readings { unit { Reading } attr { t: real } \

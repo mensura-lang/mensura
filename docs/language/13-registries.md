@@ -244,30 +244,42 @@ number of milliseconds at compile time, `int` for an `int` point.  One
 entry per block; a second contracted column is a second block, merged in
 source order like repeated `attr` blocks.
 
-The contract it states: once the intake's watermark, the maximum point
-value ever accepted on the contracted column, has passed
-`t + lateness`, no row with point `t` will ever be accepted.  Like the
-completeness fact above, it is **enforced, not trusted**: the intake
-rejects a batch containing a row older than `watermark - lateness`,
-whole and transactionally, like any other decode failure.  A producer
-that breaks its declared delivery bound surfaces at the boundary
-instead of corrupting a window already reported as final, which is
-exactly what the M5 `closed` stage builds on.
+The contract it states: once the intake's watermark on the contracted
+column has passed `t + lateness`, no row with point `t` will ever be
+accepted.  Like the completeness fact above, it is **enforced, not
+trusted**: the intake rejects a batch containing a row older than
+`watermark - lateness`, whole and transactionally, like any other decode
+failure.  A producer that breaks its declared delivery bound surfaces at
+the boundary instead of corrupting a window already reported as final,
+which is exactly what the M5 `closed` stage builds on.
+
+**A watermark serves one grain, and the grain is the key minus the
+contracted column** (ADR 0041).  Above that is `{machine_id}`: one
+watermark per machine, so a machine reporting every minute cannot refuse
+a slower machine's buffered flush, and a new machine can be onboarded
+with its history because it has no watermark yet.  The grain is a
+consequence of the unit rather than something to declare, which also
+means that adding a key field refines it: keying by
+`(machine_id, sensor_id, taken_at)` gives one watermark per sensor.
+Zero is the endpoint of the same rule: `lateness { taken_at: 0.0 *
+si.second }` says no row older than the newest already accepted *in its
+grain*, which is "this machine's readings arrive in order".
+
+The other half of the watermark is the **closure floor**, the point
+through which a deployment asserts the world is closed.  It is not
+written in the program, because advancing time would then be a
+recompile, and it is not read from the system clock, because
+`mensura run` would stop being reproducible; it is stored beside the
+data and advanced explicitly (`mensura floor <file> <registry>
+<column> <point>`).  Without it, a machine that stops reporting never
+advances its own watermark, so its windows never close and its silence
+is invisible.  See `docs/examples/watermark-grain.mensura`.
 
 The block is rejected on a plain `store`, deliberately: a store's rows
 are created, updated, and deleted by anyone, so a watermark over it
 bounds nothing and the contract would be claim-grade.  A store's intake
 accepts arbitrarily late rows, and that is the honest behaviour for a
 tabulation that accumulates revisable observations.
-
-The watermark is currently one value per contracted column, shared by
-every entity in the registry, so a slow reporter is measured against
-the fastest one.  That is the part of the design most likely to change
-under you: `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`
-proposes one watermark per entity (the declared key minus the
-contracted column) plus a declared floor, which is what makes a
-bound of zero, "this entity's rows arrive in order", a useful thing to
-write.
 
 **Changing a declared bound later is not symmetric.**  Tightening one
 (a smaller `lateness`) only ever closes windows earlier, so every

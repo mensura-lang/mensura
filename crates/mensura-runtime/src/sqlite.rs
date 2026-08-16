@@ -1,5 +1,6 @@
 //! A SQLite-backed [`StorageBackend`] using rusqlite (bundled SQLite).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use mensura_types::{ColumnRole, ColumnType, Schema, TableShape};
@@ -42,6 +43,71 @@ impl SqliteBackend {
     /// [`StorageBackend::apply`] (`docs/toolkit/05-ingestion.md`).
     pub fn execute_sql(&self, sql: &str) -> Result<(), StorageError> {
         self.conn.execute_batch(sql)?;
+        Ok(())
+    }
+
+    /// Advance a contract's declared closure floor (ADR 0041 decision 4):
+    /// the point through which the deployment asserts the world is closed.
+    ///
+    /// The floor is the stored half of the watermark, because nothing
+    /// derives an assertion.  Storing it rather than reading a clock is
+    /// what keeps `mensura run` a function of the database, and storing it
+    /// rather than writing it in the program is what keeps advancing time
+    /// from being a recompile.
+    ///
+    /// **It only ever advances.**  Lowering a floor reopens windows
+    /// already reported final, which retracts published results; that is
+    /// the same deliberate override as relaxing a `lateness` bound, and
+    /// neither is designed yet, so this refuses rather than guessing.
+    ///
+    /// `point` is the column's own text (a normalized instant, or an
+    /// integer count for an `int` point).
+    pub fn advance_floor(
+        &mut self,
+        store: &str,
+        column: &str,
+        point: &str,
+    ) -> Result<(), StorageError> {
+        let grain = match instant_to_ms(point) {
+            Ok(ms) => ms,
+            Err(_) => point.parse::<i64>().map_err(|_| {
+                StorageError::Decode(format!(
+                    "`{point}` is neither a normalized instant \
+                     (`YYYY-MM-DDTHH:MM:SS.sssZ`) nor an integer count"
+                ))
+            })?,
+        };
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(&create_floor_table_sql())?;
+        let current: Option<i64> = tx
+            .query_row(
+                &format!(
+                    "SELECT \"floor\" FROM {} WHERE \"store\" = ?1 AND \"column\" = ?2",
+                    quote_ident(FLOOR_TABLE)
+                ),
+                rusqlite::params![store, column],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(current) = current
+            && grain < current
+        {
+            return Err(StorageError::Refused(format!(
+                "a closure floor only advances: `{store}.{column}` already \
+                 stands at {}, and lowering it to {point} would reopen \
+                 windows already reported final (ADR 0041)",
+                render_point(&ColumnType::Instant, current)
+            )));
+        }
+        tx.execute(
+            &format!(
+                "INSERT INTO {} (\"store\", \"column\", \"floor\") VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (\"store\", \"column\") DO UPDATE SET \"floor\" = ?3",
+                quote_ident(FLOOR_TABLE)
+            ),
+            rusqlite::params![store, column, grain],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -190,21 +256,71 @@ impl StorageBackend for SqliteBackend {
     }
 }
 
-/// Enforce the table's `lateness` contracts and advance its watermarks
-/// (ADR 0037 decision 4), inside the caller's transaction.
+/// The reserved table holding each contract's declared closure floor
+/// (ADR 0041 decision 4).  The floor is the only stored half of the
+/// watermark: it is an operator assertion, so nothing derives it, and it
+/// carries no grain, so it needs no encoding of a heterogeneous key.
+pub(crate) const FLOOR_TABLE: &str = "mensura_lateness_floors";
+
+pub(crate) fn create_floor_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {} (\n  \
+           \"store\" TEXT NOT NULL,\n  \
+           \"column\" TEXT NOT NULL,\n  \
+           \"floor\" INTEGER NOT NULL,\n  \
+           PRIMARY KEY (\"store\", \"column\")\n);",
+        quote_ident(FLOOR_TABLE)
+    )
+}
+
+/// Read a contract's declared floor, in the column's storage grain.
+pub(crate) fn read_floor(
+    conn: &Connection,
+    store: &str,
+    column: &str,
+) -> Result<Option<i64>, StorageError> {
+    conn.execute_batch(&create_floor_table_sql())?;
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT \"floor\" FROM {} WHERE \"store\" = ?1 AND \"column\" = ?2",
+                quote_ident(FLOOR_TABLE)
+            ),
+            rusqlite::params![store, column],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Enforce the table's `lateness` contracts (ADR 0037 decision 4, grained
+/// by ADR 0041), inside the caller's transaction.
 ///
-/// The watermark is the maximum point value the intake has ever accepted on
-/// the contracted column, kept as registry metadata in
-/// `mensura_watermarks` (per table and column, in the column's storage
-/// grain: epoch milliseconds for `instant`, the plain count for `int`).
-/// A batch containing a row whose point is *older than*
-/// `watermark - bound` is rejected whole; the boundary point
-/// `watermark - bound` itself is still admissible, and the strict window
-/// upper bound is what keeps that safe for `closed`
-/// (`Mensura.closedWindow_stable`).  Rows are checked against the
-/// watermark as of intake, so a batch is judged as the unit the producer
-/// delivered; its own maximum then advances the watermark.  Deletes never
-/// move a watermark: the contract governs what may still arrive.
+/// The **effective watermark** of a grain is `max(observed, floor)`:
+///
+/// - *observed* is the maximum point already accepted in that grain, and
+///   it is **derived, never stored** (ADR 0041 decision 3).  Under an
+///   append-only intake it is exactly `max(point) where grain = ...`, so
+///   storing it would only let it drift, and its key would be a
+///   heterogeneous per-registry tuple needing an encoding.  Derived, it
+///   compares the registry's own columns with their own types, travels
+///   with a backup, and costs a keyed maximum that the primary key
+///   already indexes for a key-borne point.
+/// - *floor* is the declared point the deployment asserts the world is
+///   closed through.  It is the irreducible half, and the half with no
+///   grain.
+///
+/// The **grain** is the declared key minus the contracted column
+/// (ADR 0041 decision 2), so a slow producer is measured against itself
+/// rather than against the fleet's fastest.  An empty grain is the
+/// degenerate single-watermark case that recovers ADR 0037's global rule.
+///
+/// A batch containing a row *older than* `effective - bound` is rejected
+/// whole; the boundary point is still admissible, and the strict upper
+/// bound of the window interval is what keeps that safe for `closed`
+/// (`Mensura.closedWindow_stable`).  Rows are compared against the value
+/// as of intake, never against each other, so a batch stays an unordered
+/// bag.  Nothing is written here: an accepted append advances the
+/// observed maximum by landing, which is the point of deriving it.
 fn enforce_lateness(
     tx: &rusqlite::Transaction<'_>,
     table: &TableShape,
@@ -213,13 +329,6 @@ fn enforce_lateness(
     if table.lateness.is_empty() || delta.inserts.is_empty() {
         return Ok(());
     }
-    tx.execute_batch(
-        "CREATE TABLE IF NOT EXISTS \"mensura_watermarks\" (\n  \
-           \"store\" TEXT NOT NULL,\n  \
-           \"column\" TEXT NOT NULL,\n  \
-           \"watermark\" INTEGER NOT NULL,\n  \
-           PRIMARY KEY (\"store\", \"column\")\n);",
-    )?;
     for contract in &table.lateness {
         let Some(idx) = table.columns.iter().position(|c| c.name == contract.column) else {
             return Err(StorageError::Decode(format!(
@@ -228,7 +337,7 @@ fn enforce_lateness(
             )));
         };
         let ty = &table.columns[idx].ty;
-        // The point of one insert row, in the column's storage grain.
+        // The point of one row, in the column's storage grain.
         let point_of = |row: &Row| -> Result<i64, StorageError> {
             match &row[idx] {
                 Value::Instant(s) => instant_to_ms(s).map_err(StorageError::Decode),
@@ -240,50 +349,134 @@ fn enforce_lateness(
                 ))),
             }
         };
-        // Render a grain value the way the column writes it.
-        let render = |grain: i64| -> String {
-            match ty {
-                ColumnType::Instant => {
-                    ms_to_instant(grain).unwrap_or_else(|_| format!("{grain} ms from the epoch"))
-                }
-                _ => grain.to_string(),
-            }
-        };
-        let mut oldest = point_of(&delta.inserts[0])?;
-        let mut newest = oldest;
-        for row in &delta.inserts[1..] {
+        let render = |point: i64| -> String { render_point(ty, point) };
+
+        // The grain columns' positions, resolved once per contract.
+        let grain: Vec<usize> = contract
+            .grain
+            .iter()
+            .map(|name| {
+                table
+                    .columns
+                    .iter()
+                    .position(|c| &c.name == name)
+                    .ok_or_else(|| {
+                        StorageError::Decode(format!(
+                            "`{}` has no column `{name}` for its lateness grain",
+                            table.name
+                        ))
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+
+        // The floor has no grain, so it is read once per contract.
+        let floor = read_floor(tx, &table.name, &contract.column)?;
+
+        // Group the batch by grain and keep each group's oldest row: only
+        // the oldest can violate, and one violation rejects the batch.
+        // Grouped on the rendered grain, which is injective here because a
+        // grain column is a key column, hence equatable and never `real`
+        // (the domain matrix of `09-typing-reference.md`); the values
+        // themselves ride along for the query.
+        let mut oldest_by_grain: BTreeMap<Vec<String>, (Vec<Value>, i64)> = BTreeMap::new();
+        for row in &delta.inserts {
+            let values: Vec<Value> = grain.iter().map(|&i| row[i].clone()).collect();
+            let key: Vec<String> = values.iter().map(describe_value).collect();
             let p = point_of(row)?;
-            oldest = oldest.min(p);
-            newest = newest.max(p);
+            oldest_by_grain
+                .entry(key)
+                .and_modify(|(_, old)| *old = (*old).min(p))
+                .or_insert((values, p));
         }
-        let watermark: Option<i64> = tx
-            .query_row(
-                "SELECT \"watermark\" FROM \"mensura_watermarks\" \
-                 WHERE \"store\" = ?1 AND \"column\" = ?2",
-                rusqlite::params![table.name, contract.column],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(w) = watermark {
-            let limit = w - contract.bound;
+
+        let where_grain = contract
+            .grain
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("{} IS ?{}", quote_ident(name), i + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let sql = format!(
+            "SELECT MAX({}) FROM {}{}",
+            quote_ident(&contract.column),
+            quote_ident(&table.name),
+            if where_grain.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {where_grain}")
+            }
+        );
+        let mut stmt = tx.prepare(&sql)?;
+
+        for (_, (key, oldest)) in oldest_by_grain {
+            // The observed watermark of this grain, derived from the rows
+            // already accepted.  Absent (no rows yet) leaves the floor.
+            // `MAX` comes back in the column's own storage type: TEXT for a
+            // normalized instant (whose fixed width makes lexicographic
+            // order chronological, ADR 0036 decision 7), INTEGER for a
+            // count.  A grain with no rows yet yields SQL NULL.
+            let stored: Option<rusqlite::types::Value> = stmt
+                .query_row(rusqlite::params_from_iter(key.iter().map(encode)), |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let observed = match stored {
+                Some(rusqlite::types::Value::Text(text)) => {
+                    Some(instant_to_ms(&text).map_err(StorageError::Decode)?)
+                }
+                Some(rusqlite::types::Value::Integer(n)) => Some(n),
+                _ => None,
+            };
+            let effective = match (observed, floor) {
+                (Some(o), Some(f)) => Some(o.max(f)),
+                (Some(o), None) => Some(o),
+                (None, f) => f,
+            };
+            let Some(effective) = effective else {
+                // No rows in this grain and no floor: the first batch of a
+                // grain is unconstrained, which is what makes onboarding a
+                // device with history work (ADR 0041's worked example).
+                continue;
+            };
+            let limit = effective - contract.bound;
             if oldest < limit {
                 return Err(StorageError::Lateness {
                     table: table.name.clone(),
                     column: contract.column.clone(),
                     point: render(oldest),
                     limit: render(limit),
+                    grain: contract
+                        .grain
+                        .iter()
+                        .cloned()
+                        .zip(key.iter().map(describe_value))
+                        .collect(),
                 });
             }
         }
-        let advanced = watermark.map_or(newest, |w| w.max(newest));
-        tx.execute(
-            "INSERT INTO \"mensura_watermarks\" (\"store\", \"column\", \"watermark\") \
-             VALUES (?1, ?2, ?3) \
-             ON CONFLICT (\"store\", \"column\") DO UPDATE SET \"watermark\" = ?3",
-            rusqlite::params![table.name, contract.column, advanced],
-        )?;
     }
     Ok(())
+}
+
+/// Render a point in the column's own form, for a diagnostic.
+fn render_point(ty: &ColumnType, point: i64) -> String {
+    match ty {
+        ColumnType::Instant => {
+            ms_to_instant(point).unwrap_or_else(|_| format!("{point} ms from the epoch"))
+        }
+        _ => point.to_string(),
+    }
+}
+
+/// A grain value as a diagnostic shows it.
+fn describe_value(v: &Value) -> String {
+    match v {
+        Value::String(s) | Value::Date(s) | Value::Instant(s) | Value::Enum(s) => s.clone(),
+        Value::Int(n) => n.to_string(),
+        Value::Real(x) => x.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Missing => "(missing)".to_string(),
+    }
 }
 
 /// Translate a constraint failure into a diagnostic that names what the
@@ -1053,9 +1246,9 @@ mod tests {
                 Value::Real(300.0),
             ]
         };
-        // No watermark yet: the first batch is unconstrained, and internal
-        // skew is legal either way, because rows are checked against the
-        // watermark as of intake, never against each other.
+        // No watermark yet: the first batch of a grain is unconstrained,
+        // and internal skew is legal either way, because rows are checked
+        // against the watermark as of intake, never against each other.
         db.apply(
             &shape,
             &Delta::appending(vec![
@@ -1064,15 +1257,16 @@ mod tests {
             ]),
         )
         .expect("the first batch is unconstrained");
-        // Watermark 10:31:12, bound ten minutes: the oldest admissible point
-        // is 10:21:12, and one late row rejects the whole batch (the fresh
-        // 10:32:00 row must not land either, ADR 0034 decision 4).
+        // M-07's watermark is 10:31:12 and the bound is ten minutes, so its
+        // oldest admissible point is 10:21:12, and one late row rejects the
+        // whole batch (the fresh 10:32:00 row must not land either,
+        // ADR 0034 decision 4).
         let err = db
             .apply(
                 &shape,
                 &Delta::appending(vec![
-                    row("M-08", "2026-08-10T10:32:00.000Z"),
-                    row("M-08", "2026-08-10T10:20:45.000Z"),
+                    row("M-07", "2026-08-10T10:32:00.000Z"),
+                    row("M-07", "2026-08-10T10:20:45.000Z"),
                 ]),
             )
             .expect_err("one late row rejects the whole batch");
@@ -1080,15 +1274,89 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("2026-08-10T10:20:45.000Z"), "{msg}");
         assert!(msg.contains("2026-08-10T10:21:12.000Z"), "{msg}");
+        assert!(msg.contains("`machine_id` = M-07"), "{msg}");
         assert_eq!(db.scan(&shape).expect("scan").len(), 2);
-        // The rejected batch advanced nothing: the boundary point of the
-        // *old* watermark is still admissible, exactly `watermark - bound`.
+        // The rejected batch landed nothing, so M-07's observed maximum is
+        // unmoved and the boundary point is still admissible, exactly
+        // `watermark - bound`.
         db.apply(
             &shape,
-            &Delta::appending(vec![row("M-08", "2026-08-10T10:21:12.000Z")]),
+            &Delta::appending(vec![row("M-07", "2026-08-10T10:21:12.000Z")]),
         )
         .expect("the boundary point is admissible");
         assert_eq!(db.scan(&shape).expect("scan").len(), 3);
+        // A different machine is a different grain (ADR 0041 decision 2):
+        // the same instant that M-07 refuses is fine for M-08, which has
+        // no watermark of its own yet.
+        db.apply(
+            &shape,
+            &Delta::appending(vec![row("M-08", "2026-08-10T10:20:45.000Z")]),
+        )
+        .expect("a grain is measured against itself");
+        assert_eq!(db.scan(&shape).expect("scan").len(), 4);
+    }
+
+    /// The declared floor (ADR 0041 decisions 3 and 4): stored state that
+    /// raises a grain's effective watermark, so an entity that has stopped
+    /// reporting (or never started) is still governed.  It is the half
+    /// that cannot be derived, and the half with no grain.
+    #[test]
+    fn a_declared_floor_raises_every_grain() {
+        let src = r#"
+            import si
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+              lateness { taken_at: 10.0 * si.minute }
+            }
+        "#;
+        let schema = schema(src, "readings");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().expect("open");
+        db.ensure_store(&schema).expect("create");
+        let row = |m: &str, at: &str| -> Row {
+            vec![
+                Value::String(m.into()),
+                Value::Instant(at.into()),
+                Value::Real(300.0),
+            ]
+        };
+        // With no floor, a brand-new grain accepts anything.
+        db.apply(
+            &shape,
+            &Delta::appending(vec![row("M-01", "2026-08-10T09:00:00.000Z")]),
+        )
+        .expect("no floor, no watermark");
+        // Declare the world closed through 10:40.  The floor applies to
+        // *every* grain, including one that has never reported, which is
+        // what lets a silent machine's windows close at all.
+        db.advance_floor("readings", "taken_at", "2026-08-10T10:40:00.000Z")
+            .expect("advance");
+        let err = db
+            .apply(
+                &shape,
+                &Delta::appending(vec![row("M-99", "2026-08-10T10:29:00.000Z")]),
+            )
+            .expect_err("below the floor minus the bound");
+        assert!(
+            err.to_string().contains("2026-08-10T10:30:00.000Z"),
+            "{err}"
+        );
+        // The boundary under the floor is admissible, as under any
+        // watermark.
+        db.apply(
+            &shape,
+            &Delta::appending(vec![row("M-99", "2026-08-10T10:30:00.000Z")]),
+        )
+        .expect("the boundary point is admissible");
+        // A floor never moves backwards: lowering it would reopen windows
+        // already reported final, which is a deliberate override this
+        // slice does not offer (ADR 0041 open questions).
+        let err = db
+            .advance_floor("readings", "taken_at", "2026-08-10T10:00:00.000Z")
+            .expect_err("a floor only advances");
+        assert!(err.to_string().contains("only advances"), "{err}");
     }
 
     /// `diff(int) = int` (ADR 0036 decision 4): a count-based contract runs

@@ -1130,19 +1130,43 @@ soundness of the \texttt{closed} stage given the enforced
   \label{thm:closed-window-stable}\lean{Mensura.closedWindow_stable}\leanok
   \uses{def:window, def:union}
   ADR 0037 decision 8, gate 2.  Extend a table by appended rows every
-  one of whose points beats $\mathit{watermark} - \mathit{lateness}$,
-  exactly the rows the enforced intake contract still admits.  Then the
-  fiber of any window with
-  $w + \mathit{size} + \mathit{lateness} \le \mathit{watermark}$, any
-  window \texttt{closed} keeps, is unchanged.  This is the soundness of
-  \texttt{closed}'s establishment of completeness (decision 4) and the
-  retraction-freedom the refresh slice inherits: reruns add newly
+  one of whose points is no older than
+  $\mathit{watermark} - \mathit{lateness}$, exactly the rows the
+  enforced intake contract still admits.  Then the fiber of any window
+  with $w + \mathit{size} + \mathit{lateness} \le \mathit{watermark}$,
+  any window \texttt{closed} keeps, is unchanged.  This is the soundness
+  of \texttt{closed}'s establishment of completeness (decision 4) and
+  the retraction-freedom the refresh slice inherits: reruns add newly
   closed windows and never change one already emitted as final.
+
+  The watermark is indexed by a \emph{grain}, a partition of the keys
+  (ADR 0041 decision 2).  What the statement will not let anyone write
+  is a mixed design: the hypothesis about what the intake still admits
+  and the hypothesis about what may be declared final read the same
+  watermark at the same grain, so admitting rows at one grain while
+  closing windows at another is not expressible.  That is ADR 0041
+  decision 1, and it is why the grain is a semantic choice rather than a
+  tuning knob.
 \end{theorem}
 \begin{proof}\leanok
   A multiset-filter argument: an appended row's point is too late to
   satisfy the interval test's upper bound against a closed window's
   start, by covariance of translation in the point.
+\end{proof}
+
+\begin{theorem}[Stability transports through projection]
+  \label{thm:demote-congr}\lean{Mensura.demote_congr}\leanok
+  \uses{def:demote, thm:closed-window-stable}
+  Fiber-wise agreement survives \ref{def:demote}: two tables agreeing at
+  every fine key over the dropped component agree at the coarsened key.
+  The surface pipeline coarsens before it closes (\texttt{window}, then
+  \texttt{demote}, then \texttt{closed}), so the fact a checker rule
+  cites is about the coarse fiber, and this is the step to it from
+  \ref{thm:closed-window-stable} (ADR 0041 decision 6).
+\end{theorem}
+\begin{proof}\leanok
+  A coarse fiber is a finite sum over the dropped component, and a sum
+  of equals is equal.
 \end{proof}
 
 \begin{definition}[Grid placement]

@@ -158,12 +158,24 @@ contract, "no row of this window can still arrive" is a theorem about the
 intake, and rerunning after further ingestion never changes a window already
 emitted as final.  The placement function enters only through the interval
 test's upper bound (`hspec`), which is where the order-compatibility lemma of
-ADR 0036 decision 9 does its work. -/
-theorem closedWindow_stable {starts : P → Finset P} {size : G}
+ADR 0036 decision 9 does its work.
+
+**The watermark is indexed by a grain** (ADR 0041 decision 2): a function
+`grain : K → Γ` partitions the keys, and one watermark serves each part.
+The global watermark of ADR 0037 is the constant grain, and the per-entity
+watermark of ADR 0041 is the residual key.  What the statement will not let
+you write is a *mixed* design: `hlate` (what the intake admits) and
+`hclosed` (what may be declared final) read the same `watermark (grain k)`,
+so admitting rows at one grain while closing windows at another is not
+expressible here, which is ADR 0041 decision 1.  It is worth seeing that
+this costs nothing in the proof: the body already used the hypothesis only
+at the conclusion's own key. -/
+theorem closedWindow_stable {Γ : Type _} {starts : P → Finset P} {size : G}
     (hspec : ∀ ⦃w p : P⦄, w ∈ starts p → p < size +ᵥ w)
-    (point : K → Row H σ → P) {T A : Table K H σ} {watermark : P} {lateness : G}
-    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark ≤ lateness +ᵥ point k f)
-    {w : P} (hclosed : (size + lateness) +ᵥ w ≤ watermark) (k : K) :
+    (point : K → Row H σ → P) {T A : Table K H σ} {grain : K → Γ}
+    {watermark : Γ → P} {lateness : G}
+    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark (grain k) ≤ lateness +ᵥ point k f)
+    {w : P} (k : K) (hclosed : (size + lateness) +ᵥ w ≤ watermark (grain k)) :
     (window starts point (union T A)).rows (k, w) =
       (window starts point T).rows (k, w) := by
   rw [window_rows, window_rows]
@@ -182,6 +194,24 @@ theorem closedWindow_stable {starts : P → Finset P} {size : G}
   rw [Multiset.bind_congr hA, Multiset.bind_zero, add_zero]
 
 end Closedness
+
+/-! ### The lift through `demote` (ADR 0041 decision 6, item 2)
+
+`closedWindow_stable` speaks of a fiber at one key.  The surface pipeline
+coarsens before it closes (`window w p ... |> demote p |> closed`), so the
+fact the checker actually cites is about the *coarse* fiber.  The transport
+is immediate and worth stating rather than assuming: `demote` reads each
+coarse key as a finite sum over the dropped component, so fibers that agree
+one by one sum to fibers that agree. -/
+
+/-- Fiber-wise agreement transports through `demote`.  This is the lift
+ADR 0041 decision 6 owes: per-key stability becomes stability at the
+coarsened key, because a coarse fiber is a finite union of fine ones. -/
+theorem demote_congr {D : Type _} [Fintype D] {T U : Table (K × D) H σ} {k : K}
+    (h : ∀ d : D, T.rows (k, d) = U.rows (k, d)) :
+    (demote T).rows k = (demote U).rows k := by
+  simp only [demote]
+  exact Finset.sum_congr rfl fun d _ => by rw [h d]
 
 /-! ## The concrete grid at `Instant`
 
@@ -247,15 +277,22 @@ theorem lt_vadd_of_mem_windowStarts {size stride : Duration} (hstride : 0 < stri
 `closed` stage cites for `instant`-pointed windows.  The covariance instance
 of `Mensura.Units.Torsor` (ADR 0036 decision 9's order compatibility)
 discharges the abstract theorem's order hypothesis, and `windowStarts`
-discharges its placement hypothesis. -/
-theorem closedWindow_stable {size stride : Duration} (hstride : 0 < stride)
-    (point : K → Row H σ → Instant) {T A : Table K H σ} {watermark : Instant}
-    {lateness : Duration}
-    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark ≤ lateness +ᵥ point k f)
-    {w : Instant} (hclosed : (size + lateness) +ᵥ w ≤ watermark) (k : K) :
+discharges its placement hypothesis.
+
+The watermark is grained (ADR 0041): `grain` is the intake's partition of
+the keys, which the implementation reads off the declared key with the
+contracted column removed, and `watermark` assigns the effective point to
+each part.  The effective point is the maximum of what the intake has
+accepted in that part and the declared floor; neither half appears here,
+because both enter as one value and the theorem asks nothing more of it. -/
+theorem closedWindow_stable {Γ : Type _} {size stride : Duration}
+    (hstride : 0 < stride) (point : K → Row H σ → Instant) {T A : Table K H σ}
+    {grain : K → Γ} {watermark : Γ → Instant} {lateness : Duration}
+    (hlate : ∀ k, ∀ f ∈ A.rows k, watermark (grain k) ≤ lateness +ᵥ point k f)
+    {w : Instant} (k : K) (hclosed : (size + lateness) +ᵥ w ≤ watermark (grain k)) :
     (window (windowStarts size stride) point (union T A)).rows (k, w) =
       (window (windowStarts size stride) point T).rows (k, w) :=
   Mensura.closedWindow_stable (fun _ _ h => lt_vadd_of_mem_windowStarts hstride h)
-    point hlate hclosed k
+    point hlate k hclosed
 
 end Units.Instant

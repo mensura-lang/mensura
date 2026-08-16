@@ -62,6 +62,22 @@ enum Command {
         #[arg(long, default_value = ":memory:")]
         db: PathBuf,
     },
+    /// Advance a registry's declared closure floor: the point through
+    /// which the deployment asserts the world is closed (ADR 0041).
+    Floor {
+        /// The Mensura source file declaring the registry.
+        file: PathBuf,
+        /// The registry carrying the `lateness` contract.
+        target: String,
+        /// The contracted point column.
+        column: String,
+        /// The point to advance the floor to: an RFC 3339 timestamp for an
+        /// `instant` column, an integer for an `int` one.
+        point: String,
+        /// The SQLite database holding the floor.
+        #[arg(long, default_value = ":memory:")]
+        db: PathBuf,
+    },
     /// Run the language server, speaking LSP over stdio.
     Lsp,
 }
@@ -78,6 +94,13 @@ fn main() -> ExitCode {
             data,
             db,
         } => cmd_ingest(&file, &target, &data, &db),
+        Command::Floor {
+            file,
+            target,
+            column,
+            point,
+            db,
+        } => cmd_floor(&file, &target, &column, &point, &db),
         Command::Lsp => cmd_lsp(),
     }
 }
@@ -198,6 +221,81 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
                 let noun = if rows == 1 { "row" } else { "rows" };
                 println!("materialized view {name} ({rows} {noun})");
             }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Advance a registry's declared closure floor (ADR 0041 decision 4).
+///
+/// The floor is the half of the watermark that no data derives: it is the
+/// deployment asserting that the world is closed through a point, which is
+/// what lets the windows of a machine that has gone quiet close at all.
+/// It lives in the database rather than in the program, so advancing time
+/// is an operation rather than a recompile, and `mensura run` stays a
+/// function of the database.
+fn cmd_floor(path: &Path, target: &str, column: &str, point: &str, db_path: &Path) -> ExitCode {
+    let Some(src) = read_source(path) else {
+        return ExitCode::FAILURE;
+    };
+    let Ok(program) = frontend(path, &src) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(schema) = program.schemas.iter().find(|s| s.store == target) else {
+        eprintln!(
+            "error: no store or registry named `{target}` in {}",
+            path.display()
+        );
+        return ExitCode::FAILURE;
+    };
+    let Some(contract) = schema.lateness.iter().find(|l| l.column == column) else {
+        let declared: Vec<&str> = schema.lateness.iter().map(|l| l.column.as_str()).collect();
+        eprintln!(
+            "error: `{target}` declares no `lateness` on `{column}`{}; a floor \
+             is the closure half of a contract, so there is nothing for it to \
+             raise",
+            if declared.is_empty() {
+                String::new()
+            } else {
+                format!(" (it contracts {})", declared.join(", "))
+            }
+        );
+        return ExitCode::FAILURE;
+    };
+    // Accept the point in the column's own surface form and store it
+    // normalized, exactly as the decoder does for an ingested row
+    // (ADR 0036 decision 7).
+    let stored = match schema
+        .columns
+        .iter()
+        .find(|c| c.name == contract.column)
+        .map(|c| &c.ty)
+    {
+        Some(mensura_types::ColumnType::Instant) => {
+            match mensura_runtime::temporal::normalize_instant(point) {
+                Ok(text) => text,
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        _ => point.to_string(),
+    };
+
+    let Some(mut backend) = open_db(db_path) else {
+        return ExitCode::FAILURE;
+    };
+    if db_path.as_os_str() == ":memory:" {
+        eprintln!("note: using an in-memory database; pass --db <path> to persist");
+    }
+    match backend.advance_floor(target, column, &stored) {
+        Ok(()) => {
+            println!("{target}.{column} is closed through {stored}");
             ExitCode::SUCCESS
         }
         Err(e) => {

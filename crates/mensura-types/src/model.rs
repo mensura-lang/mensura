@@ -45,8 +45,18 @@ pub struct Lateness {
     pub column: String,
     /// The bound in the column's storage difference grain: whole
     /// milliseconds for an `instant` column, a plain count for `int`.
-    /// Positive by the resolver's check.
+    /// Non-negative by the resolver's check; zero is monotone intake
+    /// (ADR 0041 decision 5).
     pub bound: i64,
+    /// The **watermark grain** (ADR 0041 decision 2): the declared key
+    /// with the contracted column removed, in key order.  One watermark
+    /// serves each distinct value of these columns, so a slow producer is
+    /// measured against itself rather than against the fastest one.
+    ///
+    /// Computed here rather than re-derived at each use, and empty when
+    /// the contracted column *is* the whole key, which is the degenerate
+    /// single-grain case that recovers ADR 0037's global watermark.
+    pub grain: Vec<String>,
     /// The `lateness` entry's source span.
     pub span: Span,
 }

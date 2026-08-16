@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed.  Amends
+Accepted, and implemented in the pull request that introduced the
+`lateness` contract itself, so the contract never ships with a grain it
+is about to lose.  Amends
 `docs/decisions/0037-streaming-windows-and-closedness.md` decision 4,
 which fixes the watermark as "global to the registry" and files a
 per-key variant as an open question, and closes ADR 0038's open
@@ -135,11 +137,49 @@ Per grain and contracted column:
 effective  =  max(observed, floor)
 ```
 
-- **observed**: the maximum point the intake has accepted in this grain,
-  maintained exactly as today, now per grain rather than per registry.
+- **observed**: the maximum point the intake has accepted in this grain.
   It is what the data says.
 - **floor**: a declared point below which the deployment asserts the
   world is closed.  It is what the operation asserts about time.
+
+**The observed half is derived, not stored; only the floor is stored.**
+Under an append-only intake the observed watermark *is* a projection of
+the table (`max(point)` grouped by the grain), so storing it separately
+would buy a drift risk and an encoding problem and pay for them with
+nothing.  The encoding problem is the decisive one: a stored per-grain
+watermark has to key on a heterogeneous tuple whose columns and types
+differ per registry, which degenerates into a serialized blob key or a
+table per registry, while a derived one compares the registry's own
+columns with their own types.  Derivation also makes the value travel
+with a backup or a replica, removes any write contention on a per-grain
+row, and is cheap where it matters: for a key-borne point the primary
+key already indexes `(grain..., point)`, so the maximum is a range scan
+to the end of a key segment.
+
+ADR 0037 decision 4 gave three reasons for keeping the watermark as
+metadata, and none survives the regraining: "independent of downstream
+reads" is equally true of a derived value, "O(1)" is near-moot given the
+index that already exists, and "well-defined for an empty registry" is
+*identical*, since a maximum over no rows is absent in the same way a
+missing row is, with one fewer state to represent.  That sentence of
+ADR 0037 is amended here.
+
+The floor, by contrast, is irreducible: it is an operator assertion, so
+nothing derives it.  It is also, conveniently, the half with **no
+grain** (it is declared per registry and column and applies to every
+grain), so the state that must be stored is exactly the state with no
+encoding problem.
+
+**What derivation costs.**  A derived maximum is monotone in what is
+*present*, while the contract is about what was ever *accepted*, so
+deleting rows could in principle walk it backwards.  Three cases, and
+only the third bites: retention deletes the oldest rows, which does not
+move a maximum at all; deleting the newest rows is a rollback that the
+append-only declaration already forbids and that invalidates published
+finality however the watermark is kept; erasing a whole grain drops it
+to absent, which reopens admission for that grain but **not** closure,
+because closure reads the floor.  The floor is therefore the safety net
+for the one real case, which is a second job it does for free.
 
 Admission rejects a batch containing a row with `p < effective -
 lateness`; `closed` keeps a window when `w + size + lateness <=
@@ -238,12 +278,12 @@ Small, and all in `formal/Mensura/Window/Defs.lean`:
 
 ### 7.  Migration
 
-The metadata gains the grain: one row per (registry, column, grain
-value) instead of per (registry, column).  Under an append-only intake
-the observed half is recomputable from the table itself (a maximum
-grouped by the residual key), so migration needs no metadata backfill
-and a lost or stale watermark row is self-healing.  The floor starts
-absent, which is the identity element of decision 3.
+Almost nothing, because of decision 3's split.  The observed watermark
+is derived, so there is no metadata to regrain and no backfill to run;
+the stored state is one floor per registry and column, which is the
+shape the shipped table already has.  The watermark rows written under
+the global rule become dead state and are dropped.  The floor starts
+absent, which is the identity element of `max`.
 
 Nothing regresses for a user, and it is worth being precise about why:
 the admission change is strictly **permissive** (rows a global watermark
@@ -326,22 +366,35 @@ Negative:
   directions.
 - Backfill below the floor is refused by design, and the override is not
   designed here.
-- Metadata grows from one row per registry to one row per entity, which
-  for a registry keyed by user or session is a large table.  It is a
-  maximum grouped by the key, so it is bounded by the entity population
-  and recomputable, but it is no longer free.
+- An attribute-borne point on a bag registry needs an index over
+  `(grain..., point)` that the storage mapping does not create today.  A
+  key-borne point needs nothing, since its primary key already is that
+  index.
+- The observed watermark now depends on what is present rather than on
+  what was accepted, which is the deletion caveat of decision 3.  It is
+  bounded (only whole-grain erasure reaches it, and only for admission),
+  but it is a real weakening of an invariant that stored metadata held
+  unconditionally.
+- Admission reads the table it is about to write.  The read is a keyed
+  maximum per touched grain rather than a scan, but it is no longer a
+  single metadata lookup.
 
-Implementation (a later slice, not this ADR):
+Implementation:
 
-- `mensura-runtime`: grain the watermark metadata, read and advance it
-  per grain inside `apply`'s existing transaction, and store the floor
-  beside it.
-- `mensura-types`: nothing for admission; `closed` will read the
-  effective value per grain when it lands.
-- `mensura-cli`: the command that advances a floor, and its reporting.
+- `mensura-types`: the resolved `Lateness` carries its grain (the key
+  minus the contracted column), computed once where the schema is
+  resolved rather than re-derived at every use; the bound's positivity
+  check relaxes to non-negativity.
+- `mensura-runtime`: admission derives the observed maximum per touched
+  grain inside `apply`'s existing transaction, reads the floor beside
+  it, and compares against the effective value.  Nothing is written to
+  metadata by an append.
+- `mensura-cli`: the command that advances a floor.  It refuses to move
+  one backwards, since lowering a floor reopens windows and belongs to
+  the same deliberate override as relaxing a bound.
 - `formal/`: decision 6, items 1 and 2.
-- The zero bound: relax the resolver's positivity check, flip the
-  corresponding test to a negative bound, and add the corpus case.
+- Examples: a companion to the fleet file showing the grain of each
+  declaration shape, and corpus cases for the zero bound.
 
 ## Alternatives considered
 
@@ -377,6 +430,15 @@ Implementation (a later slice, not this ADR):
    separate block).  Rejected per decision 5: zero is the existing
    bound's endpoint, and a second spelling for a point already in range
    spends ADR 0035's audit discipline for no new meaning.
+9. **Storing the observed watermark per grain** (ADR 0037 decision 4's
+   metadata, regrained).  Rejected per decision 3: it stores a
+   projection of the data, so it can drift from it, and its key is a
+   heterogeneous per-registry tuple that has to be encoded into a blob
+   or a table per registry.  Both problems disappear when the value is
+   computed from the columns that already hold it.  A backend that
+   later wants to cache the maximum may do so, since caching a
+   derivable value is an optimization rather than a semantic choice;
+   what it may not do is treat the cache as the source of truth.
 
 ## Open questions
 
@@ -411,9 +473,10 @@ Implementation (a later slice, not this ADR):
 ## Forward references
 
 - `docs/decisions/0037-streaming-windows-and-closedness.md` (decision 4,
-  whose global watermark this amends and whose per-key open question
-  this closes; the evolution question this ADR's override shares an
-  owner with).
+  whose global watermark this amends, whose "maintained by the backend
+  as registry metadata" this replaces with derivation, and whose per-key
+  open question this closes; the evolution question this ADR's override
+  shares an owner with).
 - `docs/decisions/0038-rectangularization-over-the-window-grid.md` (the
   silence query decision 3's floor protects, and the open question on
   per-key watermarks this closes).

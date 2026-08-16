@@ -189,22 +189,25 @@ fn a_lateness_contract_rejects_late_batches_and_a_store_never_does() {
 
     let fresh = r#"{"machine_id":"m-01","taken_at":"2026-08-10T10:31:12Z","temperature":300.0}
 "#;
-    let late = r#"{"machine_id":"m-02","taken_at":"2026-08-10T10:20:45Z","temperature":301.0}
+    let late = r#"{"machine_id":"m-01","taken_at":"2026-08-10T10:20:45Z","temperature":301.0}
 "#;
 
-    // The registry: the first batch sets the watermark to 10:31:12, so the
-    // 10:20:45 record is older than `watermark - lateness` (10:21:12) and
-    // its batch is rejected whole.
+    // The registry: m-01's first batch sets *its own* watermark to
+    // 10:31:12, so a later 10:20:45 record for m-01 is older than
+    // `watermark - lateness` (10:21:12) and its batch is rejected whole.
     let rows = decode_jsonl(readings, fresh).expect("decodes");
     db.apply(&readings.shape(), &Delta::appending(rows))
-        .expect("the first batch is unconstrained");
+        .expect("the first batch of a grain is unconstrained");
     let rows = decode_jsonl(readings, late).expect("decodes: lateness is an intake concern");
     let err = db
         .apply(&readings.shape(), &Delta::appending(rows))
-        .expect_err("the gateway broke its ten-minute bound");
+        .expect_err("m-01's gateway broke its ten-minute bound");
     let shown = err.to_string();
     assert!(shown.contains("arrived too late"), "{shown}");
     assert!(shown.contains("2026-08-10T10:21:12.000Z"), "{shown}");
+    // The diagnostic names the grain, so it says which producer broke its
+    // contract rather than merely that one did (ADR 0041 decision 2).
+    assert!(shown.contains("`machine_id` = m-01"), "{shown}");
     assert_eq!(db.scan(&readings.shape()).expect("scan").len(), 1);
 
     // The same two records into the store, in the same order: both land,
@@ -215,6 +218,71 @@ fn a_lateness_contract_rejects_late_batches_and_a_store_never_does() {
             .expect("a store accepts late rows");
     }
     assert_eq!(db.scan(&observations.shape()).expect("scan").len(), 2);
+}
+
+#[test]
+fn the_watermark_is_grained_so_one_fast_machine_cannot_refuse_another() {
+    // ADR 0041 decision 2, and the reason for the whole regraining: a
+    // watermark is per grain (the declared key minus the contracted
+    // column, here `{machine_id}`), so the fleet's fastest reporter
+    // cannot refuse a slower machine's honest traffic.  Under ADR 0037's
+    // global watermark every assertion below except the first would fail.
+    let src = r#"
+        import si
+        unit Reading { machine_id: string  taken_at: instant }
+        registry readings {
+          unit { Reading }
+          attr { temperature: real }
+          lateness { taken_at: 10.0 * si.minute }
+        }
+    "#;
+    let program = resolve(src);
+    let mut db = seeded(&program);
+    let readings = table(&program, "readings");
+    let append = |db: &mut SqliteBackend, payload: &str| {
+        let rows = decode_jsonl(readings, payload).expect("decodes");
+        db.apply(&readings.shape(), &Delta::appending(rows))
+    };
+
+    // m-07 races ahead to 10:31:12.
+    append(
+        &mut db,
+        r#"{"machine_id":"m-07","taken_at":"2026-08-10T10:31:12Z","temperature":300.0}
+"#,
+    )
+    .expect("first batch");
+
+    // m-19's gateway was partitioned and flushes readings from 10:06.
+    // Globally these are 25 minutes behind the watermark and would be
+    // refused; per grain m-19 is measured against itself and has no
+    // watermark yet, so its buffered data lands.
+    append(
+        &mut db,
+        r#"{"machine_id":"m-19","taken_at":"2026-08-10T10:06:00Z","temperature":301.0}
+{"machine_id":"m-19","taken_at":"2026-08-10T10:20:00Z","temperature":302.0}
+"#,
+    )
+    .expect("a slow machine is measured against itself");
+
+    // Onboarding m-42 with a month of history: no observed watermark for
+    // that grain, so the backfill is admitted.
+    append(
+        &mut db,
+        r#"{"machine_id":"m-42","taken_at":"2026-07-10T09:00:00Z","temperature":295.0}
+"#,
+    )
+    .expect("a new machine's history is not late");
+
+    // m-19's own contract still binds: 10:06 is now below its own
+    // watermark (10:20) minus ten minutes.
+    let err = append(
+        &mut db,
+        r#"{"machine_id":"m-19","taken_at":"2026-08-10T10:06:00Z","temperature":303.0}
+"#,
+    )
+    .expect_err("m-19 is late against m-19");
+    assert!(err.to_string().contains("`machine_id` = m-19"), "{err}");
+    assert_eq!(db.scan(&readings.shape()).expect("scan").len(), 4);
 }
 
 #[test]

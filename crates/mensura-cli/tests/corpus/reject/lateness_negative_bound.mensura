@@ -1,0 +1,17 @@
+// Reject: resolve.  A `lateness` bound may be zero (monotone intake,
+// ADR 0041 decision 5) but never negative: a negative bound would
+// reject every row that is not strictly *ahead* of the watermark, which
+// describes no delivery contract anyone has and which no consumer asks
+// for.  Write `0.0 * second` for the strictest honest contract.
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: -1.0 * si.minute }
+}
