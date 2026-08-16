@@ -409,6 +409,23 @@ negative: a scan is fiber-to-bag and `latest` is fiber-to-row, and
 the keep-combiner route cannot return the *row*, only one column of
 it.
 
+*Amended while implementing (owner, 2026-08-16): the fused
+key-column form is **not shipped**.*  Its completeness demand is
+undischargeable, and the example above shows the trap rather than the
+fix: the coarsening happens inside the operation, so
+`assume { complete }` before it sits at the fine key (which nothing
+survives, ADR 0035, exactly the shape
+`reject/assume_before_demote.mensura` refuses) and after it comes too
+late for the fold that needed it.  There is no valid placement, so
+`latest p` requires `p` to be an attribute already and rejects a key
+column with a diagnostic naming the explicit spelling
+(`demote p`, then the claim, then `latest p`).  Everything the
+decision specifies is still reachable, including both honest cases
+above; what is refused is the one form that could never be
+discharged.  The worked example's
+`readings |> latest taken_at |> assume { complete }` should be read as
+the explicit spelling.
+
 ### 8.  Grammar and formal gates
 
 **Grammar.**  The three operations add zero productions: `window`,

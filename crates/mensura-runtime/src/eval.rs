@@ -301,6 +301,7 @@ fn apply_op(
             expect_table(input)?,
             contracts,
         )?)),
+        "latest" => Ok(TableVal::Table(eval_latest(expect_table(input)?, args)?)),
         other => err(format!(
             "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
         )),
@@ -908,6 +909,64 @@ fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
         rows,
         origin: input.origin,
         windows,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// latest
+
+/// `latest p` (ADR 0037 decision 7): keep, per fiber, the row with the
+/// maximal point `p`.
+///
+/// A reduction rather than a window, so it is fiber-to-row: one output row
+/// per present key.  The argmax is `getLast` of the arrangement the scans
+/// use, taken here in one pass, since the intermediate positions a scan
+/// scatters back to their rows are not wanted.
+///
+/// Ties resolve to the earlier row, matching the `>>` combiner, which takes
+/// the later operand only on a strict comparison.  The checker has already
+/// demanded tie-freedom, so a tie means the program claimed
+/// `assume { arranged }` over data that had one, and the rule is the same
+/// one the rest of the ordered vocabulary follows.
+fn eval_latest(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+    let [p_arg] = args else {
+        return internal("`latest` expects one point column");
+    };
+    let ExprKind::Name(p) = &p_arg.kind else {
+        return internal("`latest` expects a column name");
+    };
+    let Some(at) = input.attr_position(p) else {
+        return internal("`latest` on a column the checker did not find");
+    };
+
+    let nkeys = input.key_len();
+    // Group by key, keeping the argmax of each fiber.  `BTreeMap` orders
+    // the output by key, which is what every other reducing stage produces.
+    let mut best: BTreeMap<Vec<KeyVal>, usize> = BTreeMap::new();
+    for (i, row) in input.rows.iter().enumerate() {
+        let key: Vec<KeyVal> = row[..nkeys].iter().map(key_of).collect::<Result<_, _>>()?;
+        match best.get(&key) {
+            Some(&held) => {
+                if compare(&row[nkeys + at], &input.rows[held][nkeys + at])?
+                    == std::cmp::Ordering::Greater
+                {
+                    best.insert(key, i);
+                }
+            }
+            None => {
+                best.insert(key, i);
+            }
+        }
+    }
+    let rows = best.values().map(|&i| input.rows[i].clone()).collect();
+    Ok(SourceTable {
+        key: input.key,
+        attrs: input.attrs,
+        rows,
+        // A reduction, so neither the source's contract nor a window grid
+        // describes the result any more.
+        origin: None,
+        windows: BTreeMap::new(),
     })
 }
 
@@ -2840,6 +2899,61 @@ mod tests {
         // The left edge is inclusive and the right edge is exclusive, which
         // is what makes a closed window's boundary row safe.
         assert_eq!(window_starts(14, 15, 15), vec![0]);
+    }
+
+    /// `latest p` keeps one row per fiber, the one with the maximal point
+    /// (ADR 0037 decision 7).  A reduction, so the output is one row per
+    /// key rather than one per input row.
+    #[test]
+    fn latest_keeps_the_maximal_point_row() {
+        const HISTORY: &str = r#"
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+            }
+        "#;
+        let reading = |m: &str, at: &str, t: f64| -> Row {
+            vec![
+                Value::String(m.into()),
+                Value::Instant(at.into()),
+                Value::Real(t),
+            ]
+        };
+        let rows = eval_over(
+            HISTORY,
+            r#"view newest {
+                 readings |> demote taken_at |> assume { complete } |> latest taken_at
+               }"#,
+            &[(
+                "readings",
+                vec![
+                    // Deliberately out of order, and interleaved across two
+                    // machines: the argmax is per fiber, not global.
+                    reading("m1", "2026-08-10T10:00:00.000Z", 300.0),
+                    reading("m2", "2026-08-10T12:00:00.000Z", 310.0),
+                    reading("m1", "2026-08-10T11:00:00.000Z", 305.0),
+                    reading("m2", "2026-08-10T09:00:00.000Z", 295.0),
+                ],
+            )],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                // `demote` appends the point to the end of the attributes,
+                // so the storage order is (machine_id, temperature, taken_at).
+                vec![
+                    Value::String("m1".into()),
+                    Value::Real(305.0),
+                    Value::Instant("2026-08-10T11:00:00.000Z".into()),
+                ],
+                vec![
+                    Value::String("m2".into()),
+                    Value::Real(310.0),
+                    Value::Instant("2026-08-10T12:00:00.000Z".into()),
+                ],
+            ]
+        );
     }
 
     /// Pre-epoch points are the reason the grid uses euclidean division: a

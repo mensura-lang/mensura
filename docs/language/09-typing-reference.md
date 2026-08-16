@@ -899,6 +899,30 @@ maintain incrementally.  Note what the fact says: the *arrival*
 completeness of ADR 0033 transported to the window key, not a claim that
 the device was working.
 
+### 6.9  `latest` (the newest row per group) -- Tier A
+
+```
+latest : p -> Table -> Table
+```
+
+Keeps, per fiber, the row with the maximal point `p`, which is
+`getLast (arrange p fiber)`, deterministic by `IsArrangement.unique`
+given tie-freedom.  A **reduction**, fiber-to-row: the result is
+`singletons` at the current key with `p` a total attribute, and
+completeness is re-established on the output, a present singleton fiber
+being its whole fiber.
+
+Demands both ordered-reduction facts: **tie-freedom** of `p` (a grading,
+or `assume { arranged }`, exactly as a scan, since the argmax of a tied
+key is not determined) and **completeness** at the current key (ADR 0023,
+since a partial bag's latest is silently wrong), the latter discharged
+trivially on a `singletons` input.
+
+`p` must be an attribute and orderable and total.  A **key** column is
+rejected: fusing the coarsening into the operation would leave the
+completeness demand undischargeable, so the coarsening is written out
+(`demote p`, then the claim, then `latest p`).  Tier A.
+
 ## 7.  Tier A / Tier B and split-safety
 
 The central guarantee is **split-safety**.  In the formalization,
@@ -918,9 +942,9 @@ boundary, and `PreservesDisjoint` is what lets the lineage hierarchy carry a
 disjointness fact through a Tier A pipeline intact (section 9).
 
 - **Tier A** (split-safe): `flat_map`, `map_bags`, `promote`, `lookup`,
-  `lookup_total`, `split`, `union`, `unpivot`, `window`, `closed`.  They
-  compose freely and carry cardinality, completeness, and lineage facts
-  end to end.
+  `lookup_total`, `split`, `union`, `unpivot`, `window`, `closed`,
+  `latest`.  They compose freely and carry cardinality, completeness, and
+  lineage facts end to end.
 - **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
   lineage fact, and that is the whole content of the Tier: `demote`
   demands no completeness itself (the demand sits at the reducing
@@ -1321,9 +1345,9 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   presentation only.  Key moves (`promote`/`demote`) and reshape selectors
   naming a flattened component or a unit-reference group are deferred
   (ADR 0032).
-- **Streaming.**  `window` and `closed` have landed (sections 6.7 and
-  6.8).  `latest`, per-window sampling inference, and `on_change`
-  refresh extend these rules (M5).
+- **Streaming.**  `window`, `closed`, and `latest` have landed (sections
+  6.7 to 6.9).  Per-window sampling inference and `on_change` refresh
+  extend these rules (M5).
 - **Precision and measure semantics.**  Dimensional units are now
   specified (`11-physical-units.md`, section 5.3 above; ADR 0026).
   Precision (a library extension of `real`; the deferred `NxE` literal)

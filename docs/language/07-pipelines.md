@@ -417,6 +417,44 @@ declared **closure floor** is for (`13-registries.md`): it raises every
 grain's effective watermark, so silence becomes observable rather than
 indefinite.
 
+### `latest` - the newest row per group
+
+```
+vibrations |> assume { arranged } |> latest sampled_at
+```
+
+`latest p` keeps, per fiber, the row whose point `p` is maximal
+(ADR 0037 decision 7).  It is a **reduction**, fiber-to-row, so the result
+is `singletons` at the current key with `p` an ordinary total attribute,
+and it sits on the reducing side of the line: it demands both facts the
+ordered vocabulary demands, with no special case.
+
+- **Tie-freedom** of `p`, because the argmax of a tied key is not
+  determined.  Discharged from a grading where the shape allows it, or
+  claimed with `assume { arranged }`, exactly as for a scan.
+- **Completeness** at the current key, because a partial bag's "latest" is
+  silently wrong, the same demand a reducing `map_bags` makes.
+
+**`p` must already be an attribute.**  A key-borne point is rejected, with
+the fix named: write the coarsening out, and the claim lands where it
+bites.
+
+```mensura
+readings |> demote taken_at |> assume { complete } |> latest taken_at
+```
+
+Fusing the `demote` into the operation would leave the completeness demand
+with nowhere to stand: a claim before it would sit at the fine key, which
+a coarsening forfeits, and a claim after it would come too late for the
+fold that needed it.
+
+The two source shapes give the two honest cases.  Over an entity-keyed bag
+registry nothing coarsens, so completeness holds by mechanism and only
+tie-freedom is claimed; over a history keyed by `(entity, time)` the
+grading discharges tie-freedom and the coarsening's completeness is
+claimed.  After `closed`, both discharge by mechanism and neither claim is
+needed.
+
 ## Completeness: establish, clear, consume
 
 Two operations are Tier B: **`demote`** and **`pivot`**.  Both change
