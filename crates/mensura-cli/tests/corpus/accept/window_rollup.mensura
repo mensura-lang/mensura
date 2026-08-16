@@ -1,0 +1,73 @@
+// Accepted: a windowed rollup (ADR 0037 decisions 1, 2, and 3).
+//
+// `window w taken_at size stride` replicates each reading into every
+// window that contains its point and adds the window start `w` to the
+// key, with `taken_at`'s domain.  Window starts lie on the stride grid
+// anchored at the epoch (ADR 0036 decision 5), so placement needs no
+// declaration and no data: `stride == size` here makes the windows
+// tumbling, and a reading lands in exactly one.
+//
+// The extents are const expressions of `diff(instant) = time[real]`
+// (ADR 0037 decision 3), checked positive and whole-millisecond at
+// compile time.  Note `15.0 * si.minute`, not `15 * si.minute`: `int`
+// and `real` do not mix (ADR 0014).
+//
+// **The grading extends rather than resets** (decision 2).  The registry
+// is `singletons` at `(machine_id, taken_at)`, so that column set is a
+// grading; after the window it is `{machine_id, taken_at, w}`, which is
+// why the times stay unique inside one `(machine, window)` bag and the
+// scan below discharges its order key with no `assume { arranged }`.
+//
+// The `assume { complete }` covers two demands at once: the reducing
+// fold, and `running_max`, a scan at a fold-admitting combiner that
+// contains its reduction (ADR 0037 decision 5).  Once `closed` ships it
+// establishes that fact by mechanism and this claim goes away, which is
+// the whole point of the windowing fact this file exercises.
+import bag
+import series
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view machine_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+
+// Overlapping windows are the same operation at a shorter stride: a
+// reading lands in `size / stride` of them.
+view rolling_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (5.0 * si.minute)
+           |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+
+// A count-based window needs no unit machinery: `diff(int)` is `int`
+// (ADR 0036 decision 4), which is what "the last N rows" rides on.
+unit Tick {
+  seq: int
+}
+
+registry ticks {
+  unit { Tick }
+  attr { level: real }
+}
+
+view tick_windows {
+  ticks |> window w seq 100 100
+        |> demote seq
+        |> assume { complete }
+        |> map_bags |k, b| (.peak = bag.max b.level)
+}

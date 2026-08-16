@@ -299,6 +299,60 @@ So `pivot` is where cardinality tracking pays off directly: it type-checks
 only when each cell it spreads is known to hold at most one value, which
 the long form's key discipline provides.
 
+### `window` - replicate rows onto a time grid
+
+```
+readings |> window w taken_at (15.0 * si.minute) (5.0 * si.minute)
+```
+
+`window w p size stride` replicates each row into every window that
+contains its point `p`, adding the window's start as a fresh key column
+`w` carrying `p`'s domain (ADR 0037 decision 1).  Unlike every other
+column argument in the algebra, `w` names a column the operation
+*creates*, so it must not already exist; `p` must, and it stays wherever
+it was, key or attribute.
+
+**Window starts lie on the stride grid anchored at the domain's zero**
+(the epoch for an `instant`, ADR 0036 decision 5), so placement is
+deterministic with no declaration and no data dependence: a row with
+point `p` lands in every window `w` with `w <= p < w + size`.  Tumbling
+windows are not a second operation, they are `stride == size`.  When
+`stride` divides `size` a row lands in exactly `size / stride` windows;
+`stride > size` leaves gaps, and a row whose point falls in one lands in
+no window at all, which is legal and occasionally wanted.
+
+**A window containing no rows does not appear in the output.**  `window`
+replicates rows, and with no row there is nothing to replicate, so an
+empty window is represented by absence.  Materializing one is
+rectangularization, not windowing (ADR 0038).
+
+`size` and `stride` are const expressions of type `diff(domain(p))`
+(ADR 0037 decision 3): `time[real]` for an `instant` point, `int` for an
+`int` point, both positive and, for an instant, a whole number of
+milliseconds.  Note `15.0 * si.minute` rather than `15 * si.minute`:
+`int` and `real` do not mix (ADR 0014).  `date` points wait on
+`diff(date)` (ADR 0036 decision 4), and count-based windows over a rank
+need no special case, being windows over an `int` point.
+
+Properties.  **Content**: `w` joins the key with `p`'s domain.
+**Cardinality and gradings**: extended, not reset.  The replication is
+injective on (input identity, `w`), so a `singletons` table at key `K`
+is `singletons` at `K + {w}`, a `bag` stays a `bag`, and each grading `G`
+becomes `G + {w}` (`window_functional`).  That extension is the reason
+the fact is tracked: it keeps a downstream scan's tie-freedom derivable
+inside a window fiber, so `window` then `demote p` then a scan needs no
+`assume { arranged }`, exactly as it needs none without the window.
+**Completeness and lineage**: no new rules, since the operation is
+specified as a replicating `flat_map` followed by `promote w` and
+transports facts as those two do.  Tier A by that same construction
+(`window_splitSafe`).
+
+The checker also records a **windowing fact**: `w` windows `p` at this
+extent and stride, over a source whose intake contract it inherits.  It
+is the sibling of `unpivot`'s `exhaustive(axis)`, established by the
+operation's construction and consumed downstream by `closed`
+(`13-registries.md`, ADR 0037 decision 4).
+
 ## Completeness: establish, clear, consume
 
 Two operations are Tier B: **`demote`** and **`pivot`**.  Both change

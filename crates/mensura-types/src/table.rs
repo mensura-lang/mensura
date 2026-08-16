@@ -4,11 +4,11 @@
 //! properties as scoped qualifiers. See `docs/language/09-typing-reference.md`
 //! section 1 and `docs/decisions/0013-qualifier-scope-and-the-content-boundary.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mensura_syntax::StoreKind;
 
-use crate::model::{ColumnRole, ColumnType, Schema};
+use crate::model::{ColumnRole, ColumnType, Lateness, Schema};
 
 /// Table-scoped cardinality qualifier: the two-value chain
 /// `Singletons` (card <= 1) <= `Bag` (card 0..many) (`09` section 3.2).
@@ -265,6 +265,14 @@ pub struct Qualifiers {
     pub functional: Functional,
     /// Whether tie-freedom was claimed by fiat; see [`Arranged`].
     pub arranged: Arranged,
+    /// The live window facts (ADR 0037 decision 2); see [`Windows`].
+    pub windows: Windows,
+    /// The source's intake contracts, carried so a windowing operation can
+    /// inherit the one on its point column (ADR 0037 decision 4).  Seeded
+    /// by [`TableType::from_store`] and cleared by anything that is not
+    /// content-identity, since a contract is a statement about a
+    /// registry's intake rather than about a derived table.
+    pub contracts: Vec<Lateness>,
     pub lineage: Lineage,
 }
 
@@ -273,6 +281,97 @@ pub struct Qualifiers {
 pub struct TableType {
     pub content: Content,
     pub qualifiers: Qualifiers,
+}
+
+/// What `window` records about one window column (ADR 0037 decision 2).
+///
+/// The sibling of [`Exhaustive`], with a payload: `w` windows `point` at
+/// this extent and stride, over a source whose intake contract it
+/// inherits.  Established by the operation's construction, consumed
+/// downstream by `closed`, and reset conservatively by any operation that
+/// touches `w` or `point` or is not content-identity in ADR 0024's sense.
+///
+/// `size` and `stride` are held in the point column's **storage grain**:
+/// whole milliseconds for an `instant`, a plain count for an `int`.  That
+/// is the convention [`crate::model::Lateness::bound`] already uses, so
+/// `closed` can compare `w + size + lateness` in one unit with no
+/// conversion.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowFact {
+    /// The point column the window is over.  It stays where it was, key
+    /// or attribute (ADR 0037 decision 2).
+    pub point: String,
+    pub size: i64,
+    pub stride: i64,
+    /// The source's intake contract on `point`, when it declared one.
+    /// `closed` needs it and rejects the stage without it, since the
+    /// establishment is mechanism-grade or nothing (decision 4).
+    pub contract: Option<Lateness>,
+}
+
+/// The live window facts, keyed by window column (ADR 0037 decision 2).
+///
+/// Encapsulated like [`Totality`] rather than exposed like [`Exhaustive`],
+/// because this is the first fact carrying a payload: the clearing rule is
+/// "any operation that touches the window column or its point", which is
+/// easier to get right as [`Windows::clear_touching`] than as raw set
+/// surgery at each of the sites that reset a fact.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Windows {
+    facts: BTreeMap<String, WindowFact>,
+}
+
+impl Windows {
+    /// No window facts, the state every source and every non-windowing
+    /// operation starts from.
+    pub fn none() -> Windows {
+        Windows::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+    }
+
+    /// The fact for a window column, if it is live.
+    pub fn get(&self, window: &str) -> Option<&WindowFact> {
+        self.facts.get(window)
+    }
+
+    /// The live window columns, in name order.
+    pub fn columns(&self) -> impl Iterator<Item = &String> {
+        self.facts.keys()
+    }
+
+    /// Record what `window` just built.
+    pub fn record(&mut self, window: impl Into<String>, fact: WindowFact) {
+        self.facts.insert(window.into(), fact);
+    }
+
+    /// Drop every fact that mentions `column`, as its window column or as
+    /// its point.  The conservative rule: once either end of the relation
+    /// has been touched, the checker no longer knows the grid holds.
+    pub fn clear_touching(&mut self, column: &str) {
+        self.facts
+            .retain(|w, fact| w != column && fact.point != column);
+    }
+
+    /// Drop every fact, for an operation with no transport witness.
+    pub fn clear(&mut self) {
+        self.facts.clear();
+    }
+
+    /// The facts both sides agree on, for `union` (which must not invent a
+    /// grid the other branch does not have).
+    pub fn intersect(&self, other: &Windows) -> Windows {
+        Windows {
+            facts: self
+                .facts
+                .iter()
+                .filter(|(w, fact)| other.facts.get(*w) == Some(fact))
+                .map(|(w, fact)| (w.clone(), fact.clone()))
+                .collect(),
+        }
+    }
 }
 
 impl TableType {
@@ -332,6 +431,13 @@ impl TableType {
                 exhaustive: Exhaustive::new(),
                 functional: Functional::new(),
                 arranged: Arranged::Unclaimed,
+                windows: Windows::none(),
+                // The intake contracts travel with the source, so `window`
+                // can inherit the one on its point column and `closed` can
+                // demand it (ADR 0037 decision 4).  A plain store declares
+                // none, which is exactly why `closed` is unavailable over
+                // one.
+                contracts: schema.lateness.clone(),
                 lineage: Lineage::root(),
             },
         };
@@ -452,6 +558,8 @@ mod tests {
                 exhaustive: Exhaustive::new(),
                 functional: Functional::new(),
                 arranged: Arranged::Unclaimed,
+                windows: Windows::none(),
+                contracts: Vec::new(),
                 lineage: Lineage::root(),
             },
         };

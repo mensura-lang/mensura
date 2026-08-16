@@ -274,6 +274,7 @@ fn apply_op(
         "pivot" => Ok(TableVal::Table(eval_pivot(expect_table(input)?, args)?)),
         "assume" | "completeness_check" => Ok(TableVal::Table(expect_table(input)?)),
         "demote" => Ok(TableVal::Table(eval_demote(expect_table(input)?, args)?)),
+        "window" => Ok(TableVal::Table(eval_window(expect_table(input)?, args)?)),
         other => err(format!(
             "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
         )),
@@ -769,6 +770,109 @@ fn eval_demote(mut table: SourceTable, args: &[&Expr]) -> Result<SourceTable, Ev
         }
     }
     Ok(table)
+}
+
+// ---------------------------------------------------------------------------
+// window
+//
+// `window w p size stride` (ADR 0037 decision 1): replicate each row into
+// every window that contains its point, adding the window's start as a
+// fresh key column.  Specified as a replicating `flat_map` followed by
+// `promote w`, but evaluated natively, because `eval_flat_map` fixes the
+// key and this operation extends it.
+
+/// The window starts containing `point`, in the point's storage grain: the
+/// multiples of `stride` in the half-open interval `(point - size, point]`.
+///
+/// The grid is anchored at the domain's zero (the epoch for an `instant`,
+/// ADR 0036 decision 5), so placement is deterministic with no declaration
+/// and no data dependence.  Arithmetic is `div_euclid`, not `/`: a
+/// pre-epoch point is negative, and truncation toward zero would shift its
+/// grid by a whole stride.  This mirrors `Mensura.Units.Instant.windowStarts`
+/// in `formal/Mensura/Window/Defs.lean`, whose `mem_windowStarts` proves the
+/// interval test `w <= p < w + size`.
+fn window_starts(point: i64, size: i64, stride: i64) -> Vec<i64> {
+    let last = point.div_euclid(stride);
+    let first = (point - size).div_euclid(stride) + 1;
+    (first..=last).map(|n| n * stride).collect()
+}
+
+fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+    let [w_arg, p_arg, size_arg, stride_arg] = args else {
+        return internal("`window` expects a window column, a point, a size, and a stride");
+    };
+    let (ExprKind::Name(w), ExprKind::Name(p)) = (&w_arg.kind, &p_arg.kind) else {
+        return internal("`window` expects column names");
+    };
+
+    // The point may be a key column or an attribute: ADR 0037 decision 2
+    // leaves it where it was.
+    let nkeys = input.key.len();
+    let (point_at, point_ty) = match input.key.iter().position(|c| &c.name == p) {
+        Some(i) => (i, input.key[i].ty.clone()),
+        None => match input.attrs.iter().position(|c| &c.name == p) {
+            Some(i) => (nkeys + i, input.attrs[i].ty.clone()),
+            None => return internal("`window` on a column the checker did not find"),
+        },
+    };
+
+    // The extents are const expressions the checker has already validated;
+    // lowering substituted their const names, so they evaluate in an empty
+    // scope.  Both sides convert through `whole_milliseconds`, the one
+    // exact-or-error predicate (ADR 0036 decision 6).
+    let extent = |arg: &Expr, what: &str| -> Result<i64, EvalError> {
+        match eval_scalar(&Scope::new(), arg)? {
+            RtVal::V(Value::Real(seconds)) => {
+                temporal::whole_milliseconds(seconds).map_err(|message| EvalError { message })
+            }
+            RtVal::V(Value::Int(n)) => Ok(n),
+            _ => internal(format!("`window`'s {what} is not a const extent")),
+        }
+    };
+    let size = extent(size_arg, "size")?;
+    let stride = extent(stride_arg, "stride")?;
+    if stride <= 0 || size <= 0 {
+        return internal("`window` extents must be positive");
+    }
+
+    // The point in its storage grain, and the inverse for the emitted key.
+    let to_grain = |v: &Value| -> Result<i64, EvalError> {
+        match v {
+            Value::Instant(s) => {
+                temporal::instant_to_ms(s).map_err(|message| EvalError { message })
+            }
+            Value::Int(n) => Ok(*n),
+            _ => internal("`window` on a value that is not a point"),
+        }
+    };
+    let from_grain = |g: i64| -> Result<Value, EvalError> {
+        match point_ty {
+            Some(ColumnType::Instant) => temporal::ms_to_instant(g)
+                .map(Value::Instant)
+                .map_err(|message| EvalError { message }),
+            _ => Ok(Value::Int(g)),
+        }
+    };
+
+    let mut rows = Vec::new();
+    for row in &input.rows {
+        let point = to_grain(&row[point_at])?;
+        for start in window_starts(point, size, stride) {
+            // The key grows by one column, so the window start is spliced
+            // in at the end of the key block and the attributes follow.
+            let mut out: Row = row[..nkeys].to_vec();
+            out.push(from_grain(start)?);
+            out.extend_from_slice(&row[nkeys..]);
+            rows.push(out);
+        }
+    }
+    let mut key = input.key;
+    key.push(col(w.clone(), point_ty));
+    Ok(SourceTable {
+        key,
+        attrs: input.attrs,
+        rows,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2561,5 +2665,101 @@ mod tests {
             &[("history", source.clone())],
         );
         assert_eq!(rows, source);
+    }
+
+    /// The stride grid of ADR 0037 decision 1: window starts are the
+    /// multiples of `stride` anchored at the domain's zero, and a point
+    /// lands in every window `w` with `w <= p < w + size`.  Mirrors
+    /// `Mensura.Units.Instant.mem_windowStarts`.
+    #[test]
+    fn window_starts_follow_the_stride_grid() {
+        // Tumbling (`stride == size`): exactly one window per point.
+        assert_eq!(window_starts(0, 15, 15), vec![0]);
+        assert_eq!(window_starts(7, 15, 15), vec![0]);
+        assert_eq!(window_starts(15, 15, 15), vec![15]);
+        // Overlapping: `size / stride` windows contain the point.
+        assert_eq!(window_starts(15, 15, 5), vec![5, 10, 15]);
+        assert_eq!(window_starts(0, 15, 5), vec![-10, -5, 0]);
+        // A stride wider than the size leaves gaps, and a point in one
+        // lands in no window at all (legal, and occasionally wanted).
+        assert_eq!(window_starts(10, 5, 15), Vec::<i64>::new());
+        assert_eq!(window_starts(15, 5, 15), vec![15]);
+        // The left edge is inclusive and the right edge is exclusive, which
+        // is what makes a closed window's boundary row safe.
+        assert_eq!(window_starts(14, 15, 15), vec![0]);
+    }
+
+    /// Pre-epoch points are the reason the grid uses euclidean division: a
+    /// truncating `/` rounds toward zero, which would shift every negative
+    /// point's window by a whole stride.
+    #[test]
+    fn window_starts_do_not_shift_before_the_epoch() {
+        assert_eq!(window_starts(-1, 15, 15), vec![-15]);
+        assert_eq!(window_starts(-15, 15, 15), vec![-15]);
+        assert_eq!(window_starts(-16, 15, 15), vec![-30]);
+    }
+
+    /// End to end over instants: the replication adds one key column and
+    /// one row per containing window, and the window start is written in
+    /// the point's own domain.
+    #[test]
+    fn window_replicates_rows_onto_the_grid() {
+        const READINGS: &str = r#"
+            import si
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+              lateness { taken_at: 10.0 * si.minute }
+            }
+        "#;
+        let reading = |m: &str, at: &str, t: f64| -> Row {
+            vec![
+                Value::String(m.into()),
+                Value::Instant(at.into()),
+                Value::Real(t),
+            ]
+        };
+        // Quarter-hour tumbling windows: 10:07:31 lands in 10:00 only.
+        let rows = eval_over(
+            READINGS,
+            r#"view w {
+                 readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+               }"#,
+            &[(
+                "readings",
+                vec![reading("M-07", "2026-08-10T10:07:31.221Z", 351.2)],
+            )],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("M-07".into()),
+                Value::Instant("2026-08-10T10:07:31.221Z".into()),
+                Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                Value::Real(351.2),
+            ]]
+        );
+        // A five-minute stride under a fifteen-minute size puts the same
+        // reading in three windows.
+        let rows = eval_over(
+            READINGS,
+            r#"view w {
+                 readings |> window w taken_at (15.0 * si.minute) (5.0 * si.minute)
+               }"#,
+            &[(
+                "readings",
+                vec![reading("M-07", "2026-08-10T10:07:31.221Z", 351.2)],
+            )],
+        );
+        let starts: Vec<&Value> = rows.iter().map(|r| &r[2]).collect();
+        assert_eq!(
+            starts,
+            vec![
+                &Value::Instant("2026-08-10T09:55:00.000Z".into()),
+                &Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                &Value::Instant("2026-08-10T10:05:00.000Z".into()),
+            ]
+        );
     }
 }
