@@ -179,6 +179,18 @@ same decoder and write path (`ADR 0034`'s design) inherits the contract
 with no work.  A plain store has no contracts to enforce, and none can
 be declared on one; its intake accepts arbitrarily late rows.
 
+**The watermark is global to the registry, and that is about to
+change.**  One watermark per contracted column means it tracks the
+fastest reporter, so a producer slower than the fleet has its honest
+traffic refused and a device with a fast clock reaches every other
+producer.  `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`
+proposes graining it by the residual key (the declared key minus the
+contracted column) and restoring liveness with a declared closure
+floor.  The change is deliberately made before `closed` ships: it is
+strictly permissive at the intake (rows the global rule refused may be
+accepted), and the observed half of the metadata is recomputable from
+an append-only table, so it needs no backfill.
+
 ## CLI behavior
 
 ```

@@ -514,6 +514,13 @@ Implementation:
   If an absent entity's windows never close, `dense` never fills
   them, which is either exactly right or exactly wrong depending on
   how that question resolves.  The two should be decided together.
+  *Settled together by
+  `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`*: the
+  watermark is grained by the residual key, which alone would indeed
+  stop `dense` from ever filling an absent entity's grid, so the same
+  ADR adds a declared closure floor whose whole job is to close the
+  windows of an entity that has stopped reporting.  This ADR's worked
+  example (`M-19`'s sixteen silent slots) is the case that forced it.
 - **`date`-keyed grids.**  Blocked twice over: ADR 0036 defers
   `diff(date)`, and a calendar lower bound (`machines.commissioned`,
   a `date`) needs the zone-dependent `date <-> instant` conversion

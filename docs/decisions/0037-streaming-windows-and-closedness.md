@@ -630,7 +630,15 @@ Implementation (the M5 windows slice, not this ADR):
   Whether a per-key watermark (never closing an absent entity's
   windows) is an opt-in, and where the loss policy belongs, is
   deferred to the refresh/serving slices where the operational story
-  lives.
+  lives.  *Taken up early by
+  `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`*,
+  because implementing the intake showed the question cannot be
+  answered at the intake alone: `closedWindow_stable` reads one
+  watermark in both hypotheses, so the admission grain *is* the
+  closure grain, and a per-key watermark alone would make an absent
+  entity's silence unobservable (ADR 0038's motivating query).  That
+  ADR grains the watermark by the residual key and restores liveness
+  with a declared floor.
 - **A forward-skew bound on the watermark.**  `lateness` bounds how
   old an accepted point may be; nothing bounds how new.  One device
   with a clock far ahead advances the global watermark by the whole

@@ -260,6 +260,15 @@ bounds nothing and the contract would be claim-grade.  A store's intake
 accepts arbitrarily late rows, and that is the honest behaviour for a
 tabulation that accumulates revisable observations.
 
+The watermark is currently one value per contracted column, shared by
+every entity in the registry, so a slow reporter is measured against
+the fastest one.  That is the part of the design most likely to change
+under you: `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`
+proposes one watermark per entity (the declared key minus the
+contracted column) plus a declared floor, which is what makes a
+bound of zero, "this entity's rows arrive in order", a useful thing to
+write.
+
 **Changing a declared bound later is not symmetric.**  Tightening one
 (a smaller `lateness`) only ever closes windows earlier, so every
 result already emitted as final stays final, and it is an ordinary
