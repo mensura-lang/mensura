@@ -1,0 +1,23 @@
+// Reject: resolve.  `lateness` is an intake contract, and only a
+// `registry` has the intake that can enforce one: the declaration is the
+// sole way rows enter, and it only appends, so "no row older than
+// `watermark - bound` will ever be accepted" is a theorem about the
+// mechanism (ADR 0037 decision 4).  A store's rows are created, updated,
+// and deleted by anyone, so a watermark over it bounds nothing, and the
+// contract would be claim-grade; the resolver rejects the block rather
+// than letting it decay into documentation.  Change `store` to `registry`
+// and this is `accept/lateness_contract.mensura`; a plain store simply
+// has no lateness to declare, and its intake accepts arbitrarily late
+// rows.
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at: instant
+}
+
+store readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}

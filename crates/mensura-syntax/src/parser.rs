@@ -6,9 +6,9 @@
 //! on the `Ident` text in the position where they are expected.
 
 use crate::ast::{
-    Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LetDecl, LetKind, NameSeg,
-    NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl, StoreKind, StrLit,
-    TypeExpr, TypeKind, UnitDecl, ViewDecl,
+    Attr, DomainEntry, EnumDecl, Field, Ident, ImportDecl, Item, LatenessEntry, LetDecl, LetKind,
+    NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl,
+    StoreKind, StrLit, TypeExpr, TypeKind, UnitDecl, ViewDecl,
 };
 use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
@@ -375,17 +375,20 @@ impl<'a> Parser<'a> {
 
         let mut attrs = Vec::new();
         let mut domain = Vec::new();
+        let mut lateness = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_eof() {
             if self.at_keyword("attr") {
                 self.parse_attr_block(&mut attrs)?;
             } else if self.at_keyword("domain") {
                 self.parse_domain_block(&mut domain)?;
+            } else if self.at_keyword("lateness") {
+                self.parse_lateness_block(&mut lateness)?;
             } else if self.at_keyword("unit") {
                 return Err(
                     self.error("the `unit` clause may appear only once, at the start of the body")
                 );
             } else {
-                return Err(self.error("expected `attr`, `domain`, or `}`"));
+                return Err(self.error("expected `attr`, `domain`, `lateness`, or `}`"));
             }
         }
         let end = self.expect(
@@ -399,6 +402,7 @@ impl<'a> Parser<'a> {
             conforms,
             attrs,
             domain,
+            lateness,
             span: Span::new(start, end.end),
         })
     }
@@ -422,6 +426,11 @@ impl<'a> Parser<'a> {
                 self.parse_attr_block(&mut attrs)?;
             } else if self.at_keyword("domain") {
                 return Err(self.error("a shape cannot contain a `domain` block"));
+            } else if self.at_keyword("lateness") {
+                return Err(self.error(
+                    "a shape cannot contain a `lateness` block: the contract \
+                     belongs to the intake, so it is declared on the registry",
+                ));
             } else if self.at_keyword("unit") {
                 return Err(
                     self.error("the `unit` clause may appear only once, at the start of the body")
@@ -600,6 +609,35 @@ impl<'a> Parser<'a> {
             out.push(DomainEntry { field, store, span });
         }
         self.expect(&TokenKind::RBrace, "`}` to close the domain block")?;
+        Ok(())
+    }
+
+    /// `lateness { column: expression }` (ADR 0037 decision 4): the intake
+    /// contract of a registry.  The bound is an ordinary expression; the
+    /// resolver evaluates it as a const of the column's difference type.
+    ///
+    /// **One entry per block.**  The expression grammar applies by
+    /// juxtaposition, so a second `column:` after a bound would parse as an
+    /// application argument of the bound, which no LL(1) lookahead can
+    /// prevent.  Several contracts are therefore several blocks, merged in
+    /// source order exactly as repeated `attr` blocks are.
+    fn parse_lateness_block(&mut self, out: &mut Vec<LatenessEntry>) -> Result<(), ParseError> {
+        self.bump_keyword(); // `lateness`
+        self.expect(&TokenKind::LBrace, "`{` to open the lateness block")?;
+        let column = self.expect_ident("a column name")?;
+        self.expect(&TokenKind::Colon, "`:` after the column name")?;
+        let bound = self.parse_expr_inner()?;
+        let span = Span::new(column.span.start, bound.span.end);
+        out.push(LatenessEntry {
+            column,
+            bound,
+            span,
+        });
+        self.expect(
+            &TokenKind::RBrace,
+            "`}` to close the lateness block (one entry per block; write a \
+             second `lateness { ... }` block for a second column)",
+        )?;
         Ok(())
     }
 
@@ -1719,7 +1757,10 @@ mod tests {
     #[test]
     fn unknown_registry_block_is_an_error() {
         let err = parse_str("registry r { unit { U } nope { } }").unwrap_err();
-        assert!(err.message.contains("expected `attr`, `domain`, or `}`"));
+        assert!(
+            err.message
+                .contains("expected `attr`, `domain`, `lateness`, or `}`")
+        );
     }
 
     #[test]
@@ -1868,7 +1909,40 @@ mod tests {
     #[test]
     fn unknown_store_block_is_an_error() {
         let err = parse_str("store S { unit { U } bogus { } }").unwrap_err();
-        assert!(err.message.contains("`attr`, `domain`"));
+        assert!(err.message.contains("`attr`, `domain`, `lateness`"));
+    }
+
+    /// `lateness { column: expression }` is a third store block (ADR 0037
+    /// decision 4): contextual word, entries like `domain`'s but with an
+    /// expression bound, merged across repeated blocks in source order.
+    #[test]
+    fn lateness_block_parses_on_stores_and_registries() {
+        let p = parse_str(
+            "registry readings {
+               unit { Reading }
+               attr { temperature: real }
+               lateness { taken_at: 10 * si.minute }
+             }",
+        )
+        .expect("parses");
+        let Item::Registry(s) = &p.items[0] else {
+            panic!("expected a registry");
+        };
+        assert_eq!(s.lateness.len(), 1);
+        assert_eq!(s.lateness[0].column.name, "taken_at");
+        assert!(matches!(s.lateness[0].bound.kind, ExprKind::Binary(..)));
+        // The word is contextual, not reserved: it still names things.
+        let p = parse_str("store lateness { unit { U } attr { lateness: int } }").expect("parses");
+        let Item::Store(s) = &p.items[0] else {
+            panic!("expected a store");
+        };
+        assert_eq!(s.name.name, "lateness");
+    }
+
+    #[test]
+    fn a_shape_cannot_contain_a_lateness_block() {
+        let err = parse_str("shape S { attr { x: int } lateness { x: 1 } }").unwrap_err();
+        assert!(err.message.contains("belongs to the intake"));
     }
 
     #[test]

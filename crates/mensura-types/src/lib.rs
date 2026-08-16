@@ -14,6 +14,7 @@ pub mod pipe_check;
 pub mod resolve;
 mod suggest;
 pub mod table;
+pub mod temporal;
 pub mod units;
 
 pub use expr_check::{Context, Optionality, Ty, TypeError, type_expr};

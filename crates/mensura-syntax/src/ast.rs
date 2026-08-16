@@ -4,7 +4,7 @@
 //! Every node carries a [`Span`] so later passes can point diagnostics at the
 //! source.
 
-use crate::expr::Block;
+use crate::expr::{Block, Expr};
 use crate::token::Span;
 
 /// A whole parsed source file: a sequence of top-level items.
@@ -174,6 +174,10 @@ pub struct StoreDecl {
     /// order.
     pub attrs: Vec<Attr>,
     pub domain: Vec<DomainEntry>,
+    /// The entries of all `lateness` blocks, merged in source order
+    /// (ADR 0037 decision 4).  Meaningful only on a `registry`; the
+    /// resolver rejects the block on a plain store.
+    pub lateness: Vec<LatenessEntry>,
     pub span: Span,
 }
 
@@ -258,6 +262,20 @@ impl NameTemplate {
 pub enum NameSeg {
     Lit(String),
     Param(Ident),
+}
+
+/// One `column: expression` line inside a `lateness { ... }` block
+/// (ADR 0037 decision 4): the intake contract that no row older than
+/// `watermark - bound` on the named point column will ever be accepted.
+/// The bound is a const expression; the resolver evaluates and checks it
+/// against the column's difference type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LatenessEntry {
+    /// The contracted point column.
+    pub column: Ident,
+    /// The bound, a const expression of the column's difference type.
+    pub bound: Expr,
+    pub span: Span,
 }
 
 /// One `field: Store` line inside a `domain { ... }` block.

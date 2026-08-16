@@ -1,0 +1,45 @@
+// Accepted: a zero `lateness` bound (ADR 0041 decision 5).  The rule is
+// "reject when the point is below `watermark - bound`", so at zero it
+// reads "reject when the point is below the watermark": no row older
+// than the newest already accepted, which is monotone intake.  It is the
+// family's endpoint rather than a new feature, which is why it needs no
+// new spelling; a *negative* bound would demand every row be strictly
+// ahead of the watermark and stays rejected.
+//
+// Zero is worth having because the watermark is grained (ADR 0041
+// decision 2): here the grain is `{machine_id}`, so this says "each
+// machine's reads arrive in order", which a device with a local queue
+// can honour.  Under one global watermark the same declaration would
+// demand that the whole fleet's reads arrive in a single globally
+// sorted stream, which nothing can honour.
+//
+// Monotone weakly and per batch: equal points are admitted ("older
+// than" is strict), and rows in one batch are compared against the
+// watermark as of intake rather than against each other, so a batch
+// stays an unordered bag.
+import si
+
+unit MeterRead {
+  machine_id: string
+  read_at:    instant
+}
+
+registry meter_reads {
+  unit { MeterRead }
+  attr { kwh: real }
+  lateness { read_at: 0.0 * second }
+}
+
+// `diff(int) = int`, and the point *is* the whole key here, so the
+// grain is empty: exactly one watermark, which is ADR 0037's global
+// rule recovered as the degenerate case.  A gateway heartbeat that must
+// arrive in sequence.
+unit Beat {
+  seq: int
+}
+
+registry heartbeats {
+  unit { Beat }
+  attr { queued: int }
+  lateness { seq: 0 }
+}

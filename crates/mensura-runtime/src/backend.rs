@@ -80,6 +80,10 @@ pub enum StorageError {
     Sqlite(rusqlite::Error),
     /// A stored value did not decode to its column's declared type.
     Decode(String),
+    /// An operation refused on policy grounds rather than on a constraint
+    /// or a decode failure: today, lowering a closure floor, which would
+    /// retract finality already published (ADR 0041 decision 4).
+    Refused(String),
     /// A write violated a declared `domain` reference (ADR 0034 decision 5).
     /// Reported against the declaration rather than as a raw SQLite
     /// constraint code, so the message names what the program said.
@@ -95,6 +99,26 @@ pub enum StorageError {
     DuplicateKey {
         table: String,
     },
+    /// A batch broke the registry's `lateness` contract (ADR 0037
+    /// decision 4): it contains a row whose contracted point is older than
+    /// `watermark - bound`.  The batch is rejected whole, like any decode
+    /// failure; the producer broke its declared delivery bound, and the
+    /// violation surfaces at the boundary instead of corrupting a window
+    /// already reported as final.
+    Lateness {
+        table: String,
+        column: String,
+        /// The offending row's point, rendered in the column's own form.
+        point: String,
+        /// The oldest still-admissible point, `watermark - bound`.
+        limit: String,
+        /// The watermark grain the violation happened in, as
+        /// `column = value` pairs (ADR 0041 decision 2).  Empty when the
+        /// contracted column is the whole key, the single-grain case.
+        /// Naming it is the point of graining: it says *which* producer
+        /// broke its contract, not merely that one did.
+        grain: Vec<(String, String)>,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -102,6 +126,7 @@ impl fmt::Display for StorageError {
         match self {
             StorageError::Sqlite(e) => write!(f, "sqlite error: {e}"),
             StorageError::Decode(msg) => write!(f, "decode error: {msg}"),
+            StorageError::Refused(msg) => write!(f, "{msg}"),
             StorageError::ForeignKey { table, references } => {
                 write!(
                     f,
@@ -124,6 +149,29 @@ impl fmt::Display for StorageError {
                 "`{table}` holds at most one row per key, and this batch \
                  repeats one"
             ),
+            StorageError::Lateness {
+                table,
+                column,
+                point,
+                limit,
+                grain,
+            } => {
+                write!(f, "a row of `{table}` arrived too late")?;
+                if !grain.is_empty() {
+                    let pairs: Vec<String> = grain
+                        .iter()
+                        .map(|(col, value)| format!("`{col}` = {value}"))
+                        .collect();
+                    write!(f, " for {}", pairs.join(", "))?;
+                }
+                write!(
+                    f,
+                    ": its `{column}` is {point}, older than the oldest \
+                     still-admissible point {limit} under the declared \
+                     `lateness` bound, so the batch was rejected whole \
+                     (ADR 0037); the producer broke its delivery contract"
+                )
+            }
         }
     }
 }
@@ -133,8 +181,10 @@ impl std::error::Error for StorageError {
         match self {
             StorageError::Sqlite(e) => Some(e),
             StorageError::Decode(_)
+            | StorageError::Refused(_)
             | StorageError::ForeignKey { .. }
-            | StorageError::DuplicateKey { .. } => None,
+            | StorageError::DuplicateKey { .. }
+            | StorageError::Lateness { .. } => None,
         }
     }
 }

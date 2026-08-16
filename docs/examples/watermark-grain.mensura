@@ -1,0 +1,120 @@
+// The watermark grain, by example (ADR 0041).
+//
+// A `lateness` contract bounds how late a row may arrive, and the intake
+// enforces it against a *watermark*.  Which rows share a watermark is the
+// **grain**, and the grain is the declared key minus the contracted
+// column: a consequence of the unit, never a separate declaration.  This
+// file shows what that comes to for four declaration shapes.
+//
+// Companion to `fleet-monitoring.mensura`, which uses the first shape.
+
+import si
+
+// ---------------------------------------------------------------------
+// 1.  The common shape: the point is part of the identity.
+// ---------------------------------------------------------------------
+
+// A reading is identified by which machine took it and when, so
+// `taken_at` is a key field.  That is also what seeds the ADR 0024
+// grading the windowed views downstream discharge tie-freedom with.
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+// Grain: {machine_id, taken_at} minus {taken_at} = {machine_id}.
+// One watermark per machine, so a machine reporting every minute can
+// neither refuse a slower machine's buffered flush nor close its
+// windows.  Under a single global watermark it could do both.
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+// ---------------------------------------------------------------------
+// 2.  The same fact as a bag: the point is an attribute.
+// ---------------------------------------------------------------------
+
+unit Sensor {
+  machine_id: string
+}
+
+// Grain: {machine_id} minus {sampled_at} = {machine_id}.  Identical to
+// `readings` above, and that is the answer to the attribute-versus-key
+// question: the choice changes gradings (this shape seeds none, so its
+// windowed views need `assume { arranged }`) and duplicate handling
+// (nothing here stops two samples sharing an instant), and it does not
+// change the intake's grain at all.
+registry vibrations {
+  unit { Sensor }
+  attr* {
+    sampled_at: instant
+    amplitude:  real
+  }
+  lateness { sampled_at: 30.0 * second }
+}
+
+// ---------------------------------------------------------------------
+// 3.  The degenerate grain: the point *is* the whole key.
+// ---------------------------------------------------------------------
+
+// The plant gateway's own heartbeat: one sequence, not one per machine.
+unit Beat {
+  seq: int
+}
+
+// Grain: {seq} minus {seq} = {}.  Exactly one grain, which is the global
+// watermark recovered as the degenerate case rather than kept as a
+// special rule.
+//
+// The bound is `diff(int) = int`, and zero is the monotone contract: no
+// beat older than the newest already accepted, so the heartbeat arrives
+// in order or not at all.
+registry heartbeats {
+  unit { Beat }
+  attr { queued: int }
+  lateness { seq: 0 }
+}
+
+// ---------------------------------------------------------------------
+// 4.  Zero at a real grain: per-entity monotone delivery.
+// ---------------------------------------------------------------------
+
+unit MeterRead {
+  machine_id: string
+  read_at:    instant
+}
+
+// Grain {machine_id}, bound zero: "each machine's meter reads arrive in
+// order", which a device with a local queue can actually honour.  The
+// identical declaration under a global watermark would demand that the
+// whole fleet's reads arrive in one globally sorted stream, which nothing
+// can honour.  Same syntax, useful at one grain and dead at the other.
+registry meter_reads {
+  unit { MeterRead }
+  attr { kwh: real }
+  lateness { read_at: 0.0 * second }
+}
+
+// ---------------------------------------------------------------------
+// What is deliberately absent
+// ---------------------------------------------------------------------
+//
+// The **closure floor** appears nowhere above.  It is the point through
+// which a deployment asserts the world is closed, which is what lets the
+// windows of a machine that has gone quiet close at all, and it is
+// operational state rather than program text:
+//
+//   mensura floor thisfile.mensura readings taken_at 2026-08-10T10:40:00Z
+//
+// Writing it here would make advancing time a recompile; reading it from
+// the system clock would make `mensura run` non-reproducible.  Stored, it
+// keeps two runs over one database in agreement.
+//
+// One coupling worth knowing: adding a key field changes the grain.
+// `unit Reading { machine_id, sensor_id, taken_at }` would grain by
+// {machine_id, sensor_id}, one watermark per sensor.  Finer is the safe
+// direction (it never refuses honest data, it only closes later, and the
+// floor restores the closure), but the unit's key really does decide the
+// intake's grain.

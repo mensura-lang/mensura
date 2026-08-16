@@ -49,6 +49,7 @@ it.
 
 A registry declaration has the same shape as a store's: a name, a unit
 reference, an optional `domain` block, and one or more `attr` blocks.
+One block is registry-only: the `lateness` intake contract, below.
 
 ```
 registry temperature_readings {
@@ -222,6 +223,76 @@ registry it is the contentful fact above, and the one the mechanism arm
 exists for.  One rule covers both, so the keyword means one thing
 wherever it appears.
 
+## The `lateness` contract
+
+A registry may bound how late a row can arrive
+(`docs/decisions/0037-streaming-windows-and-closedness.md` decision 4):
+
+```
+registry readings {
+  unit { Reading }
+  attr { temperature: temperature[real] }
+  lateness { taken_at: 10.0 * si.minute }
+}
+```
+
+The entry names an orderable point column whose domain has a difference
+type (`instant` or `int`, ADR 0036 decision 4; `date` waits on
+`diff(date)`), and its bound is a const expression of that difference
+type: `time[real]` for an `instant` point, checked positive and a whole
+number of milliseconds at compile time, `int` for an `int` point.  One
+entry per block; a second contracted column is a second block, merged in
+source order like repeated `attr` blocks.
+
+The contract it states: once the intake's watermark on the contracted
+column has passed `t + lateness`, no row with point `t` will ever be
+accepted.  Like the completeness fact above, it is **enforced, not
+trusted**: the intake rejects a batch containing a row older than
+`watermark - lateness`, whole and transactionally, like any other decode
+failure.  A producer that breaks its declared delivery bound surfaces at
+the boundary instead of corrupting a window already reported as final,
+which is exactly what the M5 `closed` stage builds on.
+
+**A watermark serves one grain, and the grain is the key minus the
+contracted column** (ADR 0041).  Above that is `{machine_id}`: one
+watermark per machine, so a machine reporting every minute cannot refuse
+a slower machine's buffered flush, and a new machine can be onboarded
+with its history because it has no watermark yet.  The grain is a
+consequence of the unit rather than something to declare, which also
+means that adding a key field refines it: keying by
+`(machine_id, sensor_id, taken_at)` gives one watermark per sensor.
+Zero is the endpoint of the same rule: `lateness { taken_at: 0.0 *
+si.second }` says no row older than the newest already accepted *in its
+grain*, which is "this machine's readings arrive in order".
+
+The other half of the watermark is the **closure floor**, the point
+through which a deployment asserts the world is closed.  It is not
+written in the program, because advancing time would then be a
+recompile, and it is not read from the system clock, because
+`mensura run` would stop being reproducible; it is stored beside the
+data and advanced explicitly (`mensura floor <file> <registry>
+<column> <point>`).  Without it, a machine that stops reporting never
+advances its own watermark, so its windows never close and its silence
+is invisible.  See `docs/examples/watermark-grain.mensura`.
+
+The block is rejected on a plain `store`, deliberately: a store's rows
+are created, updated, and deleted by anyone, so a watermark over it
+bounds nothing and the contract would be claim-grade.  A store's intake
+accepts arbitrarily late rows, and that is the honest behaviour for a
+tabulation that accumulates revisable observations.
+
+**Changing a declared bound later is not symmetric.**  Tightening one
+(a smaller `lateness`) only ever closes windows earlier, so every
+result already emitted as final stays final, and it is an ordinary
+edit.  Relaxing one (a larger `lateness`) reopens windows that were
+already reported as final and retracts their results, so it will
+require an explicit annotation at the redeclaration saying what
+becomes of the rows the change invalidates.  Neither is enforced yet:
+nothing persists a program's previous text to compare against, so today
+a redeclaration simply takes effect.  The annotation and the check
+arrive with `mensura deploy` and its migration policy
+(ADR 0037, open questions).
+
 ## Registry versus store
 
 | | `store` | `registry` |
@@ -233,6 +304,7 @@ wherever it appears.
 | Written by | create, update, delete | append only |
 | Table completeness at `attr*` | `Incomplete` | `Complete` |
 | Table completeness at `attr` | `Complete` (trivially) | `Complete` (trivially) |
+| May declare `lateness` | no | yes |
 | Valid `domain` target | when `singletons` | when `singletons` |
 | Importable across modules | yes | **no** |
 
@@ -325,10 +397,11 @@ can.
   block are the web-service work (M7), settled in
   `docs/decisions/0005-identity-and-authorization.md` and
   `docs/decisions/0006-transport-agnostic-surface.md`.
-- **Streaming intake.**  Windowed refresh, window closedness, and
-  per-window sampling inference arrive with the streaming milestone
-  (M5), which is where a registry's observations start feeding
-  incrementally refreshed views.
+- **Streaming intake.**  The `lateness` contract and its watermark have
+  landed (above); the `closed` stage that consumes them, windowed
+  refresh, and per-window sampling inference arrive with the rest of
+  the streaming milestone (M5), which is where a registry's
+  observations start feeding incrementally refreshed views.
 - **A stated relationship between a store and a registry of one unit.**
   Today they are independent tabulations; whether a program ever wants
   to declare that one is the intake for the other is unsettled.

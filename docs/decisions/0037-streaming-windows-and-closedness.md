@@ -630,7 +630,15 @@ Implementation (the M5 windows slice, not this ADR):
   Whether a per-key watermark (never closing an absent entity's
   windows) is an opt-in, and where the loss policy belongs, is
   deferred to the refresh/serving slices where the operational story
-  lives.
+  lives.  *Taken up early by
+  `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`*,
+  because implementing the intake showed the question cannot be
+  answered at the intake alone: `closedWindow_stable` reads one
+  watermark in both hypotheses, so the admission grain *is* the
+  closure grain, and a per-key watermark alone would make an absent
+  entity's silence unobservable (ADR 0038's motivating query).  That
+  ADR grains the watermark by the residual key and restores liveness
+  with a declared floor.
 - **A forward-skew bound on the watermark.**  `lateness` bounds how
   old an accepted point may be; nothing bounds how new.  One device
   with a clock far ahead advances the global watermark by the whole
@@ -659,7 +667,20 @@ Implementation (the M5 windows slice, not this ADR):
   redeclaration may change, and whether the toolchain migrates or
   refuses, belongs to the (probably automatic) migration policy of a
   future `mensura deploy`, which is not yet designed; the two must
-  be settled together.
+  be settled together.  *Direction settled (owner, 2026-08-15), the
+  surface deferred with `deploy`:* **tightening** a bound (a smaller
+  `lateness`) is an ordinary migration, permitted silently, because
+  it only ever closes windows earlier and every result already
+  emitted as final stays final.  **Relaxing** one (a larger
+  `lateness`) is not, because it retracts published finality, so it
+  must require an explicit annotation at the redeclaration, whose job
+  is to say what happens to the already-emitted rows the change
+  invalidates.  What that annotation is called, and whether it
+  recomputes, quarantines, or merely records the inconsistency,
+  is designed with `deploy`; only the asymmetry is fixed here.  The
+  intake enforces neither today: a redeclaration simply takes effect,
+  since nothing yet persists a program's previous text to compare
+  against.
 - **Grid origin.**  Window starts anchor at the domain zero.  If a
   consumer needs aligned-but-offset grids (business days, fiscal
   weeks), an explicit origin argument is the natural extension.

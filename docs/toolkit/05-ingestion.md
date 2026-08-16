@@ -149,6 +149,63 @@ same setting.  And turning it on enforces constraints on databases
 created before this slice, which is intended but is a behaviour change
 for an existing file.
 
+## The `lateness` contract is enforced
+
+A registry's `lateness` entries (`13-registries.md`,
+`docs/decisions/0037-streaming-windows-and-closedness.md` decision 4,
+grained by `docs/decisions/0041-watermark-grain-and-the-closure-floor.md`)
+ride the same `apply` transaction.
+
+**The grain.**  A watermark serves one **grain**: the declared key minus
+the contracted column.  For a reading keyed `(machine_id, taken_at)`
+contracted on `taken_at` that is `{machine_id}`, one watermark per
+machine, and for the same observation modelled as an `attr*` registry
+keyed by `{machine_id}` with `sampled_at` an attribute it is
+`{machine_id}` again, so the attribute-versus-key choice does not reach
+the intake.  A registry whose key *is* the contracted column has an
+empty grain, which is the single-watermark case.
+
+**The effective watermark** of a grain is `max(observed, floor)`:
+
+- **observed** is the maximum point already accepted in that grain, and
+  it is **derived, never stored**.  Under an append-only intake it is
+  exactly `MAX(point)` filtered to the grain, so a stored copy could
+  only drift from it, and its key would be a heterogeneous per-registry
+  tuple needing an encoding.  Derived, it travels with a backup, needs
+  no migration, and costs a keyed maximum that the primary key already
+  indexes for a key-borne point.
+- **floor** is the point through which the deployment asserts the world
+  is closed.  It is the irreducible half, stored in the reserved table
+  `mensura_lateness_floors` (per store and column, in the column's
+  storage grain), and it carries no grain, so the state that must be
+  stored is exactly the state with no encoding problem.  `mensura floor`
+  advances it, and only ever forward: lowering one reopens windows
+  already reported final.
+
+On each batch, every inserted row's point is checked against its grain's
+effective watermark **as of intake**: a row older than
+`effective - bound` rejects the batch whole, in the same transaction, so
+nothing lands.  The boundary point is still admissible ("older than" is
+strict), and the strict upper bound of the window interval test is what
+keeps that safe for `closed` (`Mensura.closedWindow_stable`).  A grain
+with no rows and no floor is unconstrained, which is what lets a new
+device be onboarded with its history; rows within one batch are never
+checked against each other, because the watermark is the contract's
+clock and a batch is the unit the producer delivered.  Nothing is
+written by an append: the observed maximum advances by the rows landing.
+
+Because the check runs in `apply`, any future transport that calls the
+same decoder and write path (`ADR 0034`'s design) inherits the contract
+with no work.  A plain store has no contracts to enforce, and none can
+be declared on one; its intake accepts arbitrarily late rows.
+
+One caveat the derivation carries: a derived maximum is monotone in what
+is *present* rather than in what was *accepted*.  Retention deleting the
+oldest rows does not move it, and deleting the newest is a rollback the
+append-only declaration already forbids; erasing a whole grain drops it
+to absent, which reopens admission for that grain but not closure,
+because closure reads the floor.
+
 ## CLI behavior
 
 ```
@@ -200,9 +257,21 @@ decoder's format-independence it is not a load-bearing choice.
 - Constraint coverage: a duplicate key against a `singletons` target, a
   repeated key accepted by a `bag` target, and a violated `domain`
   reference producing the typed foreign-key error.
+- Lateness coverage: an unconstrained first batch, a late batch rejected
+  whole with the watermark unmoved, the boundary point accepted, an
+  `int`-grain contract, and the same late rows accepted by a plain
+  store.
+- Grain coverage: a fast machine that cannot refuse a slow one's flush,
+  a new machine's backfill admitted, a machine late against *itself*
+  rejected with the grain named in the diagnostic, a floor that governs
+  a never-observed grain, and a floor that refuses to move backwards.
 
 ## Forward references
 
+- The floor's operational story: who advances it, on what schedule, and
+  how a deliberate override backfills below it
+  (`docs/decisions/0041-watermark-grain-and-the-closure-floor.md`, open
+  questions).
 - Update and delete on a store through the CLI, once the change-control
   family (`@audited`, `@versioned`) is designed.
 - Best-effort batches and their report (`--continue-on-error`).

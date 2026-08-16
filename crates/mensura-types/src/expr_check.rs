@@ -2626,6 +2626,7 @@ mod tests {
             ],
             cardinality: crate::table::Cardinality::Singletons,
             foreign_keys: Vec::new(),
+            lateness: Vec::new(),
             span: Span::new(0, 0),
         };
         TableType::from_store(&schema)
