@@ -72,6 +72,17 @@ fn attention_needed_materializes_the_degraded_machines() {
         materialized,
         vec![
             ("attention_needed".to_string(), 1),
+            // One closed window across the whole fleet, and *which* one is
+            // the point of graining the watermark (ADR 0041).  Each of the
+            // four readings falls in its own quarter-hour window, and a
+            // window closes when `w + 15 min + 10 min` has passed its own
+            // machine's watermark.  Only `m1` has a later reading, so only
+            // `m1`'s 01-01 window is final; `m2` and `m3` have nothing past
+            // their latest reading, so their windows stay open and are
+            // absent rather than wrong.  Under one global watermark `m1`'s
+            // 01-02 reading would have closed `m2`'s and `m3`'s windows
+            // too, and this count would read 3.
+            ("machine_peaks".to_string(), 1),
             // The window view emits one row per reading, not one per machine:
             // four readings in, four rows out (ADR 0031, Decision 7).
             ("reading_trend".to_string(), 4),
@@ -116,6 +127,58 @@ fn attention_needed_materializes_the_degraded_machines() {
     let again = materialize_views(&mut db, &program).unwrap();
     assert_eq!(again, materialized);
     assert_eq!(db.scan(&view.shape()).unwrap().len(), 1);
+}
+
+/// **Closed windows are final** (ADR 0037 decision 4, the invariant
+/// `Mensura.closedWindow_stable` proves): rerunning after further
+/// ingestion adds newly closed windows and never changes one already
+/// emitted.  This is what the refresh slice will lean on, and what lets
+/// alerting treat each row as settled.
+#[test]
+fn closed_windows_are_final_under_further_ingestion() {
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
+    let view = program
+        .views
+        .iter()
+        .find(|v| v.name == "machine_peaks")
+        .expect("the example declares machine_peaks");
+
+    materialize_views(&mut db, &program).unwrap();
+    let before = db.scan(&view.shape()).unwrap();
+    // `m1`'s 01-01 window, closed by `m1`'s own later reading.
+    assert_eq!(
+        before,
+        vec![vec![
+            Value::String("m1".into()),
+            Value::Instant("2025-01-01T10:00:00.000Z".into()),
+            Value::Real(300.0),
+        ]]
+    );
+
+    // More readings arrive: one inside the already-closed window (which the
+    // intake would have refused in practice, and which is seeded here
+    // precisely to show the emitted row does not move), and one far later
+    // that closes further windows for `m2`.
+    db.execute_sql(
+        r#"INSERT INTO "readings" VALUES
+             ('m2', '2025-01-03T10:00:00.000Z', 305.0),
+             ('m3', '2025-01-03T10:00:00.000Z', 372.0);"#,
+    )
+    .unwrap();
+    materialize_views(&mut db, &program).unwrap();
+    let after = db.scan(&view.shape()).unwrap();
+
+    // The previously emitted row is byte-identical, and the newly closed
+    // windows are additions.
+    assert!(
+        after.contains(&before[0]),
+        "a closed window changed under further ingestion: {after:?}"
+    );
+    assert!(
+        after.len() > before.len(),
+        "later readings should close further windows: {after:?}"
+    );
 }
 
 #[test]

@@ -192,6 +192,46 @@ registry readings {
 // and an exclusive scan's first position folds the empty prefix, so the
 // earliest reading in each machine's group has no predecessor to report
 // (`Mensura.prescanBag`).
+// **The canonical M5 program** (ADR 0037's worked example), and the one
+// view in this file that carries **no `assume` at all**: every fact is
+// established by a mechanism and consumed by a demand, which is the
+// language's whole pitch.
+//
+// `window w taken_at (15 min) (15 min)`.  The grid is the multiples of
+// fifteen minutes from the epoch (ADR 0036 decision 5), which lands on
+// `:00`, `:15`, `:30`, `:45` past each UTC hour; the alignment is to UTC
+// rather than plant-local time, the absolute family's semantics made
+// visible.  `stride == size` makes the windows tumbling, so a reading at
+// `10:07:31.221Z` gains exactly one window start, `10:00:00.000Z`.  The
+// key grows to `{machine_id, taken_at, w}` and the grading grows with it.
+//
+// `demote taken_at`.  One bag of readings per `(machine_id, w)`.  The
+// registry's fine-key completeness is forfeited by the coarsening
+// (ADR 0035); the extended grading survives, so the times inside each
+// window's bag are still unique.
+//
+// `closed`.  Demands the windowing fact and the source contract, and both
+// hold; delete the `lateness` block above and this line is a compile
+// error, with `assume { complete }` as the visible fallback.  A window
+// survives iff `w + 15 min + 10 min <= watermark` *for its own machine*
+// (ADR 0041 grains the watermark), so a machine whose gateway is behind
+// does not have its windows closed by a faster one.  A window that does
+// not survive is not an error: it is a window whose answer does not exist
+// yet, and its absence is the honest representation.
+//
+// `map_bags`.  A reducing fold, so it demands completeness at the key it
+// folds at (ADR 0023); `closed` discharged it.
+//
+// Rerunning after further ingestion adds newly closed windows and never
+// changes one already emitted (`Mensura.closedWindow_stable`), which is
+// what lets alerting treat each row as final.
+view machine_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+
 view reading_trend {
   readings |> demote taken_at
            |> assume { complete }

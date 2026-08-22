@@ -451,6 +451,16 @@ Implementation:
 - **Backfill below the floor.**  Decision 3 refuses it; the deliberate
   override is not designed.  The first real consumer is onboarding a
   device with history into a registry already reporting.
+- **`closed` demands the grain in the key.**  *Settled while
+  implementing (owner, 2026-08-16), recorded here because ADR 0037
+  predates the grain and says nothing about it:* to filter a row,
+  `closed` must know that row's grain, so the contract's grain columns
+  have to still be in the current key at that point, and the stage
+  rejects otherwise with a diagnostic naming them.  The alternative, a
+  minimum over all grains where they are absent, is sound but silently
+  conservative: one stalled producer would hold back every window in the
+  view with nothing in the program saying so.  Explicit refusal matches
+  how every other demand in the language behaves.
 - **A per-grain floor.**  The floor here is per registry and column,
   applying to every grain.  A per-grain floor (retiring one machine
   without touching the rest) is expressible in the same state and has no

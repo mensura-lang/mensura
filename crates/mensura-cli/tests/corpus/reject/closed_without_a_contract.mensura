@@ -1,0 +1,31 @@
+// Reject: resolve.  `closed` establishes completeness *by mechanism*, and
+// the mechanism has two halves: the extent, which the `window` stage
+// supplies, and the lateness bound, which the source's declaration does.
+// This registry declares no `lateness`, so nothing says when a window can
+// stop expecting rows, and there is no theorem to establish (ADR 0037
+// decision 4).
+//
+// The stage is refused rather than quietly weakened, and the diagnostic
+// names the fallback: an author who genuinely knows the bags are whole
+// writes `assume { complete }` after the `demote`, locally and visibly,
+// as ever.  Add a `lateness` block and this is
+// `accept/closed_establishes_completeness.mensura`.
+import bag
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+view machine_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}

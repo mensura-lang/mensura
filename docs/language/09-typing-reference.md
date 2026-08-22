@@ -866,6 +866,39 @@ inherits), the sibling of `exhaustive(axis)`: established here, consumed
 by `closed`, and reset conservatively by any operation that is not
 content-identity in ADR 0024's sense.
 
+### 6.8  `closed` (keep the final windows) -- Tier A
+
+```
+closed : Table -> Table
+```
+
+Takes no arguments: the extent comes from the `window` stage and the
+bound from the source's declaration.  Drops every window that can still
+receive a row and **establishes `Complete`** at the current key on the
+survivors, which is a new establishment mechanism for the existing fact
+(section 8), not a new qualifier.  A window survives when
+`w + size + lateness <= watermark` against the watermark of its own
+grain (ADR 0041), which is `max(observed, floor)`: the maximum point
+accepted in that grain, raised by the deployment's declared closure
+floor.
+
+Demands, each rejected with the fix named: a window column in the key
+carrying a live windowing fact; its point demoted into the fiber; a
+`lateness` contract on that point (without one there is no mechanism and
+`assume { complete }` is the visible fallback); and the contract's
+watermark grain still in the key, since a row can only be measured
+against the producer it came from.
+
+Establishes `Complete`; carries every other fact, being content-identity
+apart from the row filter.  Tier A.
+
+The invariant it buys is **finality**: rerunning after further ingestion
+adds newly closed windows and never changes a previously emitted one
+(`closedWindow_stable`), which is what makes a closed-window view safe to
+maintain incrementally.  Note what the fact says: the *arrival*
+completeness of ADR 0033 transported to the window key, not a claim that
+the device was working.
+
 ## 7.  Tier A / Tier B and split-safety
 
 The central guarantee is **split-safety**.  In the formalization,
@@ -885,8 +918,9 @@ boundary, and `PreservesDisjoint` is what lets the lineage hierarchy carry a
 disjointness fact through a Tier A pipeline intact (section 9).
 
 - **Tier A** (split-safe): `flat_map`, `map_bags`, `promote`, `lookup`,
-  `lookup_total`, `split`, `union`, `unpivot`.  They compose freely and carry
-  cardinality, completeness, and lineage facts end to end.
+  `lookup_total`, `split`, `union`, `unpivot`, `window`, `closed`.  They
+  compose freely and carry cardinality, completeness, and lineage facts
+  end to end.
 - **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
   lineage fact, and that is the whole content of the Tier: `demote`
   demands no completeness itself (the demand sits at the reducing
@@ -898,7 +932,7 @@ disjointness fact through a Tier A pipeline intact (section 9).
 ## 8.  Completeness: establish, clear, consume
 
 Completeness (each key's bag holds all its rows, section 3.4) is established in
-one of three ways (`07`, "Completeness: establish, clear, consume"):
+one of four ways (`07`, "Completeness: establish, clear, consume"):
 
 - **mechanism**: a `registry` source is complete by construction at its
   **own declared key** (overview pillar 7, `13-registries.md`, ADR 0033
@@ -913,7 +947,12 @@ one of three ways (`07`, "Completeness: establish, clear, consume"):
   witness that the partition is complete over the current key.  The stage is
   placed ahead of the consuming operation and after the last coarsening;
 - **annotation**: `@complete_over(col)` on a source store, establishing the fact
-  globally (grammar deferred to the annotation family, section 13).
+  globally (grammar deferred to the annotation family, section 13);
+- **closedness**: `closed` (section 6.8) over a windowed table whose
+  source declares a `lateness` bound.  Mechanism-grade like the registry
+  rule and for the same kind of reason: the extent and the bound are both
+  enforced, so "no row of this window can still arrive" is a theorem
+  about the intake (ADR 0037 decision 4).
 
 Row-wise Tier A operations **preserve** completeness (they map whole
 fibers to whole fibers); the key moves **re-derive** it from the ADR 0024
@@ -1282,7 +1321,8 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   presentation only.  Key moves (`promote`/`demote`) and reshape selectors
   naming a flattened component or a unit-reference group are deferred
   (ADR 0032).
-- **Streaming.**  `sliding_window`, `latest`, window-closedness, and `on_change`
+- **Streaming.**  `window` and `closed` have landed (sections 6.7 and
+  6.8).  `latest`, per-window sampling inference, and `on_change`
   refresh extend these rules (M5).
 - **Precision and measure semantics.**  Dimensional units are now
   specified (`11-physical-units.md`, section 5.3 above; ADR 0026).

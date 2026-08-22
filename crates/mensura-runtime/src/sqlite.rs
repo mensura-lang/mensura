@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use mensura_types::{ColumnRole, ColumnType, Schema, TableShape};
+use mensura_types::{ColumnRole, ColumnType, Lateness, Schema, TableShape};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError};
+use crate::backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError, Watermarks};
 use crate::temporal::{instant_to_ms, ms_to_instant};
 use crate::value::{Row, Value};
 
@@ -200,6 +200,80 @@ impl StorageBackend for SqliteBackend {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    fn watermarks(
+        &self,
+        table: &TableShape,
+        contract: &Lateness,
+    ) -> Result<Watermarks, StorageError> {
+        // The observed half, derived rather than stored (ADR 0041
+        // decision 3): one maximum per grain, which is the same projection
+        // the intake computes per touched grain, taken here over the whole
+        // table at once.
+        let grain_cols: Vec<String> = contract.grain.iter().map(|g| quote_ident(g)).collect();
+        let selected = grain_cols
+            .iter()
+            .map(|c| format!("{c}, "))
+            .collect::<String>();
+        let group = if grain_cols.is_empty() {
+            String::new()
+        } else {
+            format!(" GROUP BY {}", grain_cols.join(", "))
+        };
+        let sql = format!(
+            "SELECT {selected}MAX({}) FROM {}{group}",
+            quote_ident(&contract.column),
+            quote_ident(&table.name),
+        );
+        let ty = table
+            .columns
+            .iter()
+            .find(|c| c.name == contract.column)
+            .map(|c| c.ty.clone())
+            .ok_or_else(|| {
+                StorageError::Decode(format!(
+                    "`{}` has no column `{}` for its lateness contract",
+                    table.name, contract.column
+                ))
+            })?;
+
+        let mut observed = BTreeMap::new();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let n = contract.grain.len();
+        while let Some(r) = rows.next()? {
+            let key: Vec<String> = (0..n)
+                .map(|i| {
+                    Ok(decode(
+                        r.get_ref(i)?,
+                        &ty_of_grain(table, &contract.grain[i]),
+                        &table.name,
+                        &contract.grain[i],
+                    )?
+                    .grain_key())
+                })
+                .collect::<Result<_, StorageError>>()?;
+            let point = match r.get_ref(n)? {
+                ValueRef::Text(t) => {
+                    let text =
+                        std::str::from_utf8(t).map_err(|e| StorageError::Decode(e.to_string()))?;
+                    Some(instant_to_ms(text).map_err(StorageError::Decode)?)
+                }
+                ValueRef::Integer(v) => Some(v),
+                // A grain with no rows cannot appear in a `GROUP BY` over
+                // the table, so a NULL maximum means an empty table.
+                _ => None,
+            };
+            if let Some(point) = point {
+                observed.insert(key, point);
+            }
+        }
+        let _ = ty;
+        Ok(Watermarks::new(
+            observed,
+            read_floor(&self.conn, &table.name, &contract.column)?,
+        ))
     }
 
     fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError> {
@@ -456,6 +530,19 @@ fn enforce_lateness(
         }
     }
     Ok(())
+}
+
+/// The declared type of one grain column, for decoding a grouped read.
+fn ty_of_grain(table: &TableShape, column: &str) -> ColumnType {
+    table
+        .columns
+        .iter()
+        .find(|c| c.name == column)
+        .map(|c| c.ty.clone())
+        // A grain column is always a declared key column, so this is
+        // unreachable; `String` keeps the decode total rather than panicking
+        // on a corrupt shape.
+        .unwrap_or(ColumnType::String)
 }
 
 /// Render a point in the column's own form, for a diagnostic.

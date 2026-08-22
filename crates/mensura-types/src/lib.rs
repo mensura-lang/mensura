@@ -19,7 +19,9 @@ pub mod units;
 
 pub use expr_check::{Context, Optionality, Ty, TypeError, type_expr};
 pub use mensura_syntax::StoreKind;
-pub use model::{Column, ColumnRole, ColumnType, ResolvedProgram, Schema, TableShape, ViewPlan};
+pub use model::{
+    Column, ColumnRole, ColumnType, Lateness, ResolvedProgram, Schema, TableShape, ViewPlan,
+};
 pub use pipe_check::{PipeTy, Sources, type_pipeline, type_view, type_view_body};
 pub use resolve::{ResolveError, resolve};
 pub use table::{
