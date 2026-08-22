@@ -55,6 +55,11 @@ Module flatMap (each file imports only what it builds on):
                      promote): split-safety by composition, the grading
                      extension, `closedWindow_stable`, and the concrete
                      stride-grid placement at `Instant` (ADR 0037)
+    Dense            rectangularization over the window grid: the fill
+                     agrees with the ideal completed reduction, is
+                     idempotent, keeps a closed slot's row final, and makes
+                     the coarse fiber a `demote w` produces complete
+                     (ADR 0038)
 
 The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
@@ -77,3 +82,4 @@ import Mensura.Units.Dimension
 import Mensura.Units.Torsor
 import Mensura.Expr.Missing
 import Mensura.Window.Defs
+import Mensura.Window.Dense
