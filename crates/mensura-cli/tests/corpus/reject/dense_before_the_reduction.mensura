@@ -1,0 +1,47 @@
+// Reject: resolve.  `dense` fills *reduced rows*, and this table is still a
+// bag of readings per window (ADR 0038 decision 1).
+//
+// The refusal is the design, not a limitation.  The tempting order is to
+// materialize the empty fibers first and let the reduction handle them,
+// which would break ADR 0029 decision 4's guarantee that a reducing lambda
+// never sees an empty bag: every fold would have to be total on nothing,
+// `bag.min` and `bag.max` would stop working, and the accumulator
+// optionality that 0029 confined to the executor would surface everywhere.
+// Filling after the reduction keeps all three and computes the same table
+// (`Mensura.dense_fiberMap_foldFiber`), with the conclusion that matters
+// intact: a filled row is a reduced row, so a count of zero means zero rows
+// were reduced rather than that a placeholder was invented and counted.
+//
+// Add the `map_bags` and this is `accept/dense_completes_the_grid.mensura`.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated:    instant
+    commissioned: date
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view sensor_health {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> dense w machines activated
+}

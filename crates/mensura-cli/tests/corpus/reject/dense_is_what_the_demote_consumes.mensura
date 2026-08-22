@@ -1,0 +1,45 @@
+// Reject: resolve.  `accept/dense_survives_the_demote.mensura` minus the
+// `dense` line, which is what makes the difference visible: the silence
+// count is refused without the fill.
+//
+// `closed` established completeness at `(machine_id, w)`, and `demote w` is
+// a genuine coarsening, so the fact is cleared (ADR 0035): a window absent at
+// the fine key is a gap inside the machine's bag, and a fold over a bag with
+// gaps is silently wrong.  The reducing `map_bags` therefore demands the
+// fact back, and the honest ways to supply it are a visible
+// `assume { complete }` or the mechanism that actually removes the gaps,
+// which is `dense` (ADR 0038 decision 4).
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated:    instant
+    commissioned: date
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view silence_per_machine {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> demote w
+           |> map_bags |k, b| (.reported = bag.sum b.n)
+}

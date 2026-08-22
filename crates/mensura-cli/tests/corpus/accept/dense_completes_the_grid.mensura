@@ -1,0 +1,66 @@
+// Accepted: the ADR 0038 worked example.  `window` puts each reading on the
+// quarter-hour grid, `closed` keeps the windows that can no longer change,
+// `map_bags` reduces them, and `dense` completes what the reduction left
+// out: the slots in which a machine reported nothing.
+//
+// A window holding no row is *absence* (ADR 0037 decision 1), which is right
+// for the operation and leaves "how many quarter-hours did this machine go
+// silent" unanswerable, because the intervals in question are not rows.
+// Worse, it fails quietly: `#b` never yields zero in a windowed view, so a
+// filter looking for sparse windows omits the sparsest ones.  This stage
+// makes them rows.
+//
+// The two arguments after the window column are policy, and they are never
+// inferred (ADR 0038 decision 3):
+//
+//   `machines`   which entities should have windows.  It cannot come from
+//                the windowed bag, which by construction knows nothing of a
+//                machine that never sent a row, and that machine is the
+//                whole point.
+//   `activated`  where each machine's history starts.  Taking the earliest
+//                observed window instead would make a sensor that was
+//                offline on day one look like a sensor that did not exist
+//                yet.
+//
+// The typing consequence is the point (decision 2).  `n` is `#b`, a fold at
+// `+`, and `+` has an identity, so a filled row's `n` is `0` and the column
+// stays total: zero readings really were reduced.  `peak` is `bag.max`, and
+// there is no maximum of nothing, so the column is optional view-wide and
+// honestly absent on a filled row.  An absent `peak` says "no readings"
+// where a low `peak` says "cold readings", and before this stage those were
+// the same row shape.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    // An absolute event, not paperwork: the moment telemetry came online.
+    // A calendar bound would need the zone-dependent conversion ADR 0036
+    // defers (see `reject/dense_over_a_date_bound.mensura`).
+    activated: instant
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view sensor_health {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature, .peak = bag.max b.temperature)
+           |> dense w machines activated
+}

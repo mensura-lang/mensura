@@ -1,0 +1,44 @@
+// Reject: resolve.  `dense` completes the grid only as far as closedness
+// reaches (ADR 0038 decision 3), and nothing here closed it.  Filling past
+// the watermark would declare a future that has not happened confirmed
+// empty, fabricating silent intervals for time that has not elapsed, which
+// is the one error this stage must not make.
+//
+// The reducer's own demand is met here by a visible claim, so the pipeline
+// gets as far as the fill before being refused: the two facts are different
+// (`assume { complete }` says the bags are whole, closedness says no row can
+// still arrive), and only the second bounds a grid.  Replace the `assume`
+// with `closed` and this is `accept/dense_completes_the_grid.mensura`.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated:    instant
+    commissioned: date
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view sensor_health {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines activated
+}

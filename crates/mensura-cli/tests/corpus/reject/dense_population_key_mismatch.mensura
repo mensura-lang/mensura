@@ -1,0 +1,41 @@
+// Reject: resolve.  The population says which entities should have windows,
+// so it has to be keyed like the windowed rows without the window column
+// (ADR 0038 decision 3).  `readings` is keyed by `(machine_id, taken_at)`,
+// which names no population of machines; there is no way to read a per-entity
+// grid bound off it.
+//
+// Name `machines` instead and this is
+// `accept/dense_completes_the_grid.mensura`.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated:    instant
+    commissioned: date
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view sensor_health {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w readings activated
+}
