@@ -432,6 +432,58 @@ fn combiner_row(op: BinOp) -> Option<&'static CombinerRow> {
     COMBINERS.iter().find(|row| row.op == op)
 }
 
+/// Whether the combiner table gives this row an identity: whether the empty
+/// bag has a true answer at this operator (ADR 0031 Decision 6).
+///
+/// The one part of the table `dense` needs (ADR 0038 decision 2), exposed as
+/// a question rather than as the table, so the rows stay in one place: a
+/// column whose combiner has an identity fills with it and stays total, and
+/// every other column goes optional because there is no minimum of nothing.
+pub fn combiner_has_identity(op: BinOp) -> bool {
+    combiner_row(op).is_some_and(|row| row.has_identity)
+}
+
+/// The combiner a reducing field reduces at, when its defining expression is
+/// a **single** fold application (ADR 0038 decision 2).
+///
+/// Recognition is syntactic plus the const resolution the checker already
+/// does, and it accepts exactly three spellings, which are three spellings of
+/// one thing:
+///
+/// * `#b.x` and `#b`, cardinality, which is a fold at `+` over ones
+///   (ADR 0031 Decision 9), so a filled row counts zero rows;
+/// * `fold `+` (|v| v) b.x`, written out;
+/// * `bag.sum b.x` and its siblings, which are const bindings that resolve to
+///   the same partial application (ADR 0031 Decision 8), so they need no
+///   special case here.
+///
+/// Everything else, compound expressions included, has no single combiner and
+/// gets no entry.  That is the whole rule: `(bag.sum b.v) / to_real(#b)` is
+/// two folds joined by a division, and filling its parts from their
+/// identities would compute `0 / 0.0`, so absence is the honest answer and
+/// the caller makes the column optional.
+pub fn field_reduction(ctx: &Context, expr: &Expr) -> Option<BinOp> {
+    if let ExprKind::Unary(UnOp::Card, _) = &expr.kind {
+        return Some(BinOp::Add);
+    }
+    // Anything else must be an application whose callee is a `fold` waiting
+    // only for its bag.  Asking the callee rather than walking the spine is
+    // what makes the bundled bindings free: `bag.sum` *is* that callee.
+    let ExprKind::App(callee, _) = &expr.kind else {
+        return None;
+    };
+    let Ok(Ty::Builtin(partial)) = type_expr(ctx, callee) else {
+        return None;
+    };
+    if partial.which != Builtin::Fold || partial.applied.len() + 1 != Builtin::Fold.arity() {
+        return None;
+    }
+    match partial.applied.first() {
+        Some(BuiltinArg::Combiner(op)) => Some(*op),
+        _ => None,
+    }
+}
+
 /// Resolve a backticked token against the table.  An unknown combiner names
 /// the table, since the set is closed and the writer cannot extend it.
 fn resolve_combiner(raw: &str, span: Span) -> Result<BinOp, Vec<TypeError>> {

@@ -13,12 +13,14 @@ use std::collections::BTreeMap;
 
 use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
 
-use crate::expr_check::{Context, Optionality, Ty, TypeError, type_expr};
+use crate::expr_check::{
+    Context, Optionality, Ty, TypeError, combiner_has_identity, field_reduction, type_expr,
+};
 use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
     Arranged, Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage,
-    Qualifiers, SplitId, TableType, Totality, WindowFact, Windows,
+    Qualifiers, Rectangles, Reductions, SplitId, TableType, Totality, WindowFact, Windows,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -209,12 +211,13 @@ fn dispatch_op(
         "window" => op_window(sources, input, args, span),
         "closed" => op_closed(input, args, span),
         "latest" => op_latest(input, args, span),
+        "dense" => op_dense(sources, input, args, span),
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
             // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
             // row, `map_bags` receives the bag") instead of the generic
             // edit-distance suggestion below.
-            const OPS: [&str; 15] = [
+            const OPS: [&str; 16] = [
                 "promote",
                 "demote",
                 "flat_map",
@@ -230,6 +233,7 @@ fn dispatch_op(
                 "window",
                 "closed",
                 "latest",
+                "dense",
             ];
             let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
             Err(error(
@@ -245,10 +249,47 @@ fn dispatch_op(
     // (ADR 0037 decision 2).  Every other operation resets them to match
     // its own output cardinality, the conservative rule until the per-op
     // transport table is mechanized.
-    Ok(match op {
+    let result = match op {
         "promote" | "demote" | "assume" | "completeness_check" | "window" | "closed" => result,
+        // `dense` adds rows at fresh keys of the key it already has, so
+        // every grading it was handed still holds (ADR 0038 decision 4's
+        // fact is about the window column, and the gradings are what let
+        // the subsequent `demote` re-derive its cardinality).
+        "dense" => result,
         _ => sync_functional(result),
+    };
+    // The two grid facts of ADR 0038 each have one producer and one
+    // consumer, one stage apart, so they are cleared centrally rather than
+    // at each site: `map_bags` records which columns a single combiner
+    // produced, `dense` reads them and records the completed grid, and
+    // `demote` consumes that grid and clears it itself.  The
+    // content-identity stages carry both, having changed nothing either
+    // fact speaks about.
+    Ok(match op {
+        "map_bags" | "assume" | "completeness_check" | "dense" | "demote" => result,
+        _ => clear_grid_facts(result),
     })
+}
+
+/// Drop the completed-grid and single-fold facts (ADR 0038), the
+/// conservative rule for every operation between their producer and their
+/// consumer; see [`dispatch_op`].
+fn clear_grid_facts(output: PipeTy) -> PipeTy {
+    fn clear(table: &mut TableType) {
+        table.qualifiers.rectangles.clear();
+        table.qualifiers.reductions.clear();
+    }
+    match output {
+        PipeTy::Table(mut t) => {
+            clear(&mut t);
+            PipeTy::Table(t)
+        }
+        PipeTy::Pair(mut a, mut b) => {
+            clear(&mut a);
+            clear(&mut b);
+            PipeTy::Pair(a, b)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -364,6 +405,8 @@ fn op_join(
             // the window facts and the source's intake contracts are reset
             // conservatively (ADR 0037 decision 2).
             windows: Windows::none(),
+            rectangles: Rectangles::new(),
+            reductions: Reductions::new(),
             contracts: Vec::new(),
             lineage: left.qualifiers.lineage,
         },
@@ -421,6 +464,8 @@ fn op_flat_map(
             // The body computes a fresh row, so neither a window grid nor
             // an intake contract survives (ADR 0037 decision 2).
             windows: Windows::none(),
+            rectangles: Rectangles::new(),
+            reductions: Reductions::new(),
             contracts: Vec::new(),
             lineage: table.qualifiers.lineage,
         },
@@ -715,7 +760,7 @@ fn op_map_bags(
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "map_bags", 2, span)?;
     let ctx = Context::bag(&sources.ambient, params[0], params[1], &table);
-    let (columns, totality, cardinality) = bag_record_content(&ctx, body)?;
+    let (columns, totality, cardinality, reductions) = bag_record_content(&ctx, body)?;
     if cardinality == Cardinality::Singletons
         && table.qualifiers.cardinality == Cardinality::Bag
         && table.qualifiers.completeness != Completeness::Complete
@@ -740,23 +785,35 @@ fn op_map_bags(
             exhaustive: table.qualifiers.exhaustive,
             functional: Functional::new(),
             arranged: Arranged::Unclaimed,
-            // The attributes are computed from the fiber, so the point
-            // column a window fact names is gone and the grid with it
-            // (ADR 0037 decision 2).
-            windows: Windows::none(),
+            // The grid facts cross this stage, because `dense` runs after
+            // the reduction by construction (ADR 0038 decision 1) and needs
+            // the stride and the bound.  What does *not* survive is the
+            // point column the fact names: the attributes are computed from
+            // the fiber, so `closed`, whose whole test is over the point,
+            // demands it downstream and finds it gone.
+            windows: table.qualifiers.windows.clone(),
+            rectangles: Rectangles::new(),
+            // Which columns a single combiner produced, for `dense` to
+            // read an identity from (ADR 0038 decision 2).
+            reductions,
             contracts: Vec::new(),
             lineage: table.qualifiers.lineage,
         },
     }))
 }
 
-/// Type a `map_bags` record body into columns, totality, and the result
-/// cardinality (section 6.2). Single-valued fields are aggregates (`Singletons`);
-/// bag-valued fields are window values (`Bag`); a mix of the two is rejected.
+/// Type a `map_bags` record body into columns, totality, the result
+/// cardinality, and the single-fold columns (section 6.2). Single-valued
+/// fields are aggregates (`Singletons`); bag-valued fields are window values
+/// (`Bag`); a mix of the two is rejected.
+///
+/// The fourth output is ADR 0038 decision 2's recognition, done here because
+/// here is where the field's defining expression is in hand: a stage
+/// downstream sees columns and cannot ask what produced one.
 fn bag_record_content(
     ctx: &Context,
     body: &Expr,
-) -> Result<(Vec<Column>, Totality, Cardinality), Vec<TypeError>> {
+) -> Result<(Vec<Column>, Totality, Cardinality, Reductions), Vec<TypeError>> {
     let ExprKind::Record(fields) = &body.kind else {
         return Err(error("`map_bags`'s lambda must return a record", body.span));
     };
@@ -768,6 +825,7 @@ fn bag_record_content(
     }
     let mut columns = Vec::new();
     let mut totality = Totality::all_total();
+    let mut reductions = Reductions::new();
     let mut errs = Vec::new();
     let mut saw_aggregate = false;
     let mut saw_window = false;
@@ -793,6 +851,9 @@ fn bag_record_content(
                     });
                     if opt == Optionality::Optional {
                         totality.mark_optional(field.name.name.clone());
+                    }
+                    if let Some(op) = field_reduction(ctx, &field.value) {
+                        reductions.insert(field.name.name.clone(), op);
                     }
                 }
                 // The fiber gets its own wording: a bare `b` is the single
@@ -840,7 +901,7 @@ fn bag_record_content(
     } else {
         Cardinality::Singletons
     };
-    Ok((columns, totality, cardinality))
+    Ok((columns, totality, cardinality, reductions))
 }
 
 /// `split |k| pred` (section 6.5, Tier A): route each key to one side of a pair
@@ -933,6 +994,8 @@ fn op_union(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             // just above).  The intake contract does not survive at all,
             // since a union of two tables is not one registry's intake.
             windows: a.qualifiers.windows.intersect(&b.qualifiers.windows),
+            rectangles: Rectangles::new(),
+            reductions: Reductions::new(),
             contracts: Vec::new(),
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
@@ -955,6 +1018,8 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
             // complete over it no longer is, and the surviving half is not
             // the registry's intake either.
             windows: Windows::none(),
+            rectangles: Rectangles::new(),
+            reductions: Reductions::new(),
             contracts: Vec::new(),
             lineage,
         },
@@ -1202,6 +1267,7 @@ fn op_window(
             size,
             stride,
             contract,
+            closed: false,
         },
     );
     // The key changed, so the rectangle fact goes the way it does under the
@@ -1394,6 +1460,16 @@ fn op_closed(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
         .expect("the column came from the fact map")
         .clone();
 
+    if fact.closed {
+        return Err(error(
+            format!(
+                "`{window}`'s grid is already closed, and closing it twice says \
+                 nothing new: drop this stage"
+            ),
+            span,
+        ));
+    }
+
     if table.content.key.iter().any(|c| c.name == fact.point) {
         return Err(error(
             format!(
@@ -1401,6 +1477,17 @@ fn op_closed(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
                  is only whole once its points are grouped into it, so \
                  `demote {}` first",
                 fact.point, fact.point
+            ),
+            span,
+        ));
+    }
+    if !table.content.columns.iter().any(|c| c.name == fact.point) {
+        return Err(error(
+            format!(
+                "`closed` tests each window against its own points, and `{}` is \
+                 no longer a column here: a reduction consumed it, so close the \
+                 grid before reducing it",
+                fact.point
             ),
             span,
         ));
@@ -1448,6 +1535,274 @@ fn op_closed(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     // device's silence was a genuinely absent reading or one lost before the
     // intake is outside the type system, the same boundary ADR 0033 draws.
     table.qualifiers.completeness = Completeness::Complete;
+    // Record that this grid now has an upper bound, which is what `dense`
+    // reads when it completes the grid (ADR 0038 decision 3).
+    table.qualifiers.windows.mark_closed(&window);
+    Ok(PipeTy::Table(table))
+}
+
+/// `dense w population bound` (section 6.10, ADR 0038): complete the window
+/// grid after the reduction, one row per entity per closed slot.
+///
+/// A window holding no row is absence (ADR 0037 decision 1), which is right
+/// for the operation and leaves "how many intervals did this machine report
+/// nothing" unanswerable, since the intervals in question are not rows.  This
+/// stage makes them rows.
+///
+/// **It runs after the reduction, never before it** (decision 1).  The
+/// tempting design materializes the empty fibers and lets the reduction
+/// handle them, which would break ADR 0029 decision 4's guarantee that a
+/// reducing lambda never sees an empty bag.  Filling reduced rows keeps that
+/// guarantee and computes the same table
+/// (`Mensura.dense_fiberMap_foldFiber`), and it keeps the conclusion that
+/// matters: a filled row is a *reduced* row, so a count of zero says zero
+/// rows were reduced rather than that a placeholder was invented and counted.
+///
+/// **Two of the four grid inputs are given, and must be** (decision 3).
+/// Stride and origin come from the `window` declaration and the upper bound
+/// from `closed`; the population (which entities should have windows) and
+/// each entity's lower bound are policy that no data determines.  Inferring
+/// them is the ADR 0034 repair pattern: taking the earliest observed window
+/// as the bound would make a sensor offline on day one look like a sensor
+/// not yet installed, and inferring the population from the windowed bag
+/// would silently omit the entity that never reported, which is the case the
+/// stage exists to expose.
+///
+/// **What it establishes.**  `Complete` at its own key, mechanism-grade
+/// (the mechanism is the grid enumeration), plus the rectangularity fact a
+/// subsequent `demote w` consumes to re-derive completeness at the coarsened
+/// key rather than clear it (decision 4,
+/// `Mensura.demote_fiberCompleteWrt_dense`).  A column produced by a single
+/// fold at an identity-carrying combiner stays total and fills with that
+/// identity; every other column, compound expressions included, goes
+/// optional, because there is no maximum of nothing and a sentinel would lie
+/// (decision 2).
+fn op_dense(
+    sources: &Sources,
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [w_arg, pop_arg, bound_arg] = args else {
+        return Err(error(
+            "`dense` takes a window column, the store whose rows are the \
+             population, and that store's lower-bound column, as in `dense w \
+             machines activated`; the last two are policy and are never \
+             inferred (ADR 0038 decision 3)",
+            span,
+        ));
+    };
+
+    let ExprKind::Name(window) = &w_arg.kind else {
+        return Err(error(
+            "`dense`'s first argument names the window column to complete",
+            w_arg.span,
+        ));
+    };
+    let key = table.key_names();
+    if !key.contains(window) {
+        return Err(error(
+            format!(
+                "`dense` needs `{window}` in the key: the grid it completes is \
+                 the window column's, and a column outside the key indexes \
+                 nothing"
+            ),
+            w_arg.span,
+        ));
+    }
+    let Some(fact) = table.qualifiers.windows.get(window).cloned() else {
+        return Err(error(
+            format!(
+                "`{window}` carries no window fact, so its values are not known \
+                 to lie on a grid: `dense` completes what a `window` stage \
+                 built (ADR 0038 decision 5), and over a raw order key there \
+                 is no step to complete against"
+            ),
+            w_arg.span,
+        ));
+    };
+    if !fact.closed {
+        return Err(error(
+            "`dense` bounds the grid above by closedness, so `closed` must run \
+             upstream: without it the stage would fill windows past the \
+             watermark, declaring a future that has not happened confirmed \
+             empty (ADR 0038 decision 3)",
+            span,
+        ));
+    }
+    if table.qualifiers.cardinality != Cardinality::Singletons {
+        return Err(error(
+            "`dense` completes reduced rows, one per (entity, window), and this \
+             table is still a bag: reduce it with `map_bags` first (ADR 0038 \
+             decision 1 fills after the reduction, so no lambda ever faces an \
+             empty bag)",
+            span,
+        ));
+    }
+
+    // The population.  Resolved by name like a join's right side, and
+    // `singletons`, since one row per entity is what makes the grid a
+    // rectangle rather than a product.
+    let ExprKind::Name(pop_name) = &pop_arg.kind else {
+        return Err(error(
+            "`dense`'s population must be a source name (the store whose rows \
+             say which entities should have windows)",
+            pop_arg.span,
+        ));
+    };
+    let population = match sources.get(pop_name) {
+        Some(PipeTy::Table(t)) => t,
+        Some(PipeTy::Pair(..)) => {
+            return Err(error(
+                format!("`{pop_name}` is a pair of tables, not a population"),
+                pop_arg.span,
+            ));
+        }
+        None => {
+            let hint = suffix(pop_name, sources.bound.keys().cloned().collect::<Vec<_>>());
+            return Err(error(
+                format!("unknown source `{pop_name}`{hint}"),
+                pop_arg.span,
+            ));
+        }
+    };
+    if population.qualifiers.cardinality != Cardinality::Singletons {
+        return Err(error(
+            format!(
+                "`dense` needs a `singletons` population, and `{pop_name}` is a \
+                 bag: one row per entity is what makes the completed grid a \
+                 rectangle"
+            ),
+            pop_arg.span,
+        ));
+    }
+
+    // The population is keyed like the windowed rows minus the window
+    // column, which is the only way a population row can say which grid it
+    // bounds.  Compared by name and domain, as a join compares its key.
+    let residual: Vec<&Column> = table
+        .content
+        .key
+        .iter()
+        .filter(|c| &c.name != window)
+        .collect();
+    let matches = population.content.key.len() == residual.len()
+        && population
+            .content
+            .key
+            .iter()
+            .zip(&residual)
+            .all(|(p, r)| p.name == r.name && p.domain == r.domain);
+    if !matches {
+        let residual_names: Vec<String> =
+            residual.iter().map(|c| format!("`{}`", c.name)).collect();
+        let pop_names: Vec<String> = population
+            .content
+            .key
+            .iter()
+            .map(|c| format!("`{}`", c.name))
+            .collect();
+        return Err(error(
+            format!(
+                "`dense` needs `{pop_name}` keyed like the windowed rows without \
+                 the window column, and it is not: the rows are keyed by {} \
+                 beside `{window}`, while `{pop_name}` is keyed by {}",
+                residual_names.join(", "),
+                pop_names.join(", ")
+            ),
+            pop_arg.span,
+        ));
+    }
+
+    // The per-entity lower bound: a column on the population, total, and in
+    // the window column's own domain, since the grid aligns the bound to a
+    // slot.
+    let ExprKind::Name(bound) = &bound_arg.kind else {
+        return Err(error(
+            "`dense`'s last argument names the population's lower-bound column \
+             (where each entity's history starts)",
+            bound_arg.span,
+        ));
+    };
+    let Some(bound_col) = population
+        .content
+        .columns
+        .iter()
+        .chain(population.content.key.iter())
+        .find(|c| &c.name == bound)
+    else {
+        let hint = suffix(
+            bound,
+            population
+                .content
+                .columns
+                .iter()
+                .chain(population.content.key.iter())
+                .map(|c| c.name.clone()),
+        );
+        return Err(error(
+            format!("`{pop_name}` has no column `{bound}`{hint}"),
+            bound_arg.span,
+        ));
+    };
+    if population.qualifiers.totality.is_optional(bound) {
+        return Err(error(
+            format!(
+                "`dense` needs `{bound}` total: an entity whose lower bound is \
+                 missing has no grid to complete, and skipping it silently is \
+                 the absence this stage exists to remove"
+            ),
+            bound_arg.span,
+        ));
+    }
+    let window_col = table
+        .content
+        .key
+        .iter()
+        .find(|c| &c.name == window)
+        .expect("the window column is in the key");
+    if bound_col.domain != window_col.domain {
+        let extra = if bound_col.domain == ColumnType::Date {
+            ": a calendar bound needs the zone-dependent `date` to `instant` \
+             conversion ADR 0036 defers, so record the bound as the absolute \
+             event it is"
+        } else {
+            ""
+        };
+        return Err(error(
+            format!(
+                "`dense` needs `{bound}` in `{window}`'s domain ({}), and it is \
+                 {}{extra}",
+                crate::resolve::type_name(&window_col.domain),
+                crate::resolve::type_name(&bound_col.domain)
+            ),
+            bound_arg.span,
+        ));
+    }
+
+    // Decision 2's typing consequence, and the point of the stage: a column
+    // whose combiner has an identity fills with it, and every other column
+    // is honestly absent on a filled row.
+    let widen: Vec<String> = table
+        .content
+        .columns
+        .iter()
+        .filter(|c| {
+            !table
+                .qualifiers
+                .reductions
+                .get(&c.name)
+                .copied()
+                .is_some_and(combiner_has_identity)
+        })
+        .map(|c| c.name.clone())
+        .collect();
+    for name in widen {
+        table.qualifiers.totality.mark_optional(name);
+    }
+    table.qualifiers.completeness = Completeness::Complete;
+    table.qualifiers.rectangles.insert(window.clone());
     Ok(PipeTy::Table(table))
 }
 
@@ -1649,11 +2004,21 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     // over the axis, exhaustiveness makes every one of them present, and
     // fiber-completeness makes each whole, so the union is whole.  Multi-
     // column demotes chain, hence `all`.
+    //
+    // A completed window grid (ADR 0038 decision 4) is the second fact with
+    // this shape, and the same argument covers it: `dense` materialized every
+    // slot between the entity's declared lower bound and the closed upper
+    // bound, so the coarse fiber is the whole rectangle rather than a sample
+    // of it (`Mensura.demote_fiberCompleteWrt_dense`).  This is the one place
+    // a genuinely coarsening `demote` re-establishes completeness from a
+    // checked fact, and it is available only over a grid, where the step is a
+    // compile-time constant and closedness bounds the run above.
     let rectangular = was_complete
         && !to_drop.is_empty()
-        && to_drop
-            .iter()
-            .all(|c| table.qualifiers.exhaustive.contains(c.as_str()));
+        && to_drop.iter().all(|c| {
+            table.qualifiers.exhaustive.contains(c.as_str())
+                || table.qualifiers.rectangles.contains(c.as_str())
+        });
     // Completeness is re-derived from the graded cardinality (ADR 0035): the
     // fact is about the current key against a fixed intended population, and
     // a genuine coarsening forfeits it, because a whole key absent at the
@@ -1678,6 +2043,10 @@ fn op_demote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     // rows are the ADR's open formal work item, so the checker stays
     // conservative until they are mechanized.
     table.qualifiers.exhaustive.clear();
+    // The grid fact is consumed here and spent: it says the window column's
+    // values are the whole grid *per residual key*, which is a statement
+    // about the key this move just changed.
+    table.qualifiers.rectangles.clear();
     Ok(PipeTy::Table(table))
 }
 
@@ -2247,8 +2616,27 @@ mod tests {
             },
             span: Span::new(0, 0),
         };
+        // The population `dense` completes a grid over (ADR 0038 decision 3):
+        // keyed like the windowed rows without the window column, with an
+        // absolute lower bound and one calendar column to reject against.
+        let machines = Schema {
+            store: "machines".to_string(),
+            kind: StoreKind::Store,
+            unit: "Machine".to_string(),
+            columns: vec![
+                scol("machine_id", ColumnType::String, ColumnRole::Key, false),
+                scol("activated", ColumnType::Instant, ColumnRole::Attr, false),
+                scol("commissioned", ColumnType::Date, ColumnRole::Attr, false),
+                scol("retired", ColumnType::Instant, ColumnRole::Attr, true),
+            ],
+            cardinality: Cardinality::Singletons,
+            foreign_keys: Vec::new(),
+            lateness: Vec::new(),
+            span: Span::new(0, 0),
+        };
         Sources::new()
             .with("readings", TableType::from_store(&schema))
+            .with("machines", TableType::from_store(&machines))
             .with_ambient(ambient_with_modules(&["bag", "series", "si"]))
             .with_consts(BTreeMap::new(), modules_map(&["si"]))
     }
@@ -3932,6 +4320,138 @@ mod tests {
             let errs = pipe_ty(&s, src).expect_err(src);
             assert!(
                 errs.iter().any(|e| e.message.contains(needle)),
+                "`{needle}` not found for `{src}`: {:?}",
+                errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn dense_completes_the_grid() {
+        let s = windowed_sources(true);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at \
+                 |> closed \
+                 |> map_bags |k, b| (.n = #b.temperature, .peak = bag.max b.temperature) \
+                 |> dense w machines activated",
+            )
+            .expect("the ADR 0038 worked example"),
+        );
+        // Decision 2: `#b` is a fold at `+`, which has an identity, so `n`
+        // stays total and fills with zero; `bag.max` has none, so `peak` is
+        // honestly absent on a filled row.
+        assert!(t.qualifiers.totality.is_total("n"));
+        assert!(t.qualifiers.totality.is_optional("peak"));
+        // Decision 4: the fill establishes completeness, and the fact
+        // survives the one key move the silence query needs.
+        assert_eq!(t.qualifiers.completeness, Completeness::Complete);
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        let silence = table_of(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at \
+                 |> closed \
+                 |> map_bags |k, b| (.n = #b.temperature) \
+                 |> dense w machines activated \
+                 |> demote w \
+                 |> map_bags |k, b| (.silent = bag.sum b.n)",
+            )
+            .expect("no assume anywhere"),
+        );
+        assert_eq!(
+            silence
+                .content
+                .key
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["machine_id"]
+        );
+        // Without the fill, the same coarsening clears the fact and the
+        // reducer demands it back (ADR 0035, ADR 0023).
+        let errs = pipe_ty(
+            &s,
+            "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+             |> demote taken_at \
+             |> closed \
+             |> map_bags |k, b| (.n = #b.temperature) \
+             |> demote w \
+             |> map_bags |k, b| (.silent = bag.sum b.n)",
+        )
+        .expect_err("the coarsening cleared the fact");
+        assert!(errs[0].message.contains("needs completeness"));
+    }
+
+    #[test]
+    fn dense_rejections_name_their_rule() {
+        let s = windowed_sources(true);
+        let windowed = "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                        |> demote taken_at";
+        let reduced = format!("{windowed} |> closed |> map_bags |k, b| (.n = #b.temperature)");
+        for (src, needle) in [
+            // Arity: both policy arguments are required (decision 3).
+            (
+                format!("{reduced} |> dense w"),
+                "takes a window column".to_string(),
+            ),
+            // No grid: `dense` is the window-grid stage, not `resample`
+            // (decision 5).
+            (
+                format!("{reduced} |> dense machine_id machines activated"),
+                "carries no window fact".to_string(),
+            ),
+            // A column outside the key indexes nothing.
+            (
+                format!("{reduced} |> dense n machines activated"),
+                "needs `n` in the key".to_string(),
+            ),
+            // No upper bound without `closed` (decision 3).
+            // A grid nobody closed has no upper bound, even where the
+            // reducer's own demand was met by a visible claim instead.
+            (
+                format!(
+                    "{windowed} |> assume {{ complete }} \
+                         |> map_bags |k, b| (.n = #b.temperature) \
+                         |> dense w machines activated"
+                ),
+                "bounds the grid above by closedness".to_string(),
+            ),
+            // Before the reduction there is nothing to fill (decision 1).
+            (
+                format!("{windowed} |> closed |> dense w machines activated"),
+                "completes reduced rows".to_string(),
+            ),
+            // The population must be keyed like the windowed rows.
+            (
+                format!("{reduced} |> dense w readings activated"),
+                "keyed like the windowed rows".to_string(),
+            ),
+            (
+                format!("{reduced} |> dense w fleet activated"),
+                "unknown source `fleet`".to_string(),
+            ),
+            // The bound is a column of the population, total, and in the
+            // window column's domain.
+            (
+                format!("{reduced} |> dense w machines started"),
+                "no column `started`".to_string(),
+            ),
+            (
+                format!("{reduced} |> dense w machines retired"),
+                "needs `retired` total".to_string(),
+            ),
+            (
+                format!("{reduced} |> dense w machines commissioned"),
+                "ADR 0036 defers".to_string(),
+            ),
+        ] {
+            let errs = pipe_ty(&s, &src).expect_err(&src);
+            assert!(
+                errs.iter().any(|e| e.message.contains(&needle)),
                 "`{needle}` not found for `{src}`: {:?}",
                 errs.iter().map(|e| &e.message).collect::<Vec<_>>()
             );
