@@ -200,9 +200,10 @@ and are noted here only so the scope is unambiguous:
 - **Streaming and refresh.**  `window` and `closed` have landed and are
   hostable in a view like any other Tier A stage (`07-pipelines.md`); a
   windowed view's completeness comes from `closed` by mechanism, so it
-  needs no discharge at the hosting site.  What remains deferred is
-  `latest`, per-window sampling inference, and `on_change` reactive
-  refresh of a view (M5).
+  needs no discharge at the hosting site.  `latest` has landed too, on
+  the reducing side: like any reducer it consumes a completeness fact at
+  the hosting site.  What remains deferred is per-window sampling
+  inference and `on_change` reactive refresh of a view (M5).
 - **Serving.**  The query and subscription surface a view exposes over a wire,
   and its authorization (M7, `docs/decisions/0006-transport-agnostic-surface.md`,
   `docs/decisions/0005-identity-and-authorization.md`).

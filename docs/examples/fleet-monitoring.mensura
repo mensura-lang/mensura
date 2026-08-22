@@ -354,6 +354,40 @@ view machine_vibration : Tabular[Vibration] {
   )
 }
 
+// `latest p` keeps, per fiber, the row with the maximal point (ADR 0037
+// decision 7).  It sits on the *reducing* side and demands both of the
+// ordered vocabulary's facts, and the fleet's two source shapes make the
+// two honest cases.
+//
+// Here completeness holds by mechanism at the registry's own key
+// (ADR 0033: a bag registry's fact is contentful, and nothing coarsens),
+// so the fold needs no claim.  But a bag registry seeds no grading
+// (ADR 0022), so tie-freedom of `sampled_at` is the claimed fact: two
+// samples of one machine could share an instant, and then "the latest"
+// is not determined.  One assumption, stated where it bites.
+view newest_vibration : Tabular[Vibration] {
+  vibrations |> assume { arranged }
+             |> latest sampled_at
+             |> map_bags |k, b| (.amplitude = bag.max b.amplitude)
+}
+
+// The mirror case, and the reason `latest` does not fuse the coarsening.
+// `taken_at` is part of the reading's identity, so it starts in the key
+// and has to be demoted before there is a fiber to reduce.  That
+// coarsening forfeits the registry's fine-key completeness (ADR 0035), so
+// the claim is stated after it, exactly where `machine_temperature` makes
+// the same claim for the same coarsening.  Tie-freedom needs no claim
+// here: the surviving grading covers it.
+//
+// Writing `readings |> latest taken_at` instead is a compile error, and
+// deliberately so: the coarsening would happen inside the operation,
+// leaving the completeness demand with nowhere to stand.
+view newest_reading : Tabular[Machine] {
+  readings |> demote taken_at
+           |> assume { complete }
+           |> latest taken_at
+}
+
 // Dimensional arithmetic in a view body: the comparison type-checks because
 // both sides are `temperature[real]`; comparing against a bare `350.0` (or
 // a duration) would be a compile error.  No shape claim: the output keeps

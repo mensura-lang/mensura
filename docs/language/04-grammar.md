@@ -653,8 +653,8 @@ identifiers, as the keyword-free lexer intends.
 - Module-qualified names in type position (`geo.speed[real]`), and the
   `exposing` import refinement (`12-modules-and-imports.md`).
 - The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
-  joins, `split`/`union`, `unpivot`/`pivot`, `window`,
-  `completeness_check`) are
+  joins, `split`/`union`, `unpivot`/`pivot`, `window`, `closed`,
+  `latest`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.
@@ -662,9 +662,9 @@ identifiers, as the keyword-free lexer intends.
   `10-views.md` (the `view_decl` production above is their grammar).
   Transforms, which also host or feed pipelines, get their own section
   here.  The streaming operations (`window`, `closed`, `latest`,
-  ADR 0037) are pipeline operations in the existing application grammar
-  and add no productions; their declaration-level half, the
-  `lateness_block`, has landed above.  (`registry` declarations have
+  ADR 0037) have landed as pipeline operations in the existing
+  application grammar, adding no productions; their declaration-level
+  half is the `lateness_block` above.  (`registry` declarations have
   landed: the `registry_decl` production above is their grammar,
   specified in `13-registries.md`.  `device` is not coming: ADR 0005
   eliminated it in favour of roles, `auth {}`, and `registry`.)

@@ -208,12 +208,13 @@ fn dispatch_op(
         "completeness_check" => op_completeness_check(sources, input, args, span),
         "window" => op_window(sources, input, args, span),
         "closed" => op_closed(input, args, span),
+        "latest" => op_latest(input, args, span),
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
             // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
             // row, `map_bags` receives the bag") instead of the generic
             // edit-distance suggestion below.
-            const OPS: [&str; 14] = [
+            const OPS: [&str; 15] = [
                 "promote",
                 "demote",
                 "flat_map",
@@ -228,6 +229,7 @@ fn dispatch_op(
                 "completeness_check",
                 "window",
                 "closed",
+                "latest",
             ];
             let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
             Err(error(
@@ -1208,6 +1210,130 @@ fn op_window(
     Ok(PipeTy::Table(table))
 }
 
+/// `latest p` (section 6.9, ADR 0037 decision 7): keep, per fiber, the row
+/// with the maximal point `p`.
+///
+/// A **reduction**, not a window: fiber-to-row, so the result is
+/// `singletons` at the current key with `p` an ordinary total attribute.
+/// Formally the kept row is `getLast (arrange p fiber)`, deterministic by
+/// `Mensura.IsArrangement.unique` given tie-freedom.
+///
+/// It demands both facts the ordered reductions demand, with no special
+/// case: **tie-freedom** of `p` (a grading, or `assume { arranged }`,
+/// exactly as a scan), because the argmax of a tied key is not determined;
+/// and **completeness** at the current key (ADR 0023), because a partial
+/// bag's "latest" is silently wrong.
+///
+/// **`p` must already be an attribute.**  ADR 0037 decision 7 also
+/// specifies a fused form over a key column (`demote p`, then the argmax),
+/// and that form is not shipped: its completeness demand would be
+/// undischargeable, since the coarsening happens inside the operation, so a
+/// claim before it sits at the fine key (which ADR 0035 says nothing
+/// survives) and a claim after it comes too late.  The ADR's own example
+/// puts the claim in that useless position.  Rejecting the form and naming
+/// the explicit spelling keeps every accepted use dischargeable.
+fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [p_arg] = args else {
+        return Err(error(
+            "`latest` takes one point column, as in `latest taken_at`",
+            span,
+        ));
+    };
+    let ExprKind::Name(p) = &p_arg.kind else {
+        return Err(error(
+            "`latest`'s point column must be an identifier",
+            p_arg.span,
+        ));
+    };
+
+    if table.content.key.iter().any(|c| &c.name == p) {
+        return Err(error(
+            format!(
+                "`latest` needs `{p}` in the fiber, not in the key: coarsening \
+                 inside the operation would leave its completeness demand with \
+                 nowhere to stand, so write the coarsening out (`demote {p}`, \
+                 then the claim the fold rests on, then `latest {p}`)"
+            ),
+            p_arg.span,
+        ));
+    }
+    let Some(point) = table.content.columns.iter().find(|c| &c.name == p).cloned() else {
+        return Err(error(format!("unknown column `{p}`"), p_arg.span));
+    };
+    if !point.domain.is_orderable() {
+        return Err(error(
+            format!(
+                "`latest` orders by `{p}`, which must land in an orderable \
+                 domain (`int`, `real`, a dimensioned real, `date`, or \
+                 `instant`), found `{}`",
+                crate::resolve::type_name(&point.domain)
+            ),
+            p_arg.span,
+        ));
+    }
+    if table.qualifiers.totality.is_optional(p) {
+        return Err(error(
+            format!(
+                "`latest` needs `{p}` total: a missing point has no position in \
+                 the order, so there is no latest row to keep"
+            ),
+            p_arg.span,
+        ));
+    }
+
+    // Tie-freedom, the same tier 1 discharge a scan gets: a projection key
+    // is injective on the fiber when `key + {p}` contains a grading
+    // (`Mensura.keyInjOn_demote_tag`), and `assume { arranged }` is the
+    // tier 3 hatch for everything else.
+    if table.qualifiers.arranged != Arranged::Assumed {
+        let mut with = table.key_names();
+        with.insert(p.clone());
+        if !table
+            .qualifiers
+            .functional
+            .iter()
+            .any(|grading| grading.is_subset(&with))
+        {
+            return Err(error(
+                format!(
+                    "`latest`'s point `{p}` may have ties, so the latest row is \
+                     not determined: nothing says at most one row per key \
+                     shares it.  Order by a column projected out of the key \
+                     (`demote` carries that fact), or claim it with \
+                     `assume {{ arranged }}`"
+                ),
+                p_arg.span,
+            ));
+        }
+    }
+
+    // Completeness, the demand every reducer makes (ADR 0023): a partial
+    // bag's latest row is silently wrong.  A `singletons` input discharges
+    // it trivially, a present key's single row being its whole fiber.
+    if table.qualifiers.cardinality == Cardinality::Bag
+        && table.qualifiers.completeness != Completeness::Complete
+    {
+        return Err(error(
+            "`latest` reduces each fiber to one row, which is silently wrong \
+             on a partial bag, so it needs completeness over the current key; \
+             establish it with `completeness_check { ... }` or \
+             `assume { complete }` first, after any `demote` (the fact does \
+             not survive a key coarsening)",
+            span,
+        ));
+    }
+
+    // Fiber-to-row: one row per present key, so the result is `singletons`
+    // and the gradings follow from the key (the conservative `sync_functional`
+    // in `dispatch_op` does that, since `latest` is not in its carve-out).
+    table.qualifiers.cardinality = Cardinality::Singletons;
+    table.qualifiers.completeness = Completeness::Complete;
+    table.qualifiers.windows.clear();
+    table.qualifiers.contracts.clear();
+    Ok(PipeTy::Table(table))
+}
+
 /// `closed` (section 6.7, ADR 0037 decision 4): drop every window that is
 /// still open and establish `Complete` at the current key on the survivors.
 ///
@@ -2104,6 +2230,7 @@ mod tests {
                 scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
                 scol("seq", ColumnType::Int, ColumnRole::Attr, false),
                 scol("day", ColumnType::Date, ColumnRole::Attr, false),
+                scol("peak", ColumnType::Real, ColumnRole::Attr, true),
                 scol("note", ColumnType::String, ColumnRole::Attr, true),
             ],
             cardinality: Cardinality::Singletons,
@@ -3726,6 +3853,89 @@ mod tests {
         )
         .expect_err("no establishment");
         assert!(errs[0].message.contains("needs completeness"));
+    }
+
+    /// `latest p` reduces each fiber to its maximal-point row, demanding
+    /// tie-freedom and completeness exactly as the other ordered
+    /// reductions do (ADR 0037 decision 7).
+    #[test]
+    fn latest_reduces_to_the_maximal_point_row() {
+        let s = windowed_sources(true);
+        // The explicit spelling: coarsen, claim what the fold rests on,
+        // then reduce.  Tie-freedom comes from the surviving grading, so
+        // there is no `assume { arranged }`.
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> demote taken_at |> assume { complete } |> latest taken_at",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+        assert_eq!(
+            t.content
+                .key
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["machine_id"]
+        );
+        // `p` survives as an ordinary total attribute.
+        assert!(t.content.columns.iter().any(|c| c.name == "taken_at"));
+        assert!(t.qualifiers.totality.is_total("taken_at"));
+        // After `closed` both demands discharge by mechanism, with no
+        // claim anywhere in the pipeline.
+        assert!(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at |> closed |> latest taken_at",
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn latest_rejections_name_their_rule() {
+        let s = windowed_sources(true);
+        for (src, needle) in [
+            // The fused key-column form is not shipped: its completeness
+            // demand would have nowhere to stand (ADR 0037 decision 7).
+            ("readings |> latest taken_at", "not in the key"),
+            // The reducer's two facts, each demanded on its own terms.
+            (
+                "readings |> demote taken_at |> latest taken_at",
+                "needs completeness",
+            ),
+            (
+                "readings |> demote taken_at |> assume { complete } |> latest temperature",
+                "may have ties",
+            ),
+            // A point needs an order, and it needs to be there at all.
+            (
+                "readings |> demote taken_at |> assume { complete } |> latest note",
+                "orderable domain",
+            ),
+            (
+                "readings |> demote taken_at |> assume { complete } |> latest peak",
+                "needs `peak` total",
+            ),
+            (
+                "readings |> demote taken_at |> latest nope",
+                "unknown column",
+            ),
+            (
+                "readings |> demote taken_at |> latest",
+                "takes one point column",
+            ),
+        ] {
+            let errs = pipe_ty(&s, src).expect_err(src);
+            assert!(
+                errs.iter().any(|e| e.message.contains(needle)),
+                "`{needle}` not found for `{src}`: {:?}",
+                errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

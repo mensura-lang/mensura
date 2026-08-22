@@ -409,6 +409,23 @@ negative: a scan is fiber-to-bag and `latest` is fiber-to-row, and
 the keep-combiner route cannot return the *row*, only one column of
 it.
 
+*Amended while implementing (owner, 2026-08-16): the fused
+key-column form is **not shipped**.*  Its completeness demand is
+undischargeable, and the example above shows the trap rather than the
+fix: the coarsening happens inside the operation, so
+`assume { complete }` before it sits at the fine key (which nothing
+survives, ADR 0035, exactly the shape
+`reject/assume_before_demote.mensura` refuses) and after it comes too
+late for the fold that needed it.  There is no valid placement, so
+`latest p` requires `p` to be an attribute already and rejects a key
+column with a diagnostic naming the explicit spelling
+(`demote p`, then the claim, then `latest p`).  Everything the
+decision specifies is still reachable, including both honest cases
+above; what is refused is the one form that could never be
+discharged.  The worked example's
+`readings |> latest taken_at |> assume { complete }` should be read as
+the explicit spelling.
+
 ### 8.  Grammar and formal gates
 
 **Grammar.**  The three operations add zero productions: `window`,
@@ -639,6 +656,28 @@ Implementation (the M5 windows slice, not this ADR):
   entity's silence unobservable (ADR 0038's motivating query).  That
   ADR grains the watermark by the residual key and restores liveness
   with a declared floor.
+- **An honest exit for the frontier window.**  Decision 4 gives the open
+  window one fate, absence, which is right for a view whose rows must be
+  final and wrong for a live dashboard asking "the peak so far today".
+  That question has no honest spelling today: `closed` withholds the row
+  and `assume { complete }` misreports it, since the claim covers the
+  whole table and is false on exactly one window (the contrast is worked
+  in `docs/language/07-pipelines.md`).  The shape that would answer it is
+  `closed`'s dual: a reduction over the *open* windows that emits the
+  bound it was computed over, the grain's effective watermark, beside the
+  aggregate, so a consumer can see both that the row is provisional and
+  how provisional it is.  It is establishable rather than claimed, and it
+  needs no new state or clock: the effective watermark is already read
+  once per run and is already the single value both admission and closure
+  read (ADR 0041 decision 1), so exposing it as a column keeps `mensura
+  run`'s purity untouched.  What is undecided is the surface (a stage
+  beside `closed`, an argument to it, or a projection of the watermark
+  usable in an ordinary expression) and whether the bound belongs in a
+  column or in a table-level fact that marks a whole table provisional.
+  Deferred to the serving side of the refresh slice
+  (`docs/toolkit/04-processing-layer.md`), which is where a consumer of
+  provisional rows first exists.  *Raised 2026-08-17, while documenting
+  the `closed`-versus-`assume` contrast.*
 - **A forward-skew bound on the watermark.**  `lateness` bounds how
   old an accepted point may be; nothing bounds how new.  One device
   with a clock far ahead advances the global watermark by the whole
