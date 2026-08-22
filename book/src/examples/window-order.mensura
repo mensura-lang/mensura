@@ -1,0 +1,25 @@
+import series
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// Both kinds of window at once, and **no claims at all**.  The reading time
+// was part of the identity, `window` extended that fact to the window column
+// rather than resetting it, and `demote` keeps it, so the order inside each
+// window's bag is provable.  `lag` relates present rows, so it demands no
+// completeness either.
+view within_window_trend {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> map_bags |k, b| (.at       = b.taken_at,
+                               .previous = series.lag (|r| r.temperature)
+                                                      (|r| r.taken_at) b)
+}

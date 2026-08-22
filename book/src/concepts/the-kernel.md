@@ -60,8 +60,12 @@ them:
   halves that share no key, and `union` is what puts two tables back together.
 - `unpivot` and `pivot` are inverses: long form and wide form of the same data.
 
-That is the whole kernel.  Everything else (the named forms `filter`, `mutate`,
-`select`, `aggregate`, window functions, and the streaming operations) is sugar
-or specialization over these, and arrives later.  With the operations named, the
+That is the whole kernel.  Everything else is sugar or specialization over
+these: the named forms `filter`, `mutate`, `select`, and `aggregate` are still
+to come, while the window functions and the streaming operations have landed.
+`window` is the clearest case of a specialization rather than a new idea: it is
+a replicating `flat_map` followed by a `promote`, which is why the facts it
+carries are the facts those two carry, and it has a chapter of its own in
+[Windows and time](../windows/over-time.md).  With the operations named, the
 next chapter can show what their *types* track and why that catches mistakes
 other tools cannot.

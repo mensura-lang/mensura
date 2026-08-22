@@ -1,0 +1,24 @@
+import bag
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// Quarter-hour tumbling windows: `stride == size`, so each reading lands in
+// exactly one.  `w` joins the key, carrying `taken_at`'s domain, and the
+// window starts lie on the fifteen-minute grid anchored at the epoch.
+view quarter_hour_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           // The frontier window is still filling, so this claim is not yet
+           // true of the whole table.  The next chapter replaces it.
+           |> assume { complete }
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}

@@ -1,0 +1,24 @@
+import bag
+
+// The machine is the identity; its samples recur.
+unit Sensor {
+  machine_id: string
+}
+
+// A bag registry (`attr*`): the bag per machine *is* the tabulation, and
+// because the registry is the sole intake and only appends, it is the whole
+// bag.
+registry vibrations {
+  unit { Sensor }
+  attr* {
+    sampled_at: instant
+    amplitude:  real
+  }
+}
+
+// No `assume` anywhere: the fold runs at the registry's own key, so nothing
+// coarsens and there is nothing to re-claim.
+view machine_vibration {
+  vibrations |> map_bags |k, b| (.peak     = bag.max b.amplitude,
+                                 .samples  = #b.amplitude)
+}

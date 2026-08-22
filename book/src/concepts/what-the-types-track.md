@@ -117,10 +117,14 @@ needs no fact at all, because at most one row per key means a present bag
 is already whole; only a coarsened key, or a bag store, can hold a partial
 bag for a fold to be silently wrong on.
 
-A table earns the fact in one of three ways: by **mechanism** (a `registry`
-source is complete by construction, at its own declared key), by a **check**
-(the `completeness_check` stage above), or by an **annotation**
-(`@complete_over(col)` on a source store).  When none of these apply,
+A table earns the fact in one of a few ways: by **mechanism** (a `registry`
+source is complete by construction, at its own declared key, see
+[Registries](../modelling/registries.md)), by a **check** (the
+`completeness_check` stage above), by an **annotation** (`@complete_over(col)`
+on a source store), or, over a time window, by **closedness** and by
+**enumeration** of the grid: two mechanisms strong enough to remove the claim
+from a streaming rollup entirely, and the subject of
+[Finality and the grid](../windows/finality.md).  When none of these apply,
 `assume { ... }` admits the operation by fiat, locally and visibly.
 
 **What other systems cannot do.**  `SELECT student, sum(credits) ... GROUP BY

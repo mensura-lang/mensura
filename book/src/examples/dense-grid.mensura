@@ -1,0 +1,39 @@
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+// The population: which machines should have windows at all, and when each
+// one's history starts.  `activated` is the moment telemetry came online, an
+// absolute event the store records directly.
+store machines {
+  unit { Machine }
+  attr { activated: instant }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+// `dense` completes the grid the reduction left holes in: one row per machine
+// per closed slot, from that machine's `activated` bound up to the closed
+// bound.  `n` fills with `0` because `#b` folds at `+`, which has an
+// identity, and zero readings really were reduced.  `peak` has no identity to
+// fill from, so the column is optional and absent on a filled row.
+view sensor_health {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n    = #b.temperature,
+                               .peak = bag.max b.temperature)
+           |> dense w machines activated
+}

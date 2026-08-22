@@ -13,6 +13,7 @@
 - [Units and keys](modelling/units.md)
 - [Scalar types](modelling/scalar-types.md)
 - [Stores and attributes](modelling/stores.md)
+- [Registries](modelling/registries.md)
 - [Shapes](modelling/shapes.md)
 
 # Concepts
@@ -25,6 +26,11 @@
 - [Views](transforming/views.md)
 - [Reshaping rows with flat_map](transforming/flat-map.md)
 - [Pivoting and unpivoting](transforming/pivot.md)
+
+# Windows and time
+
+- [Windows over time](windows/over-time.md)
+- [Finality and the grid](windows/finality.md)
 
 ---
 

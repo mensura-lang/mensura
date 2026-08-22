@@ -1,0 +1,26 @@
+import bag
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  // The gateway's delivery bound, made type-visible and enforced at the
+  // intake: a batch holding a reading older than this is rejected whole.
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+// No `assume` anywhere.  `closed` drops the windows that can still receive a
+// reading and establishes completeness on the survivors, which is exactly
+// the fact the fold below demands.  Delete the `lateness` block and this
+// becomes a compile error rather than a wrong number.
+view quarter_hour_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}

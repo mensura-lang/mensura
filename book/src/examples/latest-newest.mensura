@@ -1,0 +1,18 @@
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// The newest reading per machine.  The coarsening is written out, so the
+// completeness claim has somewhere to stand; tie-freedom needs no claim,
+// because the time is part of the reading's identity.
+view newest_reading {
+  readings |> demote taken_at
+           |> assume { complete }
+           |> latest taken_at
+}

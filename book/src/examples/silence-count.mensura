@@ -1,0 +1,35 @@
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr { activated: instant }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+// How many days did each machine report nothing?  With no `assume` anywhere:
+// `demote w` would normally forfeit the completeness the fold demands, and
+// here it re-derives it, because `dense` left no hole in the grid to lose.
+view silence_per_machine {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines activated
+           |> demote w
+           |> map_bags |k, b| (.silent = fold `+` (|r| if r.n == 0 then 1 else 0) b)
+}
