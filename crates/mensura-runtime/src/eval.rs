@@ -12,7 +12,7 @@
 //! `completeness_check`) are identities: their facts are proven at compile
 //! time and trusted at runtime (`ROADMAP.md` M2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mensura_syntax::{BinOp, Expr, ExprKind, Presence, Stmt, UnOp};
 use mensura_types::{ColumnRole, ColumnType, Lateness, ResolvedProgram, Schema, ViewPlan};
@@ -77,10 +77,23 @@ pub struct SourceTable {
     /// the same conservative rule the checker applies to the facts.
     origin: Option<String>,
     /// What `window` built, mirroring the checker's window facts so the
-    /// evaluator can filter without re-deriving them from the syntax: the
-    /// window column, its point, and its extent in the point's storage
-    /// grain.
-    windows: BTreeMap<String, (String, i64)>,
+    /// evaluator can filter and fill without re-deriving them from the
+    /// syntax, keyed by window column.
+    windows: BTreeMap<String, WindowInfo>,
+    /// Which attribute columns a single combiner produced, by its surface
+    /// spelling: the runtime twin of the checker's `Reductions` fact
+    /// (ADR 0038 decision 2), recorded by `map_bags` and read by `dense`,
+    /// which fills such a column from the combiner's identity.
+    reductions: BTreeMap<String, String>,
+}
+
+/// One window column's grid, in the point's storage grain (whole
+/// milliseconds for an `instant`, a plain count for an `int`).
+#[derive(Clone, Debug, PartialEq)]
+struct WindowInfo {
+    point: String,
+    size: i64,
+    stride: i64,
 }
 
 impl SourceTable {
@@ -102,6 +115,7 @@ impl SourceTable {
             rows,
             origin: Some(schema.store.clone()),
             windows: BTreeMap::new(),
+            reductions: BTreeMap::new(),
         }
     }
 
@@ -302,6 +316,12 @@ fn apply_op(
             contracts,
         )?)),
         "latest" => Ok(TableVal::Table(eval_latest(expect_table(input)?, args)?)),
+        "dense" => Ok(TableVal::Table(eval_dense(
+            env,
+            contracts,
+            expect_table(input)?,
+            args,
+        )?)),
         other => err(format!(
             "`{other}` is not yet executable (docs/toolkit/04-processing-layer.md)"
         )),
@@ -439,6 +459,7 @@ fn eval_flat_map(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
         // the grid with it; the checker resets the same facts here.
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     })
 }
 
@@ -625,6 +646,10 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
             )
         })
         .collect();
+    let reductions: BTreeMap<String, String> = fields
+        .iter()
+        .filter_map(|f| field_combiner(&f.value).map(|op| (f.name.name.clone(), op)))
+        .collect();
 
     // Group row positions by key, ordered by key value.
     let nkeys = input.key_len();
@@ -694,13 +719,43 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
             _ => return internal("a mixed `map_bags` record (the checker rejects this)"),
         }
     }
+    // The grid facts cross the reduction, because `dense` runs after it by
+    // construction (ADR 0038 decision 1): it reads the stride to enumerate
+    // the grid, the origin to reach the intake contract and the watermarks,
+    // and the combiner each column reduced at to fill from its identity.
+    // The checker's qualifier row carries the same facts across the same
+    // stage, and `closed` refuses downstream of here on its own grounds:
+    // the point column the grid is over is gone.
     Ok(SourceTable {
         key: input.key,
         attrs,
         rows,
-        origin: None,
-        windows: BTreeMap::new(),
+        origin: input.origin,
+        windows: input.windows,
+        reductions,
     })
+}
+
+/// The combiner an aggregate field reduces at, when the field is a **single**
+/// fold (ADR 0038 decision 2): the runtime twin of the checker's
+/// `field_reduction`, and the same three spellings.
+///
+/// By the time this runs the bundled bindings have beta-reduced to a `fold`
+/// spine (ADR 0031 Decision 8), so `bag.sum b.x` arrives as the primitive and
+/// needs no case of its own.  Cardinality is a fold at `+` over ones
+/// (Decision 9), which is what makes a filled row's count an honest zero.
+fn field_combiner(expr: &Expr) -> Option<String> {
+    if let ExprKind::Unary(UnOp::Card, _) = &expr.kind {
+        return Some("+".to_string());
+    }
+    let (head, args) = flatten_app(expr);
+    match (&head.kind, &args[..]) {
+        (ExprKind::Name(name), [combiner, _, _]) if name == "fold" => match &combiner.kind {
+            ExprKind::Combiner(raw) => Some(raw.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The statically known domain of a `map_bags` field, used to name the output
@@ -735,6 +790,24 @@ fn bag_static_domain(input: &SourceTable, bname: &str, expr: &Expr) -> Option<Co
             let (head, args) = flatten_app(expr);
             match args[..] {
                 [_] => applied(head),
+                // A fold through the identity mapper keeps its bag's domain,
+                // which is what gives `bag.sum b.x` a column type even over a
+                // source with no rows.  `dense` reads it there to fill from
+                // the combiner's identity (ADR 0038 decision 2).  A mapper
+                // that computes is left to the data, as before: the runtime
+                // cannot type an arbitrary expression.
+                [_, mapper, bag] if matches!(&head.kind, ExprKind::Name(n) if n == "fold") => {
+                    match &mapper.kind {
+                        ExprKind::Lambda { params, body, .. }
+                            if params.len() == 1
+                                && matches!(&body.kind,
+                                    ExprKind::Name(v) if *v == params[0].name) =>
+                        {
+                            member_domain(bag)
+                        }
+                        _ => None,
+                    }
+                }
                 _ => None,
             }
         }
@@ -902,13 +975,21 @@ fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
     let mut key = input.key;
     key.push(col(w.clone(), point_ty));
     let mut windows = input.windows;
-    windows.insert(w.clone(), (p.clone(), size));
+    windows.insert(
+        w.clone(),
+        WindowInfo {
+            point: p.clone(),
+            size,
+            stride,
+        },
+    );
     Ok(SourceTable {
         key,
         attrs: input.attrs,
         rows,
         origin: input.origin,
         windows,
+        reductions: input.reductions,
     })
 }
 
@@ -967,6 +1048,7 @@ fn eval_latest(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
         // describes the result any more.
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     })
 }
 
@@ -999,7 +1081,7 @@ fn eval_closed(mut table: SourceTable, contracts: &Contracts) -> Result<SourceTa
         table
             .windows
             .get(&c.name)
-            .map(|(p, s)| (i, c.name.clone(), p.clone(), *s))
+            .map(|info| (i, c.name.clone(), info.point.clone(), info.size))
     }) else {
         return internal("`closed` without a window column the checker required");
     };
@@ -1050,6 +1132,223 @@ fn eval_closed(mut table: SourceTable, contracts: &Contracts) -> Result<SourceTa
 }
 
 // ---------------------------------------------------------------------------
+// dense
+
+/// The first grid slot at or above a bound: the entity's **first full
+/// window** (ADR 0038 decision 3).
+///
+/// The slot that merely *contains* the bound is excluded deliberately, since
+/// part of it precedes the entity's history, and a zero filled into it would
+/// read as silence where the truth is that the entity did not yet exist.
+/// Euclidean division, so a pre-epoch bound aligns the same way.
+fn first_full_slot(bound: i64, stride: i64) -> i64 {
+    let q = bound.div_euclid(stride);
+    if q * stride == bound {
+        bound
+    } else {
+        (q + 1) * stride
+    }
+}
+
+/// The last closed slot: the largest grid multiple satisfying the same
+/// predicate `closed` filters on, `slot + size + lateness <= effective`.
+fn last_closed_slot(effective: i64, size: i64, lateness: i64, stride: i64) -> i64 {
+    (effective - size - lateness).div_euclid(stride) * stride
+}
+
+/// A stand-in value of a column's domain, for reading an identity off a
+/// combiner when no row of that column exists to sample.
+///
+/// [`identity_of`] asks a value rather than a type, because a dimensioned
+/// real is just a real at runtime; over an empty source there is no value to
+/// ask, and this is where the column's declared domain steps in.
+fn zero_of_domain(ty: &ColumnType) -> Option<Value> {
+    match ty {
+        ColumnType::Int => Some(Value::Int(0)),
+        ColumnType::Real | ColumnType::Quantity(_) => Some(Value::Real(0.0)),
+        ColumnType::Bool => Some(Value::Bool(false)),
+        _ => None,
+    }
+}
+
+/// `dense w population bound` (ADR 0038): complete the window grid after the
+/// reduction, one row per population entity per closed slot.
+///
+/// Three inputs and one anti-join.  The grid's step comes from the window
+/// fact, its upper bound from the same watermark `closed` read (so the two
+/// stages agree by construction rather than by coincidence), and its lower
+/// bound per entity from the named column on the named population.  Slots
+/// the reduction already produced a row for are left alone; the rest are
+/// filled, from the combiner's identity where the column has one and with
+/// absence where it does not.
+fn eval_dense(
+    env: &BTreeMap<String, TableVal>,
+    contracts: &Contracts,
+    mut table: SourceTable,
+    args: &[&Expr],
+) -> Result<SourceTable, EvalError> {
+    let [w_arg, pop_arg, bound_arg] = args else {
+        return internal("`dense` expects a window column, a population, and a bound");
+    };
+    let (ExprKind::Name(w), ExprKind::Name(pop_name), ExprKind::Name(bound)) =
+        (&w_arg.kind, &pop_arg.kind, &bound_arg.kind)
+    else {
+        return internal("`dense` expects column and source names");
+    };
+
+    let Some(at) = table.key.iter().position(|c| &c.name == w) else {
+        return internal("`dense` on a column the checker did not put in the key");
+    };
+    let Some(info) = table.windows.get(w).cloned() else {
+        return internal("`dense` without the window fact the checker required");
+    };
+    let Some(origin) = table.origin.clone() else {
+        return internal("`dense` on a table with no source the checker required");
+    };
+    let Some((contract, watermarks)) = contracts
+        .get(&origin)
+        .and_then(|cs| cs.iter().find(|(c, _)| c.column == info.point))
+    else {
+        return internal("`dense` without the intake contract the checker required");
+    };
+    let Some(TableVal::Table(population)) = env.get(pop_name) else {
+        return internal(format!("unknown population `{pop_name}`"));
+    };
+
+    // The population is keyed like the windowed rows without the window
+    // column (the checker's demand), so its key columns line up positionally
+    // with the residual key, and the grain columns are found among them.
+    let pop_nkeys = population.key_len();
+    let Some(bound_at) = population
+        .key
+        .iter()
+        .position(|c| &c.name == bound)
+        .or_else(|| {
+            population
+                .attrs
+                .iter()
+                .position(|c| &c.name == bound)
+                .map(|i| pop_nkeys + i)
+        })
+    else {
+        return internal(format!("`{pop_name}` has no column `{bound}`"));
+    };
+    let grain_at: Vec<usize> = contract
+        .grain
+        .iter()
+        .filter_map(|g| population.key.iter().position(|c| &c.name == g))
+        .collect();
+    if grain_at.len() != contract.grain.len() {
+        return internal("`dense` without the watermark grain the checker required");
+    }
+
+    // The fill, per attribute column: the combiner's identity where the
+    // column is a single fold at one that has an identity, absence
+    // otherwise.  The checker has already typed the second kind optional, so
+    // absence here is the type's own value rather than a widening
+    // (ADR 0038 decision 2).
+    let nkeys = table.key.len();
+    let mut fill: Vec<Value> = Vec::with_capacity(table.attrs.len());
+    for (i, c) in table.attrs.iter().enumerate() {
+        let Some(op) = table.reductions.get(&c.name) else {
+            fill.push(Value::Missing);
+            continue;
+        };
+        let sample = table
+            .rows
+            .iter()
+            .map(|row| &row[nkeys + i])
+            .find(|v| **v != Value::Missing)
+            .cloned()
+            .or_else(|| c.ty.as_ref().and_then(zero_of_domain));
+        match sample {
+            Some(sample) => fill.push(identity_of(op, &sample)?),
+            // Nothing reduced this column anywhere and its domain did not
+            // survive to here, so there is no value to write.  Absence is
+            // the conservative answer and the checker typed the column
+            // optional only when the combiner had no identity, so say so
+            // rather than guessing.
+            None => {
+                return internal(format!(
+                    "`dense` cannot fill `{}`: no row of it exists to read its \
+                     domain from",
+                    c.name
+                ));
+            }
+        }
+    }
+
+    // The anti-join, against the whole key.
+    let mut present: BTreeSet<Vec<KeyVal>> = BTreeSet::new();
+    for row in &table.rows {
+        present.insert(row[..nkeys].iter().map(key_of).collect::<Result<_, _>>()?);
+    }
+
+    let window_ty = table.key[at].ty.clone();
+    let to_grain = |v: &Value| -> Result<i64, EvalError> {
+        match v {
+            Value::Instant(s) => {
+                temporal::instant_to_ms(s).map_err(|message| EvalError { message })
+            }
+            Value::Int(n) => Ok(*n),
+            _ => internal("`dense` on a bound that is not a point"),
+        }
+    };
+    let from_grain = |g: i64| -> Result<Value, EvalError> {
+        match window_ty {
+            Some(ColumnType::Instant) => temporal::ms_to_instant(g)
+                .map(Value::Instant)
+                .map_err(|message| EvalError { message }),
+            _ => Ok(Value::Int(g)),
+        }
+    };
+
+    let mut filled = Vec::new();
+    for prow in &population.rows {
+        let grain: Vec<String> = grain_at.iter().map(|&i| prow[i].grain_key()).collect();
+        // No watermark at all (nothing accepted in this grain and no
+        // declared floor) means no slot of this entity is closed, so there
+        // is nothing to fill.  With a floor, this is exactly the machine
+        // that never reported and still gets its silent slots
+        // (ADR 0041 decision 3).
+        let Some(effective) = watermarks.effective(&grain) else {
+            continue;
+        };
+        let bound_value = &prow[bound_at];
+        if *bound_value == Value::Missing {
+            return internal(format!("`dense` on a missing `{bound}`"));
+        }
+        let first = first_full_slot(to_grain(bound_value)?, info.stride);
+        let last = last_closed_slot(effective, info.size, contract.bound, info.stride);
+        let mut slot = first;
+        while slot <= last {
+            let start = from_grain(slot)?;
+            let mut key: Vec<Value> = Vec::with_capacity(nkeys);
+            let mut residual = prow[..pop_nkeys].iter();
+            for i in 0..nkeys {
+                if i == at {
+                    key.push(start.clone());
+                } else {
+                    match residual.next() {
+                        Some(v) => key.push(v.clone()),
+                        None => return internal("`dense` population key shorter than the key"),
+                    }
+                }
+            }
+            let probe: Vec<KeyVal> = key.iter().map(key_of).collect::<Result<_, _>>()?;
+            if !present.contains(&probe) {
+                let mut row = key;
+                row.extend(fill.iter().cloned());
+                filled.push(row);
+            }
+            slot += info.stride;
+        }
+    }
+    table.rows.extend(filled);
+    Ok(table)
+}
+
+// ---------------------------------------------------------------------------
 // split / union
 
 /// `split |k| pred` (section 6.5): route each row by a predicate over its
@@ -1076,6 +1375,7 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
         rows: left_rows,
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     };
     let right = SourceTable {
         key: input.key,
@@ -1083,6 +1383,7 @@ fn eval_split(input: SourceTable, args: &[&Expr]) -> Result<TableVal, EvalError>
         rows: right_rows,
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     };
     Ok(TableVal::Pair(left, right))
 }
@@ -1103,6 +1404,7 @@ fn eval_bind(input: TableVal) -> Result<SourceTable, EvalError> {
         rows,
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     })
 }
 
@@ -1170,6 +1472,7 @@ fn eval_join(
         rows,
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     })
 }
 
@@ -1231,6 +1534,7 @@ fn eval_unpivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalE
         rows,
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     })
 }
 
@@ -1325,6 +1629,7 @@ fn eval_pivot(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalErr
         rows,
         origin: None,
         windows: BTreeMap::new(),
+        reductions: BTreeMap::new(),
     })
 }
 
@@ -2128,6 +2433,17 @@ mod tests {
         src_view: &str,
         rows_by_store: &[(&str, Vec<Row>)],
     ) -> Result<Vec<Row>, EvalError> {
+        try_eval_with(stores, src_view, rows_by_store, Contracts::new())
+    }
+
+    /// The same, with the intake contracts and watermarks a run would have
+    /// prefetched: what `closed` and `dense` read.
+    fn try_eval_with(
+        stores: &str,
+        src_view: &str,
+        rows_by_store: &[(&str, Vec<Row>)],
+        contracts: Contracts,
+    ) -> Result<Vec<Row>, EvalError> {
         let src = format!("{stores}\n{src_view}");
         let program = program(&src);
         let plan = &program.views[0];
@@ -2143,7 +2459,7 @@ mod tests {
                 SourceTable::from_store(schema, rows.clone()),
             );
         }
-        eval_view(plan, &sources, &Contracts::new())
+        eval_view(plan, &sources, &contracts)
     }
 
     fn eval(src_view: &str, rows: Vec<Row>) -> Vec<Row> {
@@ -2883,6 +3199,135 @@ mod tests {
     /// multiples of `stride` anchored at the domain's zero, and a point
     /// lands in every window `w` with `w <= p < w + size`.  Mirrors
     /// `Mensura.Units.Instant.mem_windowStarts`.
+    #[test]
+    fn dense_aligns_the_grid_at_both_ends() {
+        // The lower bound rounds *up* to a slot, so the window that merely
+        // contains it is excluded: part of it precedes the entity's history
+        // (ADR 0038 decision 3).
+        assert_eq!(first_full_slot(0, 15), 0);
+        assert_eq!(first_full_slot(1, 15), 15);
+        assert_eq!(first_full_slot(15, 15), 15);
+        // Pre-epoch bounds align the same way, by euclidean division.
+        assert_eq!(first_full_slot(-1, 15), 0);
+        assert_eq!(first_full_slot(-15, 15), -15);
+        assert_eq!(first_full_slot(-16, 15), -15);
+        // The upper bound is `closed`'s own predicate, floored to the grid:
+        // the largest slot with `slot + size + lateness <= effective`.
+        assert_eq!(last_closed_slot(100, 15, 10, 15), 75);
+        assert_eq!(last_closed_slot(40, 15, 10, 15), 15);
+        assert_eq!(last_closed_slot(25, 15, 10, 15), 0);
+        assert_eq!(last_closed_slot(24, 15, 10, 15), -15);
+    }
+
+    /// `dense` completes the grid the reduction left holes in, including for
+    /// a machine that never reported at all (ADR 0038's motivating case).
+    #[test]
+    fn dense_fills_the_closed_grid() {
+        const FLEET: &str = r#"
+            import bag
+            import si
+            unit Machine { machine_id: string }
+            store machines { unit { Machine } attr { activated: instant } }
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+              lateness { taken_at: 10.0 * si.minute }
+            }
+        "#;
+        let ms = |at: &str| temporal::instant_to_ms(at).expect("an instant");
+        // One watermark per grain, raised by a declared floor (ADR 0041):
+        // the floor is what lets `M-19`, which never reported, have closed
+        // windows at all.
+        let mut observed = BTreeMap::new();
+        observed.insert(vec!["M-07".to_string()], ms("2026-08-10T10:41:00.000Z"));
+        let mut contracts = Contracts::new();
+        contracts.insert(
+            "readings".to_string(),
+            vec![(
+                Lateness {
+                    column: "taken_at".to_string(),
+                    bound: 600_000,
+                    grain: vec!["machine_id".to_string()],
+                    span: mensura_syntax::Span::new(0, 0),
+                },
+                Watermarks::new(observed, Some(ms("2026-08-10T10:41:00.000Z"))),
+            )],
+        );
+        let mut rows = try_eval_with(
+            FLEET,
+            r#"view sensor_health {
+                 readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+                          |> demote taken_at
+                          |> closed
+                          |> map_bags |k, b| (.n = #b.temperature,
+                                              .peak = bag.max b.temperature)
+                          |> dense w machines activated
+               }"#,
+            &[
+                (
+                    "machines",
+                    vec![
+                        vec![
+                            Value::String("M-07".into()),
+                            Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                        ],
+                        vec![
+                            Value::String("M-19".into()),
+                            Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                        ],
+                    ],
+                ),
+                (
+                    "readings",
+                    vec![vec![
+                        Value::String("M-07".into()),
+                        Value::Instant("2026-08-10T10:07:31.221Z".into()),
+                        Value::Real(351.2),
+                    ]],
+                ),
+            ],
+            contracts,
+        )
+        .expect("should evaluate");
+        rows.sort_by_key(|r| (r[0].grain_key(), r[1].grain_key()));
+        // Two closed slots per machine (10:00 and 10:15, since 10:30 is not
+        // yet final at a 10:41 watermark), and four rows where the reduction
+        // produced one.  `n` fills with `+`'s identity, which is true: zero
+        // readings were reduced.  `peak` has no identity to fill from, so it
+        // is absent, and that absence is what distinguishes a silent
+        // interval from a cold one.
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    Value::String("M-07".into()),
+                    Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                    Value::Int(1),
+                    Value::Real(351.2),
+                ],
+                vec![
+                    Value::String("M-07".into()),
+                    Value::Instant("2026-08-10T10:15:00.000Z".into()),
+                    Value::Int(0),
+                    Value::Missing,
+                ],
+                vec![
+                    Value::String("M-19".into()),
+                    Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                    Value::Int(0),
+                    Value::Missing,
+                ],
+                vec![
+                    Value::String("M-19".into()),
+                    Value::Instant("2026-08-10T10:15:00.000Z".into()),
+                    Value::Int(0),
+                    Value::Missing,
+                ],
+            ]
+        );
+    }
+
     #[test]
     fn window_starts_follow_the_stride_grid() {
         // Tumbling (`stride == size`): exactly one window per point.
