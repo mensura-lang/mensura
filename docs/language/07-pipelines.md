@@ -368,6 +368,20 @@ It is not a new qualifier: it is a new *establishment mechanism* for the
 existing completeness fact, joining `completeness_check`/`assume`, the
 registry rule, and the exhaustive-axis rule.
 
+**Why the stage exists: two completenesses, not one.**  A `lateness`
+contract gives a *bounded* fact, that nothing will ever arrive below
+`watermark - lateness` in this grain.  A reducing `map_bags` demands an
+*absolute* one, that this fiber is everything there will ever be
+(ADR 0023).  The bounded fact becomes the absolute one only on a fiber
+whose whole span lies below the bound, and the only fibers with a finite
+span are windows, so `closed` is where the conversion happens.  There is
+no such point without a window: `readings |> demote taken_at` is one bag
+per machine whose `bag.max` tomorrow's reading can still raise, forever,
+which is why no mechanism establishes completeness there and no contract,
+however strict, would change that.  A zero bound (`13-registries.md`,
+ADR 0041 decision 5) narrows the frontier to its minimum, one open window
+per grain under tumbling windows, and does not remove it.
+
 The establishment is mechanism-grade rather than a claim.  The windowing
 fact supplies `size` and the source's `lateness` declaration supplies the
 bound, both enforced at the intake, so "no row of this window can still
@@ -390,6 +404,42 @@ the honest representation, and it is what makes the design refresh-ready:
 **closed windows are final** (`closedWindow_stable`), so rerunning after
 further ingestion adds newly closed windows and never changes one already
 emitted.
+
+**`closed` against `assume { complete }`.**  The two spellings differ by
+one line, and both type-check:
+
+```mensura
+view final_peaks {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+
+view peaks_so_far {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+```
+
+With a machine's watermark at today 14:30, `final_peaks` omits today's row
+and `peaks_so_far` emits it holding the peak of a half-finished day.  Run
+both again at 18:00 over the same program and a grown registry:
+`final_peaks` is byte-identical (today is still open, every earlier day
+was already final), while `peaks_so_far` reports a different `.peak` for
+the same key, with nothing in the row saying that it moved or that it will
+move again.  Note what is and is not wrong there: every past row of
+`peaks_so_far` is right, and only its newest row is a number the data does
+not yet fix.  The claim is a claim about the *whole table*, so one open
+window is enough to make it false, and a view row that changes between
+runs is the temporal form of reading a value that is not determined yet.
+
+So the two are not a strong mechanism and a weak one.  They are different
+statements, one of which is false here, which is why the fallback named
+below is for a source with no `lateness` contract to close against rather
+than a way to keep the frontier row.
 
 Four demands, each with a diagnostic naming its fix:
 
@@ -416,6 +466,19 @@ its last windows would never close on the data alone.  That is what the
 declared **closure floor** is for (`13-registries.md`): it raises every
 grain's effective watermark, so silence becomes observable rather than
 indefinite.
+
+**Reporting the frontier is a gap, not a policy.**  The dashboard that
+wants "the peak so far today" is asking something legitimate that neither
+spelling above answers: `closed` withholds the row and
+`assume { complete }` misreports it.  What that query needs is `closed`'s
+dual, a reduction over the *open* windows that carries the bound it was
+computed over, so the row is visibly provisional and a consumer can see
+how provisional.  That is establishable rather than claimed, since the
+effective watermark is already read once per run and could be exposed as a
+column, which is why the direction is recorded as an open question on
+ADR 0037 rather than left to each program to improvise with an `assume`.
+Until it lands, a provisional aggregate is spelled with a visible claim
+and read as provisional by the human, not by the checker.
 
 ### `latest` - the newest row per group
 
