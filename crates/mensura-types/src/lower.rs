@@ -11,11 +11,12 @@
 //! sound and total because only a const binding can create a function
 //! (ADR 0030, Decision 5), so every closure at every call site is
 //! statically known.  Only the positions the runtime actually evaluates
-//! are rewritten: lambda bodies (and the value expressions inside them).
-//! Op selector arguments (column and source names), op blocks (`assume`,
-//! `completeness_check`; runtime identities), and builtin spine heads
-//! (`sum`, `to_real`, the pipeline ops) are left untouched, mirroring how
-//! the checker resolves those positions.
+//! are rewritten: lambda bodies (and the value expressions inside them),
+//! and an op's **value** arguments (`window`'s extents, ADR 0037
+//! decision 3).  Op selector arguments (column and source names), op
+//! blocks (`assume`, `completeness_check`; runtime identities), and
+//! builtin spine heads (`sum`, `to_real`, the pipeline ops) are left
+//! untouched, mirroring how the checker resolves those positions.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -128,13 +129,32 @@ fn lower_pipeline(e: &mut Expr, s: &Subst) {
 fn lower_op(e: &mut Expr, s: &Subst) {
     if let ExprKind::App(f, arg) = &mut e.kind {
         lower_op(f, s);
-        if let ExprKind::Lambda { params, body, .. } = &mut arg.kind {
-            let mut env: Vec<Binding> = params
-                .iter()
-                .map(|p| Binding::Shadow(p.name.clone()))
-                .collect();
-            let mut fresh = 0;
-            reduce(body, s, &mut env, 0, &mut fresh);
+        match &mut arg.kind {
+            ExprKind::Lambda { params, body, .. } => {
+                let mut env: Vec<Binding> = params
+                    .iter()
+                    .map(|p| Binding::Shadow(p.name.clone()))
+                    .collect();
+                let mut fresh = 0;
+                reduce(body, s, &mut env, 0, &mut fresh);
+            }
+            // A **value** argument, the third kind of op argument after
+            // selectors and blocks: `window`'s extents (ADR 0037 decision
+            // 3) are const expressions the runtime evaluates, so their
+            // const names must be substituted like any other value
+            // position.  Left alone they would reach the evaluator as a
+            // free `si.minute`, which has no runtime meaning.
+            //
+            // A bare `Name` is a selector (a column or a source) and a
+            // `Block` is an op block (`assume`, `completeness_check`);
+            // both are resolved by position and stay untouched, which is
+            // what keeps this a no-op for every operation but `window`.
+            ExprKind::Name(_) | ExprKind::Block(_) => {}
+            _ => {
+                let mut env: Vec<Binding> = Vec::new();
+                let mut fresh = 0;
+                reduce(arg, s, &mut env, 0, &mut fresh);
+            }
         }
     }
 }

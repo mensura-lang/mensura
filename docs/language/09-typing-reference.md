@@ -819,6 +819,53 @@ So `pivot` is where cardinality tracking pays off: it type-checks only when
 each spread cell is known to hold at most one value, which the long form's
 key discipline provides.
 
+### 6.7  `window` (replicate onto a time grid) -- Tier A
+
+```
+window : w -> p -> diff(domain(p)) -> diff(domain(p)) -> Table -> Table
+```
+
+`window w p size stride` replicates each row into every window containing
+its point `p` and adds the window start as a fresh key column `w` with
+`p`'s domain (ADR 0037 decision 1).  `w` must not already exist, which is
+the reverse of every other column argument; `p` must, in the key or among
+the attributes, and it stays where it is.
+
+Window starts are the multiples of `stride` from the domain's zero
+(ADR 0036 decision 5), and a row lands in every `w` with
+`w <= p < w + size`, so tumbling windows are `stride == size` and no
+second operation is needed.  An empty window is not a row: `window`
+replicates, and with no row there is nothing to replicate (ADR 0038 is
+where materializing the empty ones belongs).
+
+The extents are **const expressions** (ADR 0030) of type
+`diff(domain(p))` (ADR 0036 decision 4): `time[real]` for an `instant`
+point, `int` for an `int` point, both positive, and for an instant a
+whole number of milliseconds, so the grid cannot drift.  A `date` point
+waits on `diff(date)`.
+
+Properties:
+
+- **Content**: the key gains `w` at `p`'s domain; nothing else moves.
+- **Cardinality**: `singletons` at `K` becomes `singletons` at `K + {w}`,
+  a `bag` stays a `bag`, because the replication is injective on
+  (input identity, `w`).
+- **Gradings**: each `G` becomes `G + {w}` (`window_functional`), the one
+  operation besides the key moves that transforms them rather than
+  resetting them.  This is what keeps a downstream scan ceremony-free:
+  after `window` then `demote p`, the points are still unique inside one
+  window fiber, so tier 1 discharges the order key with no claim.
+- **Completeness, totality, lineage**: as the derived form transports
+  them (a replicating `flat_map`, then `promote w`).
+- **`exhaustive`**: cleared, as under the other key moves.
+- Tier A (`window_splitSafe`, by composition).
+
+The checker additionally records the **windowing fact** (`w` windows `p`
+at this extent and stride, over a source whose intake contract it
+inherits), the sibling of `exhaustive(axis)`: established here, consumed
+by `closed`, and reset conservatively by any operation that is not
+content-identity in ADR 0024's sense.
+
 ## 7.  Tier A / Tier B and split-safety
 
 The central guarantee is **split-safety**.  In the formalization,

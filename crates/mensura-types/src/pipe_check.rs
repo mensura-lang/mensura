@@ -18,7 +18,7 @@ use crate::model::ColumnType;
 use crate::suggest::suffix;
 use crate::table::{
     Arranged, Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage,
-    Qualifiers, SplitId, TableType, Totality,
+    Qualifiers, SplitId, TableType, Totality, WindowFact, Windows,
 };
 
 /// The type of a table-valued (pipeline) expression.
@@ -37,6 +37,16 @@ pub enum PipeTy {
 pub struct Sources {
     bound: BTreeMap<String, PipeTy>,
     ambient: crate::expr_check::Ambient,
+    /// The evaluated top-level consts and the imported module
+    /// environments, for the one kind of operation argument that is a
+    /// compile-time *value* rather than a selector: `window`'s extents
+    /// (ADR 0037 decision 3).
+    ///
+    /// The ambient above carries only *types*, so `si.minute` reaches an
+    /// expression site as `time[real]` with its magnitude erased.  An
+    /// extent has to be the magnitude, so the values travel separately.
+    consts: BTreeMap<String, crate::consts::ConstValue>,
+    modules: BTreeMap<String, &'static crate::modules::ModuleEnv>,
 }
 
 impl Sources {
@@ -53,6 +63,18 @@ impl Sources {
     /// Set the ambient value environment expression sites resolve against.
     pub fn with_ambient(mut self, ambient: crate::expr_check::Ambient) -> Self {
         self.ambient = ambient;
+        self
+    }
+
+    /// Set the compile-time values an extent argument evaluates against
+    /// (ADR 0037 decision 3, ADR 0030's const machinery).
+    pub fn with_consts(
+        mut self,
+        consts: BTreeMap<String, crate::consts::ConstValue>,
+        modules: BTreeMap<String, &'static crate::modules::ModuleEnv>,
+    ) -> Self {
+        self.consts = consts;
+        self.modules = modules;
         self
     }
 
@@ -184,12 +206,13 @@ fn dispatch_op(
         "pivot" => op_pivot(input, args, span),
         "assume" => op_assume(input, args, span),
         "completeness_check" => op_completeness_check(sources, input, args, span),
+        "window" => op_window(sources, input, args, span),
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
             // pointed diagnostic ("no `map` in Mensura: `flat_map` receives a
             // row, `map_bags` receives the bag") instead of the generic
             // edit-distance suggestion below.
-            const OPS: [&str; 12] = [
+            const OPS: [&str; 13] = [
                 "promote",
                 "demote",
                 "flat_map",
@@ -202,6 +225,7 @@ fn dispatch_op(
                 "pivot",
                 "assume",
                 "completeness_check",
+                "window",
             ];
             let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
             Err(error(
@@ -211,12 +235,14 @@ fn dispatch_op(
         }
     }?;
     // Gradings are transformed only where a witness backs the transform
-    // (ADR 0024): the key moves derive cardinality from them, and the
-    // content-identity stages carry them.  Every other operation resets
-    // them to match its own output cardinality, the conservative rule
-    // until the per-op transport table is mechanized.
+    // (ADR 0024): the key moves derive cardinality from them, the
+    // content-identity stages carry them, and `window` extends each of
+    // them by its fresh key column, witnessed by `Mensura.window_functional`
+    // (ADR 0037 decision 2).  Every other operation resets them to match
+    // its own output cardinality, the conservative rule until the per-op
+    // transport table is mechanized.
     Ok(match op {
-        "promote" | "demote" | "assume" | "completeness_check" => result,
+        "promote" | "demote" | "assume" | "completeness_check" | "window" => result,
         _ => sync_functional(result),
     })
 }
@@ -329,6 +355,12 @@ fn op_join(
             },
             functional: Functional::new(),
             arranged: Arranged::Unclaimed,
+            // A join is not content-identity in ADR 0024's sense (it
+            // widens the row and, for the inner form, can drop one), so
+            // the window facts and the source's intake contracts are reset
+            // conservatively (ADR 0037 decision 2).
+            windows: Windows::none(),
+            contracts: Vec::new(),
             lineage: left.qualifiers.lineage,
         },
     }))
@@ -382,6 +414,10 @@ fn op_flat_map(
             exhaustive,
             functional: Functional::new(),
             arranged: Arranged::Unclaimed,
+            // The body computes a fresh row, so neither a window grid nor
+            // an intake contract survives (ADR 0037 decision 2).
+            windows: Windows::none(),
+            contracts: Vec::new(),
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -700,6 +736,11 @@ fn op_map_bags(
             exhaustive: table.qualifiers.exhaustive,
             functional: Functional::new(),
             arranged: Arranged::Unclaimed,
+            // The attributes are computed from the fiber, so the point
+            // column a window fact names is gone and the grid with it
+            // (ADR 0037 decision 2).
+            windows: Windows::none(),
+            contracts: Vec::new(),
             lineage: table.qualifiers.lineage,
         },
     }))
@@ -883,6 +924,12 @@ fn op_union(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
             exhaustive,
             functional: Functional::new(),
             arranged: Arranged::Unclaimed,
+            // Only the facts both branches carry: a merge must not invent a
+            // grid one side does not have (the rule `exhaustive` follows
+            // just above).  The intake contract does not survive at all,
+            // since a union of two tables is not one registry's intake.
+            windows: a.qualifiers.windows.intersect(&b.qualifiers.windows),
+            contracts: Vec::new(),
             lineage: a.qualifiers.lineage.union(&b.qualifiers.lineage),
         },
     }))
@@ -900,6 +947,11 @@ fn split_side(table: &TableType, lineage: Lineage) -> TableType {
             exhaustive: Exhaustive::new(),
             functional: Functional::new(),
             arranged: Arranged::Unclaimed,
+            // A split cuts rows out of the table, so a grid that was
+            // complete over it no longer is, and the surviving half is not
+            // the registry's intake either.
+            windows: Windows::none(),
+            contracts: Vec::new(),
             lineage,
         },
     }
@@ -1012,6 +1064,221 @@ fn op_promote(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<T
         table.qualifiers.completeness = Completeness::Complete;
     }
     Ok(PipeTy::Table(table))
+}
+
+/// `window w p size stride` (section 6.7, Tier A, ADR 0037 decisions 1, 2,
+/// and 3): replicate each row into every window that contains its point `p`,
+/// adding the window's start as a fresh key column `w` with `p`'s domain.
+///
+/// Specified as a derived form (a replicating `flat_map` then `promote w`),
+/// which is what makes it Tier A by construction: split-safety and
+/// disjointness come from the composition, mechanized as
+/// `Mensura.window_splitSafe`.  It is a builtin rather than a library
+/// binding twice over: the replication arity is data-dependent, and `w` and
+/// `p` are column names, which are not values.
+///
+/// Content: `w` joins the key with `p`'s domain; `p` itself is untouched and
+/// stays wherever it was.  Cardinality and gradings: **extended, not reset**.
+/// The replication is injective on (input identity, `w`), so each grading `G`
+/// becomes `G + {w}` (`Mensura.window_functional`).  That is the whole reason
+/// the fact is tracked: it keeps a downstream scan's tie-freedom derivable
+/// inside a window fiber, so `window` then `demote p` needs no ceremony.
+/// Rewriting rather than adding is the point, since after replication the
+/// table is no longer functional over `G` alone.
+fn op_window(
+    sources: &Sources,
+    input: PipeTy,
+    args: &[&Expr],
+    span: Span,
+) -> Result<PipeTy, Vec<TypeError>> {
+    let mut table = expect_table(input, span)?;
+    let [w_arg, p_arg, size_arg, stride_arg] = args else {
+        return Err(error(
+            "`window` takes a window column, a point column, a size, and a \
+             stride, as in `window w taken_at (15.0 * si.minute) \
+             (5.0 * si.minute)`",
+            span,
+        ));
+    };
+    let ExprKind::Name(w) = &w_arg.kind else {
+        return Err(error(
+            "`window`'s window column must be an identifier",
+            w_arg.span,
+        ));
+    };
+    let ExprKind::Name(p) = &p_arg.kind else {
+        return Err(error(
+            "`window`'s point column must be an identifier",
+            p_arg.span,
+        ));
+    };
+
+    // `w` is fresh, unlike every other column argument in the algebra: the
+    // operation creates it.  The collision check is `unpivot`'s.
+    if table
+        .content
+        .key
+        .iter()
+        .chain(&table.content.columns)
+        .any(|c| &c.name == w)
+    {
+        return Err(error(
+            format!("`window` would duplicate column `{w}`; name the window column something new"),
+            w_arg.span,
+        ));
+    }
+
+    // `p` must exist, in the key or among the attributes: a window is over a
+    // point, and ADR 0037 decision 2 leaves that point where it is.
+    let Some(point) = table
+        .content
+        .key
+        .iter()
+        .chain(&table.content.columns)
+        .find(|c| &c.name == p)
+        .cloned()
+    else {
+        if is_group_prefix(&table.content.key, p) || is_group_prefix(&table.content.columns, p) {
+            return Err(error(
+                format!(
+                    "`{p}` is a unit-reference group; windows over its \
+                     components are not yet supported (ADR 0032)"
+                ),
+                p_arg.span,
+            ));
+        }
+        return Err(error(format!("unknown column `{p}`"), p_arg.span));
+    };
+    if table.qualifiers.totality.is_optional(p) {
+        return Err(error(
+            format!(
+                "`window` needs `{p}` total: a missing point lands in no \
+                 window, so there is nothing to replicate it into"
+            ),
+            p_arg.span,
+        ));
+    }
+
+    // The extents are const expressions of type `diff(domain(p))` (ADR 0037
+    // decision 3, ADR 0036 decision 4), held here in the point's storage
+    // grain so `closed` can later compare `w + size + lateness` in one unit.
+    let size = const_extent(sources, size_arg, &point, "size")?;
+    let stride = const_extent(sources, stride_arg, &point, "stride")?;
+
+    table.content.key.push(Column {
+        name: w.clone(),
+        domain: point.domain.clone(),
+    });
+    table.qualifiers.functional = table
+        .qualifiers
+        .functional
+        .iter()
+        .map(|grading| {
+            let mut extended = grading.clone();
+            extended.insert(w.clone());
+            extended
+        })
+        .collect();
+    table.derive_cardinality();
+    // The windowing fact, the sibling of `unpivot`'s `exhaustive(axis)`:
+    // established by construction here and consumed by `closed`.  It
+    // inherits the source's intake contract on `p` when there is one; that
+    // is what makes `closed`'s establishment mechanism-grade rather than a
+    // claim (ADR 0037 decision 4).
+    let contract = table
+        .qualifiers
+        .contracts
+        .iter()
+        .find(|c| &c.column == p)
+        .cloned();
+    table.qualifiers.windows.record(
+        w.clone(),
+        WindowFact {
+            point: p.clone(),
+            size,
+            stride,
+            contract,
+        },
+    );
+    // The key changed, so the rectangle fact goes the way it does under the
+    // other key moves.
+    table.qualifiers.exhaustive.clear();
+    Ok(PipeTy::Table(table))
+}
+
+/// One `window` extent: a const expression of the point's difference type
+/// (ADR 0036 decision 4), positive, and exact in the point's storage grain.
+///
+/// The same shape as a `lateness` bound (`resolve.rs::resolve_lateness`), and
+/// deliberately the same diagnostics: both are compile-time durations against
+/// a point column, and an author who has met one should recognize the other.
+/// Unlike a bound, an extent must be strictly positive: a zero-width window
+/// contains nothing and a zero stride is not a grid.
+fn const_extent(
+    sources: &Sources,
+    arg: &Expr,
+    point: &Column,
+    what: &str,
+) -> Result<i64, Vec<TypeError>> {
+    use crate::consts::ConstValue;
+    let value =
+        crate::consts::eval_const_expr(arg, &sources.consts, &sources.modules).map_err(|errs| {
+            errs.into_iter()
+                .map(|e| te(e.message, e.span))
+                .collect::<Vec<_>>()
+        })?;
+    match (&point.domain, &value) {
+        (ColumnType::Instant, ConstValue::Real { magnitude, dim })
+            if *dim == crate::units::Dimension::base("time").expect("time is a base axis") =>
+        {
+            match crate::temporal::whole_milliseconds(*magnitude) {
+                Ok(ms) if ms > 0 => Ok(ms),
+                Ok(_) => Err(error(
+                    format!("`window`'s {what} must be positive"),
+                    arg.span,
+                )),
+                Err(message) => Err(error(message, arg.span)),
+            }
+        }
+        (ColumnType::Instant, other) => Err(error(
+            format!(
+                "`window`'s {what} must be a duration (`time[real]`, the \
+                 difference type of `instant`), found `{}`",
+                other.describe()
+            ),
+            arg.span,
+        )),
+        (ColumnType::Int, ConstValue::Int(n)) if *n > 0 => Ok(*n),
+        (ColumnType::Int, ConstValue::Int(_)) => Err(error(
+            format!("`window`'s {what} must be positive"),
+            arg.span,
+        )),
+        (ColumnType::Int, other) => Err(error(
+            format!(
+                "`window`'s {what} must be an `int` (the difference type of \
+                 `int`), found `{}`",
+                other.describe()
+            ),
+            arg.span,
+        )),
+        (ColumnType::Date, _) => Err(error(
+            format!(
+                "a window over `{}` is not yet supported: `diff(date)` is \
+                 deferred (ADR 0036 decision 4)",
+                point.name
+            ),
+            arg.span,
+        )),
+        (other, _) => Err(error(
+            format!(
+                "`window` needs an orderable point column whose domain has a \
+                 difference type (`instant` or `int`), and `{}` is `{}`",
+                point.name,
+                crate::resolve::type_name(other)
+            ),
+            arg.span,
+        )),
+    }
 }
 
 /// Whether `name` is a unit-reference group prefix among `cols` (ADR 0032):
@@ -1685,6 +1952,59 @@ mod tests {
             ambient.insert((*name).to_string(), crate::expr_check::Ty::Record(members));
         }
         ambient
+    }
+
+    /// The bundled module environments as `Sources::with_consts` wants
+    /// them: `window`'s extents are compile-time *values*, so the ambient's
+    /// types are not enough (ADR 0037 decision 3).
+    fn modules_map(names: &[&str]) -> BTreeMap<String, &'static crate::modules::ModuleEnv> {
+        names
+            .iter()
+            .map(|name| {
+                let env = crate::modules::bundled(name)
+                    .unwrap_or_else(|| panic!("`{name}` is bundled"))
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("`{name}` resolves cleanly: {e:?}"));
+                ((*name).to_string(), env)
+            })
+            .collect()
+    }
+
+    /// The fleet's shape in miniature: a registry keyed by
+    /// `(machine_id, taken_at)` with an `instant` point and a declared
+    /// intake contract, which is what `window` needs and `sample_sources`
+    /// (whose `taken_at` is a `date` attribute) cannot provide.
+    fn windowed_sources(with_contract: bool) -> Sources {
+        let schema = Schema {
+            store: "readings".to_string(),
+            kind: StoreKind::Registry,
+            unit: "Reading".to_string(),
+            columns: vec![
+                scol("machine_id", ColumnType::String, ColumnRole::Key, false),
+                scol("taken_at", ColumnType::Instant, ColumnRole::Key, false),
+                scol("temperature", ColumnType::Real, ColumnRole::Attr, false),
+                scol("seq", ColumnType::Int, ColumnRole::Attr, false),
+                scol("day", ColumnType::Date, ColumnRole::Attr, false),
+                scol("note", ColumnType::String, ColumnRole::Attr, true),
+            ],
+            cardinality: Cardinality::Singletons,
+            foreign_keys: Vec::new(),
+            lateness: if with_contract {
+                vec![crate::model::Lateness {
+                    column: "taken_at".to_string(),
+                    bound: 600_000,
+                    grain: vec!["machine_id".to_string()],
+                    span: Span::new(0, 0),
+                }]
+            } else {
+                Vec::new()
+            },
+            span: Span::new(0, 0),
+        };
+        Sources::new()
+            .with("readings", TableType::from_store(&schema))
+            .with_ambient(ambient_with_modules(&["bag", "series", "si"]))
+            .with_consts(BTreeMap::new(), modules_map(&["si"]))
     }
 
     fn pipe_ty(sources: &Sources, src: &str) -> Result<PipeTy, Vec<TypeError>> {
@@ -3173,5 +3493,137 @@ mod tests {
         // stage. It is rejected, not invented.
         let errs = pipe_ty(&s, "promote machine").expect_err("no input");
         assert!(errs[0].message.contains("unknown source `machine`"));
+    }
+
+    /// `window w p size stride` adds `w` to the key with `p`'s domain and
+    /// leaves `p` where it was (ADR 0037 decisions 1 and 2).
+    #[test]
+    fn window_extends_the_key_with_the_point_domain() {
+        let s = windowed_sources(true);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (5.0 * si.minute)",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(
+            t.content
+                .key
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["machine_id", "taken_at", "w"]
+        );
+        assert_eq!(t.content.key[2].domain, ColumnType::Instant);
+        // The replication is injective on (input identity, `w`), so a
+        // `singletons` source stays `singletons` at the extended key.
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    /// **The reason the fact is tracked** (ADR 0037 decision 2): each
+    /// grading `G` becomes `G + {w}`, so after the window the times are
+    /// still unique inside one `(machine, window)` bag and a scan's
+    /// tie-freedom discharges with no ceremony, exactly as it does without
+    /// the window.
+    #[test]
+    fn window_extends_the_gradings_so_a_scan_stays_ceremony_free() {
+        let s = windowed_sources(true);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)",
+            )
+            .expect("ok"),
+        );
+        let extended: std::collections::BTreeSet<String> = ["machine_id", "taken_at", "w"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            t.qualifiers.functional.contains(&extended),
+            "expected the grading to extend with `w`, found {:?}",
+            t.qualifiers.functional
+        );
+        // The payoff, end to end: demote the point and scan inside the
+        // window fiber with no `assume { arranged }`.  The scan at `>>` also
+        // demands completeness (ADR 0037 decision 5), which `assume` states
+        // here because `closed` has not shipped yet.
+        assert!(
+            pipe_ty(
+                &s,
+                "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
+                 |> demote taken_at \
+                 |> assume { complete } \
+                 |> map_bags |k, b| (.run = series.running_max (|r| r.temperature) (|r| r.taken_at) b)",
+            )
+            .is_ok(),
+            "the extended grading should discharge the scan's order key"
+        );
+    }
+
+    /// A window over an `int` point needs no unit machinery: `diff(int)` is
+    /// `int` (ADR 0036 decision 4), which is what count-based windows ride
+    /// on (ADR 0037 decision 3).
+    #[test]
+    fn window_accepts_an_int_point_with_int_extents() {
+        let s = windowed_sources(true);
+        let t = table_of(pipe_ty(&s, "readings |> window w seq 100 10").expect("ok"));
+        assert_eq!(t.content.key[2].domain, ColumnType::Int);
+    }
+
+    #[test]
+    fn window_rejections_name_their_rule() {
+        let s = windowed_sources(true);
+        for (src, needle) in [
+            // `w` is fresh, unlike every other column argument.
+            (
+                "readings |> window temperature taken_at (15.0 * si.minute) (5.0 * si.minute)",
+                "would duplicate column",
+            ),
+            (
+                "readings |> window w nope (15.0 * si.minute) (5.0 * si.minute)",
+                "unknown column",
+            ),
+            // The point needs a difference type (ADR 0036 decision 4).
+            (
+                "readings |> window w day (15.0 * si.minute) (5.0 * si.minute)",
+                "deferred",
+            ),
+            (
+                "readings |> window w temperature (15.0 * si.minute) (5.0 * si.minute)",
+                "difference type",
+            ),
+            (
+                "readings |> window w note (15.0 * si.minute) (5.0 * si.minute)",
+                "total",
+            ),
+            // The extents are const, of the point's difference type,
+            // positive, and exact on the millisecond grid.
+            (
+                "readings |> window w taken_at 15 (5.0 * si.minute)",
+                "must be a duration",
+            ),
+            (
+                "readings |> window w taken_at (0.0 * si.minute) (5.0 * si.minute)",
+                "must be positive",
+            ),
+            (
+                "readings |> window w taken_at (15.0 * si.minute) (-5.0 * si.minute)",
+                "must be positive",
+            ),
+            (
+                "readings |> window w taken_at (0.0001 * second) (5.0 * si.minute)",
+                "not rounded",
+            ),
+            ("readings |> window w taken_at", "takes a window column"),
+        ] {
+            let errs = pipe_ty(&s, src).expect_err(src);
+            assert!(
+                errs.iter().any(|e| e.message.contains(needle)),
+                "`{needle}` not found for `{src}`: {:?}",
+                errs.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
     }
 }

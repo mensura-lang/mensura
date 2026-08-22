@@ -653,7 +653,8 @@ identifiers, as the keyword-free lexer intends.
 - Module-qualified names in type position (`geo.speed[real]`), and the
   `exposing` import refinement (`12-modules-and-imports.md`).
 - The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
-  joins, `split`/`union`, `unpivot`/`pivot`, `completeness_check`) are
+  joins, `split`/`union`, `unpivot`/`pivot`, `window`,
+  `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.

@@ -1,0 +1,24 @@
+// Reject: resolve.  `window`'s first argument names the column the
+// operation *creates*, which is the opposite of every other column
+// argument in the algebra (`demote course`, `unpivot sensor reading`,
+// all of which name columns that must already exist).  Naming an
+// existing column would leave the table with two columns of one name,
+// so it is rejected the way `unpivot` rejects the same collision.
+//
+// Pick a fresh name (`w`, `bucket`, `quarter_hour`) and this is
+// `accept/window_rollup.mensura`.
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+view collision {
+  readings |> window temperature taken_at (15.0 * si.minute) (15.0 * si.minute)
+}

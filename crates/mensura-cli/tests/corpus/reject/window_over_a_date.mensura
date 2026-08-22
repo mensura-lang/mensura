@@ -1,0 +1,25 @@
+// Reject: resolve.  A window is an interval on a point domain, so it
+// needs the domain's difference type to say how wide the interval is.
+// `diff(date)` is deferred (ADR 0036 decision 4): the calendar
+// difference between two dates is not a duration without a zone, and
+// the conversion that would supply one is exactly what that ADR
+// declined to guess.  So a `date` point is "not yet supported" rather
+// than "wrong", and the diagnostic says which deferral blocks it.
+//
+// `instant` and `int` both work today; a reading whose time genuinely
+// matters to the minute wants an `instant` anyway (ADR 0036).
+import si
+
+unit Sample {
+  machine_id: string
+  day:        date
+}
+
+registry samples {
+  unit { Sample }
+  attr { temperature: real }
+}
+
+view daily {
+  samples |> window w day (15.0 * si.minute) (15.0 * si.minute)
+}

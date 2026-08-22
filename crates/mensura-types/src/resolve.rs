@@ -446,7 +446,12 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
     if !views.is_empty() {
         // Expression sites inside view bodies see the ambient environment:
         // the intrinsics, the top-level consts, and the imported modules.
-        let mut sources = Sources::new().with_ambient(ambient.clone());
+        // The const *values* travel alongside, for the one argument
+        // position that is a compile-time value rather than a selector:
+        // `window`'s extents (ADR 0037 decision 3).
+        let mut sources = Sources::new()
+            .with_ambient(ambient.clone())
+            .with_consts(const_values.clone(), modules.clone());
         for schema in &schemas {
             sources = sources.with(&schema.store, TableType::from_store(schema));
         }
