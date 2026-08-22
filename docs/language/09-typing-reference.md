@@ -471,14 +471,18 @@ order key reading `1, 2, 4, 5` every obligation above is discharged and
 `lag` at `4` still reports `2`'s value, which a caller differencing
 consecutive readings will take for `3`'s.  `rank` counts present rows
 rather than positions, and `cumsum` totals whatever the bag holds.
-Whether the ordered operations should carry a contiguity obligation of
-their own is an open question recorded in
-`docs/decisions/0035-completeness-cleared-by-demote.md`; it is not the
-completeness fact of section 8, which governs whole rows rather than
-holes in an order key, and it needs a notion (a dense order key, or an
-explicit resampling stage) the language does not yet have.  Until it is
-settled, a discharged `arranged` means the window is deterministic, not
-that it is faithful to an underlying regular series.
+The ordered operations carry no contiguity obligation of their own, which
+is settled rather than open (ADR 0037 decision 6): a dense and an
+irregular series are indistinguishable over a raw order key, so no
+mechanism could discharge such an obligation and no marker should claim
+it.  A discharged `arranged` therefore means the window is deterministic,
+not that it is faithful to an underlying regular series, and the fix for
+positional-as-temporal code is to stop writing rates positionally.  Over
+a **window grid** contiguity is decidable, and there it is established by
+a mechanism rather than obliged: `dense` (section 6.10) completes the
+grid, after which the previous present row *is* the previous slot.  The
+general case over a raw order key, an explicit `resample` with a stated
+step, stays deferred for the reason above.
 
 **The combiner is closed, the mapper is open.**  A fold over an *unordered*
 bag is deterministic only when the combiner is associative and commutative,
@@ -923,6 +927,49 @@ rejected: fusing the coarsening into the operation would leave the
 completeness demand undischargeable, so the coarsening is written out
 (`demote p`, then the claim, then `latest p`).  Tier A.
 
+### 6.10  `dense` (complete the window grid) -- Tier A
+
+```
+dense : w -> population -> bound -> Table -> Table
+```
+
+Adds one row per population entity per closed grid slot that produced
+none, and **establishes `Complete`** at the current key (ADR 0038).  The
+establishment is mechanism-grade, the mechanism being the grid
+enumeration: stride and origin are compile-time constants, closedness
+bounds the run above, so every row the ideal rectangle has is present.
+Runs **after** the reduction, which preserves ADR 0029 decision 4's
+empty-bag guarantee and computes the ideal grid's answer anyway
+(`dense_fiberMap_foldFiber`).
+
+Demands, each rejected with the fix named: a window column in the key
+carrying a live windowing fact; `closed` upstream on that grid, since
+closedness is the upper bound and filling past the watermark would
+declare unelapsed time confirmed empty; a `singletons` input, since the
+grid is one row per (entity, slot) and a bag input has not been reduced
+yet; a `singletons` population keyed like the windowed rows without the
+window column; and a total lower-bound column of that population in the
+window column's domain.  The population and the bound are policy and are
+never inferred (ADR 0038 decision 3): the windowed bag knows nothing of
+an entity that never sent a row, and the earliest observed window would
+confuse "offline since before we watched" with "not yet installed".
+
+**Totality**: a column that is a single fold at a combiner carrying an
+identity fills with that identity and stays total; every other column
+becomes **optional** and is absent on a filled row (ADR 0038 decision 2,
+`foldBagOpt_eq_none_iff`).  The recognition is syntactic plus const
+resolution over the fold shapes of section 5.4, so `#b`, `bag.sum b.x`
+and a written-out `fold` at `+` qualify and a compound expression does
+not.  **Cardinality** and the gradings are preserved (rows are added at
+fresh keys of the same key).  **Rectangularity** is recorded beside the
+completeness fact and consumed by one rule: the `demote` of section 6.3
+re-derives `Complete` from it instead of clearing it
+(`demote_fiberCompleteWrt_dense`), which is the one exception beside the
+`exhaustive`-axis rule and holds only over a grid.  Tier A
+(`dense_idem`); a closed slot's row is final across the fill
+(`dense_stable_of_closed`), so a rectangularized view grows without
+retracting.
+
 ## 7.  Tier A / Tier B and split-safety
 
 The central guarantee is **split-safety**.  In the formalization,
@@ -943,7 +990,7 @@ disjointness fact through a Tier A pipeline intact (section 9).
 
 - **Tier A** (split-safe): `flat_map`, `map_bags`, `promote`, `lookup`,
   `lookup_total`, `split`, `union`, `unpivot`, `window`, `closed`,
-  `latest`.  They compose freely and carry cardinality, completeness, and
+  `latest`, `dense`.  They compose freely and carry cardinality, completeness, and
   lineage facts end to end.
 - **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
   lineage fact, and that is the whole content of the Tier: `demote`
@@ -956,7 +1003,7 @@ disjointness fact through a Tier A pipeline intact (section 9).
 ## 8.  Completeness: establish, clear, consume
 
 Completeness (each key's bag holds all its rows, section 3.4) is established in
-one of four ways (`07`, "Completeness: establish, clear, consume"):
+one of five ways (`07`, "Completeness: establish, clear, consume"):
 
 - **mechanism**: a `registry` source is complete by construction at its
   **own declared key** (overview pillar 7, `13-registries.md`, ADR 0033
@@ -976,7 +1023,12 @@ one of four ways (`07`, "Completeness: establish, clear, consume"):
   source declares a `lateness` bound.  Mechanism-grade like the registry
   rule and for the same kind of reason: the extent and the bound are both
   enforced, so "no row of this window can still arrive" is a theorem
-  about the intake (ADR 0037 decision 4).
+  about the intake (ADR 0037 decision 4);
+- **enumeration**: `dense` (section 6.10) over a closed grid, which
+  materializes the slots the reduction produced no row for, so the fact
+  holds by construction rather than by claim (ADR 0038 decision 4).  The
+  only establishment that also survives a coarsening `demote`, of the
+  window column it completed.
 
 Row-wise Tier A operations **preserve** completeness (they map whole
 fibers to whole fibers); the key moves **re-derive** it from the ADR 0024
@@ -986,6 +1038,10 @@ absent fine key becomes a gap inside a coarse fiber
 demoted column is an `exhaustive` axis (section 6.6) is the exception:
 exhaustiveness rules those absences out, so the fact survives
 (`demote_fiberCompleteWrt_of_exhaustive`, ADR 0035 decision 6).  A
+coarsening of a window column whose grid `dense` completed is the second:
+the fill left no absent fine key inside the grid, so the coarse fiber is
+the whole rectangle (`demote_fiberCompleteWrt_dense`, ADR 0038
+decision 4).  A
 **reducing `map_bags`**
 **consumes** it, because a fold over a partial bag is silently wrong
 (ADR 0023, amending ADR 0017's consumer placement).  *Consume* names the
@@ -1102,6 +1158,14 @@ the full key.
 | `union` | unchanged | `singletons` if disjoint, else `bag` | pres. | iff both | unions tags | A | `union_split` |
 | `unpivot` | all attrs -> (name, value); missing cells drop | pres. | `value` total | establishes `exhaustive` | carried | A | `unpivotDrop_splitSafe` |
 | `pivot` | name leaves key, variants spread | demands `singletons` | per `exhaustive` | not consumed | dropped | B | `pivot_not_splitInvariant`, `pivot_total_of_exhaustive` |
+| `window` | `w` joins the key | pres.; each grading gains `w` | pres. | pres. | carried | A | `window_splitSafe`, `window_functional` |
+| `closed` | unchanged (rows dropped) | pres. | pres. | **establishes** | carried | A | `closedWindow_stable` |
+| `latest` | `p` becomes an attribute | `singletons` | `p` total | re-established; **demanded** | carried | A | `IsArrangement.unique`, `fiberCompleteWrt_of_functional` |
+| `dense` | unchanged (rows added) | pres. | no-identity columns -> **optional** | **establishes**, plus rectangularity | carried | A | `dense_fiberMap_foldFiber`, `dense_idem`, `dense_stable_of_closed` |
+
+The `demote` row's completeness arm reads the rectangularity fact as its
+second exception: a coarsening of a window column whose grid `dense`
+completed re-derives the fact (`demote_fiberCompleteWrt_dense`).
 
 ## 11.  Lean theorem catalogue
 
@@ -1233,6 +1297,35 @@ positional map is expressible over one.
   split-invariant" concerned lifting to the list monad *in general*; what stays
   out of scope is an order *across* keys.
 
+**Streaming windows** (`Window/`, ADR 0037 decision 8, ADR 0038
+decision 7) -- the gate `window`, `closed`, and `dense` ship behind.  The
+operation is specified as a derived form (a replicating `flatMap` then
+`promote`), so safety comes from the composition lemmas rather than a new
+argument:
+
+- `Window/Defs.lean`: `window` with `window_splitSafe` and
+  `window_unionHom` (by composition), the fiber characterization
+  `window_rows`, the grading extension `window_functional` (decision 2's
+  "extended, not reset"), and `closedWindow_stable`, which is the
+  soundness of `closed`'s establishment given the enforced contract and
+  the finality invariant the refresh slice inherits.  The watermark is
+  indexed by a grain, and the theorem's two hypotheses read the same
+  watermark, so a mixed admission-and-closure grain is not expressible
+  (ADR 0041 decision 1).  `demote_congr` lifts fiber agreement through the
+  coarsening the surface performs first.  The concrete grid is
+  `Units.Instant.windowStarts`, characterized by `mem_windowStarts` as the
+  interval test on the stride grid.
+- `Window/Dense.lean`: `dense` with `dense_fiberMap_foldFiber` and its
+  `Option` mirror `dense_fiberMap_foldFiberOpt` (filling after the
+  reduction computes the reduction over the completed grid, the licence for
+  the cheap order of operations), `dense_present_of_mem_grid`,
+  `dense_idem`, `Units.Instant.dense_stable_of_closed` (a closed slot's row
+  is final across the fill), and `demote_fiberCompleteWrt_dense` with
+  `dense_eq_rectangle` (after the fill the table *is* the ideal rectangle,
+  which is why the coarsening keeps the fact).  Slots are an abstract
+  `Fintype`, since the grid's provenance is a side condition of the surface
+  rule rather than a hypothesis of any theorem.
+
 **Physical dimensions** (`Units/Dimension.lean`, ADR 0026) -- the group
 behind the section 5.3 dimensional rules: `Dimension` (the free abelian
 group over the seven `Base` dimensions) with its `CommGroup` and
@@ -1345,9 +1438,15 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   presentation only.  Key moves (`promote`/`demote`) and reshape selectors
   naming a flattened component or a unit-reference group are deferred
   (ADR 0032).
-- **Streaming.**  `window`, `closed`, and `latest` have landed (sections
-  6.7 to 6.9).  Per-window sampling inference and `on_change` refresh
-  extend these rules (M5).
+- **Streaming.**  `window`, `closed`, `latest`, and `dense` have landed
+  (sections 6.7 to 6.10).  Per-window sampling inference and `on_change`
+  refresh extend these rules (M5), and with the latter the honest exit for
+  the frontier window: a reduction over the *open* windows that carries the
+  bound it was computed over, so a provisional row says so (ADR 0037, open
+  questions).  Deferred beside them: fill policies that narrow a `dense`
+  column back to total, the general `resample` over a raw order key, and
+  completeness transport through per-row filters (ADR 0038, open
+  questions).
 - **Precision and measure semantics.**  Dimensional units are now
   specified (`11-physical-units.md`, section 5.3 above; ADR 0026).
   Precision (a library extension of `real`; the deferred `NxE` literal)

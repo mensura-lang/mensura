@@ -654,7 +654,7 @@ identifiers, as the keyword-free lexer intends.
   `exposing` import refinement (`12-modules-and-imports.md`).
 - The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
   joins, `split`/`union`, `unpivot`/`pivot`, `window`, `closed`,
-  `latest`, `completeness_check`) are
+  `latest`, `dense`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.
@@ -662,9 +662,13 @@ identifiers, as the keyword-free lexer intends.
   `10-views.md` (the `view_decl` production above is their grammar).
   Transforms, which also host or feed pipelines, get their own section
   here.  The streaming operations (`window`, `closed`, `latest`,
-  ADR 0037) have landed as pipeline operations in the existing
-  application grammar, adding no productions; their declaration-level
-  half is the `lateness_block` above.  (`registry` declarations have
+  ADR 0037; `dense`, ADR 0038) have landed as pipeline operations in the
+  existing application grammar, adding no productions; their
+  declaration-level half is the `lateness_block` above.  `dense`'s three
+  juxtaposed arguments are the same application form every other
+  operation uses: the arity is fixed, so no keyword separates them
+  (ADR 0038 decision 6, which declines the two prose words an earlier
+  draft's `dense w over machines from activated` would have cost).  (`registry` declarations have
   landed: the `registry_decl` production above is their grammar,
   specified in `13-registries.md`.  `device` is not coming: ADR 0005
   eliminated it in favour of roles, `auth {}`, and `registry`.)

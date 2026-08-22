@@ -146,6 +146,20 @@ trailing expression is the result.
 - **`closed`** filters rows whose window can still receive one.  It runs
   before any grouping, since `demote` is a column-role move and fibers
   are not formed until `map_bags`, so it is a cheap per-row predicate.
+- **`dense w population bound`** completes the grid after the reduction
+  (ADR 0038).  It reads the population's rows from the environment, the
+  way a join reads its right table, aligns each row's bound up to the
+  first full slot, walks the grid to the last closed slot, and emits a row
+  wherever an anti-join against the reduced rows finds none.  The upper
+  bound is computed from the same prefetched watermark `closed` filtered
+  on, so the two stages agree by construction: `slot + size + lateness <=
+  effective`, floored to the grid.  A grain with no watermark at all is
+  skipped, since nothing licenses calling any of its slots closed; the
+  declared closure floor is what gives a never-reporting entity its silent
+  slots (ADR 0041 decision 3).  Fill values come from the combiner each
+  column reduced at, read through the same `identity_of` table `prescan`
+  uses, and a column with no identity is filled `Missing`, which the
+  checker has already typed optional.
 
 Later Tier A operations slot into the same shape: each is a function from
 input row batches to an output row batch, with its property effects already
@@ -168,9 +182,17 @@ the same database agree.
 Because the qualifier row does not cross the view boundary IR (only
 columns, cardinality, and the body do), the evaluator maintains its own
 lightweight mirror of the facts it needs while walking the pipeline: which
-column is a window column, over which point and at what extent, and which
-store the rows still unambiguously come from.  A join or a union clears
-both, exactly as the checker clears its own facts there.
+column is a window column, over which point and at what extent and
+stride, which store the rows still unambiguously come from, and which
+attribute column a single combiner produced.  A join or a union clears
+them, exactly as the checker clears its own facts there.
+
+The third of those is what `dense` fills from, and the mirror is why all
+three cross a reducing `map_bags` here as they do in the checker: `dense`
+runs *after* the reduction by construction (ADR 0038 decision 1), so the
+facts have to survive exactly that stage.  What does not survive is the
+point column itself, which is why `closed` after a reduction is a compile
+error rather than a runtime surprise.
 
 ## Materializing the result
 
