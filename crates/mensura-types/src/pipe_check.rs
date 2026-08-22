@@ -24,7 +24,13 @@ use crate::table::{
 };
 
 /// The type of a table-valued (pipeline) expression.
+///
+/// The pair variant is twice a table by definition, and the size difference
+/// clippy flags buys nothing here: one of these exists per pipeline stage
+/// while that stage is being checked, never many at once and never inside a
+/// collection, so boxing would add indirection and no measurable win.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum PipeTy {
     Table(TableType),
     /// A pair of tables: produced by `split`, consumed by `union` (section 6.5).
