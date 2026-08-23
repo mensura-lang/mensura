@@ -166,13 +166,119 @@ view.  A filter looking for sparse windows omits the sparsest ones, silently.
 in `machines` per slot, from that machine's `activated` bound up to the closed
 bound.
 
-**Why those two arguments cannot be inferred.**  The population cannot come
-from the windowed bag, which by construction knows nothing of a machine that
-never sent a row, and that machine is the entire point.  The lower bound cannot
-be the earliest window observed, because that would make a sensor that was
-offline on day one indistinguishable from a sensor that was not yet installed.
-Both are policy, both are stated, and the stage is wordier than its neighbours
-for exactly that reason.
+Every other stage takes column names, extents, or nothing at all.  These two
+arguments are the only ones in the language that state **policy**, and the next
+three sections are about why they cannot be anything else.
+
+### What fixes the grid
+
+Four things decide which rows the completed grid should have.  Two of them the
+program has already said, and two of them are nowhere in the data:
+
+| what | where it comes from |
+|------|---------------------|
+| the step and where the slots fall | the `window` stage, and the domain's zero |
+| the upper bound | `closed`, per grain |
+| **which entities get rows** | the second argument |
+| **from when, per entity** | the third argument |
+
+The first two need no arguments because they are already fixed: the stride was
+written down, and filling past the watermark is the one thing this stage must
+never do.  The other two are the subject of the rest of this section, and the
+short version is that a table cannot be asked about rows it does not have.
+
+### Which entities: the population
+
+Look again at the pipeline above, just before `dense` runs.  Its rows mention
+the machines that reported.  A machine whose sensor died before it ever sent a
+reading appears in *no* reading, therefore in no window, therefore in no bag,
+therefore nowhere in the pipeline at all.  **Absence leaves no trace to read.**
+
+So if the stage inferred its population from its input, it would complete the
+grid for every machine except the ones you most wanted to hear about, and it
+would do so quietly.  That is why the population is named: `machines` is a
+store whose rows say which machines exist, independently of which of them are
+talking.
+
+Two rules follow, and both have diagnostics that name them:
+
+- the population holds **at most one row per entity**, because a second row for
+  the same machine would emit every slot twice;
+- it is **keyed like the windowed rows without the window column**, here
+  `machine_id`.  That is how a population row says *which* grid it bounds.
+  Naming `readings` instead, keyed `(machine_id, taken_at)`, describes no
+  population of machines and is rejected.
+
+Because it is an argument rather than a rule, it can be narrowed:
+
+```mensura
+{{#include ../examples/dense-population.mensura}}
+```
+
+Whether a decommissioned machine's silence is worth counting is a question
+about your operation, not about your data, and this is where you answer it.
+
+### From when: the lower bound
+
+The other argument is a **column** of that population, read per row, so each
+machine gets its own starting point.
+
+Two reasons it cannot be inferred either.  The grid is anchored at the domain's
+zero, so with no bound at all "complete the grid" honestly means *fill from the
+epoch*, and nobody wants a row per quarter-hour since 1970.  And the plausible
+guess, the earliest window a machine was actually seen in, is wrong in a
+specific way: it makes a sensor that was **installed but offline on day one**
+indistinguishable from one that was **not yet installed**.  For the machine
+that never reported it is worse than wrong, because there is no earliest
+observed window to guess from.
+
+**The bound aligns up, to the first full window.**  The entity's first slot is
+the smallest grid multiple at or above its bound, so a bound that falls inside
+a slot skips that slot:
+
+```text
+             06:00         06:15         06:30
+    grid  -----|-------------|-------------|-----
+                  ^ activated 06:03:22
+
+    06:00 is skipped: part of it precedes the machine's history.
+    The machine's first row is 06:15.
+```
+
+That is deliberate, and it is the same rule as everywhere else in this chapter.
+A `0` filled into the `06:00` slot would read as *the machine was silent then*,
+when the truth is *the machine did not exist for part of that interval*.
+
+Two rules again: the column must be **total**, since a machine whose bound is
+missing has no grid and skipping it silently is the absence this stage exists
+to remove, and it must be in the **window column's own domain**, since it has
+to be alignable to a slot.  A civil `date` against an `instant` grid is
+rejected rather than converted, because that conversion needs a zone.  This is
+why the example records `activated`, the moment telemetry came online, rather
+than reusing the commissioning date from the paperwork: they are different
+facts, and only one of them answers "when should this machine have been
+reporting".
+
+### A grid, end to end
+
+Two machines, both activated at midnight on 12-31, daily windows, a
+ten-minute lateness bound, and a floor declaring the world closed through
+`01-02T00:10`.  `M-07` reported twice, on 01-01 and 01-02.  `M-19` never
+reported at all.
+
+Before `dense`, exactly one row exists: `closed` kept `M-07`'s 01-01 window
+(its 01-02 reading pushed its watermark past `w + 1 day + 10 min`) and dropped
+its 01-02 window, and `M-19` produced nothing to keep.  Then:
+
+| machine | lower, from `activated` | upper, from closedness | slots | already there | filled |
+|---------|-------------------------|------------------------|-------|---------------|--------|
+| `M-07`  | 12-31                   | 01-01                  | 12-31, 01-01 | 01-01 | 12-31 |
+| `M-19`  | 12-31                   | 01-01                  | 12-31, 01-01 | none  | both  |
+
+`M-19`'s upper bound comes from the floor, since it has no watermark of its
+own; `M-07`'s comes from its own newest reading.  Four rows out, three of them
+for days on which nothing was reported, and none of them expressible before
+this stage.
 
 **Why it runs after the reduction.**  The obvious design materializes the empty
 bags first and lets the fold handle them, and it would cost the guarantee that
