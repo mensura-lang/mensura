@@ -1,0 +1,22 @@
+import bag
+import si
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// A five-minute stride under a fifteen-minute size: the windows overlap, so
+// each reading lands in `size / stride` of them, three here.  Sliding and
+// tumbling are the same operation at different arguments.
+view rolling_peaks {
+  readings |> window w taken_at (15.0 * si.minute) (5.0 * si.minute)
+           |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}

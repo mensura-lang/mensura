@@ -67,6 +67,8 @@ sole intake for its observations and so its bags are whole by construction.
 That is the difference the keyword buys, at the registry's own key (a
 coarsened key is another matter, below), and it is the only difference: a
 registry's body, its storage, and its reads are a store's exactly.
+[Registries](../modelling/registries.md) takes that apart properly, including
+what the promise cannot cover.
 
 ## Windows: the other shape of `map_bags`
 

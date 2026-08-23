@@ -1,0 +1,43 @@
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+enum MachineStatus {
+  "operational"
+  "retired"
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated: instant
+    status:    MachineStatus
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+// The population is an argument, so it can be narrowed: here the grid is
+// completed only for the machines still in service, and a retired machine's
+// silence is not counted.  Whether that is right is a question about the
+// operation rather than about the data, which is why the program answers it.
+view live_sensor_health {
+  let live = machines |> flat_map |_, r| if r.status == "operational" then r else ();
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w live activated
+}

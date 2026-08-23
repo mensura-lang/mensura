@@ -1,0 +1,23 @@
+import bag
+
+// A reading is identified by which machine took it and when, so the time is
+// part of the key: at most one row exists per `(machine_id, taken_at)`.
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+// A `registry`, not a `store`: this declaration is the sole intake for
+// readings, and the intake only appends.
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// Folding per machine coarsens the key first, and the registry's fact does
+// not survive that, so the claim is written where it bites.
+view machine_peak {
+  readings |> demote taken_at
+           |> assume { complete }
+           |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
