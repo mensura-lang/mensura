@@ -1,0 +1,44 @@
+// Reject: resolve.  The grid aligns each entity's lower bound to a slot, so
+// the bound must live in the window column's own domain.  `commissioned` is
+// a civil `date` and `w` is an `instant`: converting one to the other needs
+// a zone, which ADR 0036 defers deliberately rather than guessing at.
+//
+// This is ADR 0038's `date`-keyed-grid open question, blocked twice over
+// (`diff(date)` is deferred too), and the worked example waits for neither:
+// "when should telemetry exist" is answered by `activated`, an absolute
+// event the store records directly.  A bound that is genuinely calendar data
+// ("since the contract started", somebody's local midnight) is the first
+// real consumer of both deferrals.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr {
+    activated:    instant
+    commissioned: date
+  }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view sensor_health {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines commissioned
+}

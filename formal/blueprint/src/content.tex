@@ -1204,6 +1204,88 @@ soundness of the \texttt{closed} stage given the enforced
   Instantiation.
 \end{proof}
 
+\section{Rectangularization over the window grid}
+
+ADR 0038 takes the window-grid case of the rectangularizing stage that
+ADR 0037 decision 6 defers in general.  A window holding no row is
+absence, which is correct for the operation and leaves ``how many
+intervals did this entity report nothing'' unanswerable, so the stage
+below completes the grid \emph{after} the reduction: it keeps every
+reduced row and adds one filled row per grid slot that produced none.
+Filling after rather than before is what preserves the guarantee that a
+reducing lambda never faces an empty bag, and the first theorem is that
+the cheap order of operations computes the expensive one's answer.
+
+\begin{definition}[Rectangularization]
+  \label{def:dense}\lean{Mensura.dense}\leanok
+  \uses{def:table}
+  Keep every present fiber; at a grid slot that produced no row, emit the
+  single filled row.  A slot outside the grid is untouched, which confines
+  the stage to the grid the program wrote down.  The grid enters as a
+  finite set of slots per key, since where it comes from (the stride and
+  origin from the window declaration, the upper bound from closedness, the
+  population and per-entity lower bound from the stage's arguments) is a
+  side condition of the surface rule rather than a hypothesis of any
+  theorem here.
+\end{definition}
+
+\begin{theorem}[The fill agrees with the ideal completed reduction]
+  \label{thm:dense-ideal}\lean{Mensura.dense_fiberMap_foldFiber}\leanok
+  \uses{def:dense, def:foldbag, def:fibermap}
+  ADR 0038 decision 7 item 1.  For a column that is a single fold at a
+  combiner carrying an identity, filling after the reduction equals
+  reducing over the completed grid.  The empty slot is the whole content:
+  the ideal folds the empty bag to the identity, and the fill writes
+  exactly that, which is why a filled row is a reduced row rather than a
+  fabricated observation.  A count reports zero because zero rows were
+  reduced, not because a placeholder was invented and counted.  The
+  identity-free case is the same statement in \texttt{Option}, where the
+  empty slot's honest answer is absence: there is no minimum of nothing,
+  so the column goes optional rather than carrying a sentinel.
+\end{theorem}
+\begin{proof}\leanok
+  Case on whether the slot's bag is empty.  Where it is, the fold of the
+  empty bag is the identity by definition; where it is not, both sides are
+  the same reduced singleton.
+\end{proof}
+
+\begin{theorem}[The coarse fiber of a rectangle is complete]
+  \label{thm:dense-demote-complete}
+  \lean{Mensura.demote_fiberCompleteWrt_dense}\leanok
+  \uses{def:dense, def:demote, thm:dense-ideal}
+  ADR 0038 decision 7 item 4, and the one place a genuinely coarsening
+  key move re-derives completeness from a checked fact instead of
+  clearing it.  Given that no present slot lies outside the grid (which
+  closedness and the stage's lower bound supply), that a present slot
+  holds one row (which is what running after the reduction means), and
+  that the fill is the slot's true empty answer
+  (\ref{thm:dense-ideal}), the filled table \emph{is} the ideal
+  rectangle, so the fiber a coarsening produces is complete with respect
+  to it.  The clearing rule is right in general because an absent fine
+  key becomes a hole in the coarse bag; after the fill there is no absent
+  fine key inside the grid, which is the whole difference.
+\end{theorem}
+\begin{proof}\leanok
+  The three hypotheses identify the filled table with the rectangle
+  slot by slot, and a table is fiber-complete with respect to itself.
+\end{proof}
+
+\begin{theorem}[A closed slot's row is final, fill included]
+  \label{thm:dense-stable}
+  \lean{Mensura.Units.Instant.dense_stable_of_closed}\leanok
+  \uses{def:dense, thm:closed-window-stable-instant}
+  ADR 0038 decision 7 item 3.  Append rows the intake contract still
+  admits, rerun, and a slot closed before the append carries the row it
+  carried, whether the data produced it or the grid fill did.  A rerun
+  adds rows for newly closed slots and retracts nothing, which is what
+  makes a rectangularized view safe to serve incrementally.
+\end{theorem}
+\begin{proof}\leanok
+  The closed window's bag is unchanged, a fiber-local reduction of an
+  unchanged bag is unchanged, and the fill reads only the slot and that
+  bag.
+\end{proof}
+
 \chapter{Open problems}
 
 The white nodes below are planned, not yet formalized; the Lean names

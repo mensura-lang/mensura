@@ -28,11 +28,18 @@ fn seeded_db(program: &ResolvedProgram) -> SqliteBackend {
     // Temporal columns hold what the decoder would have produced: `date`
     // stays `YYYY-MM-DD`, and the `instant` columns (ADR 0036) hold the
     // normalized fixed-width UTC form.
+    // The `activated` instants are a fleet-wide sensor retrofit rather than
+    // each machine's own commissioning: `dense` completes the grid from this
+    // bound to the closed bound, so a bound years before the readings would
+    // ask for a row per interval per machine over those years, which is the
+    // row-count consequence ADR 0038 records.  The paperwork dates stay where
+    // they were, which is also the ADR 0036 point: the two are different
+    // facts, and neither converts to the other without a zone.
     db.execute_sql(
         r#"INSERT INTO "machines" VALUES
-             ('m1', '2020-01-01', '2020-01-05T08:00:00.000Z', 'operational', NULL),
-             ('m2', '2021-06-15', '2021-06-20T09:30:00.000Z', 'degraded', '2025-12-01'),
-             ('m3', '2022-03-10', '2022-03-15T14:00:00.000Z', 'failure', NULL);
+             ('m1', '2020-01-01', '2024-12-31T00:00:00.000Z', 'operational', NULL),
+             ('m2', '2021-06-15', '2024-12-31T00:00:00.000Z', 'degraded', '2025-12-01'),
+             ('m3', '2022-03-10', '2024-12-31T00:00:00.000Z', 'failure', NULL);
            -- `m1`'s two readings are inserted out of order under `taken_at`.
            -- The store scan orders by the full key, so they arrive sorted
            -- anyway; the scan-order discrimination for the window operators
@@ -83,6 +90,21 @@ fn attention_needed_materializes_the_degraded_machines() {
             // 01-02 reading would have closed `m2`'s and `m3`'s windows
             // too, and this count would read 3.
             ("machine_peaks".to_string(), 1),
+            // The grid completed (ADR 0038).  Daily windows, so `closed`
+            // keeps `m1`'s 01-01 window (its 01-02 reading pushed its
+            // watermark past `w + 1 day + 10 min`) and nothing else: `m2`
+            // and `m3` have no reading past their own, so their 01-01
+            // windows are still open.  `dense` then completes each machine's
+            // grid from its `activated` bound (12-31) to its own closed
+            // bound: `m1` gains 12-31 beside the row it reduced, `m2` and
+            // `m3` gain 12-31 alone.  Four rows, three of them for days on
+            // which nothing was reported, which is exactly what no view
+            // above this one can say.
+            ("sensor_health".to_string(), 4),
+            // And the query the fill exists for: one row per machine, with
+            // no `assume` anywhere, because `demote w` re-derives the
+            // completeness `dense` established (ADR 0038 decision 4).
+            ("silence_per_machine".to_string(), 3),
             // The window view emits one row per reading, not one per machine:
             // four readings in, four rows out (ADR 0031, Decision 7).
             ("reading_trend".to_string(), 4),
@@ -121,7 +143,7 @@ fn attention_needed_materializes_the_degraded_machines() {
         rows,
         vec![vec![
             Value::String("m2".into()),
-            Value::Instant("2021-06-20T09:30:00.000Z".into()),
+            Value::Instant("2024-12-31T00:00:00.000Z".into()),
             Value::Date("2021-06-15".into()),
             Value::Date("2025-12-01".into()),
             Value::Enum("degraded".into()),
@@ -139,6 +161,86 @@ fn attention_needed_materializes_the_degraded_machines() {
 /// ingestion adds newly closed windows and never changes one already
 /// emitted.  This is what the refresh slice will lean on, and what lets
 /// alerting treat each row as settled.
+/// The case ADR 0038 exists for and ADR 0041 had to make possible: a machine
+/// whose sensor never reported at all still gets its silent slots.
+///
+/// Its own watermark is absent (nothing was ever accepted in its grain), so
+/// nothing licenses closing any of its windows on the data alone, and `dense`
+/// fills nothing.  The declared closure floor is what supplies the bound
+/// (ADR 0041 decision 3), and it is the half of the watermark no data
+/// derives: an operator assertion that the world is closed through a point,
+/// stored beside the data rather than read from the clock, so `mensura run`
+/// stays reproducible.
+#[test]
+fn a_machine_that_never_reported_still_gets_its_silent_slots() {
+    let program = fleet_program();
+    let mut db = seeded_db(&program);
+    db.execute_sql(
+        r#"INSERT INTO "machines" VALUES
+             ('m4', '2024-11-02', '2024-12-31T00:00:00.000Z', 'operational', NULL);"#,
+    )
+    .unwrap();
+    let view = program
+        .views
+        .iter()
+        .find(|v| v.name == "sensor_health")
+        .expect("the example declares sensor_health");
+
+    // Without a floor, `m4` has no watermark, so none of its windows is
+    // closed and its silence is invisible rather than reported.
+    materialize_views(&mut db, &program).unwrap();
+    let rows = db.scan(&view.shape()).unwrap();
+    assert!(
+        !rows.iter().any(|r| r[0] == Value::String("m4".into())),
+        "an unobserved grain has no closed windows: {rows:?}"
+    );
+
+    // Declare the world closed through 01-02, and the silence becomes rows:
+    // 12-31 and 01-01, the daily slots from `m4`'s activation whose whole
+    // extent plus the lateness bound lies below the floor.
+    db.advance_floor("readings", "taken_at", "2025-01-02T00:10:00.000Z")
+        .unwrap();
+    materialize_views(&mut db, &program).unwrap();
+    let rows = db.scan(&view.shape()).unwrap();
+    let silent: Vec<&Vec<Value>> = rows
+        .iter()
+        .filter(|r| r[0] == Value::String("m4".into()))
+        .collect();
+    assert_eq!(
+        silent,
+        vec![
+            // `n` fills from `+`'s identity, and it is true: zero readings
+            // were reduced.  `peak` has no identity to fill from, so it is
+            // absent, which is what says "no readings" rather than "a low
+            // peak" (ADR 0038 decision 2).
+            &vec![
+                Value::String("m4".into()),
+                Value::Instant("2024-12-31T00:00:00.000Z".into()),
+                Value::Int(0),
+                Value::Missing,
+            ],
+            &vec![
+                Value::String("m4".into()),
+                Value::Instant("2025-01-01T00:00:00.000Z".into()),
+                Value::Int(0),
+                Value::Missing,
+            ],
+        ]
+    );
+
+    // And the query the fill exists for reports it, with no `assume`.
+    let silence = program
+        .views
+        .iter()
+        .find(|v| v.name == "silence_per_machine")
+        .expect("the example declares silence_per_machine");
+    let rows = db.scan(&silence.shape()).unwrap();
+    assert!(
+        rows.contains(&vec![Value::String("m4".into()), Value::Int(2)]),
+        "the silence count should hold `m4`'s two silent days: {rows:?}"
+    );
+}
+
 #[test]
 fn closed_windows_are_final_under_further_ingestion() {
     let program = fleet_program();

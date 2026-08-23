@@ -232,6 +232,90 @@ view machine_peaks {
            |> map_bags |k, b| (.peak = bag.max b.temperature)
 }
 
+// **The grid completed** (ADR 0038): `machine_peaks` above answers "what was
+// the peak in each window that had readings", and cannot answer "in which
+// windows were there none", because a window holding no reading is not a row
+// (ADR 0037 decision 1).  Absence is the right representation for the
+// operation and the wrong one for that question, and it fails quietly:
+// `#b` never yields zero in a windowed view, so a filter looking for sparse
+// windows omits the sparsest ones.
+//
+// `dense w machines activated` reads: complete the `w` grid, one row per
+// machine in `machines` per slot, from that machine's `activated` bound up to
+// the closed bound.  Both arguments after the window column are policy and
+// are never inferred (decision 3).  The population cannot come from the
+// windowed bag, which by construction knows nothing of a machine that never
+// sent a row, and that machine is the case the stage exists to expose; the
+// lower bound cannot be the earliest observed window either, since that would
+// make a sensor offline on day one look like a sensor not yet installed.
+//
+// **It runs after the reduction, and that inverts the obvious design**
+// (decision 1).  Materializing the empty fibers first would break ADR 0029
+// decision 4's guarantee that a reducing lambda never sees an empty bag: every
+// fold would have to be total on nothing, `bag.min` and `bag.max` would stop
+// working, and the accumulator optionality 0029 confined to the executor would
+// surface everywhere.  Filling reduced rows keeps all of that and computes the
+// same table (`Mensura.dense_fiberMap_foldFiber`), with the conclusion that
+// matters intact: **a filled row is a reduced row**, so `n = 0` says zero
+// readings were reduced rather than that a placeholder reading was invented
+// and counted.
+//
+// **The columns split on the identity, and that is the point** (decision 2).
+// `n` is `#b`, a fold at `+`, and `+` has an identity, so a filled row's `n`
+// is a true `0` and the column stays total.  `peak` is `bag.max`, and there is
+// no maximum of nothing, so the column is `temperature[real]?` view-wide and
+// honestly absent on a filled row.  An absent `peak` says "no readings" where
+// a low `peak` says "cold readings"; before this stage those were the same row
+// shape.  Consume the absence with `??` where a default is a true statement
+// about the domain (ADR 0039), or serve it and let the reader see it.
+//
+// **The trap worth naming.**  A decomposed ratio travels honestly through the
+// fill (`.sum = bag.sum b.temperature` and `.n = #b.temperature` both fill
+// with `0`, and both filled values are true), and recombining them downstream
+// divides zero by zero on every filled row, which `real` division answers with
+// a silent `NaN`.  ADR 0039's lifting does not save it: both components are
+// *total* zeros, so nothing is optional and nothing propagates.  Compute a
+// ratio upstream of `dense`, where this rule sends it honestly optional, or
+// let the consumer read `.n = 0` and know the mean does not exist.
+view sensor_health {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature, .peak = bag.max b.temperature)
+           |> dense w machines activated
+}
+
+// The motivating query, and the reason the fill records what it built
+// (ADR 0038 decision 4).  Counting silent days is a reduction of the grid at
+// the machine key, one step past `sensor_health`.
+//
+// That step is the interesting one.  The reducing fold demands completeness
+// at the key it folds (ADR 0023), and `demote w` is a genuine coarsening,
+// which clears the fact (ADR 0035) because a window absent at the fine key is
+// a gap inside the machine's bag.  Here there is no absent window: `dense`
+// materialized every slot between `activated` and the closed bound, so the
+// coarse fiber is the whole rectangle and the checker re-derives the fact from
+// that mechanism (`Mensura.demote_fiberCompleteWrt_dense`).  **No `assume`
+// anywhere**, and this is the one place a genuinely coarsening `demote`
+// re-establishes completeness rather than clearing it, beside ADR 0035
+// decision 6's exhaustive axes.
+//
+// It is honest about time in the same way `closed` is: it counts silent days
+// *as of the closed bound*, and because filled rows are final, reruns only
+// ever grow the count.
+//
+// The pipeline is repeated rather than reading `sensor_health`: a view over a
+// view is not yet a source (`ROADMAP.md`).
+view silence_per_machine : Tabular[Machine] {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines activated
+           |> demote w
+           |> map_bags |k, b| (.silent = fold `+` (|r| if r.n == 0 then 1 else 0) b)
+}
+
 view reading_trend {
   readings |> demote taken_at
            |> assume { complete }

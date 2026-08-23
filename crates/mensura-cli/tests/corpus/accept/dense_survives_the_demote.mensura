@@ -1,0 +1,55 @@
+// Accepted, and **with no `assume` anywhere**: the query ADR 0038 exists to
+// make expressible.  "How many quarter-hours was this machine silent" is a
+// reduction of the completed grid at the machine key, one step past the fill.
+//
+// That step is the interesting one.  The reducing fold demands completeness
+// at the key it folds (ADR 0023), and `demote w` is a genuine coarsening,
+// which clears the fact (ADR 0035) because a key absent at the fine key
+// becomes a gap inside the coarse bag.  Here it cannot: `dense` materialized
+// every slot between each machine's `activated` bound and the closed bound,
+// so the coarse fiber is the whole rectangle rather than a sample of it
+// (`Mensura.demote_fiberCompleteWrt_dense`).  The checker re-derives the
+// fact from that mechanism instead of asking the author to claim it, which
+// is the establish/consume model working as designed (ADR 0017).
+//
+// This is the *one* exception to the clearing rule, beside ADR 0035
+// decision 6's exhaustive axes, and it is available only over a window grid:
+// the stride is a compile-time constant, the origin is fixed (ADR 0036
+// decision 5), and closedness bounds the run above, so "are these values a
+// contiguous run" is a finite question with an answer.  Over a raw order key
+// it is not, which is why `dense` is not the general `resample`.
+//
+// Delete the `dense` line and this file becomes
+// `reject/dense_is_what_the_demote_consumes.mensura`.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr { activated: instant }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view silence_per_machine {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines activated
+           |> demote w
+           |> map_bags |k, b| (.reported = bag.sum b.n)
+}

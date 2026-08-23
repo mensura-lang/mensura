@@ -120,8 +120,26 @@ mensura/
   combiner table (its ordered-only rows now reachable), the `desc` order
   marker, and the window vocabulary as const bindings in a bundled `series`
   module, behind ADR 0029's Stage 2.
+  **M5's window slice is complete** (ADRs 0036-0041): the `instant` point
+  domain and its torsor arithmetic (ADR 0036); missing-aware expressions
+  and the partial precedence order the `??` slot forced (ADRs 0039, 0040);
+  `window` on the stride grid with the grading extension (ADR 0037
+  decisions 1-3); the `lateness` intake contract enforced per grain, with
+  the effective watermark as `max(observed, floor)` and `mensura floor`
+  advancing the stored half (ADR 0037 decision 4, ADR 0041); the `closed`
+  stage, which converts that bounded contract into the absolute
+  completeness a reducer demands and buys finality
+  (`closedWindow_stable`); completeness demanded per combiner rather than
+  per shape under `scan` (decision 5); `latest` as an attribute-only
+  reduction (decision 7); and `dense`, which completes the window grid
+  from a given population and per-entity lower bound, fills from the
+  combiner's identity where one exists and pushes the rest onto the value
+  axis, and establishes the completeness that survives `demote w`
+  (ADR 0038).  What remains of M5 is the *refresh* half.
 - **Design docs still to write** (each ahead of its milestone, per specs
-  first): streaming windows and refresh; ML signatures and validation; the
+  first): incremental refresh (`on_change`, the changelog, the plan IR,
+  and the DBSP lowering) and the sampling qualifier that per-window
+  sampling inference needs; ML signatures and validation; the
   serving/transport integration (including the ingestion *endpoints*, whose
   local intake is already specified in `docs/toolkit/05-ingestion.md`); and
   the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
@@ -270,18 +288,25 @@ Delivered.
 
 Output: windowed, incrementally refreshed views over device streams.
 
-- Design docs first: streaming windows and refresh.
-- `sliding_window` and tumbling windows, `latest`, window-closedness, and
-  `on_change` / incremental refresh through the processing layer.
+- Design docs first: streaming windows (done: ADRs 0036-0041) and refresh
+  (still to write).
+- **The window half has landed.**  One `window` operation rather than a
+  sliding/tumbling pair (tumbling is `stride == size`), `latest`,
+  window-closedness against a per-grain effective watermark, and `dense`
+  over the window grid, so an interval in which an entity reported nothing
+  is a row rather than an absence.  The ordered primitives these rest on
+  (**`scan` and `prescan`**, the `desc` marker, and the bundled `series`
+  module) landed earlier still, with ADR 0029's Stage 2 `formal/` work,
+  since M5's window rollups needed something concrete to refer to.
+- What remains: `on_change` / incremental refresh through the processing
+  layer (the changelog, the plan IR, and the DBSP lowering,
+  `docs/toolkit/04-processing-layer.md`), and with it the honest exit for
+  the frontier window that ADR 0037 records as an open question.
 - Per-window sampling inference (Exhaustive when the fleet is fully covered,
-  Biased or Representative otherwise).
+  Biased or Representative otherwise).  Waits on the sampling-qualifier ADR
+  whose slot `docs/language/09-typing-reference.md` section 13 holds.
 - The temporal and dependency typing rules, and temporal referential integrity
   (the "outlives" constraint), extending `docs/language/08-lineage.md`.
-- The ordered primitives that window functions need (**`scan` and `prescan`**,
-  the `desc` marker, and the bundled `series` module) have **landed early**,
-  with ADR 0029's Stage 2 `formal/` work, since M5's window rollups need
-  something concrete to refer to.  What remains here is the *streaming* half: windowed refresh, window-closedness,
-  and per-window sampling inference.
 
   The tie model's **tier 1 and tier 3 are enforced**: a scan demands a
   tie-free order key, discharged from a grading where the shape allows it (a

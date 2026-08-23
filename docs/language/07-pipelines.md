@@ -518,6 +518,120 @@ grading discharges tie-freedom and the coarsening's completeness is
 claimed.  After `closed`, both discharge by mechanism and neither claim is
 needed.
 
+### `dense` - complete the window grid
+
+```
+readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+         |> demote taken_at
+         |> closed
+         |> map_bags |k, b| (.n = #b.temperature, .peak = bag.max b.temperature)
+         |> dense w machines activated
+```
+
+`dense w population bound` adds one row per population entity per closed
+grid slot that produced none, and **establishes completeness** at the
+current key (ADR 0038).  A window holding no row is absence (`window`
+above), which is right for the operation and leaves "how many intervals
+did this machine report nothing" unanswerable, because the intervals in
+question are not rows.  Worse, it fails quietly: `#b` never yields zero
+in a windowed view, so a filter meant to find sparse windows omits the
+sparsest ones.
+
+**It runs after the reduction, which inverts the obvious design and keeps
+its conclusion.**  Materializing the empty fibers first and letting the
+reduction handle them would break the guarantee that `map_bags` skips
+empty bags (ADR 0029 decision 4): every reducing lambda would have to be
+total on nothing, `bag.min` and `bag.max` would stop working, and the
+accumulator's optionality would surface in every surface type.  Filling
+reduced rows preserves all three and computes the same table
+(`dense_fiberMap_foldFiber`).  The conclusion that matters survives
+either way: **a filled row is a reduced row**, so `n = 0` says zero
+readings were reduced, not that a placeholder reading was invented and
+counted.
+
+**Four things fix the grid, and two of them are policy that is never
+inferred.**  The stride and the origin come from the `window` stage and
+the domain's zero; the upper bound is closedness, so the stage runs after
+`closed` and inherits its bound, because filling past the watermark would
+declare a future that has not happened confirmed empty.  The other two
+are arguments:
+
+- **the population**, the store whose rows say which entities should have
+  windows.  It cannot be inferred from the windowed bag, which by
+  construction knows nothing of an entity that never sent a row, and that
+  entity is the case the stage exists to expose.  It must be `singletons`
+  and keyed like the windowed rows without the window column;
+- **the per-entity lower bound**, a total column of that store in the
+  window column's domain.  Each entity's first slot is the smallest grid
+  multiple at or above its bound: the slot *containing* the bound is
+  excluded deliberately, since part of it precedes the entity's history,
+  and a zero filled into it would read as silence where the truth is that
+  the entity did not yet exist.  Inferring this from the earliest observed
+  window would make an entity offline on day one indistinguishable from
+  one not yet installed.
+
+**Fill values come from the combiner's identity, and the rest go
+optional.**  A column whose defining expression is a *single* fold at a
+combiner carrying an identity (`#b`, `bag.sum b.x`, a written-out `fold`)
+fills with that identity and stays total.  Every other column, compound
+expressions included, becomes optional and is absent on a filled row:
+there is no maximum of nothing, so `bag.max b.temperature` is
+`temperature[real]` before this stage and `temperature[real]?` after it.
+That is where the information lives: an absent `peak` says no readings, a
+present low `peak` says cold readings, and without the stage those are
+the same row shape.  A ratio is the worked non-example:
+`(bag.sum b.v) / to_real(#b)` is two folds joined by a division, no
+single combiner produced it, and filling its parts would compute
+`0 / 0.0`, so the column is optional and honestly absent.  Note the trap
+in the decomposed spelling: `.sum` and `.n` each fill with a *total*
+zero, so recombining them downstream divides zero by zero to a silent
+`NaN`, and ADR 0039's lifting cannot save what is not optional.  Compute
+the ratio upstream of `dense`, or let the consumer read `.n = 0`.
+
+Properties.  **Content**: unchanged, except that the no-identity columns
+become optional.  **Cardinality**: `singletons` in and `singletons` out;
+a bag input is rejected, since the grid is one row per (entity, slot) and
+there is nothing to fill before the reduction.  **Completeness**:
+established, mechanism-grade, the mechanism being the grid enumeration
+itself.  **Rectangularity**: recorded beside it, and consumed by exactly
+one rule, below.  Tier A (`dense_idem`, `dense_stable_of_closed`).
+
+**The fact survives one `demote`, and only that one.**  The motivating
+query reduces the grid at the entity key:
+
+```mensura
+view silence_per_machine {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines activated
+           |> demote w
+           |> map_bags |k, b| (.silent = fold `+` (|r| if r.n == 0 then 1 else 0) b)
+}
+```
+
+The reducing fold demands completeness at `{machine_id}`, and `demote w`
+is a genuine coarsening, which clears the fact.  Here it re-derives it
+instead: the coarse fiber is the whole rectangle between the entity's
+bound and the closed bound, so nothing is missing from the bag being
+folded (`demote_fiberCompleteWrt_dense`).  This is the one place a
+genuinely coarsening `demote` re-establishes completeness from a checked
+fact, beside the `exhaustive`-axis rule, and it is sound only over a
+window grid: the stride is a compile-time constant, the origin is fixed,
+and closedness bounds the run above, so "are these values a contiguous
+run" is a finite question with an answer.  Over a raw order key it is
+not, which is why `dense` is not the general `resample` and why that
+stage stays deferred.
+
+The count is honest about time in the same way `closed` is: it counts
+silent intervals *as of the closed bound*, and because filled rows are
+final, reruns only ever grow it.
+
+A **fill policy** that narrows an optional column back to total
+(carry-forward being the obvious one) is deferred: it is strictly
+additive and wants a consumer.
+
 ## Completeness: establish, clear, consume
 
 Two operations are Tier B: **`demote`** and **`pivot`**.  Both change
@@ -540,8 +654,9 @@ is about the *current* key, an absent fine key becomes a gap inside a
 coarse fiber, so a genuine `demote` clears the qualifier and the
 establishment step belongs after it.  A coarsening along `exhaustive`
 axes is not genuine in that sense and keeps the fact (ADR 0035 decision
-6), which is the one case where a reducer below the establishing key
-still needs no discharge.  Over a `singletons` input the
+6); a coarsening of a window column whose grid `dense` completed keeps it
+for the same kind of reason (ADR 0038 decision 4).  Those two are the only
+cases where a reducer below the establishing key needs no discharge.  Over a `singletons` input the
 reducer's obligation discharges trivially, so the ordinary aggregation
 over a plain store stays ceremony-free.  The M1 surface for establishing
 and consuming the fact is ratified in
@@ -550,7 +665,7 @@ ADR 0023): M1 ships the `completeness_check` and `assume { complete }`
 stages (with key-context asserts).  `registry`-by-mechanism completeness
 landed with M4 (`13-registries.md`, ADR 0033 as amended by ADR 0035);
 the `@complete_over` annotation stays deferred with its family.
-Completeness is established in one of three ways:
+Completeness is established in one of five ways:
 
 - **mechanism**: a `registry` source is complete by construction at its
   **own declared key** (overview pillar 7, `13-registries.md`), so a
@@ -583,6 +698,19 @@ Completeness is established in one of three ways:
   |> completeness_check { assert row_count open_offerings == 0 }
   |> map_bags |k, b| (.total_credits = bag.sum b.credits)
   ```
+
+- **`closed`**, which converts a `lateness` contract's bounded fact (that
+  nothing will ever arrive below `watermark - lateness`) into the absolute
+  one a reducer needs, on the windows whose whole span lies below that
+  bound (ADR 0037 decision 4).  Mechanism-grade rather than a claim: the
+  extent comes from the `window` stage and the bound from an enforced
+  declaration, so "no row of this window can still arrive" is a theorem
+  about the intake.
+
+- **`dense`**, which materializes the grid slots the reduction produced no
+  row for, so completeness holds by enumeration (ADR 0038 decision 4).
+  The one establishment whose fact also survives a coarsening `demote` of
+  the window column, for the reason the `dense` entry above gives.
 
 - **`@complete_over(col)`** on a source store, establishing the fact globally so
   no per-use check is needed.  This is an annotation; its surface lands with

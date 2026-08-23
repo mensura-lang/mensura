@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mensura_syntax::StoreKind;
+use mensura_syntax::{BinOp, StoreKind};
 
 use crate::model::{ColumnRole, ColumnType, Lateness, Schema};
 
@@ -220,6 +220,33 @@ pub enum Arranged {
 /// column is total; consumed by `pivot`'s totality upgrade.
 pub type Exhaustive = BTreeSet<String>;
 
+/// Which window columns carry a **rectangularity** fact (ADR 0038
+/// decision 4): per residual key, the column's values are exactly the grid
+/// between that entity's declared lower bound and the closed upper bound.
+///
+/// The sibling of [`Exhaustive`], and deliberately the same shape, because
+/// it plays the same part: these are the two facts a genuinely coarsening
+/// `demote` consumes instead of clearing the completeness qualifier
+/// (ADR 0035's rule, with its two exceptions).  Established by `dense`,
+/// which enumerates the grid, and cleared by every other operation, since
+/// anything that drops or adds rows can put a hole back.
+pub type Rectangles = BTreeSet<String>;
+
+/// Which value columns are a **single fold**, and at which combiner
+/// (ADR 0038 decision 2).
+///
+/// Recorded by a reducing `map_bags`, where the field's defining expression
+/// is in hand, and read by `dense`, which fills such a column from the
+/// combiner's identity and pushes every other column onto the value axis.
+/// The map holds only the columns the recognizer accepted: a compound
+/// expression has no entry, which is what makes "no single combiner
+/// produced it" the default rather than a special case.
+///
+/// It is *not* a provenance model.  The pipeline ADR 0038 specifies puts
+/// `dense` directly after the reduction, so the fact needs to survive
+/// exactly one step and every other operation clears it.
+pub type Reductions = BTreeMap<String, BinOp>;
+
 /// The key-graded cardinality facts (ADR 0024,
 /// `docs/decisions/0024-key-moves-as-a-true-inverse-pair.md`): column sets
 /// over the flat table, key and non-key columns alike, over which the
@@ -267,6 +294,11 @@ pub struct Qualifiers {
     pub arranged: Arranged,
     /// The live window facts (ADR 0037 decision 2); see [`Windows`].
     pub windows: Windows,
+    /// The completed window grids (ADR 0038 decision 4); see [`Rectangles`].
+    pub rectangles: Rectangles,
+    /// The single-fold value columns (ADR 0038 decision 2); see
+    /// [`Reductions`].
+    pub reductions: Reductions,
     /// The source's intake contracts, carried so a windowing operation can
     /// inherit the one on its point column (ADR 0037 decision 4).  Seeded
     /// by [`TableType::from_store`] and cleared by anything that is not
@@ -307,6 +339,11 @@ pub struct WindowFact {
     /// `closed` needs it and rejects the stage without it, since the
     /// establishment is mechanism-grade or nothing (decision 4).
     pub contract: Option<Lateness>,
+    /// Whether `closed` has run on this grid.  `dense` demands it, because
+    /// closedness is the grid's upper bound (ADR 0038 decision 3): filling
+    /// past the watermark would declare a future that has not happened
+    /// confirmed empty, which is the one error the stage must not make.
+    pub closed: bool,
 }
 
 /// The live window facts, keyed by window column (ADR 0037 decision 2).
@@ -345,6 +382,13 @@ impl Windows {
     /// Record what `window` just built.
     pub fn record(&mut self, window: impl Into<String>, fact: WindowFact) {
         self.facts.insert(window.into(), fact);
+    }
+
+    /// Record that `closed` has run on a grid (ADR 0038 decision 3).
+    pub fn mark_closed(&mut self, window: &str) {
+        if let Some(fact) = self.facts.get_mut(window) {
+            fact.closed = true;
+        }
     }
 
     /// Drop every fact that mentions `column`, as its window column or as
@@ -432,6 +476,8 @@ impl TableType {
                 functional: Functional::new(),
                 arranged: Arranged::Unclaimed,
                 windows: Windows::none(),
+                rectangles: Rectangles::new(),
+                reductions: Reductions::new(),
                 // The intake contracts travel with the source, so `window`
                 // can inherit the one on its point column and `closed` can
                 // demand it (ADR 0037 decision 4).  A plain store declares
@@ -559,6 +605,8 @@ mod tests {
                 functional: Functional::new(),
                 arranged: Arranged::Unclaimed,
                 windows: Windows::none(),
+                rectangles: Rectangles::new(),
+                reductions: Reductions::new(),
                 contracts: Vec::new(),
                 lineage: Lineage::root(),
             },

@@ -15,9 +15,31 @@ ADR 0029 decision 4 (the guarantee decision 1 preserves), and
 ADR 0010 (optional columns).  Honours ADR 0021: decision 7 supplies
 the theorems for the typing rules of decisions 2 and 4.
 
-Not scheduled.  This is the follow-up 0037 decision 6 promised "with
-its own consumer"; the consumer arrived as soon as anyone asked how
-many intervals a machine went silent.
+**Implemented** (2026-08-22), as the last unimplemented ADR of M5's
+window slice.  This was the follow-up 0037 decision 6 promised "with its
+own consumer"; the consumer arrived as soon as anyone asked how many
+intervals a machine went silent, and the two things that had been
+missing arrived with it: ADR 0039's lifted operators, without which a
+`T?` fill column would have been serve-only, and ADR 0041's closure
+floor, without which the never-reporting machine of the worked example
+could not have had closed windows at all.
+
+Three things the implementation had to add, none of them changing a
+decision:
+
+- **the combiner each column reduced at** is recorded by the reducing
+  `map_bags`, where the field's defining expression is in hand.  The
+  ADR says the recognition needs no provenance model, which is true, and
+  true only because it happens there: a stage downstream sees columns and
+  cannot ask what produced one;
+- **a closedness flag on the windowing fact**, since decision 3 makes
+  closedness the upper bound and completeness alone is too loose a proxy
+  for it (an `assume { complete }` would pass);
+- **a sharpening of `closed`'s own demand.**  Its rule was "the point is
+  not in the key"; because the grid facts now cross a reducing
+  `map_bags`, the rule is "the point is still a column", which is what it
+  always meant.  Closing a grid after the reduction that consumed its
+  points is now rejected rather than vacuously accepted.
 
 ## Context
 
@@ -496,10 +518,13 @@ Implementation:
 
 ## Open questions
 
-- **Naming** (decision 6).  `dense` reuses a word ADR 0037 decision 6
-  rejected in a different role.  `rectangular`, `grid`, `fill`, and
-  `complete_grid` are the alternatives; `fill` collides with the fill
-  policy below.
+- **Naming** (decision 6).  *Settled (owner, 2026-08-22): shipped as
+  `dense`, as decision 6 wrote it.*  The alternatives on the table were
+  `rectangular`, `grid`, and `complete_grid` (`fill` collides with the
+  fill policy below), and the argument for keeping `dense` is the one
+  decision 6 makes: the intuition ADR 0037 decision 6 rejected was
+  always right, and only its epistemic status was wrong.  The word now
+  names something a mechanism earns.
 - **Fill policies** (decision 2).  Carry-forward, carry-backward,
   interpolation, and a user-supplied constant all narrow an optional
   column back to total.  Additive, and each wants a consumer.
