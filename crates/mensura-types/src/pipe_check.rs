@@ -1282,6 +1282,30 @@ fn op_window(
     Ok(PipeTy::Table(table))
 }
 
+/// The column named by a point argument, whether bare (`p`) or marked
+/// descending (`desc p`).
+///
+/// The marker is read off the *syntax* rather than typed through
+/// `expr_check`: a point is a column name, and column names are not values
+/// (ADR 0037 decision 7), so there is no expression here to type.  Matching
+/// the name `desc` is sound because it is an ambient builtin that
+/// `resolve` refuses to let a program redeclare or shadow.
+///
+/// The direction is deliberately dropped: no obligation in `op_latest`
+/// depends on it, and the runtime reads it back off the same syntax.
+fn point_argument(arg: &Expr) -> Option<&str> {
+    match &arg.kind {
+        ExprKind::Name(p) => Some(p),
+        ExprKind::App(head, inner) if matches!(&head.kind, ExprKind::Name(n) if n == "desc") => {
+            match &inner.kind {
+                ExprKind::Name(p) => Some(p),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// `latest p` (section 6.9, ADR 0037 decision 7): keep, per fiber, the row
 /// with the maximal point `p`.
 ///
@@ -1304,22 +1328,45 @@ fn op_window(
 /// survives) and a claim after it comes too late.  The ADR's own example
 /// puts the claim in that useless position.  Rejecting the form and naming
 /// the explicit spelling keeps every accepted use dischargeable.
+///
+/// **The dual is the same operation under a marked point** (ADR 0037
+/// decision 7, direction settled): `latest (desc p)` keeps the *minimal*
+/// point, which is `getLast (arrange p fiber)` at the dual order, so
+/// `Mensura.IsArrangement.unique` covers it at `ωᵒᵈ` with no new theorem.
+/// Nothing below branches on the direction, because nothing below depends on
+/// it: the dual of a total order is total and the dual of an injective key is
+/// injective, so both obligations discharge by the same rules.  There is no
+/// `earliest`: direction is already a value-level marker, and a dual name per
+/// point-reduction would double the vocabulary.
 fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     let [p_arg] = args else {
+        // `latest desc p` flattens to two arguments, so the arity error is
+        // the likeliest way to spell the dual wrong; name the fix.
+        if let [head, _] = args
+            && matches!(&head.kind, ExprKind::Name(n) if n == "desc")
+        {
+            return Err(error(
+                "`latest`'s `desc` marker needs parentheses, as in \
+                 `latest (desc taken_at)`",
+                span,
+            ));
+        }
         return Err(error(
-            "`latest` takes one point column, as in `latest taken_at`",
+            "`latest` takes one point column, as in `latest taken_at` or \
+             `latest (desc taken_at)`",
             span,
         ));
     };
-    let ExprKind::Name(p) = &p_arg.kind else {
+    let Some(p) = point_argument(p_arg) else {
         return Err(error(
-            "`latest`'s point column must be an identifier",
+            "`latest`'s point column must be an identifier, optionally marked \
+             descending (`latest (desc taken_at)`)",
             p_arg.span,
         ));
     };
 
-    if table.content.key.iter().any(|c| &c.name == p) {
+    if table.content.key.iter().any(|c| c.name == p) {
         return Err(error(
             format!(
                 "`latest` needs `{p}` in the fiber, not in the key: coarsening \
@@ -1330,7 +1377,7 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
             p_arg.span,
         ));
     }
-    let Some(point) = table.content.columns.iter().find(|c| &c.name == p).cloned() else {
+    let Some(point) = table.content.columns.iter().find(|c| c.name == p).cloned() else {
         return Err(error(format!("unknown column `{p}`"), p_arg.span));
     };
     if !point.domain.is_orderable() {
@@ -1360,7 +1407,7 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     // tier 3 hatch for everything else.
     if table.qualifiers.arranged != Arranged::Assumed {
         let mut with = table.key_names();
-        with.insert(p.clone());
+        with.insert(p.to_string());
         if !table
             .qualifiers
             .functional
@@ -4289,6 +4336,48 @@ mod tests {
         );
     }
 
+    /// `latest (desc p)` is the same operation at the dual order, so it
+    /// produces the same type and demands the same facts (ADR 0037
+    /// decision 7, direction settled).
+    #[test]
+    fn latest_takes_the_descending_marker() {
+        let s = windowed_sources(true);
+        let ascending = table_of(
+            pipe_ty(
+                &s,
+                "readings |> demote taken_at |> assume { complete } |> latest taken_at",
+            )
+            .expect("ok"),
+        );
+        let descending = table_of(
+            pipe_ty(
+                &s,
+                "readings |> demote taken_at |> assume { complete } \
+                 |> latest (desc taken_at)",
+            )
+            .expect("the dual is reachable"),
+        );
+        assert_eq!(ascending.content, descending.content);
+        assert_eq!(ascending.qualifiers, descending.qualifiers);
+        // The marker is transparent to both obligations, so the tie-freedom
+        // and completeness rejections read the same under it: the dual of a
+        // total order is total, the dual of an injective key injective.
+        for (src, needle) in [
+            (
+                "readings |> demote taken_at |> latest (desc taken_at)",
+                "needs completeness",
+            ),
+            (
+                "readings |> demote taken_at |> assume { complete } \
+                 |> latest (desc temperature)",
+                "may have ties",
+            ),
+        ] {
+            let errs = pipe_ty(&s, src).expect_err(src);
+            assert!(errs.iter().any(|e| e.message.contains(needle)), "{src}");
+        }
+    }
+
     #[test]
     fn latest_rejections_name_their_rule() {
         let s = windowed_sources(true);
@@ -4321,6 +4410,18 @@ mod tests {
             (
                 "readings |> demote taken_at |> latest",
                 "takes one point column",
+            ),
+            // The marker is a marker on one argument, so the flattened
+            // application is an arity error that names the fix.
+            (
+                "readings |> demote taken_at |> assume { complete } \
+                 |> latest desc taken_at",
+                "needs parentheses",
+            ),
+            (
+                "readings |> demote taken_at |> assume { complete } \
+                 |> latest (desc (desc taken_at))",
+                "must be an identifier",
             ),
         ] {
             let errs = pipe_ty(&s, src).expect_err(src);

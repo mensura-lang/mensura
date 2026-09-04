@@ -1,0 +1,18 @@
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// The oldest reading per machine: the same reduction at the dual order.
+// `desc` marks the point as descending, so the maximal point under that
+// order is the minimal one under time.
+view first_reading {
+  readings |> demote taken_at
+           |> assume { complete }
+           |> latest (desc taken_at)
+}

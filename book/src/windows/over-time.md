@@ -128,3 +128,23 @@ has somewhere to stand.  Fusing the two would leave that demand with no place
 to go, since a claim before the coarsening is a claim at the wrong key and a
 claim after it comes too late for the fold.  After `closed`, in the next
 chapter, both facts hold by mechanism and neither claim is written at all.
+
+## The oldest row per group
+
+That is the same question with the order turned around, so it is the same
+operation with the point marked `desc`, the marker a scan's order key already
+takes:
+
+```mensura
+{{#include ../examples/latest-oldest.mensura}}
+```
+
+Reversing an order costs nothing: the dual of an unambiguous order is
+unambiguous, so `latest (desc p)` demands exactly what `latest p` demands and
+discharges it the same way.  The parentheses matter, though.  Written without
+them, the marker reads as a second argument rather than as an annotation on
+the point, and the diagnostic says so.
+
+There is no `earliest`.  Direction is a marker, one word that works on every
+ordered operation, and the language prefers that to a second name for each of
+them.

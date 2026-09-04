@@ -1009,18 +1009,38 @@ fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
 /// demanded tie-freedom, so a tie means the program claimed
 /// `assume { arranged }` over data that had one, and the rule is the same
 /// one the rest of the ordered vocabulary follows.
+///
+/// A `desc`-marked point (`latest (desc p)`) takes the argmin instead: one
+/// comparison flip, which is the same operation over the dual order, and the
+/// tie rule is that same rule there (still the earlier row, `<<` where the
+/// ascending form is `>>`).  The direction is read off the syntax for the
+/// reason `key_is_descending` gives: an order marker must never reach a
+/// runtime value, let alone storage.
 fn eval_latest(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let [p_arg] = args else {
         return internal("`latest` expects one point column");
     };
-    let ExprKind::Name(p) = &p_arg.kind else {
+    let (inner, descending) = match &p_arg.kind {
+        ExprKind::App(head, inner) if matches!(&head.kind, ExprKind::Name(n) if n == "desc") => {
+            (inner.as_ref(), true)
+        }
+        _ => (*p_arg, false),
+    };
+    let ExprKind::Name(p) = &inner.kind else {
         return internal("`latest` expects a column name");
     };
-    let Some(at) = input.attr_position(p) else {
+    let Some(at) = input.attr_position(p.as_str()) else {
         return internal("`latest` on a column the checker did not find");
     };
 
     let nkeys = input.key_len();
+    // The strict comparison that displaces the held row: the maximal point
+    // ascending, the minimal one under `desc`.
+    let wanted = if descending {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Greater
+    };
     // Group by key, keeping the argmax of each fiber.  `BTreeMap` orders
     // the output by key, which is what every other reducing stage produces.
     let mut best: BTreeMap<Vec<KeyVal>, usize> = BTreeMap::new();
@@ -1028,9 +1048,7 @@ fn eval_latest(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
         let key: Vec<KeyVal> = row[..nkeys].iter().map(key_of).collect::<Result<_, _>>()?;
         match best.get(&key) {
             Some(&held) => {
-                if compare(&row[nkeys + at], &input.rows[held][nkeys + at])?
-                    == std::cmp::Ordering::Greater
-                {
+                if compare(&row[nkeys + at], &input.rows[held][nkeys + at])? == wanted {
                     best.insert(key, i);
                 }
             }
@@ -3396,6 +3414,40 @@ mod tests {
                     Value::String("m2".into()),
                     Value::Real(310.0),
                     Value::Instant("2026-08-10T12:00:00.000Z".into()),
+                ],
+            ]
+        );
+        // The marked point is the argmin over the same data: one comparison
+        // flip, the same operation at the dual order.
+        let oldest = eval_over(
+            HISTORY,
+            r#"view first_reading {
+                 readings |> demote taken_at
+                          |> assume { complete }
+                          |> latest (desc taken_at)
+               }"#,
+            &[(
+                "readings",
+                vec![
+                    reading("m1", "2026-08-10T10:00:00.000Z", 300.0),
+                    reading("m2", "2026-08-10T12:00:00.000Z", 310.0),
+                    reading("m1", "2026-08-10T11:00:00.000Z", 305.0),
+                    reading("m2", "2026-08-10T09:00:00.000Z", 295.0),
+                ],
+            )],
+        );
+        assert_eq!(
+            oldest,
+            vec![
+                vec![
+                    Value::String("m1".into()),
+                    Value::Real(300.0),
+                    Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                ],
+                vec![
+                    Value::String("m2".into()),
+                    Value::Real(295.0),
+                    Value::Instant("2026-08-10T09:00:00.000Z".into()),
                 ],
             ]
         );
