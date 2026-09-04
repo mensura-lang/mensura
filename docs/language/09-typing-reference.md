@@ -399,7 +399,8 @@ in type position and cannot reach a column.  Because the marker sits on
 express.  A direction marker rather than a comparator is forced by the same
 epistemics as the combiner table: a comparator's obligation is a law (a strict
 total order), unverifiable on a lambda.  In `formal/` it is Mathlib's
-`OrderDual`, so the arrangement absorbs it at no proof cost.
+`OrderDual`, so the arrangement absorbs it at no proof cost.  Its consumers
+are the ordered primitives' order keys and `latest`'s point (section 6.9).
 
 **A scan's result is a bag, so it is the window shape**, one output row per
 input row.  Its completeness demand is nonetheless per **combiner row**, not
@@ -907,6 +908,7 @@ the device was working.
 
 ```
 latest : p -> Table -> Table
+latest : desc p -> Table -> Table
 ```
 
 Keeps, per fiber, the row with the maximal point `p`, which is
@@ -926,6 +928,15 @@ trivially on a `singletons` input.
 rejected: fusing the coarsening into the operation would leave the
 completeness demand undischargeable, so the coarsening is written out
 (`demote p`, then the claim, then `latest p`).  Tier A.
+
+The point takes the `desc` marker (section 5.4), so `latest (desc p)` is
+the argmin: `getLast (arrange p fiber)` at the dual order, which is
+`IsArrangement.unique` instantiated at `ωᵒᵈ` rather than a new theorem.
+The obligations are unchanged, the dual of a total order being total and
+the dual of an injective key injective, and ties resolve to the earlier
+row either way.  The marker must be parenthesized, an unparenthesized
+`latest desc p` being two arguments.  No `earliest` exists (ADR 0037
+decision 7, direction settled).
 
 ### 6.10  `dense` (complete the window grid) -- Tier A
 

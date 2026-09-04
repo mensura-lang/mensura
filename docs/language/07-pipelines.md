@@ -518,6 +518,23 @@ grading discharges tie-freedom and the coarsening's completeness is
 claimed.  After `closed`, both discharge by mechanism and neither claim is
 needed.
 
+**The oldest row is the same operation at the dual order.**  The point
+takes the `desc` marker, exactly as a scan's order key does, so
+`latest (desc p)` keeps the row whose point is *minimal*:
+
+```mensura
+readings |> demote taken_at |> assume { complete } |> latest (desc taken_at)
+```
+
+Nothing in the demands moves, because the dual of a total order is total
+and the dual of an injective key is injective: totality and tie-freedom
+discharge by the same rules, and ties resolve the same way at the dual
+order (the earlier row).  The parentheses are load-bearing:
+`latest desc taken_at` is two arguments, not a marked one.  There is no
+`earliest`, since direction is already a marker and a dual name per
+point-reduction would double the vocabulary (ADR 0037 decision 7,
+direction settled).
+
 ### `dense` - complete the window grid
 
 ```

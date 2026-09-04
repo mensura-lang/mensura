@@ -426,6 +426,31 @@ discharged.  The worked example's
 `readings |> latest taken_at |> assume { complete }` should be read as
 the explicit spelling.
 
+*Direction settled (owner, 2026-09-04): the dual is reachable through
+the order marker, `latest (desc p)`, and no `earliest` is minted.*
+The decision above specifies the argmax and never raises the argmin,
+which left "the oldest row per group" unreachable rather than
+declined (`latest` names its point directly, so there was nowhere to
+put a direction), and no other operation answers it: the series
+vocabulary is bag-shaped, and `latest` is the only reduction that
+picks a *row* by a point.  `desc` (ADR 0031 decision 7) is the
+marker whose whole job is direction, and the scans already take it,
+so the dual reuses that path rather than adding one.  Nothing in the
+demands moves: the dual of a total order is total and the dual of an
+injective key is injective, so totality and tie-freedom discharge by
+the same rules, and `IsArrangement.unique` is polymorphic in the
+`LinearOrder`, so the kept row is `getLast (arrange p fiber)` at the
+dual order with no new theorem.  Ties keep the same rule at the dual
+order, the earlier row, which is `<<` where the ascending form is
+`>>`.  The alternative weighed was a separate `earliest p`, which
+reads better (`latest (desc p)` says "the latest by descending `p`",
+which is the earliest) and is what ADR 0025's nomenclature discipline
+would prefer on its own; it was declined because minting a dual name
+per point-reduction doubles the surface vocabulary as more of them
+land, while the marker generalizes to all of them at once.
+`earliest` stays available later as sugar over the marker, if the
+reading cost proves real in use.
+
 ### 8.  Grammar and formal gates
 
 **Grammar.**  The three operations add zero productions: `window`,
