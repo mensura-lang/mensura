@@ -2,3 +2,4 @@
 Cargo.lock
 /book/book
 /docs/superpowers/plans
+**/__pycache__/
