@@ -38,6 +38,10 @@ view trend {
       // Every row sees the group's first value under the order: keep-left
       // discards each later operand.
       .opening = series.first_value (|r| r.temperature) (|r| r.taken_at) b,
+      // And the group's last value: `first_value` over the dual order, the
+      // same trick `lead` plays on `lag`.  Keep-left again, so it demands
+      // nothing either.
+      .closing = series.last_value (|r| r.temperature) (|r| r.taken_at) b,
       // The ones-scan (Decision 8): its mapper ignores the row.
       .position = series.rank (|r| r.taken_at) b
     )

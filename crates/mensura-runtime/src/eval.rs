@@ -3453,6 +3453,72 @@ mod tests {
         );
     }
 
+    /// `series.first_value` and `series.last_value` are one scan at keep-left
+    /// under the two orders: every row of a fiber sees the fiber's first and
+    /// last value, so the two columns are constant across a machine and
+    /// nothing is missing anywhere (a keep-left scan has no empty prefix).
+    /// The dual order is not coded: `last_value` reuses `scan` at a `desc`
+    /// key, exactly as `lead` reuses `prescan`.
+    #[test]
+    fn first_and_last_value_bracket_each_fiber() {
+        const HISTORY: &str = r#"
+            import series
+            unit Reading { machine_id: string  taken_at: instant }
+            registry readings {
+              unit { Reading }
+              attr { temperature: real }
+            }
+        "#;
+        let reading = |m: &str, at: &str, t: f64| -> Row {
+            vec![
+                Value::String(m.into()),
+                Value::Instant(at.into()),
+                Value::Real(t),
+            ]
+        };
+        let rows = eval_over(
+            HISTORY,
+            r#"view bracket {
+                 readings |> demote taken_at
+                          |> map_bags |k, b| (
+                            .opening = series.first_value (|r| r.temperature) (|r| r.taken_at) b,
+                            .closing = series.last_value (|r| r.temperature) (|r| r.taken_at) b
+                          )
+               }"#,
+            &[(
+                "readings",
+                vec![
+                    // Out of order and interleaved, so "first" and "last"
+                    // are under the key, not under insertion.
+                    reading("m1", "2026-08-10T11:00:00.000Z", 305.0),
+                    reading("m2", "2026-08-10T12:00:00.000Z", 310.0),
+                    reading("m1", "2026-08-10T10:00:00.000Z", 300.0),
+                    reading("m1", "2026-08-10T12:00:00.000Z", 302.0),
+                ],
+            )],
+        );
+        // One output row per input row (the window shape), keyed by machine;
+        // within a machine the two columns do not vary.
+        assert_eq!(rows.len(), 4);
+        let m1: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r[0] == Value::String("m1".into()))
+            .collect();
+        assert_eq!(m1.len(), 3);
+        for r in &m1 {
+            assert_eq!(r[1], Value::Real(300.0), "first under the order: {r:?}");
+            assert_eq!(r[2], Value::Real(302.0), "last under the order: {r:?}");
+        }
+        // A single-reading machine: its only row is both the first and the
+        // last, so the two agree and neither is missing.
+        let m2 = rows
+            .iter()
+            .find(|r| r[0] == Value::String("m2".into()))
+            .expect("m2 has a reading");
+        assert_eq!(m2[1], Value::Real(310.0));
+        assert_eq!(m2[2], Value::Real(310.0));
+    }
+
     /// Pre-epoch points are the reason the grid uses euclidean division: a
     /// truncating `/` rounds toward zero, which would shift every negative
     /// point's window by a whole stride.

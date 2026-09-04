@@ -417,6 +417,16 @@ let lead        { |key| prescan `:>` (|v| v) (|r| desc (key r)) }
 A descending `rank` needs no binding of its own: it is the ones-scan
 over a `desc` key at the call site.
 
+*Annotated (owner, 2026-09-04): the listing gains `last_value`.*  The
+vocabulary above pairs `running_min`/`running_max` and `lag`/`lead` but
+leaves `first_value` without its dual, a gap in the chosen vocabulary
+rather than a binding specified and dropped.  It lands as
+`let last_value { |value| |key| scan `<:` value (|r| desc (key r)) }`:
+`first_value` over the dual order, by the trick `lead` plays on `lag`,
+and a lambda for the same reason.  Keep-right is not it, since
+`scan `:>`` holds each row's own value.  Like every keep-combiner scan
+it demands nothing beyond tie-freedom (ADR 0037 decision 5).
+
 A view writes `import bag` and `bag.max b.temperature`.  There is **no
 implicit prelude and no unqualified loading**: with `fold` and `scan` as
 builtins there is no reason to keep so many *names* in the language, and
