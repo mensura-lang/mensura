@@ -213,8 +213,14 @@ whose shape differs from the plan is not reconciled; that is migration and
 stays out of scope.
 
 `mensura run` orders the work: ensure every store, then materialize views
-in declaration order.  With store-only sources any order works; declaration
-order is deterministic and reads naturally once view-on-view arrives.
+in dependency order, the order the checker typed them in (declaration order
+among views that do not read one another,
+`docs/decisions/0042-views-reading-views.md`).  A view that reads another
+view receives the upstream's evaluated table in memory, not a rescan of
+its materialized table.  The table carries the runtime's mirror of the
+window and reduction facts, and a rescan would drop it.  The intake
+contracts and their watermarks are read once per run, before any view is
+evaluated.
 
 ## StorageBackend extensions
 

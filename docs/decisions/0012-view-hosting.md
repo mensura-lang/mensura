@@ -12,6 +12,11 @@ deferral of "enforcing `singletons` via a shape" is resolved; a shape claim
 now constrains cardinality through its `attr` / `attr*` blocks (an
 all-`attr` shape requires a `singletons` output, an `attr*` shape a `bag`).
 
+The open question "Views reading views" is resolved by
+`docs/decisions/0042-views-reading-views.md`: a view is a table source
+whose name reads its computed type unchanged, and the view dependency
+graph must be acyclic.
+
 ## Context
 
 The pipeline algebra is frozen (`docs/language/07-pipelines.md`,
