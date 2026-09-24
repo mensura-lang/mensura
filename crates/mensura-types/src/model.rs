@@ -216,7 +216,9 @@ pub struct ViewPlan {
     /// The checked view body (`10-views.md`: `let` bindings, then a trailing
     /// table expression).
     pub body: Block,
-    /// The stores the body reads, by name.
+    /// The stores and views the body reads, by name.  A view source comes
+    /// earlier in [`ResolvedProgram::views`], which is in dependency order
+    /// (ADR 0042).
     pub sources: Vec<String>,
     pub span: Span,
 }

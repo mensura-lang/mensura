@@ -1,0 +1,19 @@
+// Reject: resolve.  A view is computed from its sources, so the view
+// dependency graph must be acyclic (ADR 0042 decision 2).  `left` reads
+// `right` and `right` reads `left`: neither has a value to start from.
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr { commissioned: date }
+}
+
+view left {
+  right |> flat_map |_, r| r
+}
+
+view right {
+  left |> flat_map |_, r| r
+}
