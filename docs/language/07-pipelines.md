@@ -117,6 +117,13 @@ several rows (an expansion) are the same primitive: a filter is
 literals of `06-expressions.md`.  There is no `filter` primitive; a named
 `filter` may later be sugar for this form (ADR 0015).
 
+A returned record may spread the row to keep the columns it does not
+rewrite: `flat_map |k, r| (.celsius = r.kelvin - 273.15, ...r)` adds one
+column and keeps every other, and `(.value = r.value * 2.0, ...r)` replaces
+`value` in place.  The spread elaborates to an ordinary record body before
+the rule above applies, so it adds nothing to the algebra
+(`docs/decisions/0043-record-spread.md`).
+
 ### `map_bags` - per-key whole-bag transform
 
 ```
@@ -161,6 +168,17 @@ to one side, so the order is established locally
 (`Mensura.scanFiber_splitSafe`, ADR 0029 Stage 2).  Split-safety therefore
 holds regardless, and `rank`/`cumsum` are well-defined because the call site
 supplies the order rather than because the store carries one.
+
+A window-shaped return keeps the fiber's other columns by spreading it:
+since `b.x` is projection, `...b` expands to one bag-valued field per
+column, so `(.running = series.cumsum (|r| r.energy) (|r| r.taken_at) b,
+...b)` is the running total beside every original column, one row per
+input row.  An aggregate-shaped return cannot spread `b`: its fields would
+be a mix of aggregates and window values, which stays an error.  Keeping a
+column that is constant within the bag needs a reducer that demands that
+agreement, a separate design (`docs/decisions/0043-record-spread.md`).  A
+return may not name a key column, which rules out `...k` here as it does in
+`flat_map`.
 
 ### `promote` / `demote` - rekeying
 
@@ -840,7 +858,10 @@ cost of dropping disjointness.  It type-checks.
   `Table<Qs, C>`.
 - **Named sugar.**  `filter`, `mutate`, `select`, `reduce`,
   and `tagged_union`/`tagged_split` are sugar over the primitives above and get
-  their own round.  The window functions have **landed** instead: `rank` and
+  their own round.  The record spread (`docs/decisions/0043-record-spread.md`)
+  is the construct underneath `mutate` and `select`: a mutate is already
+  `flat_map |k, r| (.x = e, ...r)`.  The named forms, `rename`, and dropping
+  a column from a spread remain deferred.  The window functions have **landed** instead: `rank` and
   `cumsum` are bindings in the bundled `series` module over the `scan`
   primitive (ADR 0031 Decision 8).
 - **Expression features the fuller surfaces need.**  Row-dropping and

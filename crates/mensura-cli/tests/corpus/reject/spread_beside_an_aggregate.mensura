@@ -1,0 +1,21 @@
+// Rejected at resolve: `...b` spreads the fiber as window values (one per
+// input row), so beside the aggregate `.total` the record is the mix of
+// shapes `map_bags` refuses (ADR 0043 decision 2).  Keeping the columns
+// that are constant within a group is not a spread.
+import bag
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr {
+    site:   string
+    energy: real
+  }
+}
+
+view bad {
+  readings |> map_bags |k, b| (.total = bag.sum b.energy, ...b)
+}

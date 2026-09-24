@@ -58,8 +58,9 @@ pub enum ExprKind {
     /// parenthesized expression `(e)` is grouping and is *not* represented as
     /// a one-element tuple (it reduces to `e`).
     Tuple(Vec<Expr>),
-    /// A labeled record `(.a = x, .b : T = y)`.
-    Record(Vec<RecordField>),
+    /// A labeled record `(.a = x, .b : T = y, ...r)`, whose items are
+    /// labeled fields and spreads (ADR 0043).
+    Record(Vec<RecordItem>),
     /// A statement block `{ let ...; assert ...; result }`.
     Block(Block),
     /// A conditional `if c then a else b` (ADR 0015).
@@ -141,6 +142,35 @@ pub enum BinOp {
 pub enum Presence {
     Known,
     Missing,
+}
+
+/// One item of a record body: a labeled field or a spread.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecordItem {
+    /// `.name [: Type] = value`.
+    Field(RecordField),
+    /// `...value`, expanding to the fields of the record `value`
+    /// (ADR 0043).  Which fields those are is the checker's business; the
+    /// parse is only the operand.  `span` covers the `...` and the operand.
+    Spread { value: Expr, span: Span },
+}
+
+impl RecordItem {
+    /// The item's expression: a field's value or a spread's operand.
+    pub fn value(&self) -> &Expr {
+        match self {
+            RecordItem::Field(f) => &f.value,
+            RecordItem::Spread { value, .. } => value,
+        }
+    }
+
+    /// Mutable access to the item's expression.
+    pub fn value_mut(&mut self) -> &mut Expr {
+        match self {
+            RecordItem::Field(f) => &mut f.value,
+            RecordItem::Spread { value, .. } => value,
+        }
+    }
 }
 
 /// One labeled field of a record: `.name [: Type] = value`.

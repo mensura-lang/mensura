@@ -56,8 +56,14 @@ Each bracket has exactly one role:
   is `e`; `()` is the empty collection and `(a, b, ...)` a collection of like
   values (the form a `flat_map` body uses to drop or expand rows, and the form a
   merge consumes, for example `(train, test)`); and `(.a = x, .b = y)` is a
-  labeled **record**, where the leading `.` marks a field.  A `( )` is
-  *either* a positional collection or all-labeled, never mixed.  A
+  labeled **record**, where the leading `.` marks a field.  A record item
+  may also be a **spread** `...e`, which expands to the fields of the
+  record `e`: `(.celsius = r.kelvin - 273.15, ...r)` computes one column
+  and keeps the rest.  An explicit field overrides a spread field of the
+  same name wherever it is written, and keeps the spread's position; two
+  explicit fields, or two spreads, sharing a name are an error
+  (`docs/decisions/0043-record-spread.md`).  A `( )` is *either* a
+  positional collection or all record items, never mixed.  A
   heterogeneous sequence `([ ... ])` is reserved for the future (ADR 0015).
 - **`{ }`** is for blocks and declaration bodies, never a value.  In
   expression position it is a statement block (`let` / `assert` statements and

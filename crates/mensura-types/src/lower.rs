@@ -264,7 +264,7 @@ fn reduce(e: &mut Expr, s: &Subst, env: &mut Vec<Binding>, depth: u32, fresh: &m
         }
         ExprKind::Record(fields) => {
             for field in fields {
-                reduce(&mut field.value, s, env, depth, fresh);
+                reduce(field.value_mut(), s, env, depth, fresh);
             }
         }
         ExprKind::Lambda { params, body, .. } => {
@@ -332,7 +332,7 @@ fn mentions_name(e: &Expr, name: &str) -> bool {
             mentions_name(cond, name) || mentions_name(then, name) || mentions_name(els, name)
         }
         ExprKind::Tuple(items) => items.iter().any(|i| mentions_name(i, name)),
-        ExprKind::Record(fields) => fields.iter().any(|f| mentions_name(&f.value, name)),
+        ExprKind::Record(fields) => fields.iter().any(|f| mentions_name(f.value(), name)),
         ExprKind::Lambda { body, .. } => mentions_name(body, name),
         ExprKind::Block(block) => block.stmts.iter().any(|stmt| match stmt {
             Stmt::Let { value, .. } | Stmt::Assert(value) | Stmt::Expr(value) => {

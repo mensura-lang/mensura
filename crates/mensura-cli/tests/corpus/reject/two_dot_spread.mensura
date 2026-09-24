@@ -1,0 +1,15 @@
+// Rejected at lex: the spread is `...`, and no `..` operator exists, so two
+// dots are a lex error rather than two member accesses (ADR 0043
+// decision 7).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { energy: real }
+}
+
+view bad {
+  readings |> flat_map |k, r| (.x = 1, ..r)
+}

@@ -583,7 +583,7 @@ fn collect_expr(expr: &Expr, stores: &HashSet<&str>, found: &mut BTreeSet<String
         }
         ExprKind::Record(fields) => {
             for f in fields {
-                collect_expr(&f.value, stores, found);
+                collect_expr(f.value(), stores, found);
             }
         }
         ExprKind::Block(b) => collect_block(b, stores, found),

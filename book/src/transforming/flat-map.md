@@ -22,6 +22,30 @@ Each reading in kelvin becomes a reading in celsius.  A record literal is
 row.  Because the body returns exactly one row, per-key cardinality is
 unchanged.
 
+## Keep the rest: spreading the row
+
+A record lists its columns, so `in_celsius` above keeps only `celsius`.  To
+compute a column and keep every other, spread the row into the record with
+`...r`:
+
+```mensura
+{{#include ../examples/flat-map-spread.mensura}}
+```
+
+`...r` stands for one field per column of the row, `.kelvin = r.kelvin` and
+`.status = r.status`, written where the spread is.  So `with_celsius` has
+`celsius` followed by the row's own columns.
+
+A field you write explicitly wins over a spread field of the same name, which
+is how `recalibrated` replaces `kelvin` in place.  The replaced column keeps
+its position in the row, wherever you write the explicit field, so
+`(.kelvin = ..., ...r)` and `(...r, .kelvin = ...)` are the same row.  Setting
+the same field twice by hand is an error, and so is spreading two records
+that share a field.
+
+A spread never touches the key: `r` holds only the row's non-key columns, and
+the key columns pass through as they always do.
+
 ## Drop: filtering is flat_map returning nothing
 
 Returning the empty collection `()` drops the row.  A filter is just a

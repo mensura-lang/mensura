@@ -14,7 +14,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mensura_syntax::{BinOp, Expr, ExprKind, Presence, Stmt, UnOp};
+use mensura_syntax::{BinOp, Expr, ExprKind, Presence, RecordItem, Stmt, UnOp};
+use mensura_types::record::{Elaborated, elaborate, spread_path};
 use mensura_types::{ColumnRole, ColumnType, Lateness, ResolvedProgram, Schema, ViewPlan};
 
 use crate::backend::{StorageBackend, StorageError, Watermarks};
@@ -504,15 +505,19 @@ fn flat_map_single_row(
     expr: &Expr,
 ) -> Result<Vec<Col>, EvalError> {
     match &expr.kind {
-        ExprKind::Record(fields) => Ok(fields
-            .iter()
-            .map(|f| {
-                col(
-                    f.name.name.clone(),
-                    static_domain(input, kname, rname, &f.value),
-                )
-            })
-            .collect()),
+        ExprKind::Record(items) => {
+            let roots = [(kname, &input.key[..]), (rname, &input.attrs[..])];
+            Ok(static_record(items, &roots)?
+                .into_iter()
+                .flat_map(|f| match f {
+                    Elaborated::Field(f) => vec![col(
+                        f.name.name.clone(),
+                        static_domain(input, kname, rname, &f.value),
+                    )],
+                    Elaborated::Spread { value, .. } => value,
+                })
+                .collect())
+        }
         // A whole-row body: the checker reads the row record's fields off a
         // sorted map, so the output columns are alphabetical.
         ExprKind::Name(n) if n == rname => Ok(sorted_cols(&input.attrs)),
@@ -523,6 +528,90 @@ fn flat_map_single_row(
             unify_cols(a, b)
         }
         _ => internal("a `flat_map` row form the checker should have rejected"),
+    }
+}
+
+/// Elaborate a record body without a row (ADR 0043), for the output
+/// columns of a stage that may see no input.  A spread operand is a path
+/// into one of the `roots` (the lambda parameters and the columns they
+/// bind), so its fields are the matching columns, grouped by top-level
+/// field in map order: the same order the checker reads off the record
+/// type, and the one [`eval_record`] meets at run time.
+fn static_record<'a>(
+    items: &'a [RecordItem],
+    roots: &[(&str, &[Col])],
+) -> Result<Vec<Elaborated<'a, Vec<Col>>>, EvalError> {
+    let mut spreads = Vec::new();
+    for item in items {
+        let RecordItem::Spread { value, .. } = item else {
+            continue;
+        };
+        let Some((root, steps)) = spread_path(value) else {
+            return internal("a spread of a non-path (the checker rejects this)");
+        };
+        let Some((_, cols)) = roots.iter().find(|(n, _)| *n == root && *n != "_") else {
+            return internal(format!("a spread of an unbound name `{root}`"));
+        };
+        let prefix: String = steps.iter().map(|s| format!("{s}.")).collect();
+        let mut groups: BTreeMap<String, Vec<Col>> = BTreeMap::new();
+        for c in cols.iter() {
+            if let Some(rel) = c.name.strip_prefix(&prefix) {
+                let top = rel.split('.').next().unwrap_or(rel);
+                groups
+                    .entry(top.to_string())
+                    .or_default()
+                    .push(col(rel, c.ty.clone()));
+            }
+        }
+        for g in groups.values_mut() {
+            g.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        spreads.push(groups.into_iter().collect());
+    }
+    match elaborate(items, spreads) {
+        Ok(fields) => Ok(fields),
+        Err(_) => internal("a record field collision (the checker rejects this)"),
+    }
+}
+
+/// Evaluate a record body to its named leaves in output order (ADR 0043):
+/// each spread operand is evaluated to its record, the fields are
+/// elaborated, and a unit-reference group forwarded by a spread flattens
+/// back to its dotted columns.  A leaf is a single value in a row body and
+/// a value or a bag in a `map_bags` body.
+fn eval_record(scope: &Scope, items: &[RecordItem]) -> Result<Vec<(String, RtVal)>, EvalError> {
+    let mut spreads = Vec::new();
+    for item in items {
+        if let RecordItem::Spread { value, .. } = item {
+            match eval_scalar(scope, value)? {
+                RtVal::Rec(fields) => spreads.push(fields.into_iter().collect()),
+                _ => return internal("a spread of a non-record (the checker rejects this)"),
+            }
+        }
+    }
+    let fields = match elaborate(items, spreads) {
+        Ok(fields) => fields,
+        Err(_) => return internal("a record field collision (the checker rejects this)"),
+    };
+    let mut out = Vec::new();
+    for field in fields {
+        match field {
+            Elaborated::Field(f) => out.push((f.name.name.clone(), eval_scalar(scope, &f.value)?)),
+            Elaborated::Spread { name, value } => flatten_leaves(name, value, &mut out),
+        }
+    }
+    Ok(out)
+}
+
+/// Flatten a nested record into its dotted leaves, in map order.
+fn flatten_leaves(name: String, v: RtVal, out: &mut Vec<(String, RtVal)>) {
+    match v {
+        RtVal::Rec(sub) => {
+            for (field, v) in sub {
+                flatten_leaves(format!("{name}.{field}"), v, out);
+            }
+        }
+        leaf => out.push((name, leaf)),
     }
 }
 
@@ -605,11 +694,13 @@ fn eval_rows(scope: &Scope, body: &Expr) -> Result<Vec<NamedRow>, EvalError> {
 /// value (for example the row parameter `r`) in its own field order.
 fn eval_row(scope: &Scope, expr: &Expr) -> Result<NamedRow, EvalError> {
     match &expr.kind {
-        ExprKind::Record(fields) => {
-            let mut row = Vec::with_capacity(fields.len());
-            for field in fields {
-                let value = eval_value(scope, &field.value)?;
-                row.push((field.name.name.clone(), value));
+        ExprKind::Record(items) => {
+            let mut row = Vec::new();
+            for (name, v) in eval_record(scope, items)? {
+                match v {
+                    RtVal::V(v) => row.push((name, v)),
+                    _ => return internal("a `flat_map` row field is not a single value"),
+                }
             }
             Ok(row)
         }
@@ -634,22 +725,28 @@ fn eval_row(scope: &Scope, expr: &Expr) -> Result<NamedRow, EvalError> {
 /// bag-valued fields: one window row per input row of the group.
 fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let (params, body) = lambda_parts(args, 2)?;
-    let ExprKind::Record(fields) = &body.kind else {
+    let ExprKind::Record(items) = &body.kind else {
         return internal("`map_bags` body is not a record");
     };
-    let attrs: Vec<Col> = fields
-        .iter()
-        .map(|f| {
-            col(
-                f.name.name.clone(),
-                bag_static_domain(&input, params[1], &f.value),
-            )
-        })
-        .collect();
-    let reductions: BTreeMap<String, String> = fields
-        .iter()
-        .filter_map(|f| field_combiner(&f.value).map(|op| (f.name.name.clone(), op)))
-        .collect();
+    let roots = [(params[0], &input.key[..]), (params[1], &input.attrs[..])];
+    let fields = static_record(items, &roots)?;
+    let mut attrs: Vec<Col> = Vec::new();
+    let mut reductions: BTreeMap<String, String> = BTreeMap::new();
+    for field in fields {
+        match field {
+            Elaborated::Field(f) => {
+                if let Some(op) = field_combiner(&f.value) {
+                    reductions.insert(f.name.name.clone(), op);
+                }
+                attrs.push(col(
+                    f.name.name.clone(),
+                    bag_static_domain(&input, params[1], &f.value),
+                ));
+            }
+            // A spread of the fiber copies its columns, domains and all.
+            Elaborated::Spread { value, .. } => attrs.extend(value),
+        }
+    }
 
     // Group row positions by key, ordered by key value.
     let nkeys = input.key_len();
@@ -691,8 +788,8 @@ fn eval_map_bags(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, Eval
 
         let mut aggregates: Vec<Value> = Vec::new();
         let mut windows: Vec<Vec<Value>> = Vec::new();
-        for field in fields {
-            match eval_scalar(&scope, &field.value)? {
+        for (_, v) in eval_record(&scope, items)? {
+            match v {
                 RtVal::V(v) => aggregates.push(v),
                 RtVal::Bag(vs) => windows.push(vs),
                 RtVal::Rec(_) => return internal("a `map_bags` field yielded a row"),
@@ -2506,6 +2603,70 @@ mod tests {
                 Value::Missing,
                 Value::Enum("degraded".into()),
             ]]
+        );
+    }
+
+    #[test]
+    fn a_spread_keeps_the_rest_and_an_override_stays_in_place() {
+        // ADR 0043: `...r` expands to the row's fields in the whole-row
+        // order (hours, last_service, status); the explicit `hours` takes
+        // the spread's position although it is written first, and `twice`
+        // sits where it is written.
+        let rows = eval(
+            r#"view mutated {
+                 machines |> flat_map |_, r| (.twice = r.hours * 2, .hours = r.hours + 1, ...r)
+               }"#,
+            vec![machine("m1", "degraded", 20, None)],
+        );
+        assert_eq!(
+            rows,
+            vec![vec![
+                Value::String("m1".into()),
+                Value::Int(40),
+                Value::Int(21),
+                Value::Missing,
+                Value::Enum("degraded".into()),
+            ]]
+        );
+        // Over no rows the output columns still derive, from the input's.
+        let none = eval(
+            r#"view mutated { machines |> flat_map |_, r| (.twice = r.hours * 2, ...r) }"#,
+            vec![],
+        );
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn a_spread_fiber_keeps_every_column_beside_a_window_value() {
+        // `...b` is one bag per column, zipped with the window value into
+        // one row per input row (ADR 0043 decision 2).
+        // The overridden `status` keeps its spread position, after `hours`
+        // and `last_service`.
+        let rows = eval(
+            r#"view flagged {
+                 machines |> map_bags |_, b| (.status = map (|s| s == "degraded") b.status, ...b)
+               }"#,
+            vec![
+                machine("m1", "degraded", 20, None),
+                machine("m2", "operational", 10, Some("2026-01-01")),
+            ],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    Value::String("m1".into()),
+                    Value::Int(20),
+                    Value::Missing,
+                    Value::Bool(true),
+                ],
+                vec![
+                    Value::String("m2".into()),
+                    Value::Int(10),
+                    Value::Date("2026-01-01".into()),
+                    Value::Bool(false),
+                ],
+            ]
         );
     }
 

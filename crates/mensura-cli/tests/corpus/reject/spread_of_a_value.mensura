@@ -1,0 +1,14 @@
+// Rejected at resolve: a spread expands a record's fields, and `r.energy`
+// is a single value (ADR 0043 decision 1).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { energy: real }
+}
+
+view bad {
+  readings |> flat_map |k, r| (.x = 1, ...r.energy)
+}

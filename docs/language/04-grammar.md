@@ -413,7 +413,7 @@ conditional = "if" logic_expr "then" logic_expr "else" logic_expr ;
 
 paren       = "(" ( record_body | collection_body ) ")" ;
 record_body = field { "," field } ;
-field       = "." ident [ ":" type ] "=" expr ;
+field       = "." ident [ ":" type ] "=" expr | "..." expr ;
 collection_body = [ expr { "," expr } ] ;
 
 block       = "{" [ stmt { ";" stmt } [ ";" ] ] "}" ;
@@ -458,7 +458,9 @@ by maximal munch on `?`: two adjacent `?` are always the coalesce operator,
 which collides with nothing because the optional marker is a single `?`
 taken at most once, so `T??` was already unparseable and is now merely
 rejected one stage earlier (by the lexer's tokenization rather than the
-type grammar).  (An `NxE` measured literal
+type grammar).  ADR 0043 adds `...`, the record spread, by maximal munch on
+`.`: three adjacent dots are one token.  No `..` operator is planned, so a
+bare `..` is a lex error rather than two member-access dots.  (An `NxE` measured literal
 (`10x3`) was once reserved here for physical units; ADR 0026 supersedes
 it.  Units need no literal form, and a measured-precision literal is
 deferred with the precision library.)
@@ -539,13 +541,16 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
 - **`conditional`**: the reserved ident `if` selects it; `then` and `else`
   are reserved idents that fix the two branch boundaries, so each sub-expression
   (a `logic_expr`) is delimited by one token of lookahead.
-- **`paren`**: after `(`, the next token chooses the body - `.` opens a
-  `record_body` (labeled fields), anything else begins a `collection_body` whose
-  first element is an expression; then `,` continues the collection and `)` ends
-  a grouping.  Since an expression never starts with `.`, the record/collection
-  choice is one token; `()` is the empty collection.  A record field is
+- **`paren`**: after `(`, the next token chooses the body - `.` or `...`
+  opens a `record_body` (labeled fields and spreads), anything else begins a
+  `collection_body` whose first element is an expression; then `,` continues
+  the collection and `)` ends a grouping.  Since an expression never starts
+  with `.` or `...`, the record/collection choice is one token with a
+  two-element predictor set; `()` is the empty collection.  A record field is
   `.name [: Type] = value`; within a field the optional `:` ascription, then
-  `=`, are fixed by position.
+  `=`, are fixed by position.  Within a `record_body`, each item is again
+  chosen by its first token: `.` a labeled field, `...` a spread
+  (`docs/decisions/0043-record-spread.md`).
 - **`block`**: `{` opens it; each statement is dispatched on its first token
   (`let` -> `let_stmt`, `assert` -> `assert_stmt`, otherwise a result
   `expr`); `;` separates statements and `}` ends.  This is the only `{ }` in

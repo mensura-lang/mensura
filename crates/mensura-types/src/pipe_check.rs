@@ -11,12 +11,13 @@
 
 use std::collections::BTreeMap;
 
-use mensura_syntax::{BinOp, Block, Expr, ExprKind, Span, Stmt};
+use mensura_syntax::{BinOp, Block, Expr, ExprKind, RecordItem, Span, Stmt};
 
 use crate::expr_check::{
     Context, Optionality, Ty, TypeError, combiner_has_identity, field_reduction, type_expr,
 };
 use crate::model::ColumnType;
+use crate::record::{Clash, Elaborated, elaborate, spread_path};
 use crate::suggest::suffix;
 use crate::table::{
     Arranged, Cardinality, Column, Completeness, Content, Exhaustive, Functional, Lineage,
@@ -587,39 +588,127 @@ fn row_collection(
     }
 }
 
+/// A spread field awaiting its column: the operand's field type and the
+/// spread's span, for diagnostics.
+type SpreadField = (Ty, Span);
+
+/// Type the spread operands of a record body to their ordered top-level
+/// fields (ADR 0043 decision 1), one list per spread in item order.  An
+/// operand must be a path to a record: the row `r` or key `k`, the fiber
+/// `b`, or a unit-reference group inside one (`...r.course`).
+fn spread_operands(
+    ctx: &Context,
+    items: &[RecordItem],
+) -> Result<Vec<Vec<(String, SpreadField)>>, Vec<TypeError>> {
+    let mut out = Vec::new();
+    let mut errs = Vec::new();
+    for item in items {
+        let RecordItem::Spread { value, span } = item else {
+            continue;
+        };
+        if spread_path(value).is_none() {
+            errs.push(te(
+                "a spread takes a path to a record: a lambda parameter (`...r`, \
+                 `...b`) or a unit-reference group inside one (`...r.course`)",
+                value.span,
+            ));
+            continue;
+        }
+        match type_expr(ctx, value) {
+            Err(e) => errs.extend(e),
+            Ok(Ty::Record(fields) | Ty::Rows(fields)) => out.push(
+                fields
+                    .into_iter()
+                    .map(|(name, ty)| (name, (ty, *span)))
+                    .collect(),
+            ),
+            Ok(_) => errs.push(te(
+                "a spread expands a record's fields, and this is a single value; \
+                 set it as a field (`.name = ...`) instead",
+                value.span,
+            )),
+        }
+    }
+    if errs.is_empty() { Ok(out) } else { Err(errs) }
+}
+
+/// Elaborate a record body against its typed spreads (ADR 0043), reporting
+/// every collision the override rule leaves.
+fn elaborate_record<'a>(
+    ctx: &Context,
+    items: &'a [RecordItem],
+) -> Result<Vec<Elaborated<'a, SpreadField>>, Vec<TypeError>> {
+    let spreads = spread_operands(ctx, items)?;
+    elaborate(items, spreads).map_err(|clashes| {
+        clashes
+            .iter()
+            .map(|c: &Clash| te(c.message(), c.span()))
+            .collect()
+    })
+}
+
+/// Whether a record field named `name` would set a key column: the column
+/// itself, or the group of a compound key's dotted columns (ADR 0032).
+fn names_key_column(key: &[Column], name: &str) -> bool {
+    key.iter().any(|c| c.name == name) || is_group_prefix(key, name)
+}
+
 /// Type one value row of a `flat_map` body: a record literal `(.a = ...)` or a value
-/// row (e.g. the parameter `r`). Anything else is not a row.
+/// row (e.g. the parameter `r`). Anything else is not a row.  A record's
+/// spreads are elaborated first (ADR 0043), so what is typed below is an
+/// ordinary record body.
 fn single_row_schema(
     ctx: &Context,
     expr: &Expr,
     input: &TableType,
 ) -> Result<RowSchema, Vec<TypeError>> {
     match &expr.kind {
-        ExprKind::Record(fields) => {
+        ExprKind::Record(items) => {
+            let fields = elaborate_record(ctx, items)?;
             let mut schema = Vec::new();
             let mut errs = Vec::new();
             for field in fields {
-                let name = &field.name.name;
-                if input.content.key.iter().any(|c| &c.name == name) {
+                let (name, span) = match &field {
+                    Elaborated::Field(f) => (f.name.name.clone(), f.name.span),
+                    Elaborated::Spread {
+                        name,
+                        value: (_, span),
+                    } => (name.clone(), *span),
+                };
+                if names_key_column(&input.content.key, &name) {
                     errs.push(te(
                         format!("a `flat_map` row may not set the key column `{name}`"),
-                        field.name.span,
+                        span,
                     ));
                     continue;
                 }
-                match type_expr(ctx, &field.value) {
-                    Err(e) => errs.extend(e),
-                    Ok(ty) => match column_of(&ty) {
-                        Some((domain, opt)) => schema.push(RowColumn {
-                            name: name.clone(),
-                            domain,
-                            opt,
-                        }),
-                        None => errs.push(te(
-                            format!("field `{name}` is not a single value"),
-                            field.value.span,
-                        )),
+                let (ty, value_span) = match field {
+                    Elaborated::Field(f) => match type_expr(ctx, &f.value) {
+                        Err(e) => {
+                            errs.extend(e);
+                            continue;
+                        }
+                        Ok(ty) => (ty, f.value.span),
                     },
+                    // A unit-reference group forwards whole and re-flattens
+                    // to its dotted columns, as a bare `r` does.
+                    Elaborated::Spread {
+                        value: (Ty::Record(sub), _),
+                        ..
+                    } => {
+                        flatten_row_fields(name, sub, &mut schema);
+                        continue;
+                    }
+                    Elaborated::Spread {
+                        value: (ty, span), ..
+                    } => (ty, span),
+                };
+                match column_of(&ty) {
+                    Some((domain, opt)) => schema.push(RowColumn { name, domain, opt }),
+                    None => errs.push(te(
+                        format!("field `{name}` is not a single value"),
+                        value_span,
+                    )),
                 }
             }
             if errs.is_empty() {
@@ -678,6 +767,21 @@ fn unify_row_schema(a: &RowSchema, b: &RowSchema, span: Span) -> Result<RowSchem
     if a.len() != b.len() {
         return Err(error(
             "a `flat_map` collection's rows must share one schema (column count differs)",
+            span,
+        ));
+    }
+    // The same columns in another order is its own mistake, and the one a
+    // spread makes easy (`(.a = x, ...r)` against `(...r, .a = y)`), so it
+    // names the fix rather than a bare mismatch (ADR 0043 decision 4).
+    let mut sorted_a: Vec<&str> = a.iter().map(|c| c.name.as_str()).collect();
+    let mut sorted_b: Vec<&str> = b.iter().map(|c| c.name.as_str()).collect();
+    sorted_a.sort_unstable();
+    sorted_b.sort_unstable();
+    if sorted_a == sorted_b && a.iter().zip(b).any(|(ca, cb)| ca.name != cb.name) {
+        return Err(error(
+            "a `flat_map` collection's rows carry the same columns in a different \
+             order; write the fields in one order (a spread `...r` places its \
+             fields where it is written)",
             span,
         ));
     }
@@ -766,7 +870,8 @@ fn op_map_bags(
     let table = expect_table(input, span)?;
     let (params, body) = lambda_params(args, "map_bags", 2, span)?;
     let ctx = Context::bag(&sources.ambient, params[0], params[1], &table);
-    let (columns, totality, cardinality, reductions) = bag_record_content(&ctx, body)?;
+    let (columns, totality, cardinality, reductions) =
+        bag_record_content(&ctx, body, &table.content.key)?;
     if cardinality == Cardinality::Singletons
         && table.qualifiers.cardinality == Cardinality::Bag
         && table.qualifiers.completeness != Completeness::Complete
@@ -819,83 +924,123 @@ fn op_map_bags(
 fn bag_record_content(
     ctx: &Context,
     body: &Expr,
+    key: &[Column],
 ) -> Result<(Vec<Column>, Totality, Cardinality, Reductions), Vec<TypeError>> {
-    let ExprKind::Record(fields) = &body.kind else {
+    let ExprKind::Record(items) = &body.kind else {
         return Err(error("`map_bags`'s lambda must return a record", body.span));
     };
+    let fields = elaborate_record(ctx, items)?;
     if fields.is_empty() {
         return Err(error(
             "`map_bags`'s record needs at least one field",
             body.span,
         ));
     }
+    let has_spread = items
+        .iter()
+        .any(|item| matches!(item, RecordItem::Spread { .. }));
+    // Each output column with its type, the span a diagnostic points at,
+    // and, for an explicit field, the expression that defines it.  A spread
+    // of the fiber contributes bag-valued fields (`...b` is `.x = b.x` per
+    // column, ADR 0043 decision 2), and a group among them forwards whole
+    // as its dotted columns.
+    let mut leaves: Vec<(String, Ty, Span, Option<&Expr>)> = Vec::new();
+    let mut errs = Vec::new();
+    for field in fields {
+        let (name, span) = match &field {
+            Elaborated::Field(f) => (f.name.name.clone(), f.name.span),
+            Elaborated::Spread {
+                name,
+                value: (_, span),
+            } => (name.clone(), *span),
+        };
+        // The key is preserved, so the record may not set it: without this
+        // an explicit `.machine = k.machine` (or a `...k`) duplicated the
+        // key column.
+        if names_key_column(key, &name) {
+            errs.push(te(
+                format!("a `map_bags` record may not set the key column `{name}`"),
+                span,
+            ));
+            continue;
+        }
+        match field {
+            Elaborated::Field(f) => match type_expr(ctx, &f.value) {
+                Err(e) => errs.extend(e),
+                Ok(ty) => leaves.push((name, ty, f.value.span, Some(&f.value))),
+            },
+            Elaborated::Spread {
+                value: (ty, span), ..
+            } => flatten_group(name, ty, span, &mut leaves),
+        }
+    }
     let mut columns = Vec::new();
     let mut totality = Totality::all_total();
     let mut reductions = Reductions::new();
-    let mut errs = Vec::new();
     let mut saw_aggregate = false;
     let mut saw_window = false;
-    for field in fields {
-        match type_expr(ctx, &field.value) {
-            Err(e) => errs.extend(e),
-            Ok(Ty::Bag { domain, opt }) => {
+    for (name, ty, span, value) in leaves {
+        match ty {
+            Ty::Bag { domain, opt } => {
                 saw_window = true;
-                columns.push(Column {
-                    name: field.name.name.clone(),
-                    domain,
-                });
                 if opt == Optionality::Optional {
-                    totality.mark_optional(field.name.name.clone());
+                    totality.mark_optional(name.clone());
                 }
+                columns.push(Column { name, domain });
             }
-            Ok(ty) => match column_of(&ty) {
+            ty => match column_of(&ty) {
                 Some((domain, opt)) => {
                     saw_aggregate = true;
-                    columns.push(Column {
-                        name: field.name.name.clone(),
-                        domain,
-                    });
                     if opt == Optionality::Optional {
-                        totality.mark_optional(field.name.name.clone());
+                        totality.mark_optional(name.clone());
                     }
-                    if let Some(op) = field_reduction(ctx, &field.value) {
-                        reductions.insert(field.name.name.clone(), op);
+                    if let Some(op) = value.and_then(|v| field_reduction(ctx, v)) {
+                        reductions.insert(name.clone(), op);
                     }
+                    columns.push(Column { name, domain });
                 }
                 // The fiber gets its own wording: a bare `b` is the single
-                // most likely way to land here, and the fix (project or
-                // count) is worth naming (ADR 0031, Decision 1).
+                // most likely way to land here, and the fix (project,
+                // count, or spread) is worth naming (ADR 0031, Decision 1).
                 None if matches!(ty, Ty::Rows(_)) => errs.push(te(
                     format!(
-                        "field `{}` is a bag of rows; project a column \
-                         (`b.name`) or count the group (`#b`)",
-                        field.name.name
+                        "field `{name}` is a bag of rows; project a column \
+                         (`b.name`), count the group (`#b`), or spread its \
+                         columns (`...b`)"
                     ),
-                    field.value.span,
+                    span,
                 )),
                 // A descending marker is an order annotation, not a value, so
                 // it names its own home rather than reporting a bare "not a
                 // value" (ADR 0031, Decision 7).
                 None if matches!(ty, Ty::Desc(_)) => errs.push(te(
                     format!(
-                        "field `{}` is a descending marker, which orders a \
+                        "field `{name}` is a descending marker, which orders a \
                          scan's key and is never stored; drop the `desc`, or \
-                         move it into the order key",
-                        field.name.name
+                         move it into the order key"
                     ),
-                    field.value.span,
+                    span,
                 )),
-                None => errs.push(te(
-                    format!("field `{}` is not a value or a bag", field.name.name),
-                    field.value.span,
-                )),
+                None => errs.push(te(format!("field `{name}` is not a value or a bag"), span)),
             },
         }
     }
     if saw_aggregate && saw_window {
+        // A spread of the fiber is window-valued, and beside an aggregate it
+        // is the first thing people reach for to keep the other columns, so
+        // the diagnostic says why that cannot work (ADR 0043 decision 2).
+        let hint = if has_spread {
+            "; a spread `...b` contributes window values (one per input row), \
+             so it cannot sit beside an aggregate, and keeping a column that \
+             is constant within the group needs a reducer over it"
+        } else {
+            ""
+        };
         errs.push(te(
-            "a `map_bags` record must be all aggregates (one row per key) or all \
-             window values (a bag), not a mix",
+            format!(
+                "a `map_bags` record must be all aggregates (one row per key) or \
+                 all window values (a bag), not a mix{hint}"
+            ),
             body.span,
         ));
     }
@@ -908,6 +1053,25 @@ fn bag_record_content(
         Cardinality::Singletons
     };
     Ok((columns, totality, cardinality, reductions))
+}
+
+/// Flatten one spread field of a `map_bags` record into its leaves: a
+/// unit-reference group (a record, of bags when it comes from the fiber)
+/// becomes its dotted columns, in map order as [`flatten_row_fields`] does.
+fn flatten_group(
+    name: String,
+    ty: Ty,
+    span: Span,
+    out: &mut Vec<(String, Ty, Span, Option<&Expr>)>,
+) {
+    match ty {
+        Ty::Record(sub) => {
+            for (field, ty) in sub {
+                flatten_group(format!("{name}.{field}"), ty, span, out);
+            }
+        }
+        ty => out.push((name, ty, span, None)),
+    }
 }
 
 /// `split |k| pred` (section 6.5, Tier A): route each key to one side of a pair
@@ -2824,6 +2988,140 @@ mod tests {
             assert!(t.content.columns.iter().any(|c| c.name == name), "{name}");
         }
         assert_eq!(t.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    fn column_names(t: &TableType) -> Vec<&str> {
+        t.content.columns.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_spread_is_the_whole_row_in_place() {
+        let s = sample_sources();
+        // `(...r)` is exactly `r`, and a computed field sits where it is
+        // written beside the spread's columns (ADR 0043 decision 4).
+        let whole = table_of(pipe_ty(&s, "readings |> flat_map |k, r| r").expect("ok"));
+        let spread = table_of(pipe_ty(&s, "readings |> flat_map |k, r| (...r)").expect("ok"));
+        assert_eq!(column_names(&whole), column_names(&spread));
+        assert_eq!(whole.qualifiers.totality, spread.qualifiers.totality);
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> flat_map |k, r| (.hot = r.temperature > 1.0, ...r)",
+            )
+            .expect("ok"),
+        );
+        let mut expected = vec!["hot"];
+        expected.extend(column_names(&whole));
+        assert_eq!(column_names(&t), expected);
+    }
+
+    #[test]
+    fn an_override_keeps_the_spread_position() {
+        let s = sample_sources();
+        let whole = table_of(pipe_ty(&s, "readings |> flat_map |k, r| r").expect("ok"));
+        for body in [
+            "(.temperature = r.temperature * 2.0, ...r)",
+            "(...r, .temperature = r.temperature * 2.0)",
+        ] {
+            let src = format!("readings |> flat_map |k, r| {body}");
+            let t = table_of(pipe_ty(&s, &src).expect("ok"));
+            assert_eq!(column_names(&t), column_names(&whole), "{body}");
+        }
+        // An override may change the column's type and totality.
+        let t =
+            table_of(pipe_ty(&s, "readings |> flat_map |k, r| (.peak = 0.0, ...r)").expect("ok"));
+        assert!(t.qualifiers.totality.is_total("peak"));
+    }
+
+    #[test]
+    fn record_collisions_are_errors() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> flat_map |k, r| (.a = 1, .a = 2)")
+            .expect_err("explicit twice");
+        assert!(errs[0].message.contains("set twice"), "{}", errs[0].message);
+        let errs =
+            pipe_ty(&s, "readings |> flat_map |k, r| (...r, ...r)").expect_err("spread twice");
+        assert!(
+            errs[0].message.contains("two spreads"),
+            "{}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn a_spread_needs_a_path_to_a_record() {
+        let s = sample_sources();
+        let errs =
+            pipe_ty(&s, "readings |> flat_map |k, r| (...r.temperature)").expect_err("a value");
+        assert!(
+            errs[0].message.contains("single value"),
+            "{}",
+            errs[0].message
+        );
+        let errs = pipe_ty(
+            &s,
+            "readings |> flat_map |k, r| (...(if r.flag then r else r))",
+        )
+        .expect_err("not a path");
+        assert!(errs[0].message.contains("path"), "{}", errs[0].message);
+        let errs = pipe_ty(&s, "readings |> flat_map |k, r| (...k, ...r)").expect_err("the key");
+        assert!(
+            errs[0].message.contains("key column `ts`"),
+            "{}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn rows_in_another_order_name_the_order() {
+        let s = sample_sources();
+        let errs = pipe_ty(
+            &s,
+            "readings |> flat_map |k, r| if r.flag then (.a = 1, ...r) else (...r, .a = 2)",
+        )
+        .expect_err("order differs");
+        assert!(
+            errs[0].message.contains("different order"),
+            "{}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn a_spread_fiber_is_window_shaped() {
+        let s = sample_sources();
+        // `...b` is one bag-valued field per column, so beside a window value
+        // it is the window shape, one row per input row (ADR 0043 decision 2).
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> map_bags |k, b| \
+                 (.prev = series.lag (|r| r.temperature) (|r| k.ts) b, ...b)",
+            )
+            .expect("ok"),
+        );
+        assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
+        assert_eq!(column_names(&t)[0], "prev");
+        assert!(column_names(&t).contains(&"machine"));
+        // Beside an aggregate it is the rejected mix, and the error says why.
+        let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.n = #b, ...b)").expect_err("mix");
+        assert!(
+            errs[0].message.contains("spread `...b`"),
+            "{}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn map_bags_may_not_set_the_key() {
+        let s = sample_sources();
+        let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.ts = k.ts, .n = #b)")
+            .expect_err("sets the key");
+        assert!(
+            errs[0].message.contains("key column `ts`"),
+            "{}",
+            errs[0].message
+        );
     }
 
     #[test]

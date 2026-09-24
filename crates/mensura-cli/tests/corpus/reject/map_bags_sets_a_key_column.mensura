@@ -1,0 +1,16 @@
+// Rejected at resolve: a `map_bags` record may not set a key column, since
+// the key is preserved; before ADR 0043 decision 8 this duplicated `id`.
+import bag
+
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { energy: real }
+}
+
+view bad {
+  readings |> map_bags |k, b| (.id = k.id, .total = bag.sum b.energy)
+}

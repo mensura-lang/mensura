@@ -10,7 +10,7 @@ use crate::ast::{
     NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl,
     StoreKind, StrLit, TypeExpr, TypeKind, UnitDecl, ViewDecl,
 };
-use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
+use crate::expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, RecordItem, Stmt, UnOp};
 use crate::token::{Span, Token, TokenKind};
 
 /// A parse failure, located by a source span.
@@ -1254,10 +1254,10 @@ impl<'a> Parser<'a> {
                 span: Span::new(start, end),
             });
         }
-        if self.check(&TokenKind::Dot) {
-            let mut fields = vec![self.parse_record_field()?];
+        if self.check(&TokenKind::Dot) || self.check(&TokenKind::Ellipsis) {
+            let mut fields = vec![self.parse_record_item()?];
             while self.eat(&TokenKind::Comma) {
-                fields.push(self.parse_record_field()?);
+                fields.push(self.parse_record_item()?);
             }
             let end = self
                 .expect(&TokenKind::RParen, "`)` to close the record")?
@@ -1285,7 +1285,20 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `field = "." ident [ ":" type ] "=" expr`, one labeled record field.
+    /// `field = "." ident [ ":" type ] "=" expr | "..." expr`, one record
+    /// item: the first token picks a labeled field or a spread (ADR 0043).
+    fn parse_record_item(&mut self) -> Result<RecordItem, ParseError> {
+        if self.check(&TokenKind::Ellipsis) {
+            let start = self.cur_span().start;
+            self.pos += 1; // `...`
+            let value = self.parse_expr_inner()?;
+            let span = Span::new(start, value.span.end);
+            return Ok(RecordItem::Spread { value, span });
+        }
+        Ok(RecordItem::Field(self.parse_record_field()?))
+    }
+
+    /// One labeled record field, `.name [: Type] = value`.
     fn parse_record_field(&mut self) -> Result<RecordField, ParseError> {
         let start = self.expect(&TokenKind::Dot, "`.` to start a record field")?;
         let name = self.expect_ident("a field name")?;
@@ -2282,7 +2295,10 @@ mod tests {
             ExprKind::Record(fs) => {
                 let fs: Vec<String> = fs
                     .iter()
-                    .map(|f| format!("{}={}", f.name.name, sexpr(&f.value)))
+                    .map(|f| match f {
+                        RecordItem::Field(f) => format!("{}={}", f.name.name, sexpr(&f.value)),
+                        RecordItem::Spread { value, .. } => format!("...{}", sexpr(value)),
+                    })
                     .collect();
                 format!("(record {})", fs.join(" "))
             }
@@ -2547,6 +2563,19 @@ mod tests {
     fn records_with_optional_ascription() {
         assert_eq!(sexpr(&expr("(.a = x, .b = y)")), "(record a=x b=y)");
         assert_eq!(sexpr(&expr("(.a : number = 1)")), "(record a=1)");
+    }
+
+    #[test]
+    fn records_with_spreads() {
+        // `...` opens a record body as `.` does, and an item may be either.
+        assert_eq!(sexpr(&expr("(...r)")), "(record ...r)");
+        assert_eq!(
+            sexpr(&expr("(.c = r.k - 1, ...r)")),
+            "(record c=(- (. r k) 1) ...r)"
+        );
+        assert_eq!(sexpr(&expr("(...k, ...r)")), "(record ...k ...r)");
+        // A record never mixes with positional items.
+        assert!(expr_err("(...r, x)").message.contains("`.`"));
     }
 
     #[test]

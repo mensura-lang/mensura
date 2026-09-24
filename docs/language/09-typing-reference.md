@@ -653,6 +653,16 @@ Because the body is the formal multiset, **filtering and row-expansion are the
 same primitive**: there is no `filter` primitive (`filterRows_splitSafe` is
 derived), and a named `filter` may later be sugar for `if c then r else ()`.
 
+**Spread.**  A record item `...e`, with `e : Record`, elaborates to one
+labeled field `.f = e.f` per top-level field `f` of `e`, in `e`'s field
+order, at the spread's position; a unit-reference group forwards whole and
+re-flattens to its dotted columns as a bare `r` does.  An explicit field
+overrides a spread field of its name and takes the spread's position; two
+explicit fields, or two spreads, sharing a name are an error.  The rule
+above then applies to the elaborated body, so `(...r)` types exactly as `r`
+and a spread needs no lemma of its own (ADR 0043).  Rows that carry the
+same columns in different orders do not unify.
+
 ### 6.2  `map_bags` (per-key whole-bag transform) -- Tier A
 
 ```
@@ -688,6 +698,11 @@ the call site names by a `scan`'s key argument (section 5.4).
 Split-safety holds regardless, because a split routes a key's *whole* bag to
 one side, so neither the bag a reduction sees nor the fiber a scan arranges is
 ever torn.
+
+The return may not name a key column (as in 6.1).  A spread elaborates as in
+6.1; over the fiber, `...b` yields one field `.f = b.f : Bag` per column, so
+it is window-shaped and sits beside window values only.  Beside an aggregate
+it is the rejected mix (ADR 0043 decision 2).
 
 ### 6.3  `promote` / `demote` (rekeying)
 

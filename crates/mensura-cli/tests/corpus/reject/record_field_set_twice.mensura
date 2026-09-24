@@ -1,0 +1,14 @@
+// Rejected at resolve: two explicit fields of one name collide (ADR 0043
+// decision 3).  Only an explicit field over a spread field is an override.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { energy: real }
+}
+
+view bad {
+  readings |> flat_map |k, r| (.energy = r.energy, .energy = r.energy * 2.0)
+}
