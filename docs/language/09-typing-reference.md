@@ -1387,7 +1387,8 @@ suite itself is M1 work (`ROADMAP.md`, M1).
   fact-less `bag` (`series.cumsum`, `series.running_max`, `series.rank`
   included): the scan contains its reduction, so it carries the reducer's
   demand; the keep combiners (`series.lag`, `series.lead`,
-  `series.first_value`) stay accepted there (ADR 0037 decision 5).
+  `series.first_value`, `series.last_value`) stay accepted there (ADR 0037
+  decision 5).
 - A disjointness-demanding site fed two tables that are not structurally
   disjoint and were neither asserted nor assumed.
 - A scalar operator applied to a bag (`r.x > 30` where `x` is read at a

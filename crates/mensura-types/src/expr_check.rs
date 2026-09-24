@@ -3486,6 +3486,7 @@ mod tests {
             "series.lag (|r| r.temperature) (|r| r.at) b",
             "series.lead (|r| r.temperature) (|r| r.at) b",
             "series.first_value (|r| r.temperature) (|r| r.at) b",
+            "series.last_value (|r| r.temperature) (|r| r.at) b",
         ] {
             assert!(ty_of(&ctx, accepted).is_ok(), "`{accepted}` should pass");
         }

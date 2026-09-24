@@ -131,9 +131,10 @@ builtin there is no reason to keep so many *names* in the language, so
 bundled `bag` module, `count` became the `#` operator, and the freed names
 returned to users.  The ordered siblings live in the bundled `series` module,
 in the same way and for the same reason: `cumsum`, `running_min`,
-`running_max`, `first_value`, `lag`, `lead`, and `rank`, each a partial
-application of `scan` or `prescan` (ADR 0029's Stage 2 gates them,
-`formal/Mensura/Arranged.lean`).
+`running_max`, `first_value`, `last_value`, `lag`, `lead`, and `rank`, each
+a partial application of `scan` or `prescan` (ADR 0029's Stage 2 gates them,
+`formal/Mensura/Arranged.lean`), the two duals (`lead`, `last_value`) as
+lambdas that wrap the key in `desc`.
 
 The consequence is that **"no implicit prelude" now holds without
 exception**.  `si` was already an ordinary import (`9.8 * meter / second^2`

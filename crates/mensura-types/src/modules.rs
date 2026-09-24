@@ -313,6 +313,7 @@ mod tests {
             ("running_min", "scan", "<<"),
             ("running_max", "scan", ">>"),
             ("first_value", "scan", "<:"),
+            ("last_value", "scan", "<:"),
             ("rank", "scan", "+"),
             ("lag", "prescan", ":>"),
             ("lead", "prescan", ":>"),
@@ -376,25 +377,29 @@ mod tests {
     }
 
     #[test]
-    fn lead_is_a_lambda_over_the_dual_key() {
-        // The one binding that is a genuine lambda rather than a partial
-        // application, so it exercises the ordinary closure path instead of
-        // `eta_expand_builtin`.  Its key is wrapped in `desc`, which is what
-        // makes it `lag` over the dual order.
+    fn the_dual_order_bindings_are_lambdas_over_a_desc_key() {
+        // The two bindings that are genuine lambdas rather than partial
+        // applications, so they exercise the ordinary closure path instead of
+        // `eta_expand_builtin`.  Each wraps its key in `desc`, which is what
+        // makes `lead` into `lag`, and `last_value` into `first_value`, over
+        // the dual order.  The oracle cannot see this: it pins the primitive
+        // and the combiner, which both pairs share.
         let env = bundled("series")
             .expect("bundled")
             .as_ref()
             .expect("resolves");
-        let ConstValue::Closure(c) = &env.values["lead"] else {
-            panic!("`lead` is not a function");
-        };
-        let rendered = format!("{:?}", c.body);
-        assert!(
-            rendered.contains("Name(\"desc\")"),
-            "`lead` must order by the dual key: {rendered}"
-        );
-        // No eta machinery leaked: this body was written, not synthesized.
-        assert!(!rendered.contains("x__"), "unexpected eta parameter");
+        for (dual, of) in [("lead", "lag"), ("last_value", "first_value")] {
+            let ConstValue::Closure(c) = &env.values[dual] else {
+                panic!("`{dual}` is not a function");
+            };
+            let rendered = format!("{:?}", c.body);
+            assert!(
+                rendered.contains("Name(\"desc\")"),
+                "`{dual}` must order by the dual key to be `{of}` reversed: {rendered}"
+            );
+            // No eta machinery leaked: this body was written, not synthesized.
+            assert!(!rendered.contains("x__"), "unexpected eta parameter");
+        }
     }
 
     #[test]

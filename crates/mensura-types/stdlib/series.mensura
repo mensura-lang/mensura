@@ -42,15 +42,22 @@ let running_max { scan `>>` }
 // each later operand, so the accumulator never moves off the first element.
 let first_value { scan `<:` }
 
+// Every row sees the group's *last* value under the order: `first_value` over
+// the dual order, the same trick `lead` plays on `lag`.  Note that keep-right
+// is not it: `scan `:>`` holds each row's own value, the identity projection
+// rather than a lookahead, so the lookahead has to come from reversing the
+// order.  A genuine lambda for the reason `lead` is (see below).
+let last_value { |value| |key| scan `<:` value (|r| desc (key r)) }
+
 // The previous row's value.  The first row is **missing**, and that is not
 // designed: keep-right has no identity, so the exclusive scan's first
 // position (which folds the empty prefix) has no answer.  The rule that
 // governs empty windows governs this too.
 let lag { prescan `:>` }
 
-// The next row's value: `lag` over the dual order.  This is the one binding
-// that is a genuine lambda rather than a partial application, because the key
-// must be wrapped before it is passed on.
+// The next row's value: `lag` over the dual order.  Like `last_value`, this is
+// a genuine lambda rather than a partial application, because the key must be
+// wrapped before it is passed on.
 //
 // Curried explicitly (`|value| |key| ...`), not tupled: a multi-parameter
 // lambda binds a single n-tuple (ADR 0030, Decision 2), which would make

@@ -98,7 +98,7 @@ that demand made visible; it would be incoherent for `max` to carry the
 obligation while a running maximum computed the same number without it.
 `previous` is different: "the reading before this one" is a claim about the
 readings you *have*, honest whether or not some were lost, so `lag` (and
-`lead`, and `first_value`) demand nothing.  The line is per combiner: a scan
+`lead`, `first_value`, and `last_value`) demand nothing.  The line is per combiner: a scan
 that contains its reduction carries the reduction's obligation, and one that
 only relates neighbouring present rows does not.
 
@@ -144,9 +144,9 @@ Descending order is marked on the key value (`desc r.temperature`), not on the
 operator, so each part of a key can go its own way.
 
 The window vocabulary is a library, not language: `cumsum`, `rank`, `lag`,
-`lead`, `first_value`, `running_min`, and `running_max` are ordinary definitions
-in the bundled `series` module, each one a `scan` or a `prescan` at a chosen
-combiner.  You can read them, and the reason `lag`'s first row is missing is
+`lead`, `first_value`, `last_value`, `running_min`, and `running_max` are
+ordinary definitions in the bundled `series` module, each one a `scan` or a
+`prescan` at a chosen combiner.  You can read them, and the reason `lag`'s first row is missing is
 visible in its definition rather than buried in the compiler.
 
 ## Coarsening a composite key
