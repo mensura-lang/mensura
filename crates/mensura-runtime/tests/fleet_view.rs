@@ -7,11 +7,18 @@
 use mensura_runtime::{SqliteBackend, StorageBackend, Value, materialize_views};
 use mensura_types::ResolvedProgram;
 
-fn fleet_program() -> ResolvedProgram {
+fn fleet_source() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/examples/fleet-monitoring.mensura");
-    let src = std::fs::read_to_string(&path).expect("readable example");
-    let tokens = mensura_syntax::tokenize(&src).expect("should lex");
+    std::fs::read_to_string(&path).expect("readable example")
+}
+
+fn fleet_program() -> ResolvedProgram {
+    resolve_source(&fleet_source())
+}
+
+fn resolve_source(src: &str) -> ResolvedProgram {
+    let tokens = mensura_syntax::tokenize(src).expect("should lex");
     let program = mensura_syntax::parse(&tokens).expect("should parse");
     mensura_types::resolve(&program).expect("should resolve")
 }
@@ -239,6 +246,44 @@ fn a_machine_that_never_reported_still_gets_its_silent_slots() {
         rows.contains(&vec![Value::String("m4".into()), Value::Int(2)]),
         "the silence count should hold `m4`'s two silent days: {rows:?}"
     );
+}
+
+/// A view reading another view (ADR 0042), split across the one place the
+/// runtime mirrors the checker's facts: `window` upstream, `closed`
+/// downstream.  `closed` needs the upstream's window grid and its origin
+/// store's intake contract, neither of which survives a rescan of the
+/// materialized table, so this passes only if the value is handed over in
+/// memory.  The reader is declared first, so it also exercises dependency
+/// order.
+#[test]
+fn a_view_reads_another_views_window_facts() {
+    let src = fleet_source()
+        + r#"
+view peaks_downstream {
+  windowed_upstream |> closed
+                    |> map_bags |k, b| (.peak = bag.max b.temperature)
+}
+
+view windowed_upstream {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+}
+"#;
+    let program = resolve_source(&src);
+    let position = |name: &str| program.views.iter().position(|v| v.name == name);
+    assert!(
+        position("windowed_upstream") < position("peaks_downstream"),
+        "the source view is materialized before its reader"
+    );
+    let mut db = seeded_db(&program);
+    materialize_views(&mut db, &program).unwrap();
+    let scan = |name: &str| {
+        let view = program.views.iter().find(|v| v.name == name).unwrap();
+        db.scan(&view.shape()).unwrap()
+    };
+    // The same pipeline as `machine_peaks`, split in two.
+    assert_eq!(scan("peaks_downstream"), scan("machine_peaks"));
+    assert!(!scan("peaks_downstream").is_empty());
 }
 
 #[test]

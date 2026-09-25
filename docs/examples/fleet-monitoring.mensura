@@ -304,16 +304,13 @@ view sensor_health {
 // *as of the closed bound*, and because filled rows are final, reruns only
 // ever grow the count.
 //
-// The pipeline is repeated rather than reading `sensor_health`: a view over a
-// view is not yet a source (`ROADMAP.md`).
+// It reads `sensor_health` rather than repeating its pipeline (ADR 0042).
+// The view name carries every fact `sensor_health` computed, the dense grid's
+// rectangularity included, so the re-derivation above happens here exactly
+// as it would inside one body.
 view silence_per_machine : Tabular[Machine] {
-  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
-           |> demote taken_at
-           |> closed
-           |> map_bags |k, b| (.n = #b.temperature)
-           |> dense w machines activated
-           |> demote w
-           |> map_bags |k, b| (.silent = fold `+` (|r| if r.n == 0 then 1 else 0) b)
+  sensor_health |> demote w
+                |> map_bags |k, b| (.silent = fold `+` (|r| if r.n == 0 then 1 else 0) b)
 }
 
 view reading_trend {

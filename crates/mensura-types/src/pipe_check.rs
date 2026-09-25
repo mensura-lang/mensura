@@ -2686,6 +2686,73 @@ pub fn type_view_body(sources: &Sources, block: &Block) -> Result<PipeTy, Vec<Ty
     }
 }
 
+/// The free table names a view body reads, in order of appearance, each with
+/// the span of its first use (ADR 0042 decision 2).
+///
+/// Mirrors [`type_pipeline`]'s structure rather than walking every name, so
+/// only the positions that resolve a table count: pipeline position, a
+/// join's right side, and `dense`'s population.  A column selector or a
+/// lambda body naming a view is not a reference, and a name an earlier
+/// `let` bound is local.
+pub fn table_references(block: &Block) -> Vec<(String, Span)> {
+    let mut local: Vec<&str> = Vec::new();
+    let mut found: Vec<(String, Span)> = Vec::new();
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                pipeline_refs(value, &local, &mut found);
+                local.push(&name.name);
+            }
+            Stmt::Expr(e) => pipeline_refs(e, &local, &mut found),
+            Stmt::Assert(_) => {}
+        }
+    }
+    found
+}
+
+fn pipeline_refs(expr: &Expr, local: &[&str], found: &mut Vec<(String, Span)>) {
+    match &expr.kind {
+        ExprKind::Name(name) => {
+            if !local.contains(&name.as_str()) && !found.iter().any(|(n, _)| n == name) {
+                found.push((name.clone(), expr.span));
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                pipeline_refs(item, local, found);
+            }
+        }
+        ExprKind::Binary(BinOp::Pipe, lhs, rhs) => {
+            pipeline_refs(lhs, local, found);
+            stage_refs(rhs, false, local, found);
+        }
+        ExprKind::App(..) => stage_refs(expr, true, local, found),
+        _ => {}
+    }
+}
+
+/// The table names a stage's arguments read: the named table of a join or a
+/// `dense`, and, for a bare application, the trailing input.
+fn stage_refs(stage: &Expr, bare: bool, local: &[&str], found: &mut Vec<(String, Span)>) {
+    let (head, mut args) = flatten_app(stage);
+    if bare && let Some(input) = args.pop() {
+        pipeline_refs(input, local, found);
+    }
+    let ExprKind::Name(op) = &head.kind else {
+        return;
+    };
+    let named = match op.as_str() {
+        "lookup" | "lookup_total" => args.first(),
+        "dense" => args.get(1),
+        _ => None,
+    };
+    if let Some(named) = named
+        && matches!(named.kind, ExprKind::Name(_))
+    {
+        pipeline_refs(named, local, found);
+    }
+}
+
 /// Type a view body and require it to materialize a single table (a view is not
 /// a bare pair, `10-views.md`). Returns the output table type.
 pub fn type_view(sources: &Sources, body: &Block) -> Result<TableType, Vec<TypeError>> {

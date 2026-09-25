@@ -1,0 +1,44 @@
+// Accepted: `dense_survives_the_demote.mensura` split at the fill, so the
+// silence count reads the completed grid from another view (ADR 0042).
+//
+// A view name carries every fact its body computed, and nothing is reset at
+// the boundary.  The grid's rectangularity reaches `silence_per_machine`
+// through the name `grid`, and `demote w` re-derives completeness from it
+// exactly as it would inside one body, so there is still no `assume`
+// anywhere.  The reader is declared first: views are checked in dependency
+// order, not declaration order.
+import bag
+import si
+
+unit Machine {
+  machine_id: string
+}
+
+store machines {
+  unit { Machine }
+  attr { activated: instant }
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+  lateness { taken_at: 10.0 * si.minute }
+}
+
+view silence_per_machine {
+  grid |> demote w
+       |> map_bags |k, b| (.reported = bag.sum b.n)
+}
+
+view grid {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+           |> dense w machines activated
+}

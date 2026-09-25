@@ -20,7 +20,7 @@ stage; the design content is not.
 ## What a view is
 
 A view is a derived table with a name.  It reads from one or more sources
-(stores, and later other views), applies a pipeline, and is materialized so the
+(stores, registries, and other views), applies a pipeline, and is materialized so the
 result can be queried like a store.  Three things follow from "derived by a
 pipeline":
 
@@ -58,9 +58,12 @@ view feature_window : Tabular[Machine] {
   joining several tables is tupling them for a `union`.  No pipeline-specific
   grammar is introduced: a view body is exactly a block (`04-grammar.md`).
 - **Sources resolve by name.**  A bare name in the pipeline (`readings`) refers
-  to a store (later, another view) in scope, presented to the pipeline as a
-  table value.  This is the context model of `06-expressions.md`: the site
-  supplies the named tables, the grammar stays the same.
+  to a store, a registry, or another view in scope, presented to the
+  pipeline as a table value.  This is the context model of
+  `06-expressions.md`: the site supplies the named tables, the grammar
+  stays the same.  A view source is presented with its computed type,
+  every qualifier intact, exactly as a `let` binding of its body would be
+  ("Reading another view", below).
 - **The conformance clause is optional.**  When present, the `:` clause claims
   one or more shapes the view's *output* must satisfy, with the same meaning and
   the same check as a store's `:` clause (`03-shapes.md`, "Conformance").
@@ -127,6 +130,39 @@ output schema rather than a declared one.  This is the sense in which
 "conformance machinery becomes the carrier of table properties"
 (`03-shapes.md`, forward references): a shape claim on a view is a check on the
 pipeline's result.
+
+## Reading another view
+
+A view may name another view as a source, anywhere it may name a store:
+in pipeline position, as a join's right side, or as `dense`'s
+population (`docs/decisions/0042-views-reading-views.md`).
+
+```mensura
+view daily_counts {
+  readings |> window w taken_at (1.0 * si.day) (1.0 * si.day)
+           |> demote taken_at
+           |> closed
+           |> map_bags |k, b| (.n = #b.temperature)
+}
+
+view busy_days {
+  daily_counts |> flat_map |_, r| if r.n > 100 then r else ()
+}
+```
+
+- **The name reads the computed type.**  `busy_days` sees `daily_counts`
+  with every qualifier the pipeline computed: its cardinality, totality,
+  completeness, gradings, window facts, and lineage.  Nothing is reset at
+  the boundary, so reading a view types exactly as binding its body with
+  `let` would.  An `assume` in the upstream body therefore reaches its
+  readers too, as it reaches every later stage of its own body.
+- **The dependency graph is acyclic.**  A view is computed from its
+  sources, so no view may read itself, directly or through other views.
+  A cycle is an error, reported at the reference that closes it.
+- **Views run in dependency order.**  The checker types each view after
+  the views it reads, and `mensura run` materializes them in that order
+  (`docs/toolkit/04-processing-layer.md`).  Each view is computed once
+  per run, however many views read it.
 
 ## Worked examples
 

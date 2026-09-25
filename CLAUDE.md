@@ -71,7 +71,9 @@ attributes (`string`, `int`, `real`, `bool`, `date`, named `enum` types
 whose variants are string literals, dimensioned `D[real]` quantities, and
 unit references resolved through `domain`); shapes with `Unit`/`string`
 parameters; views hosting the core pipeline algebra over the expression
-sublanguage, including the Tier B completeness discharge (ADR 0017); and
+sublanguage, including the Tier B completeness discharge (ADR 0017), and
+reading other views with every qualifier intact, checked and
+materialized in dependency order (ADR 0042); and
 typed ingestion through `mensura ingest` (ADR 0034).  A `registry`
 (ADR 0033) shares the store's grammar and resolved model exactly, differing
 in one `kind` field: its table is `Complete` by mechanism at its own

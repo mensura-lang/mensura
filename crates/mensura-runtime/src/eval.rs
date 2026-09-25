@@ -187,6 +187,17 @@ pub fn eval_view(
     sources: &BTreeMap<String, SourceTable>,
     contracts: &Contracts,
 ) -> Result<Vec<Row>, EvalError> {
+    align(plan, eval_view_table(plan, sources, contracts)?)
+}
+
+/// Evaluate a view plan to its table value, before alignment.  The value
+/// keeps the runtime's mirror of the checker's facts, which is what a view
+/// reading this one receives (ADR 0042 decision 3).
+fn eval_view_table(
+    plan: &ViewPlan,
+    sources: &BTreeMap<String, SourceTable>,
+    contracts: &Contracts,
+) -> Result<SourceTable, EvalError> {
     let mut env: BTreeMap<String, TableVal> = sources
         .iter()
         .map(|(name, table)| (name.clone(), TableVal::Table(table.clone())))
@@ -206,7 +217,7 @@ pub fn eval_view(
     let Some(table) = result else {
         return internal("view body without a trailing table expression");
     };
-    align(plan, expect_table(table)?)
+    expect_table(table)
 }
 
 /// Reorder a table's rows into the plan's output column order.  The checker
@@ -2417,47 +2428,64 @@ impl From<EvalError> for RunError {
     }
 }
 
-/// Materialize every view of a resolved program over `backend`, in
-/// declaration order (`docs/toolkit/04-processing-layer.md`): scan the
-/// sources, evaluate the body, replace the view table's contents.  Returns
-/// each view's name and row count.
+/// Materialize every view of a resolved program over `backend`, in the
+/// dependency order the checker fixed (ADR 0042,
+/// `docs/toolkit/04-processing-layer.md`): gather the sources, evaluate the
+/// body, replace the view table's contents.  Returns each view's name and
+/// row count.
 pub fn materialize_views<B: StorageBackend>(
     backend: &mut B,
     program: &ResolvedProgram,
 ) -> Result<Vec<(String, usize)>, RunError> {
+    // The intake contracts and their watermarks, read once per run *before*
+    // any evaluation (ADR 0037 decision 4).  Reading them here rather than
+    // mid-pipeline is what keeps `eval_view` a pure function of its inputs,
+    // so two runs over one database agree.  Every contract is read, not only
+    // those of the stores a view names: a view reading another view reaches
+    // the upstream store's contract through the table's origin.
+    let mut contracts = Contracts::new();
+    for schema in &program.schemas {
+        if schema.lateness.is_empty() {
+            continue;
+        }
+        let shape = schema.shape();
+        let mut per_store = Vec::new();
+        for contract in &schema.lateness {
+            let marks = backend.watermarks(&shape, contract)?;
+            per_store.push((contract.clone(), marks));
+        }
+        contracts.insert(schema.store.clone(), per_store);
+    }
+
+    // Each view's evaluated table, for the views that read it.  Handed over
+    // in memory rather than rescanned, since the materialized rows lose the
+    // runtime's mirror of the window and reduction facts (ADR 0042
+    // decision 3).
+    let mut evaluated: BTreeMap<String, SourceTable> = BTreeMap::new();
     let mut out = Vec::new();
     for plan in &program.views {
         let mut sources = BTreeMap::new();
-        let mut contracts = Contracts::new();
         for name in &plan.sources {
-            let Some(schema) = program.schemas.iter().find(|s| &s.store == name) else {
+            let table = if let Some(view) = evaluated.get(name) {
+                view.clone()
+            } else if let Some(schema) = program.schemas.iter().find(|s| &s.store == name) {
+                SourceTable::from_store(schema, backend.scan(&schema.shape())?)
+            } else {
                 return Err(EvalError {
                     message: format!(
-                        "internal: view `{}` reads unknown store `{name}`",
+                        "internal: view `{}` reads unknown source `{name}`",
                         plan.name
                     ),
                 }
                 .into());
             };
-            let rows = backend.scan(&schema.shape())?;
-            // The intake contracts and their watermarks, read once per run
-            // *before* evaluation (ADR 0037 decision 4).  Reading them here
-            // rather than mid-pipeline is what keeps `eval_view` a pure
-            // function of its inputs, so two runs over one database agree.
-            if !schema.lateness.is_empty() {
-                let shape = schema.shape();
-                let mut per_store = Vec::new();
-                for contract in &schema.lateness {
-                    let marks = backend.watermarks(&shape, contract)?;
-                    per_store.push((contract.clone(), marks));
-                }
-                contracts.insert(name.clone(), per_store);
-            }
-            sources.insert(name.clone(), SourceTable::from_store(schema, rows));
+            sources.insert(name.clone(), table);
         }
-        let rows = eval_view(plan, &sources, &contracts)?;
+        let table = eval_view_table(plan, &sources, &contracts)?;
+        let rows = align(plan, table.clone())?;
         backend.materialize_view(&plan.shape(), &rows)?;
         out.push((plan.name.clone(), rows.len()));
+        evaluated.insert(plan.name.clone(), table);
     }
     Ok(out)
 }
