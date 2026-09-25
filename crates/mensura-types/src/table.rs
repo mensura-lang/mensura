@@ -278,6 +278,29 @@ pub struct Content {
     pub columns: Vec<Column>,
 }
 
+impl Content {
+    /// The same content in canonical order: key columns, then attributes,
+    /// each sorted by name.  Column order carries no meaning (ADR 0043
+    /// decision 4); this is the order a view output presents.
+    pub fn canonical(&self) -> Content {
+        let sorted = |cols: &[Column]| {
+            let mut out = cols.to_vec();
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            out
+        };
+        Content {
+            key: sorted(&self.key),
+            columns: sorted(&self.columns),
+        }
+    }
+
+    /// Whether two contents carry the same key and attribute columns at the
+    /// same domains, whatever order each lists them in.
+    pub fn same_columns(&self, other: &Content) -> bool {
+        self.canonical() == other.canonical()
+    }
+}
+
 /// The qualifier row `Qs` (`09` section 1): the four tracked properties, each at
 /// its scope. Concrete and closed in the M0 freeze.
 #[derive(Clone, Debug, PartialEq)]

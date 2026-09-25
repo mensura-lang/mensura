@@ -1,0 +1,79 @@
+// Accepted: the record spread (ADR 0043).  `...r` keeps the columns a
+// `flat_map` body does not rewrite, an explicit field overrides a spread
+// field of its name wherever it is written, a unit-reference group forwards
+// whole and re-flattens to its dotted columns, and `...b` spreads the fiber
+// as window values beside a window-shaped `map_bags` field.
+import series
+import si
+
+unit Person {
+  id: string
+}
+
+unit Program {
+  code: string
+}
+
+unit Reading {
+  machine_id: string
+  taken_at:   instant
+}
+
+store persons {
+  unit { Person }
+}
+
+store programs {
+  unit { Program }
+  domain { coordinator: persons }
+  attr {
+    name:        string
+    credits:     int
+    coordinator: Person
+  }
+}
+
+registry readings {
+  unit { Reading }
+  attr { temperature: real }
+}
+
+// Add one column and keep the rest, the group `coordinator` among them.
+view weighted {
+  programs |> flat_map |k, r| (.weight = to_real r.credits * 1.5, ...r)
+}
+
+// Replace `credits` in place: both branches carry the same columns.
+view doubled {
+  programs |> flat_map |k, r| if r.credits > 4
+                              then (.credits = r.credits * 2, ...r)
+                              else (...r)
+}
+
+// Column order carries no meaning (ADR 0043 decision 4): the branches write
+// `hot` on either side of the spread and still carry one schema.
+view flagged {
+  programs |> flat_map |k, r| if r.credits > 4
+                              then (.hot = true, ...r)
+                              else (...r, .hot = false)
+}
+
+// A store and a view that carry the same columns in different orders
+// unite: `name` is declared first in `programs`, and sorts after
+// `coordinator` and `credits` in the view.
+view renamed {
+  programs |> flat_map |k, r| (.name = r.name, ...r)
+}
+
+view both {
+  (programs, renamed) |> union
+}
+
+// The window value beside every original column of the fiber.
+view trend {
+  readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute)
+           |> demote taken_at
+           |> map_bags |k, b| (.previous = series.lag (|r| r.temperature)
+                                                      (|r| r.taken_at) b,
+                               ...b)
+}

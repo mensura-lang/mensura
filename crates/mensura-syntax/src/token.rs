@@ -61,6 +61,9 @@ pub enum TokenKind {
     Comma,
     Semi,
     Dot,
+    /// `...`, the record spread (ADR 0043).  Maximal-munch on `.`; a bare
+    /// `..` is a lex error, since no `..` operator exists.
+    Ellipsis,
     Question,
     /// `??`, the coalescing discharge (ADR 0039, Decision 2).  A
     /// maximal-munch token: two adjacent `?` are always the operator, never

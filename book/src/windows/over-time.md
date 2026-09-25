@@ -83,7 +83,9 @@ window's bag is still provable:
 
 No `assume { arranged }`, exactly as there would be none without the window.
 The two kinds of window compose, and the time grid does not cost you the row
-order.
+order.  The `...b` at the end spreads the fiber, keeping each reading's own
+columns beside its `previous` value, as a spread of `r` does in a
+[`flat_map`](../transforming/flat-map.md#keep-the-rest-spreading-the-row).
 
 `lag` was chosen there for a second reason worth noticing: it relates rows
 that are present, so it demands no completeness, and the view carries no

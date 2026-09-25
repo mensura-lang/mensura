@@ -11,6 +11,7 @@ mod lower;
 pub mod model;
 mod modules;
 pub mod pipe_check;
+pub mod record;
 pub mod resolve;
 mod suggest;
 pub mod table;

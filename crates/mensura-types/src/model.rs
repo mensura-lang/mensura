@@ -207,8 +207,8 @@ pub struct ResolvedProgram {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewPlan {
     pub name: String,
-    /// Output columns in storage order: the key columns, then the computed
-    /// attribute columns in the order the checker produced them.
+    /// Output columns in storage order, the canonical one: the key columns,
+    /// then the attribute columns, each by name (ADR 0043 decision 4).
     pub columns: Vec<Column>,
     /// The computed cardinality.  `Singletons` gets the composite primary
     /// key over the key columns; a `Bag` view gets none.

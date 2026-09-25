@@ -283,7 +283,24 @@ impl<'a> Lexer<'a> {
             }
             ',' => TokenKind::Comma,
             ';' => TokenKind::Semi,
-            '.' => TokenKind::Dot,
+            // `...` is the record spread (ADR 0043), by maximal munch.  No
+            // `..` operator exists, so two dots are an error rather than two
+            // member accesses.
+            '.' => match (self.peek(), self.peek2()) {
+                (Some('.'), Some('.')) => {
+                    self.bump();
+                    self.bump();
+                    TokenKind::Ellipsis
+                }
+                (Some('.'), _) => {
+                    self.bump();
+                    return Err(LexError::new(
+                        "unexpected '..' (a record spread is '...')",
+                        Span::new(start, self.pos),
+                    ));
+                }
+                _ => TokenKind::Dot,
+            },
             '?' => {
                 if self.peek() == Some('?') {
                     self.bump();
@@ -461,6 +478,21 @@ mod tests {
                 TokenKind::Ident("id".into()),
             ]
         );
+    }
+
+    #[test]
+    fn ellipsis_is_one_token_and_two_dots_are_an_error() {
+        assert_eq!(
+            kinds("(...r)"),
+            vec![
+                TokenKind::LParen,
+                TokenKind::Ellipsis,
+                TokenKind::Ident("r".into()),
+                TokenKind::RParen,
+            ]
+        );
+        let err = lex("a..b").expect_err("`..` is not a token");
+        assert!(err.message.contains("'...'"), "{}", err.message);
     }
 
     #[test]

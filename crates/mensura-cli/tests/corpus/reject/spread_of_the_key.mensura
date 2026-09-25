@@ -1,0 +1,14 @@
+// Rejected at resolve: the key is preserved, so a row may not set a key
+// column, and `...k` spreads exactly the key columns (ADR 0043 decision 8).
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { energy: real }
+}
+
+view bad {
+  readings |> flat_map |k, r| (...k, ...r)
+}

@@ -16,7 +16,7 @@ pub use ast::{
     NameSeg, NameTemplate, Program, ShapeArg, ShapeDecl, ShapeParam, ShapeRef, StoreDecl,
     StoreKind, StrLit, TypeExpr, TypeKind, UnitDecl, ViewDecl,
 };
-pub use expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, Stmt, UnOp};
+pub use expr::{BinOp, Block, Expr, ExprKind, Presence, RecordField, RecordItem, Stmt, UnOp};
 pub use lexer::{LexError, Lexed, is_identifier, lex, tokenize};
 pub use parser::{ParseError, Parsed, parse, parse_expr, parse_with_meta};
 pub use token::{Span, Token, TokenKind, Trivia, TriviaKind};
