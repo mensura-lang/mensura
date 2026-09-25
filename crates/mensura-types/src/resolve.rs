@@ -17,9 +17,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use mensura_syntax::{
-    Attr, Block, EnumDecl, Expr, ExprKind, Field, Ident, Item, LetKind, NameSeg, NameTemplate,
-    Program, ShapeArg, ShapeDecl, ShapeRef, Span, Stmt, StoreDecl, StoreKind, TypeExpr, TypeKind,
-    UnitDecl, ViewDecl, is_identifier,
+    Attr, Block, EnumDecl, Field, Ident, Item, LetKind, NameSeg, NameTemplate, Program, ShapeArg,
+    ShapeDecl, ShapeRef, Span, StoreDecl, StoreKind, TypeExpr, TypeKind, UnitDecl, ViewDecl,
+    is_identifier,
 };
 
 use crate::consts::{ConstDecl, ConstValue, eval_const_bindings, eval_const_expr};
@@ -27,7 +27,7 @@ use crate::model::{
     Column, ColumnRole, ColumnType, ForeignKey, Lateness, ResolvedProgram, Schema, ViewPlan,
 };
 use crate::modules::ModuleEnv;
-use crate::pipe_check::{Sources, type_view};
+use crate::pipe_check::{Sources, table_references, type_view};
 use crate::table::{Cardinality, TableType};
 use crate::units::Dimension;
 
@@ -455,7 +455,20 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
         for schema in &schemas {
             sources = sources.with(&schema.store, TableType::from_store(schema));
         }
-        for v in &views {
+        // A view may read other views (ADR 0042): type them in dependency
+        // order, each output joining the sources its readers see.  A view
+        // on a cycle, or reading one that failed, is skipped without a
+        // further diagnostic.
+        let table_names: HashSet<&str> = store_names.union(&view_names).copied().collect();
+        let (order, mut failed) = view_order(&views, &mut errors);
+        for v in order {
+            if table_references(&v.body)
+                .iter()
+                .any(|(n, _)| failed.contains(n.as_str()))
+            {
+                failed.insert(&v.name.name);
+                continue;
+            }
             match type_view(&sources, &v.body) {
                 Ok(output) => {
                     // Check the optional `: Shape` conformance clause against
@@ -475,11 +488,13 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                     );
                     // Constant-fold the body before it reaches the
                     // runtime (`crate::lower`).
-                    let mut plan = view_plan(v, &output, &store_names);
+                    let mut plan = view_plan(v, &output, &table_names);
                     crate::lower::lower_view_body(&mut plan.body, &subst);
                     view_plans.push(plan);
+                    sources = sources.with(&v.name.name, output);
                 }
                 Err(errs) => {
+                    failed.insert(&v.name.name);
                     for e in errs {
                         errors.push(ResolveError::new(e.message, e.span));
                     }
@@ -500,8 +515,8 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
 
 /// Lower a checked view into its [`ViewPlan`]: the output columns in storage
 /// order (read off the checked table type), the computed cardinality, the
-/// body, and the stores it reads.
-fn view_plan(v: &ViewDecl, output: &TableType, store_names: &HashSet<&str>) -> ViewPlan {
+/// body, and the stores and views it reads.
+fn view_plan(v: &ViewDecl, output: &TableType, table_names: &HashSet<&str>) -> ViewPlan {
     let mut columns = Vec::new();
     for c in &output.content.key {
         columns.push(Column {
@@ -526,72 +541,96 @@ fn view_plan(v: &ViewDecl, output: &TableType, store_names: &HashSet<&str>) -> V
         columns,
         cardinality: output.qualifiers.cardinality,
         body: v.body.clone(),
-        sources: collect_sources(&v.body, store_names),
+        sources: collect_sources(&v.body, table_names),
         span: v.span,
     }
 }
 
-/// The store names a view body mentions, sorted.  A bare name is a source
-/// only in pipeline position, but matching every name against the store set
-/// over-approximates harmlessly (the runtime would scan a store it does not
-/// read); shadowing store names with lambda parameters is not a concern the
-/// slice needs to resolve.
-fn collect_sources(body: &Block, stores: &HashSet<&str>) -> Vec<String> {
-    let mut found = BTreeSet::new();
-    collect_block(body, stores, &mut found);
+/// The store and view names a view body reads, sorted (ADR 0042 decision 2).
+fn collect_sources(body: &Block, tables: &HashSet<&str>) -> Vec<String> {
+    let found: BTreeSet<String> = table_references(body)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| tables.contains(name.as_str()))
+        .collect();
     found.into_iter().collect()
 }
 
-fn collect_block(block: &Block, stores: &HashSet<&str>, found: &mut BTreeSet<String>) {
-    for stmt in &block.stmts {
-        match stmt {
-            Stmt::Let { value, .. } => collect_expr(value, stores, found),
-            Stmt::Assert(e) | Stmt::Expr(e) => collect_expr(e, stores, found),
-        }
+/// Order the views so each comes after the views it reads (ADR 0042
+/// decision 2), declaration order among independent ones.  A dependency
+/// cycle is reported once, at the reference that closes it; the views on
+/// it are left out of the order and returned as failed, so their readers
+/// are skipped too.
+fn view_order<'a>(
+    views: &[&'a ViewDecl],
+    errors: &mut Vec<ResolveError>,
+) -> (Vec<&'a ViewDecl>, HashSet<&'a str>) {
+    let by_name: HashMap<&'a str, &'a ViewDecl> = views
+        .iter()
+        .rev()
+        .map(|v| (v.name.name.as_str(), *v))
+        .collect();
+    let mut order = Vec::new();
+    let mut done: HashSet<&str> = HashSet::new();
+    let mut cyclic: HashSet<&str> = HashSet::new();
+    for v in views {
+        let mut stack = Vec::new();
+        visit_view(
+            v,
+            &by_name,
+            &mut stack,
+            &mut done,
+            &mut cyclic,
+            &mut order,
+            errors,
+        );
     }
+    (order, cyclic)
 }
 
-fn collect_expr(expr: &Expr, stores: &HashSet<&str>, found: &mut BTreeSet<String>) {
-    match &expr.kind {
-        ExprKind::Name(name) => {
-            if stores.contains(name.as_str()) {
-                found.insert(name.clone());
-            }
+/// Depth-first visit for [`view_order`]; `stack` is the path, for cycle
+/// reporting.
+fn visit_view<'a>(
+    v: &'a ViewDecl,
+    by_name: &HashMap<&'a str, &'a ViewDecl>,
+    stack: &mut Vec<&'a str>,
+    done: &mut HashSet<&'a str>,
+    cyclic: &mut HashSet<&'a str>,
+    order: &mut Vec<&'a ViewDecl>,
+    errors: &mut Vec<ResolveError>,
+) {
+    let name = v.name.name.as_str();
+    if done.contains(name) {
+        return;
+    }
+    stack.push(name);
+    for (dep, span) in table_references(&v.body) {
+        let Some((&dep_name, &dep_view)) = by_name.get_key_value(dep.as_str()) else {
+            continue;
+        };
+        if let Some(start) = stack.iter().position(|n| *n == dep_name) {
+            let path = stack[start..]
+                .iter()
+                .chain(std::iter::once(&dep_name))
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            errors.push(ResolveError::new(
+                format!(
+                    "view dependency cycle: {path}; a view is computed from its \
+                     sources, so none may read itself (ADR 0042)"
+                ),
+                span,
+            ));
+            cyclic.extend(stack[start..].iter().copied());
+            continue;
         }
-        // A combiner names an operator from the closed table, never a store.
-        ExprKind::Int(_)
-        | ExprKind::Float(_)
-        | ExprKind::Str(_)
-        | ExprKind::Bool(_)
-        | ExprKind::Combiner(_) => {}
-        ExprKind::Member(base, _) => collect_expr(base, stores, found),
-        ExprKind::App(f, a) => {
-            collect_expr(f, stores, found);
-            collect_expr(a, stores, found);
-        }
-        ExprKind::Unary(_, e) => collect_expr(e, stores, found),
-        ExprKind::Binary(_, l, r) => {
-            collect_expr(l, stores, found);
-            collect_expr(r, stores, found);
-        }
-        ExprKind::Presence(base, _) => collect_expr(base, stores, found),
-        ExprKind::Lambda { body, .. } => collect_expr(body, stores, found),
-        ExprKind::Tuple(items) => {
-            for item in items {
-                collect_expr(item, stores, found);
-            }
-        }
-        ExprKind::Record(fields) => {
-            for f in fields {
-                collect_expr(&f.value, stores, found);
-            }
-        }
-        ExprKind::Block(b) => collect_block(b, stores, found),
-        ExprKind::If { cond, then, els } => {
-            collect_expr(cond, stores, found);
-            collect_expr(then, stores, found);
-            collect_expr(els, stores, found);
-        }
+        visit_view(dep_view, by_name, stack, done, cyclic, order, errors);
+    }
+    stack.pop();
+    done.insert(name);
+    if !cyclic.contains(name) {
+        order.push(v);
     }
 }
 
@@ -2618,6 +2657,128 @@ mod tests {
             errs.iter().any(|e| e.message.contains("duplicate view")),
             "expected a duplicate-view error, got: {errs:?}"
         );
+    }
+
+    /// A store the view-over-view tests coarsen: `promote status` then
+    /// `demote id` is a genuine coarsening, so it clears completeness
+    /// (ADR 0035) and a reducer over it has an obligation to discharge.
+    const VIEW_SOURCES: &str = r#"
+        unit Machine { id: string }
+        enum MachineStatus { "operational" "degraded" "failure" }
+        store machines {
+          unit { Machine }
+          attr {
+            commissioned: date
+            status: MachineStatus
+          }
+        }
+    "#;
+
+    #[test]
+    fn a_view_reads_another_view_in_dependency_order() {
+        // The reader is declared first (ADR 0042 decision 2).
+        let src = format!(
+            "{VIEW_SOURCES}
+            view per_status {{
+              by_status |> map_bags |k, b| (.n = #b.commissioned)
+            }}
+            view by_status {{
+              machines |> promote status |> demote id |> assume {{ complete }}
+            }}"
+        );
+        let program = resolve_program(&src).expect("should resolve");
+        let names: Vec<&str> = program.views.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, vec!["by_status", "per_status"]);
+        assert_eq!(program.views[1].sources, vec!["by_status".to_string()]);
+    }
+
+    #[test]
+    fn a_view_source_carries_its_qualifiers() {
+        // Without the upstream `assume`, the completeness the coarsening
+        // cleared stays cleared across the view name, so the reducer
+        // downstream rejects exactly as it would inside one body.
+        let src = format!(
+            "{VIEW_SOURCES}
+            view by_status {{
+              machines |> promote status |> demote id
+            }}
+            view per_status {{
+              by_status |> map_bags |k, b| (.n = #b.commissioned)
+            }}"
+        );
+        let errs = errors(&src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("complete")),
+            "expected the reducer's completeness demand, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_view_dependency_cycle_is_reported_once() {
+        let src = format!(
+            "{VIEW_SOURCES}
+            view a {{ b |> flat_map |_, r| r }}
+            view b {{ a |> flat_map |_, r| r }}
+            view c {{ a |> flat_map |_, r| r }}"
+        );
+        let errs = errors(&src);
+        assert_eq!(errs.len(), 1, "one diagnostic for the cycle: {errs:?}");
+        assert!(
+            errs[0]
+                .message
+                .contains("view dependency cycle: `a` -> `b` -> `a`"),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_view_reading_itself_is_a_cycle() {
+        let src = format!("{VIEW_SOURCES} view a {{ a |> flat_map |_, r| r }}");
+        let errs = errors(&src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("view dependency cycle: `a` -> `a`")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_reader_of_a_failed_view_adds_no_diagnostic() {
+        let src = format!(
+            "{VIEW_SOURCES}
+            view broken {{ nowhere |> flat_map |_, r| r }}
+            view reader {{ broken |> flat_map |_, r| r }}"
+        );
+        let errs = errors(&src);
+        let reader = src.find("view reader").unwrap();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unknown source `nowhere`")),
+            "got: {errs:?}"
+        );
+        assert!(
+            errs.iter().all(|e| e.span.start < reader),
+            "nothing reported against the reader: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn only_table_positions_are_view_references() {
+        // `status` is a column selector in `by_status` and a `let` in
+        // `shadowed`, so neither reads the view `status`, and there is no
+        // cycle.
+        let src = format!(
+            "{VIEW_SOURCES}
+            view status {{ by_status |> flat_map |_, r| r }}
+            view by_status {{ machines |> promote status }}
+            view shadowed {{
+              let status = machines;
+              status |> flat_map |_, r| r
+            }}"
+        );
+        let program = resolve_program(&src).expect("should resolve");
+        let shadowed = program.views.iter().find(|v| v.name == "shadowed").unwrap();
+        assert_eq!(shadowed.sources, vec!["machines".to_string()]);
     }
 
     #[test]

@@ -203,12 +203,38 @@ cardinality.  A shape written with plain `attr` blocks demands `singletons`
 instead; `hottest` above could claim one, since its reducing `map_bags`
 leaves one row per machine.
 
+## Reading another view
+
+A view can be the source of another view.  Anywhere a pipeline names a store,
+it can name a view instead, so a derived table that several views need is
+written once and shared.
+
+```mensura
+{{#include ../examples/view-chain.mensura}}
+```
+
+`hottest_celsius` reads `celsius` as it would read a store, and sees
+everything the checker worked out about it: its columns, its cardinality,
+which values may be missing, and whether each bag is complete.  Nothing is
+forgotten at the view's name, so reading a view checks exactly as if its
+pipeline had been written in place with `let`.  Here `celsius` rewrites row
+for row and keeps each machine's bag of readings, so the reducing `map_bags`
+downstream still carries the completeness obligation from
+[Aggregating over a bag](#aggregating-over-a-bag), and the `assume` sits where
+the fold happens.
+
+A view cannot read itself, directly or through other views: a view is
+computed from its sources, so a cycle among views is an error.  The order in
+which views are declared does not matter.
+
 ## Creating a view
 
 `mensura run` materializes a view the same way it creates a store: it scans the
 sources, evaluates the pipeline, and writes the result to a table that can be
 queried like any other.  A view is recomputed from its sources on each run, so
-re-running an unchanged program leaves the same rows.
+re-running an unchanged program leaves the same rows.  When one view reads
+another, the one it reads is computed first, and once per run however many
+views read it.
 
 The chapters that follow look at the two reshaping operations most worth seeing
 on their own: [`flat_map`](flat-map.md), which rewrites, drops, and expands
