@@ -60,8 +60,9 @@ Each bracket has exactly one role:
   may also be a **spread** `...e`, which expands to the fields of the
   record `e`: `(.celsius = r.kelvin - 273.15, ...r)` computes one column
   and keeps the rest.  An explicit field overrides a spread field of the
-  same name wherever it is written, and keeps the spread's position; two
-  explicit fields, or two spreads, sharing a name are an error
+  same name wherever it is written; two explicit fields, or two spreads,
+  sharing a name are an error.  The order of a record's fields carries no
+  meaning, so `(.a = x, ...r)` and `(...r, .a = x)` are the same record
   (`docs/decisions/0043-record-spread.md`).  A `( )` is *either* a
   positional collection or all record items, never mixed.  A
   heterogeneous sequence `([ ... ])` is reserved for the future (ADR 0015).

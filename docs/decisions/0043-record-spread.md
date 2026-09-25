@@ -5,10 +5,19 @@
 Accepted.  Resolves issue #73.  Partly discharges the `mutate` and
 `select` bullet of the named-sugar deferral in
 `docs/language/07-pipelines.md`: the general construct underneath
-both lands here, and the named forms stay deferred.
+both lands here, and the named forms stay deferred.  Makes column
+order unobservable language-wide (decision 4), which reduces the
+storage column order of
+`docs/decisions/0019-attr-blocks-and-dropped-const-var.md` to a
+layout fact, settles the attribute-order caveat of
+`docs/decisions/0024-key-moves-as-a-true-inverse-pair.md`, and turns
+the flatten-then-sort rule of
+`docs/decisions/0032-compound-keys-flatten-to-dotted-columns.md` into
+the canonical order of a view output.
 
 Touches `mensura-syntax` (one token, the `record_body` production),
-`mensura-types` (the row and bag record checkers), `mensura-runtime`
+`mensura-types` (the row and bag record checkers, and schema
+unification at `if`, collections, and `union`), `mensura-runtime`
 (`eval`), and `docs/language/04-grammar.md`, `06-expressions.md`,
 `07-pipelines.md`, `09-typing-reference.md`.  No `formal/` work
 follows (decision 6).
@@ -62,6 +71,9 @@ is the ordinary record body
 (.celsius = r.kelvin - 273.15, .kelvin = r.kelvin, .machine = r.machine)
 ```
 
+(in any order: decision 4 makes the order of a record's fields
+unobservable).
+
 A record body still needs at least one item, and a `( )` is still
 either all positional or all record items: `(...r)` is a record,
 `(...r, x)` is a parse error.
@@ -102,25 +114,57 @@ what people reach for first.
   spread position the override takes.
 
 Positional last-wins, the JavaScript rule, is rejected: it makes
-reordering the items of a record silently change its meaning.
+reordering the items of a record silently change its meaning.  With
+column order unobservable (decision 4), reordering the items of a
+record changes nothing at all.
 
-### 4.  Column order: a spread expands in place
+### 4.  Column order is unobservable
 
-Column order is observable (the branches of an `if` and the items of
-an expanding collection must carry the same columns in the same
-order), so it gets a rule.  A spread contributes its operand's fields
-at its own position, in the operand's order, which for `r`, `k`, and
-`b` is the name order the whole-row form `r` already uses.  An
-overridden name keeps its **spread** position, not the explicit
-field's.  An explicit field that overrides nothing sits where it is
-written.  So `(...r)` is exactly `r`, and a mutate never reshuffles
-columns.
+A record, a row, and a table's schema are sets of named columns, and
+the order in which they are written carries no meaning anywhere in the
+language.  Two rows unify when they carry the same column names at
+the same domains, whatever order each was written in, so
 
-Two rows that carry the same columns in different orders are still a
-mismatch (`if c then (.a = x, ...r) else (...r, .a = y)` when `r` has
-no `a`); canonicalizing silently would make column order depend on
-which branch the checker read first.  The mismatch diagnostic says
-that only the order differs.
+```mensura
+if c then (.a = x, ...r) else (...r, .a = y)
+```
+
+is well typed, and `(.kelvin = f, ...r)` and `(...r, .kelvin = f)` are
+the same record.  This holds wherever two schemas meet: the branches of
+an `if`, the items of an expanding collection, and the two sides of a
+`union`.  The partition of a table's columns into index and attribute
+columns is semantic and stays; the order within each part is not.
+
+The formal model never had column order: a `Row` in
+`formal/Mensura/Core/Defs.lean` is a dependent function from column
+names to cells.  Order was an artifact of the checker and the
+evaluator, and it is the only reason a spread would need a position
+rule.  The alternatives each cost more than they buy:
+
+- **Order observable, with a spread expanding in place** (the earlier
+  draft of this decision: an overridden name keeps its spread position,
+  and rows in different orders are a mismatch).  Correct, but a
+  surface rule with no semantic content, and it makes reordering the
+  items of a record change its type.
+- **Order observable, with an override moving to the explicit field's
+  position.**  It loses the in-place mutate: a field neither first nor
+  last in `r` can no longer be replaced without listing every column,
+  and `if bad then (.v = fix, ...r) else r` becomes an order mismatch.
+- **Canonicalizing to the first branch's order.**  It makes column
+  order depend on which branch the checker read first.
+
+A concrete order still exists below the language, because a runtime
+row is positional and a storage table lays out its columns.  Each
+materialized table has one column list fixed by its schema, every
+reader addresses a column by name, and no rule reads the position.  A
+store keeps the declaration order of ADR 0019 (key columns, then
+attributes as declared), which is also the order it presents.  A view
+output, which has no single authoritative written order, uses the
+**canonical order**: key columns first, then attributes, each by
+flattened column name, the order the whole-row form `r` already uses
+(ADR 0032).  The evaluator places a record body's fields in the output
+table's order when it builds a row, rather than trusting the order in
+which they were written.
 
 ### 5.  Nesting: a spread forwards top-level fields whole
 
@@ -167,6 +211,20 @@ which covers `...k` as well.
 - A record literal's items are no longer all labeled, so every
   consumer of `ExprKind::Record` (the checker, the evaluator, the
   const-function lowering, the source collector) walks spread
-  operands too.  The override and ordering rules live in one function
+  operands too.  The override and collision rules live in one function
   (`mensura_types::record::elaborate`) that the checker and the
-  evaluator both call, so the two cannot disagree on column order.
+  evaluator both call, so the two cannot disagree on which fields a
+  body carries.
+- Schema comparison becomes set comparison at every meeting point: the
+  `if` branches, the items of an expanding collection, and `union`.
+  The order-only mismatch diagnostic of the earlier draft is gone,
+  because that mismatch no longer exists.
+- A view output's columns are presented in canonical order, not in
+  the order its record body was written.  This is the one visible
+  cost: a user who writes `(.celsius = ..., .kelvin = ...)` sees the
+  columns sorted by name.  A store keeps its declaration order.
+- An exact `shrink_key`/`extend_key` round trip now restores the schema
+  completely: the attribute-order difference ADR 0024 records is no
+  longer observable.
+- Runtime tests that seed or read view rows positionally follow the
+  canonical order.

@@ -654,14 +654,19 @@ same primitive**: there is no `filter` primitive (`filterRows_splitSafe` is
 derived), and a named `filter` may later be sugar for `if c then r else ()`.
 
 **Spread.**  A record item `...e`, with `e : Record`, elaborates to one
-labeled field `.f = e.f` per top-level field `f` of `e`, in `e`'s field
-order, at the spread's position; a unit-reference group forwards whole and
-re-flattens to its dotted columns as a bare `r` does.  An explicit field
-overrides a spread field of its name and takes the spread's position; two
-explicit fields, or two spreads, sharing a name are an error.  The rule
-above then applies to the elaborated body, so `(...r)` types exactly as `r`
-and a spread needs no lemma of its own (ADR 0043).  Rows that carry the
-same columns in different orders do not unify.
+labeled field `.f = e.f` per top-level field `f` of `e`; a unit-reference
+group forwards whole and re-flattens to its dotted columns as a bare `r`
+does.  An explicit field overrides a spread field of its name wherever it
+is written; two explicit fields, or two spreads, sharing a name are an
+error.  The rule above then applies to the elaborated body, so `(...r)`
+types exactly as `r` and a spread needs no lemma of its own (ADR 0043).
+
+**Column order.**  A row's columns are a set: two rows unify when they
+carry the same column names at the same domains, whatever order each was
+written in, at the branches of an `if`, the items of a collection, and the
+two sides of a `union` alike.  A view output presents its columns in
+canonical order (key columns, then attributes, each by flattened name);
+no rule reads a column's position (ADR 0043 decision 4).
 
 ### 6.2  `map_bags` (per-key whole-bag transform) -- Tier A
 
