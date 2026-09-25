@@ -659,14 +659,14 @@ identifiers, as the keyword-free lexer intends.
   `exposing` import refinement (`12-modules-and-imports.md`).
 - The pipeline operations (`flat_map`, `map_bags`, `promote`/`demote`,
   joins, `split`/`union`, `unpivot`/`pivot`, `window`, `closed`,
-  `latest`, `dense`, `completeness_check`) are
+  `last`, `dense`, `completeness_check`) are
   specified in `07-pipelines.md`; they are builtins applied through the
   expression grammar above (record literals, blocks, juxtaposition) and add no
   new grammar.
 - `view` declarations host a pipeline and are specified in
   `10-views.md` (the `view_decl` production above is their grammar).
   Transforms, which also host or feed pipelines, get their own section
-  here.  The streaming operations (`window`, `closed`, `latest`,
+  here.  The streaming operations (`window`, `closed`, `last`,
   ADR 0037; `dense`, ADR 0038) have landed as pipeline operations in the
   existing application grammar, adding no productions; their
   declaration-level half is the `lateness_block` above.  `dense`'s three

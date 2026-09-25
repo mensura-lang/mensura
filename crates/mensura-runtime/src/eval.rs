@@ -375,7 +375,7 @@ fn apply_op(
             expect_table(input)?,
             contracts,
         )?)),
-        "latest" => Ok(TableVal::Table(eval_latest(expect_table(input)?, args)?)),
+        "last" => Ok(TableVal::Table(eval_last(expect_table(input)?, args)?)),
         "dense" => Ok(TableVal::Table(eval_dense(
             env,
             contracts,
@@ -1154,9 +1154,9 @@ fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
 }
 
 // ---------------------------------------------------------------------------
-// latest
+// last
 
-/// `latest p` (ADR 0037 decision 7): keep, per fiber, the row with the
+/// `last p` (ADR 0037 decision 7): keep, per fiber, the row with the
 /// maximal point `p`.
 ///
 /// A reduction rather than a window, so it is fiber-to-row: one output row
@@ -1170,15 +1170,15 @@ fn eval_window(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
 /// `assume { arranged }` over data that had one, and the rule is the same
 /// one the rest of the ordered vocabulary follows.
 ///
-/// A `desc`-marked point (`latest (desc p)`) takes the argmin instead: one
+/// A `desc`-marked point (`last (desc p)`) takes the argmin instead: one
 /// comparison flip, which is the same operation over the dual order, and the
 /// tie rule is that same rule there (still the earlier row, `<<` where the
 /// ascending form is `>>`).  The direction is read off the syntax for the
 /// reason `key_is_descending` gives: an order marker must never reach a
 /// runtime value, let alone storage.
-fn eval_latest(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
+fn eval_last(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalError> {
     let [p_arg] = args else {
-        return internal("`latest` expects one point column");
+        return internal("`last` expects one point column");
     };
     let (inner, descending) = match &p_arg.kind {
         ExprKind::App(head, inner) if matches!(&head.kind, ExprKind::Name(n) if n == "desc") => {
@@ -1187,10 +1187,10 @@ fn eval_latest(input: SourceTable, args: &[&Expr]) -> Result<SourceTable, EvalEr
         _ => (*p_arg, false),
     };
     let ExprKind::Name(p) = &inner.kind else {
-        return internal("`latest` expects a column name");
+        return internal("`last` expects a column name");
     };
     let Some(at) = input.attr_position(p.as_str()) else {
-        return internal("`latest` on a column the checker did not find");
+        return internal("`last` on a column the checker did not find");
     };
 
     let nkeys = input.key_len();
@@ -3676,11 +3676,11 @@ mod tests {
         assert_eq!(window_starts(14, 15, 15), vec![0]);
     }
 
-    /// `latest p` keeps one row per fiber, the one with the maximal point
+    /// `last p` keeps one row per fiber, the one with the maximal point
     /// (ADR 0037 decision 7).  A reduction, so the output is one row per
     /// key rather than one per input row.
     #[test]
-    fn latest_keeps_the_maximal_point_row() {
+    fn last_keeps_the_maximal_point_row() {
         const HISTORY: &str = r#"
             unit Reading { machine_id: string  taken_at: instant }
             registry readings {
@@ -3698,7 +3698,7 @@ mod tests {
         let rows = eval_over(
             HISTORY,
             r#"view newest {
-                 readings |> demote taken_at |> assume { complete } |> latest taken_at
+                 readings |> demote taken_at |> assume { complete } |> last taken_at
                }"#,
             &[(
                 "readings",
@@ -3736,7 +3736,7 @@ mod tests {
             r#"view first_reading {
                  readings |> demote taken_at
                           |> assume { complete }
-                          |> latest (desc taken_at)
+                          |> last (desc taken_at)
                }"#,
             &[(
                 "readings",

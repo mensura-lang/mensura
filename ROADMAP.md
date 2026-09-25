@@ -130,8 +130,8 @@ mensura/
   stage, which converts that bounded contract into the absolute
   completeness a reducer demands and buys finality
   (`closedWindow_stable`); completeness demanded per combiner rather than
-  per shape under `scan` (decision 5); `latest` as an attribute-only
-  reduction (decision 7); and `dense`, which completes the window grid
+  per shape under `scan` (decision 5); `last` (so named by ADR 0044) as
+  an attribute-only reduction (decision 7); and `dense`, which completes the window grid
   from a given population and per-entity lower bound, fills from the
   combiner's identity where one exists and pushes the rest onto the value
   axis, and establishes the completeness that survives `demote w`
@@ -291,7 +291,7 @@ Output: windowed, incrementally refreshed views over device streams.
 - Design docs first: streaming windows (done: ADRs 0036-0041) and refresh
   (still to write).
 - **The window half has landed.**  One `window` operation rather than a
-  sliding/tumbling pair (tumbling is `stride == size`), `latest`,
+  sliding/tumbling pair (tumbling is `stride == size`), `last`,
   window-closedness against a per-grain effective watermark, and `dense`
   over the window grid, so an interval in which an entity reported nothing
   is a row rather than an absence.  The ordered primitives these rest on

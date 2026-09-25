@@ -1,4 +1,4 @@
-// Accepted: `latest (desc p)` is `latest p` at the dual order, so it keeps
+// Accepted: `last (desc p)` is `last p` at the dual order, so it keeps
 // the row with the *minimal* point, the oldest row per fiber (ADR 0037
 // decision 7, direction settled).
 //
@@ -6,8 +6,9 @@
 // `accept/scan_with_a_descending_key.mensura`), reused rather than a second
 // name minted: direction is a value-level marker whose whole job is this, and
 // an `earliest` per point-reduction would double the vocabulary as more of
-// them land.  What it costs is the reading, since "the latest by descending
-// `p`" is the earliest; what it buys is one marker that generalizes.
+// them land.  The name is relative to the arrangement, which is exactly what
+// the marker reverses, so the spelling reads as what it does: the last row
+// of the descending arrangement is the oldest (ADR 0044).
 //
 // Nothing in the demands moves under it.  The dual of a total order is total
 // and the dual of an injective key is injective, so totality and tie-freedom
@@ -16,10 +17,10 @@
 // `getLast (arrange p fiber)`, which is `Mensura.IsArrangement.unique` at the
 // reversed order rather than a new theorem.  The completeness claim is the one
 // the coarsening forced, exactly as in the ascending spelling
-// (`reject/latest_on_a_key_column.mensura` works that through).
+// (`reject/last_on_a_key_column.mensura` works that through).
 //
-// The parentheses are load-bearing: `latest desc taken_at` flattens to two
-// arguments, which is `reject/latest_desc_needs_parens.mensura`.
+// The parentheses are load-bearing: `last desc taken_at` flattens to two
+// arguments, which is `reject/last_desc_needs_parens.mensura`.
 unit Reading {
   machine_id: string
   taken_at:   instant
@@ -35,11 +36,11 @@ registry readings {
 view newest_reading {
   readings |> demote taken_at
            |> assume { complete }
-           |> latest taken_at
+           |> last taken_at
 }
 
 view first_reading {
   readings |> demote taken_at
            |> assume { complete }
-           |> latest (desc taken_at)
+           |> last (desc taken_at)
 }

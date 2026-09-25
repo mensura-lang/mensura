@@ -451,6 +451,11 @@ land, while the marker generalizes to all of them at once.
 `earliest` stays available later as sugar over the marker, if the
 reading cost proves real in use.
 
+*Renamed (owner, 2026-09-25): the operation is now spelled `last`
+(`docs/decisions/0044-last-the-arrangement-relative-reduction.md`, the
+translation reference).*  This ADR keeps `latest` as written; read
+`latest p` as `last p` and `latest (desc p)` as `last (desc p)`.
+
 ### 8.  Grammar and formal gates
 
 **Grammar.**  The three operations add zero productions: `window`,

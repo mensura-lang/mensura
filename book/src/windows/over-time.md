@@ -109,21 +109,24 @@ before it can fill it in.
 
 ## The newest row per group
 
-One reduction belongs here rather than with the folds, because it is about
-time: `latest p` keeps, per bag, the row whose point `p` is maximal.
+"The newest reading per machine" is a question about time, but the operation
+that answers it is not: `last p` arranges each bag by its point `p` and keeps
+the last row, the one whose `p` is maximal.  The point may be any orderable
+column, so `last score` keeps the highest-scoring row just as `last taken_at`
+keeps the newest one.
 
 ```mensura
-{{#include ../examples/latest-newest.mensura}}
+{{#include ../examples/last-newest.mensura}}
 ```
 
 It is a reduction, fiber to row, so it demands both facts the ordered
-vocabulary demands: the order must be unambiguous (a tie has no single
-argmax), and the bag must be whole (the latest of some of the rows is not the
-latest).  Here the first is free, because the time is part of the reading's
+vocabulary demands: the order must be unambiguous (a tie has no single last
+row), and the bag must be whole (the last of some of the rows is not the
+last).  Here the first is free, because the time is part of the reading's
 identity, and the second is the claim the coarsening forced, as in
 [Registries](../modelling/registries.md).
 
-**`p` must already be an attribute.**  Writing `readings |> latest taken_at`
+**`p` must already be an attribute.**  Writing `readings |> last taken_at`
 with the time still in the key is rejected, and the diagnostic names the fix:
 write the coarsening out, `demote taken_at`, and the completeness claim then
 has somewhere to stand.  Fusing the two would leave that demand with no place
@@ -138,14 +141,15 @@ operation with the point marked `desc`, the marker a scan's order key already
 takes:
 
 ```mensura
-{{#include ../examples/latest-oldest.mensura}}
+{{#include ../examples/last-oldest.mensura}}
 ```
 
-Reversing an order costs nothing: the dual of an unambiguous order is
-unambiguous, so `latest (desc p)` demands exactly what `latest p` demands and
-discharges it the same way.  The parentheses matter, though.  Written without
-them, the marker reads as a second argument rather than as an annotation on
-the point, and the diagnostic says so.
+Arranged by descending time, the last row is the oldest, so the spelling says
+what it does.  Reversing an order costs nothing: the dual of an unambiguous
+order is unambiguous, so `last (desc p)` demands exactly what `last p` demands
+and discharges it the same way.  The parentheses matter, though.  Written
+without them, the marker reads as a second argument rather than as an
+annotation on the point, and the diagnostic says so.
 
 There is no `earliest`.  Direction is a marker, one word that works on every
 ordered operation, and the language prefers that to a second name for each of

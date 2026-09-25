@@ -498,14 +498,17 @@ ADR 0037 rather than left to each program to improvise with an `assume`.
 Until it lands, a provisional aggregate is spelled with a visible claim
 and read as provisional by the human, not by the checker.
 
-### `latest` - the newest row per group
+### `last` - the last row per group
 
 ```
-vibrations |> assume { arranged } |> latest sampled_at
+vibrations |> assume { arranged } |> last sampled_at
 ```
 
-`latest p` keeps, per fiber, the row whose point `p` is maximal
-(ADR 0037 decision 7).  It is a **reduction**, fiber-to-row, so the result
+`last p` keeps, per fiber, the row whose point `p` is maximal: the last
+row of the fiber arranged by `p` (ADR 0037 decision 7).  The name is
+relative to the arrangement, not to time (ADR 0044): the point may be any
+orderable column, so `last taken_at` is the newest row and `last score`
+the highest-scoring one.  It is a **reduction**, fiber-to-row, so the result
 is `singletons` at the current key with `p` an ordinary total attribute,
 and it sits on the reducing side of the line: it demands both facts the
 ordered vocabulary demands, with no special case.
@@ -513,7 +516,7 @@ ordered vocabulary demands, with no special case.
 - **Tie-freedom** of `p`, because the argmax of a tied key is not
   determined.  Discharged from a grading where the shape allows it, or
   claimed with `assume { arranged }`, exactly as for a scan.
-- **Completeness** at the current key, because a partial bag's "latest" is
+- **Completeness** at the current key, because a partial bag's last row is
   silently wrong, the same demand a reducing `map_bags` makes.
 
 **`p` must already be an attribute.**  A key-borne point is rejected, with
@@ -521,7 +524,7 @@ the fix named: write the coarsening out, and the claim lands where it
 bites.
 
 ```mensura
-readings |> demote taken_at |> assume { complete } |> latest taken_at
+readings |> demote taken_at |> assume { complete } |> last taken_at
 ```
 
 Fusing the `demote` into the operation would leave the completeness demand
@@ -538,20 +541,21 @@ needed.
 
 **The oldest row is the same operation at the dual order.**  The point
 takes the `desc` marker, exactly as a scan's order key does, so
-`latest (desc p)` keeps the row whose point is *minimal*:
+`last (desc p)` keeps the row whose point is *minimal*:
 
 ```mensura
-readings |> demote taken_at |> assume { complete } |> latest (desc taken_at)
+readings |> demote taken_at |> assume { complete } |> last (desc taken_at)
 ```
 
 Nothing in the demands moves, because the dual of a total order is total
 and the dual of an injective key is injective: totality and tie-freedom
 discharge by the same rules, and ties resolve the same way at the dual
 order (the earlier row).  The parentheses are load-bearing:
-`latest desc taken_at` is two arguments, not a marked one.  There is no
+`last desc taken_at` is two arguments, not a marked one.  There is no
 `earliest`, since direction is already a marker and a dual name per
 point-reduction would double the vocabulary (ADR 0037 decision 7,
-direction settled).
+direction settled).  None is missed: the last row of the descending
+arrangement is the oldest, so the marked spelling reads as what it does.
 
 ### `dense` - complete the window grid
 
@@ -902,5 +906,5 @@ cost of dropping disjointness.  It type-checks.
 - **Hosting and streaming.**  `view` declarations that host pipelines are
   specified in `10-views.md`, and `registry` declarations in
   `13-registries.md`.  The remaining hosting sites (`transform`, endpoints)
-  and the streaming operations (`sliding_window`, `latest`, reactive `on`
+  and the streaming operations (`sliding_window`, `last`, reactive `on`
   blocks) extend this grammar and get their own sections.

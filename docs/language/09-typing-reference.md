@@ -400,7 +400,7 @@ express.  A direction marker rather than a comparator is forced by the same
 epistemics as the combiner table: a comparator's obligation is a law (a strict
 total order), unverifiable on a lambda.  In `formal/` it is Mathlib's
 `OrderDual`, so the arrangement absorbs it at no proof cost.  Its consumers
-are the ordered primitives' order keys and `latest`'s point (section 6.9).
+are the ordered primitives' order keys and `last`'s point (section 6.9).
 
 **A scan's result is a bag, so it is the window shape**, one output row per
 input row.  Its completeness demand is nonetheless per **combiner row**, not
@@ -924,11 +924,11 @@ maintain incrementally.  Note what the fact says: the *arrival*
 completeness of ADR 0033 transported to the window key, not a claim that
 the device was working.
 
-### 6.9  `latest` (the newest row per group) -- Tier A
+### 6.9  `last` (the last row per group) -- Tier A
 
 ```
-latest : p -> Table -> Table
-latest : desc p -> Table -> Table
+last : p -> Table -> Table
+last : desc p -> Table -> Table
 ```
 
 Keeps, per fiber, the row with the maximal point `p`, which is
@@ -941,22 +941,23 @@ being its whole fiber.
 Demands both ordered-reduction facts: **tie-freedom** of `p` (a grading,
 or `assume { arranged }`, exactly as a scan, since the argmax of a tied
 key is not determined) and **completeness** at the current key (ADR 0023,
-since a partial bag's latest is silently wrong), the latter discharged
+since a partial bag's last row is silently wrong), the latter discharged
 trivially on a `singletons` input.
 
 `p` must be an attribute and orderable and total.  A **key** column is
 rejected: fusing the coarsening into the operation would leave the
 completeness demand undischargeable, so the coarsening is written out
-(`demote p`, then the claim, then `latest p`).  Tier A.
+(`demote p`, then the claim, then `last p`).  Tier A.
 
-The point takes the `desc` marker (section 5.4), so `latest (desc p)` is
+The point takes the `desc` marker (section 5.4), so `last (desc p)` is
 the argmin: `getLast (arrange p fiber)` at the dual order, which is
 `IsArrangement.unique` instantiated at `ωᵒᵈ` rather than a new theorem.
 The obligations are unchanged, the dual of a total order being total and
 the dual of an injective key injective, and ties resolve to the earlier
 row either way.  The marker must be parenthesized, an unparenthesized
-`latest desc p` being two arguments.  No `earliest` exists (ADR 0037
-decision 7, direction settled).
+`last desc p` being two arguments.  No `earliest` exists (ADR 0037
+decision 7, direction settled).  The name is relative to the arrangement,
+which is what the marker reverses, rather than to time (ADR 0044).
 
 ### 6.10  `dense` (complete the window grid) -- Tier A
 
@@ -1021,7 +1022,7 @@ disjointness fact through a Tier A pipeline intact (section 9).
 
 - **Tier A** (split-safe): `flat_map`, `map_bags`, `promote`, `lookup`,
   `lookup_total`, `split`, `union`, `unpivot`, `window`, `closed`,
-  `latest`, `dense`.  They compose freely and carry cardinality, completeness, and
+  `last`, `dense`.  They compose freely and carry cardinality, completeness, and
   lineage facts end to end.
 - **Tier B** (split-breaking): `demote` and `pivot`.  Each drops the
   lineage fact, and that is the whole content of the Tier: `demote`
@@ -1191,7 +1192,7 @@ the full key.
 | `pivot` | name leaves key, variants spread | demands `singletons` | per `exhaustive` | not consumed | dropped | B | `pivot_not_splitInvariant`, `pivot_total_of_exhaustive` |
 | `window` | `w` joins the key | pres.; each grading gains `w` | pres. | pres. | carried | A | `window_splitSafe`, `window_functional` |
 | `closed` | unchanged (rows dropped) | pres. | pres. | **establishes** | carried | A | `closedWindow_stable` |
-| `latest` | `p` becomes an attribute | `singletons` | `p` total | re-established; **demanded** | carried | A | `IsArrangement.unique`, `fiberCompleteWrt_of_functional` |
+| `last` | `p` becomes an attribute | `singletons` | `p` total | re-established; **demanded** | carried | A | `IsArrangement.unique`, `fiberCompleteWrt_of_functional` |
 | `dense` | unchanged (rows added) | pres. | no-identity columns -> **optional** | **establishes**, plus rectangularity | carried | A | `dense_fiberMap_foldFiber`, `dense_idem`, `dense_stable_of_closed` |
 
 The `demote` row's completeness arm reads the rectangularity fact as its
@@ -1470,7 +1471,7 @@ specified ahead of the milestone that needs it (`ROADMAP.md`, "specs first").
   presentation only.  Key moves (`promote`/`demote`) and reshape selectors
   naming a flattened component or a unit-reference group are deferred
   (ADR 0032).
-- **Streaming.**  `window`, `closed`, `latest`, and `dense` have landed
+- **Streaming.**  `window`, `closed`, `last`, and `dense` have landed
   (sections 6.7 to 6.10).  Per-window sampling inference and `on_change`
   refresh extend these rules (M5), and with the latter the honest exit for
   the frontier window: a reduction over the *open* windows that carries the
