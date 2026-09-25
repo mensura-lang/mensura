@@ -43,12 +43,30 @@ view weighted {
   programs |> flat_map |k, r| (.weight = to_real r.credits * 1.5, ...r)
 }
 
-// Replace `credits` in place: the override keeps the spread's position, so
-// both branches carry the same columns in the same order.
+// Replace `credits` in place: both branches carry the same columns.
 view doubled {
   programs |> flat_map |k, r| if r.credits > 4
                               then (.credits = r.credits * 2, ...r)
                               else (...r)
+}
+
+// Column order carries no meaning (ADR 0043 decision 4): the branches write
+// `hot` on either side of the spread and still carry one schema.
+view flagged {
+  programs |> flat_map |k, r| if r.credits > 4
+                              then (.hot = true, ...r)
+                              else (...r, .hot = false)
+}
+
+// A store and a view that carry the same columns in different orders
+// unite: `name` is declared first in `programs`, and sorts after
+// `coordinator` and `credits` in the view.
+view renamed {
+  programs |> flat_map |k, r| (.name = r.name, ...r)
+}
+
+view both {
+  (programs, renamed) |> union
 }
 
 // The window value beside every original column of the fiber.

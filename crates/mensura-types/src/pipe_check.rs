@@ -761,8 +761,9 @@ fn flatten_row_fields(prefix: String, fields: BTreeMap<String, Ty>, out: &mut Ve
 }
 
 /// Unify two row schemas (the branches of an `if` or the items of an expanding
-/// collection): same columns in the same order and domains; a column optional in
-/// either side is optional in the result. A mismatch is a located error.
+/// collection): the same columns at the same domains, in any order (ADR 0043
+/// decision 4); a column optional in either side is optional in the result,
+/// which lists the columns in `a`'s order. A mismatch is a located error.
 fn unify_row_schema(a: &RowSchema, b: &RowSchema, span: Span) -> Result<RowSchema, Vec<TypeError>> {
     if a.len() != b.len() {
         return Err(error(
@@ -770,29 +771,15 @@ fn unify_row_schema(a: &RowSchema, b: &RowSchema, span: Span) -> Result<RowSchem
             span,
         ));
     }
-    // The same columns in another order is its own mistake, and the one a
-    // spread makes easy (`(.a = x, ...r)` against `(...r, .a = y)`), so it
-    // names the fix rather than a bare mismatch (ADR 0043 decision 4).
-    let mut sorted_a: Vec<&str> = a.iter().map(|c| c.name.as_str()).collect();
-    let mut sorted_b: Vec<&str> = b.iter().map(|c| c.name.as_str()).collect();
-    sorted_a.sort_unstable();
-    sorted_b.sort_unstable();
-    if sorted_a == sorted_b && a.iter().zip(b).any(|(ca, cb)| ca.name != cb.name) {
-        return Err(error(
-            "a `flat_map` collection's rows carry the same columns in a different \
-             order; write the fields in one order (a spread `...r` places its \
-             fields where it is written)",
-            span,
-        ));
-    }
     let mut merged = Vec::with_capacity(a.len());
-    for (ca, cb) in a.iter().zip(b) {
-        if ca.name != cb.name || ca.domain != cb.domain {
+    for ca in a {
+        let cb = b.iter().find(|cb| cb.name == ca.name);
+        let Some(cb) = cb.filter(|cb| cb.domain == ca.domain) else {
             return Err(error(
                 "a `flat_map` collection's rows must share one schema (a column differs)",
                 span,
             ));
-        }
+        };
         let opt = if ca.opt == Optionality::Optional || cb.opt == Optionality::Optional {
             Optionality::Optional
         } else {
@@ -1110,7 +1097,8 @@ fn op_split(
 }
 
 /// `union` (section 6.5, Tier A): the union of a pair of tables of the same
-/// schema. Cardinality is `Singletons` iff both inputs are and their lineages
+/// schema, the same columns in any order (ADR 0043 decision 4); the result
+/// lists them in the first table's order. Cardinality is `Singletons` iff both inputs are and their lineages
 /// are disjoint, else `Bag`; completeness holds iff both inputs are complete;
 /// `exhaustive` holds where both inputs carry it (a union of full fibers is
 /// full, `bind_exhaustive`); the lineage tag-sets union.
@@ -1122,7 +1110,7 @@ fn op_union(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Typ
         PipeTy::Pair(a, b) => (a, b),
         PipeTy::Table(_) => return Err(error("`union` expects a pair of tables", span)),
     };
-    if a.content != b.content {
+    if !a.content.same_columns(&b.content) {
         return Err(error(
             "`union` requires both tables to have the same schema",
             span,
@@ -3062,10 +3050,10 @@ mod tests {
     }
 
     #[test]
-    fn a_spread_is_the_whole_row_in_place() {
+    fn a_spread_is_the_whole_row() {
         let s = sample_sources();
-        // `(...r)` is exactly `r`, and a computed field sits where it is
-        // written beside the spread's columns (ADR 0043 decision 4).
+        // `(...r)` is exactly `r`, and a computed field joins the spread's
+        // columns in canonical order, by name (ADR 0043 decision 4).
         let whole = table_of(pipe_ty(&s, "readings |> flat_map |k, r| r").expect("ok"));
         let spread = table_of(pipe_ty(&s, "readings |> flat_map |k, r| (...r)").expect("ok"));
         assert_eq!(column_names(&whole), column_names(&spread));
@@ -3079,11 +3067,12 @@ mod tests {
         );
         let mut expected = vec!["hot"];
         expected.extend(column_names(&whole));
+        expected.sort_unstable();
         assert_eq!(column_names(&t), expected);
     }
 
     #[test]
-    fn an_override_keeps_the_spread_position() {
+    fn an_override_is_the_same_record_wherever_it_is_written() {
         let s = sample_sources();
         let whole = table_of(pipe_ty(&s, "readings |> flat_map |k, r| r").expect("ok"));
         for body in [
@@ -3140,15 +3129,40 @@ mod tests {
     }
 
     #[test]
-    fn rows_in_another_order_name_the_order() {
+    fn rows_written_in_another_order_unify() {
+        // Column order carries no meaning (ADR 0043 decision 4).
         let s = sample_sources();
+        let t = table_of(
+            pipe_ty(
+                &s,
+                "readings |> flat_map |k, r| if r.flag then (.a = 1, ...r) else (...r, .a = 2)",
+            )
+            .expect("one schema"),
+        );
+        assert!(column_names(&t).contains(&"a"));
+        assert!(column_names(&t).is_sorted());
+    }
+
+    #[test]
+    fn a_union_matches_columns_by_name() {
+        // The store lists its attributes as declared, the spread row by name;
+        // the union takes them as the same schema (ADR 0043 decision 4).
+        let s = sample_sources();
+        let store = table_of(pipe_ty(&s, "readings").expect("ok"));
+        let spread = table_of(pipe_ty(&s, "readings |> flat_map |k, r| (...r)").expect("ok"));
+        assert_ne!(column_names(&store), column_names(&spread));
+        pipe_ty(
+            &s,
+            "(readings, readings |> flat_map |k, r| (...r)) |> union",
+        )
+        .expect("the same columns in another order");
         let errs = pipe_ty(
             &s,
-            "readings |> flat_map |k, r| if r.flag then (.a = 1, ...r) else (...r, .a = 2)",
+            "(readings, readings |> flat_map |k, r| (.extra = 1, ...r)) |> union",
         )
-        .expect_err("order differs");
+        .expect_err("a column more");
         assert!(
-            errs[0].message.contains("different order"),
+            errs[0].message.contains("same schema"),
             "{}",
             errs[0].message
         );
@@ -3168,7 +3182,7 @@ mod tests {
             .expect("ok"),
         );
         assert_eq!(t.qualifiers.cardinality, Cardinality::Bag);
-        assert_eq!(column_names(&t)[0], "prev");
+        assert!(column_names(&t).contains(&"prev"));
         assert!(column_names(&t).contains(&"machine"));
         // Beside an aggregate it is the rejected mix, and the error says why.
         let errs = pipe_ty(&s, "readings |> map_bags |k, b| (.n = #b, ...b)").expect_err("mix");

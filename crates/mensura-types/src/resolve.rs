@@ -470,7 +470,11 @@ pub fn resolve(program: &Program) -> Result<ResolvedProgram, Vec<ResolveError>> 
                 continue;
             }
             match type_view(&sources, &v.body) {
-                Ok(output) => {
+                Ok(mut output) => {
+                    // A view output has no single written column order, so
+                    // it presents the canonical one, to its readers and to
+                    // storage alike (ADR 0043 decision 4).
+                    output.content = output.content.canonical();
                     // Check the optional `: Shape` conformance clause against
                     // the view's computed output content (key + named
                     // columns by type/totality) and cardinality (10-views.md,

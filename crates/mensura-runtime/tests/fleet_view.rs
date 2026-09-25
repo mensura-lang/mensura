@@ -381,8 +381,11 @@ fn reading_trend_scans_each_machine_in_key_order() {
     let rows = db.scan(&view.shape()).unwrap();
     assert_eq!(rows.len(), 4, "one output row per input reading");
 
-    // Columns, in the record's declaration order: machine_id, running_peak,
-    // previous, next.
+    // Columns, in canonical order (ADR 0043 decision 4): machine_id, next,
+    // previous, running_peak.
+    const NEXT: usize = 1;
+    const PREVIOUS: usize = 2;
+    const PEAK: usize = 3;
     // `m1` at 2025-01-01 is the earlier reading (300.0) even though it was
     // inserted second, so it is the one whose `previous` is missing and whose
     // running peak is its own value.
@@ -393,20 +396,20 @@ fn reading_trend_scans_each_machine_in_key_order() {
     assert_eq!(m1.len(), 2);
     let earlier = m1
         .iter()
-        .find(|r| r[1] == Value::Real(300.0))
+        .find(|r| r[PEAK] == Value::Real(300.0))
         .expect("the earlier reading's running peak is its own value");
     assert_eq!(
-        earlier[2],
+        earlier[PREVIOUS],
         Value::Missing,
         "the first row under the order has no predecessor: `lag` is a \
          `prescan` at keep-right, which has no identity"
     );
     let later = m1
         .iter()
-        .find(|r| r[1] == Value::Real(302.5))
+        .find(|r| r[PEAK] == Value::Real(302.5))
         .expect("the later reading's running peak is the group max so far");
     assert_eq!(
-        later[2],
+        later[PREVIOUS],
         Value::Real(300.0),
         "the later row's predecessor is the earlier one *under the key*, not \
          under the insertion order"
@@ -414,8 +417,8 @@ fn reading_trend_scans_each_machine_in_key_order() {
     // `lead` is the mirror: it is `lag` at the dual key, so the *last* row
     // under the order is the missing one, not the first.  That symmetry is not
     // coded anywhere; it falls out of `lead` reusing `prescan` at `desc`.
-    assert_eq!(earlier[3], Value::Real(302.5));
-    assert_eq!(later[3], Value::Missing);
+    assert_eq!(earlier[NEXT], Value::Real(302.5));
+    assert_eq!(later[NEXT], Value::Missing);
 
     // A single-reading machine: its only row is also its first, so `previous`
     // is missing and the running peak is its own value.
@@ -423,11 +426,11 @@ fn reading_trend_scans_each_machine_in_key_order() {
         .iter()
         .find(|r| r[0] == Value::String("m3".into()))
         .expect("m3 has a reading");
-    assert_eq!(m3[1], Value::Real(371.5));
+    assert_eq!(m3[PEAK], Value::Real(371.5));
     // Its only row is both the first and the last under the order, so both
     // neighbours are absent.
-    assert_eq!(m3[2], Value::Missing);
-    assert_eq!(m3[3], Value::Missing);
+    assert_eq!(m3[PREVIOUS], Value::Missing);
+    assert_eq!(m3[NEXT], Value::Missing);
 }
 
 #[test]

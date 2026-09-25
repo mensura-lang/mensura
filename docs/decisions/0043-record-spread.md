@@ -111,7 +111,7 @@ what people reach for first.
   unchecked before the spread and is closed with it.)
 - Two spreads that share a field name are an error, even when an
   explicit field overrides that name, so no reader has to ask which
-  spread position the override takes.
+  spread the override replaces.
 
 Positional last-wins, the JavaScript rule, is rejected: it makes
 reordering the items of a record silently change its meaning.  With

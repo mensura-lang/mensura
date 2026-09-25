@@ -127,6 +127,54 @@ impl SourceTable {
     fn attr_position(&self, name: &str) -> Option<usize> {
         self.attrs.iter().position(|c| c.name == name)
     }
+
+    /// The same table in canonical column order: key columns, then
+    /// attributes, each by name, with every row permuted to match (ADR 0043
+    /// decision 4).  The order a view output presents, mirroring the
+    /// checker's `Content::canonical`.
+    fn canonical(mut self) -> SourceTable {
+        let nkeys = self.key.len();
+        let mut key: Vec<usize> = (0..nkeys).collect();
+        key.sort_by(|&a, &b| self.key[a].name.cmp(&self.key[b].name));
+        let mut attrs: Vec<usize> = (0..self.attrs.len()).collect();
+        attrs.sort_by(|&a, &b| self.attrs[a].name.cmp(&self.attrs[b].name));
+        let order: Vec<usize> = key
+            .iter()
+            .copied()
+            .chain(attrs.iter().map(|&a| nkeys + a))
+            .collect();
+        self.rows = self
+            .rows
+            .into_iter()
+            .map(|row| order.iter().map(|&p| row[p].clone()).collect())
+            .collect();
+        self.key = key.iter().map(|&a| self.key[a].clone()).collect();
+        self.attrs = attrs.iter().map(|&a| self.attrs[a].clone()).collect();
+        self
+    }
+
+    /// The rows permuted into the order of `key`, then `attrs`, for a table
+    /// that carries the same columns in another order.
+    fn rows_in_order(&self, key: &[Col], attrs: &[Col]) -> Result<Vec<Row>, EvalError> {
+        let own: Vec<&str> = self
+            .key
+            .iter()
+            .chain(&self.attrs)
+            .map(|c| c.name.as_str())
+            .collect();
+        let mut order = Vec::with_capacity(own.len());
+        for c in key.iter().chain(attrs) {
+            match own.iter().position(|n| *n == c.name) {
+                Some(p) => order.push(p),
+                None => return internal(format!("a table has no column `{}`", c.name)),
+            }
+        }
+        Ok(self
+            .rows
+            .iter()
+            .map(|row| order.iter().map(|&p| row[p].clone()).collect())
+            .collect())
+    }
 }
 
 /// A pipeline value: a single table, or the pair a `split` yields and a
@@ -217,7 +265,7 @@ fn eval_view_table(
     let Some(table) = result else {
         return internal("view body without a trailing table expression");
     };
-    expect_table(table)
+    Ok(expect_table(table)?.canonical())
 }
 
 /// Reorder a table's rows into the plan's output column order.  The checker
@@ -632,19 +680,22 @@ fn sorted_cols(cols: &[Col]) -> Vec<Col> {
     out
 }
 
-/// Unify two column lists: the names must agree (the checker enforced it);
-/// a domain survives only where both sides agree on it.
+/// Unify two column lists: the names must agree, in any order (the checker
+/// enforced it, ADR 0043 decision 4); the result is in `a`'s order, and a
+/// domain survives only where both sides agree on it.
 fn unify_cols(a: Vec<Col>, b: Vec<Col>) -> Result<Vec<Col>, EvalError> {
-    if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| x.name != y.name) {
-        return internal("`flat_map` rows with differing schemas");
+    if a.len() != b.len() {
+        return internal("tables or rows with differing schemas");
     }
-    Ok(a.into_iter()
-        .zip(b)
-        .map(|(x, y)| {
-            let ty = if x.ty == y.ty { x.ty } else { None };
-            Col { name: x.name, ty }
-        })
-        .collect())
+    let mut out = Vec::with_capacity(a.len());
+    for x in a {
+        let Some(y) = b.iter().find(|y| y.name == x.name) else {
+            return internal("tables or rows with differing schemas");
+        };
+        let ty = if x.ty == y.ty { x.ty } else { None };
+        out.push(Col { name: x.name, ty });
+    }
+    Ok(out)
 }
 
 /// The statically known domain of a scalar expression: a copied column keeps
@@ -701,8 +752,9 @@ fn eval_rows(scope: &Scope, body: &Expr) -> Result<Vec<NamedRow>, EvalError> {
     }
 }
 
-/// Evaluate one value row: a record literal in field order, or a record
-/// value (for example the row parameter `r`) in its own field order.
+/// Evaluate one value row: a record literal or a record value (for example
+/// the row parameter `r`), in canonical order either way (ADR 0043
+/// decision 4).
 fn eval_row(scope: &Scope, expr: &Expr) -> Result<NamedRow, EvalError> {
     match &expr.kind {
         ExprKind::Record(items) => {
@@ -1520,10 +1572,12 @@ fn eval_bind(input: TableVal) -> Result<SourceTable, EvalError> {
     let TableVal::Pair(a, b) = input else {
         return internal("`union` expects a pair of tables");
     };
-    let key = unify_cols(a.key, b.key)?;
-    let attrs = unify_cols(a.attrs, b.attrs)?;
+    // The two sides may list the same columns in different orders (ADR 0043
+    // decision 4): the result takes `a`'s, and `b`'s rows follow it.
+    let key = unify_cols(a.key, b.key.clone())?;
+    let attrs = unify_cols(a.attrs, b.attrs.clone())?;
     let mut rows = a.rows;
-    rows.extend(b.rows);
+    rows.extend(b.rows_in_order(&key, &attrs)?);
     Ok(SourceTable {
         key,
         attrs,
@@ -2635,11 +2689,11 @@ mod tests {
     }
 
     #[test]
-    fn a_spread_keeps_the_rest_and_an_override_stays_in_place() {
-        // ADR 0043: `...r` expands to the row's fields in the whole-row
-        // order (hours, last_service, status); the explicit `hours` takes
-        // the spread's position although it is written first, and `twice`
-        // sits where it is written.
+    fn a_spread_keeps_the_rest_and_an_override_replaces_its_column() {
+        // ADR 0043: `...r` expands to the row's fields, and the explicit
+        // `hours` replaces the spread's.  Column order carries no meaning
+        // (decision 4), so the view presents the canonical one: hours,
+        // last_service, status, twice.
         let rows = eval(
             r#"view mutated {
                  machines |> flat_map |_, r| (.twice = r.hours * 2, .hours = r.hours + 1, ...r)
@@ -2650,10 +2704,10 @@ mod tests {
             rows,
             vec![vec![
                 Value::String("m1".into()),
-                Value::Int(40),
                 Value::Int(21),
                 Value::Missing,
                 Value::Enum("degraded".into()),
+                Value::Int(40),
             ]]
         );
         // Over no rows the output columns still derive, from the input's.
@@ -2668,8 +2722,8 @@ mod tests {
     fn a_spread_fiber_keeps_every_column_beside_a_window_value() {
         // `...b` is one bag per column, zipped with the window value into
         // one row per input row (ADR 0043 decision 2).
-        // The overridden `status` keeps its spread position, after `hours`
-        // and `last_service`.
+        // The overridden `status` replaces the spread's, and the columns
+        // come out in canonical order: hours, last_service, status.
         let rows = eval(
             r#"view flagged {
                  machines |> map_bags |_, b| (.status = map (|s| s == "degraded") b.status, ...b)
@@ -2699,9 +2753,68 @@ mod tests {
     }
 
     #[test]
+    fn a_union_matches_columns_by_name() {
+        // ADR 0043 decision 4: the store lists (status, hours, last_service)
+        // and the spread row (hours, last_service, status), and each value
+        // still lands in its own column.
+        let rows = eval(
+            r#"view both {
+                 let later = machines |> flat_map |_, r| (.hours = r.hours + 1, ...r);
+                 (machines, later) |> union
+               }"#,
+            vec![machine("m1", "degraded", 20, None)],
+        );
+        let m1 = vec![
+            Value::String("m1".into()),
+            Value::Int(20),
+            Value::Missing,
+            Value::Enum("degraded".into()),
+        ];
+        let mut later = m1.clone();
+        later[1] = Value::Int(21);
+        assert_eq!(rows, vec![m1, later]);
+    }
+
+    #[test]
+    fn branches_written_in_different_orders_agree() {
+        let rows = eval(
+            r#"view flagged {
+                 machines |> flat_map |_, r| if r.hours > 15
+                                             then (.hot = true, ...r)
+                                             else (...r, .hot = false)
+               }"#,
+            vec![
+                machine("m1", "degraded", 20, None),
+                machine("m2", "operational", 10, None),
+            ],
+        );
+        // By name: hot, hours, last_service, status.
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    Value::String("m1".into()),
+                    Value::Bool(true),
+                    Value::Int(20),
+                    Value::Missing,
+                    Value::Enum("degraded".into()),
+                ],
+                vec![
+                    Value::String("m2".into()),
+                    Value::Bool(false),
+                    Value::Int(10),
+                    Value::Missing,
+                    Value::Enum("operational".into()),
+                ],
+            ]
+        );
+    }
+
+    #[test]
     fn absence_absorbs_through_the_lifted_operators() {
         // ADR 0039 decision 1 at runtime: a missing operand makes every
-        // lifted operator's result missing.  The third column pins the
+        // lifted operator's result missing.  The columns come out by name
+        // (and_false, and_true, negated, same), and `and_false` pins the
         // absorbing (not Kleene) reading: `false and missing` is missing.
         let rows = eval(
             r#"view lifted {
@@ -2722,10 +2835,10 @@ mod tests {
             vec![
                 vec![
                     Value::String("m1".into()),
-                    Value::Bool(true),
+                    Value::Bool(false),
                     Value::Bool(true),
                     Value::Bool(false),
-                    Value::Bool(false),
+                    Value::Bool(true),
                 ],
                 vec![
                     Value::String("m2".into()),
@@ -2787,20 +2900,21 @@ mod tests {
             vec![
                 vec![
                     Value::String("m1".into()),
-                    Value::Date("2026-01-01".into()),
                     Value::Bool(false),
+                    Value::Date("2026-01-01".into()),
                 ],
                 vec![
                     Value::String("m2".into()),
-                    Value::Missing,
                     Value::Bool(true),
+                    Value::Missing,
                 ],
             ]
         );
     }
 
     #[test]
-    fn map_computes_record_fields_in_field_order() {
+    fn map_computes_record_fields_in_canonical_order() {
+        // Written `twice` first, presented by name: flagged, twice.
         let rows = eval(
             r#"view doubled {
                  machines |> flat_map |_, r| (.twice = r.hours * 2, .flagged = r.status != "operational")
@@ -2815,13 +2929,13 @@ mod tests {
             vec![
                 vec![
                     Value::String("m1".into()),
-                    Value::Int(20),
-                    Value::Bool(false)
+                    Value::Bool(false),
+                    Value::Int(20)
                 ],
                 vec![
                     Value::String("m2".into()),
-                    Value::Int(40),
-                    Value::Bool(true)
+                    Value::Bool(true),
+                    Value::Int(40)
                 ],
             ]
         );
@@ -2864,13 +2978,13 @@ mod tests {
                 machine("m2", "degraded", 20, None),
             ],
         );
-        // The promoted column sits at the end of the key; the flat_map body reads
-        // it off `k` to prove it moved.
+        // The promoted column joins the key, which the view presents by name
+        // (hours, id); the flat_map body reads it off `k` to prove it moved.
         assert_eq!(
             rows,
             vec![
-                vec![Value::String("m1".into()), Value::Int(10), Value::Int(10)],
-                vec![Value::String("m2".into()), Value::Int(20), Value::Int(20)],
+                vec![Value::Int(10), Value::String("m1".into()), Value::Int(10)],
+                vec![Value::Int(20), Value::String("m2".into()), Value::Int(20)],
             ]
         );
     }
@@ -2891,19 +3005,20 @@ mod tests {
                 machine("m2", "degraded", 20, None),
             ],
         );
+        // By name: n, total, worst.
         assert_eq!(
             rows,
             vec![
                 vec![
                     Value::String("m1".into()),
-                    Value::Int(20),
                     Value::Int(2),
+                    Value::Int(20),
                     Value::Int(10)
                 ],
                 vec![
                     Value::String("m2".into()),
-                    Value::Int(40),
                     Value::Int(2),
+                    Value::Int(40),
                     Value::Int(20)
                 ],
             ]
@@ -2963,13 +3078,14 @@ mod tests {
                }"#,
             vec![machine("m1", "operational", 10, None)],
         );
+        // By name: biggest, sq, total.
         assert_eq!(
             rows,
             vec![vec![
                 Value::String("m1".into()),
-                Value::Int(20),
                 Value::Int(10),
                 Value::Int(200),
+                Value::Int(20),
             ]]
         );
     }
@@ -3060,12 +3176,13 @@ mod tests {
                }"#,
             vec![machine("m1", "operational", 10, None)],
         );
+        // By name: hi, left, lo, right.
         assert_eq!(
             rows,
             vec![vec![
                 Value::String("m1".into()),
-                Value::Int(10),
                 Value::Int(15),
+                Value::Int(10),
                 Value::Int(10),
                 Value::Int(99),
             ]]
@@ -3166,20 +3283,21 @@ mod tests {
             r#"view located { machines |> lookup sites (|_, r| r.site) }"#,
             &fleet_rows(),
         );
+        // By name: hours, region, site.
         assert_eq!(
             rows,
             vec![
                 vec![
                     Value::String("m1".into()),
-                    Value::String("s1".into()),
                     Value::Int(10),
                     Value::String("north".into()),
+                    Value::String("s1".into()),
                 ],
                 vec![
                     Value::String("m2".into()),
-                    Value::String("sX".into()),
                     Value::Int(20),
                     Value::Missing,
+                    Value::String("sX".into()),
                 ],
             ]
         );
@@ -3194,7 +3312,8 @@ mod tests {
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][0], Value::String("m1".into()));
-        assert_eq!(rows[0][3], Value::String("north".into()));
+        // By name: hours, region, site.
+        assert_eq!(rows[0][2], Value::String("north".into()));
     }
 
     const READINGS: &str = r#"
@@ -3222,23 +3341,24 @@ mod tests {
             )],
         );
         // The missing humidity cell at ts=2 yields no row (drop semantics),
-        // so the value column is total.
+        // so the value column is total.  The key presents by name: metric,
+        // ts.
         assert_eq!(
             rows,
             vec![
                 vec![
-                    Value::Int(1),
                     Value::Enum("temperature".into()),
+                    Value::Int(1),
                     Value::Real(20.0)
                 ],
                 vec![
-                    Value::Int(1),
                     Value::Enum("humidity".into()),
+                    Value::Int(1),
                     Value::Real(30.0)
                 ],
                 vec![
-                    Value::Int(2),
                     Value::Enum("temperature".into()),
+                    Value::Int(2),
                     Value::Real(21.0)
                 ],
             ]
@@ -3271,11 +3391,12 @@ mod tests {
                 ],
             )],
         );
+        // By name: humidity, temperature.
         assert_eq!(
             rows,
             vec![
-                vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
-                vec![Value::Int(2), Value::Real(21.0), Value::Missing],
+                vec![Value::Int(1), Value::Real(30.0), Value::Real(20.0)],
+                vec![Value::Int(2), Value::Missing, Value::Real(21.0)],
             ]
         );
     }
@@ -3295,11 +3416,12 @@ mod tests {
                 ],
             )],
         );
+        // By name: humidity, temperature.
         assert_eq!(
             rows,
             vec![
-                vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
-                vec![Value::Int(2), Value::Real(21.0), Value::Real(31.0)],
+                vec![Value::Int(1), Value::Real(30.0), Value::Real(20.0)],
+                vec![Value::Int(2), Value::Real(31.0), Value::Real(21.0)],
             ]
         );
     }
@@ -3318,10 +3440,11 @@ mod tests {
     "#;
 
     #[test]
-    fn demote_drops_key_columns_to_the_end_in_key_order() {
-        // `demote c a` names the columns out of key order; they still re-enter
-        // at the end of the attribute list in key order, as the checker's
-        // `op_demote` types them (ADR 0024 section 3).
+    fn demote_moves_key_columns_into_the_attributes() {
+        // `demote c a` moves both columns out of the key and into the
+        // attributes, as the checker's `op_demote` types them (ADR 0024
+        // section 3).  The view presents canonical order: key b, then a, c,
+        // x (ADR 0043 decision 4).
         let rows = eval_over(
             r#"
                 unit Triple {
@@ -3349,17 +3472,17 @@ mod tests {
             rows,
             vec![vec![
                 Value::String("b1".into()),
-                Value::Int(7),
                 Value::String("a1".into()),
                 Value::String("c1".into()),
+                Value::Int(7),
             ]]
         );
     }
 
     #[test]
     fn promote_then_demote_restores_the_rows() {
-        // The exact round trip is the identity on the rows (`demote_promote`);
-        // only the attribute order moves, `hours` re-entering at the end.
+        // The exact round trip is the identity on the rows (`demote_promote`),
+        // presented in canonical order: hours, last_service, status.
         let rows = eval(
             r#"view same {
                  machines |> promote hours |> demote hours
@@ -3370,9 +3493,9 @@ mod tests {
             rows,
             vec![vec![
                 Value::String("m1".into()),
-                Value::Enum("operational".into()),
-                Value::Missing,
                 Value::Int(10),
+                Value::Missing,
+                Value::Enum("operational".into()),
             ]]
         );
     }
@@ -3592,17 +3715,17 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                // `demote` appends the point to the end of the attributes,
-                // so the storage order is (machine_id, temperature, taken_at).
+                // The view presents canonical order (ADR 0043 decision 4):
+                // (machine_id, taken_at, temperature).
                 vec![
                     Value::String("m1".into()),
-                    Value::Real(305.0),
                     Value::Instant("2026-08-10T11:00:00.000Z".into()),
+                    Value::Real(305.0),
                 ],
                 vec![
                     Value::String("m2".into()),
-                    Value::Real(310.0),
                     Value::Instant("2026-08-10T12:00:00.000Z".into()),
+                    Value::Real(310.0),
                 ],
             ]
         );
@@ -3630,13 +3753,13 @@ mod tests {
             vec![
                 vec![
                     Value::String("m1".into()),
-                    Value::Real(300.0),
                     Value::Instant("2026-08-10T10:00:00.000Z".into()),
+                    Value::Real(300.0),
                 ],
                 vec![
                     Value::String("m2".into()),
-                    Value::Real(295.0),
                     Value::Instant("2026-08-10T09:00:00.000Z".into()),
+                    Value::Real(295.0),
                 ],
             ]
         );
@@ -3694,9 +3817,10 @@ mod tests {
             .filter(|r| r[0] == Value::String("m1".into()))
             .collect();
         assert_eq!(m1.len(), 3);
+        // By name: closing, then opening.
         for r in &m1 {
-            assert_eq!(r[1], Value::Real(300.0), "first under the order: {r:?}");
-            assert_eq!(r[2], Value::Real(302.0), "last under the order: {r:?}");
+            assert_eq!(r[1], Value::Real(302.0), "last under the order: {r:?}");
+            assert_eq!(r[2], Value::Real(300.0), "first under the order: {r:?}");
         }
         // A single-reading machine: its only row is both the first and the
         // last, so the two agree and neither is missing.

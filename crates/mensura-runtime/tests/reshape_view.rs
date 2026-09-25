@@ -40,13 +40,14 @@ fn a_total_fold_round_trips_into_not_null_spread_columns() {
     assert_eq!(materialized, vec![("wide".to_string(), 2)]);
 
     // The rectangle held by mechanism, so the spread columns are total and
-    // the values round-trip exactly (`pivot_unpivotDrop`).
+    // the values round-trip exactly (`pivot_unpivotDrop`).  The view
+    // presents canonical order: humidity, temperature.
     let view = &program.views[0];
     assert_eq!(
         db.scan(&view.shape()).unwrap(),
         vec![
-            vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
-            vec![Value::Int(2), Value::Real(21.0), Value::Real(31.0)],
+            vec![Value::Int(1), Value::Real(30.0), Value::Real(20.0)],
+            vec![Value::Int(2), Value::Real(31.0), Value::Real(21.0)],
         ]
     );
 }
@@ -67,13 +68,13 @@ fn a_sparse_fold_round_trips_missing_cells_through_nullable_columns() {
 
     // The missing humidity cell dropped its long row and came back as a
     // missing cell; the checker made the spread columns optional, so the
-    // insert accepts it.
+    // insert accepts it.  Canonical order: humidity, temperature.
     let view = &program.views[0];
     assert_eq!(
         db.scan(&view.shape()).unwrap(),
         vec![
-            vec![Value::Int(1), Value::Real(20.0), Value::Real(30.0)],
-            vec![Value::Int(2), Value::Real(21.0), Value::Missing],
+            vec![Value::Int(1), Value::Real(30.0), Value::Real(20.0)],
+            vec![Value::Int(2), Value::Missing, Value::Real(21.0)],
         ]
     );
 }

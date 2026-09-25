@@ -1,19 +1,20 @@
 //! Record spread elaboration (`docs/decisions/0043-record-spread.md`).
 //!
 //! A record body's items are labeled fields and spreads `...e`.  This module
-//! is the one place that decides which fields the body ends up with and in
-//! which order, so the checker and the evaluator cannot disagree on column
-//! order: each supplies the ordered top-level fields of every spread operand
-//! (typed or evaluated), and [`elaborate`] applies the override and ordering
-//! rules of ADR 0043 decisions 3 and 4.
+//! is the one place that decides which fields the body ends up with, so the
+//! checker and the evaluator cannot disagree on a body's columns: each
+//! supplies the top-level fields of every spread operand (typed or
+//! evaluated), and [`elaborate`] applies the override rule of ADR 0043
+//! decision 3.  Column order carries no meaning (decision 4), so the fields
+//! come out in canonical order, by name, whatever order they were written
+//! in.
 
 use mensura_syntax::{Expr, ExprKind, RecordField, RecordItem, Span};
 
-/// One field of an elaborated record body, in output order.
+/// One field of an elaborated record body.
 #[derive(Debug)]
 pub enum Elaborated<'a, T> {
-    /// An explicit field, at its own position or, when it overrides a
-    /// spread field, at that spread field's position.
+    /// An explicit field, whether or not it overrides a spread field.
     Field(&'a RecordField),
     /// A top-level field contributed by a spread, carrying whatever the
     /// caller attached to it (a type, a value, a column list).
@@ -49,12 +50,15 @@ impl Clash {
 }
 
 /// Elaborate a record body.  `spreads` holds, for each spread item in item
-/// order, its operand's top-level fields in the operand's own order.
+/// order, its operand's top-level fields.
 ///
-/// An explicit field overrides a spread field of the same name and takes
-/// its position; one that overrides nothing stays where it is written; two
+/// An explicit field overrides a spread field of the same name; two
 /// explicit fields, or two spreads, sharing a name are a [`Clash`], even
-/// when an explicit field overrides the shared name.
+/// when an explicit field overrides the shared name.  The fields come out
+/// sorted by name.  Flattening a unit-reference group afterwards keeps the
+/// dotted columns sorted too, because `.` orders below every identifier
+/// character, so the flat columns are in canonical order (ADR 0043
+/// decision 4).
 pub fn elaborate<'a, T>(
     items: &'a [RecordItem],
     spreads: Vec<Vec<(String, T)>>,
@@ -95,27 +99,24 @@ pub fn elaborate<'a, T>(
         return Err(clashes);
     }
 
-    let mut out = Vec::new();
-    let mut spreads = spreads.into_iter();
-    for item in items {
-        match item {
-            RecordItem::Field(f) => {
-                if !spread_names.contains(&f.name.name) {
-                    out.push(Elaborated::Field(f));
-                }
-            }
-            RecordItem::Spread { .. } => {
-                let fields = spreads.next().unwrap_or_default();
-                for (name, value) in fields {
-                    match explicit.iter().find(|f| f.name.name == name) {
-                        Some(f) => out.push(Elaborated::Field(f)),
-                        None => out.push(Elaborated::Spread { name, value }),
-                    }
-                }
-            }
+    let mut out: Vec<Elaborated<'a, T>> = explicit.iter().copied().map(Elaborated::Field).collect();
+    for (name, value) in spreads.into_iter().flatten() {
+        if !explicit.iter().any(|f| f.name.name == name) {
+            out.push(Elaborated::Spread { name, value });
         }
     }
+    out.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(out)
+}
+
+impl<T> Elaborated<'_, T> {
+    /// The field's name, explicit or spread.
+    pub fn name(&self) -> &str {
+        match self {
+            Elaborated::Field(f) => &f.name.name,
+            Elaborated::Spread { name, .. } => name,
+        }
+    }
 }
 
 /// The operand of a spread as a path: a bare name and the member steps
@@ -161,14 +162,14 @@ mod tests {
     }
 
     #[test]
-    fn a_spread_expands_in_place() {
-        let it = items("(.c = 1, ...r, .d = 2)");
-        let out = elaborate(&it, vec![fields(&["a", "b"])]).unwrap();
-        assert_eq!(names(&out), ["=c", "...a", "...b", "=d"]);
+    fn the_fields_come_out_by_name() {
+        let it = items("(.d = 1, ...r, .a = 2)");
+        let out = elaborate(&it, vec![fields(&["c", "b"])]).unwrap();
+        assert_eq!(names(&out), ["=a", "...b", "...c", "=d"]);
     }
 
     #[test]
-    fn an_override_takes_the_spread_position_wherever_it_is_written() {
+    fn an_override_is_the_same_record_wherever_it_is_written() {
         for src in ["(.b = 1, ...r)", "(...r, .b = 1)"] {
             let it = items(src);
             let out = elaborate(&it, vec![fields(&["a", "b", "c"])]).unwrap();

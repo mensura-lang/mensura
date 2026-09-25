@@ -124,21 +124,23 @@ fn nested_key_access_filters_the_compound_store() {
         .expect("the program declares cs_grades");
     let rows = db.scan(&view.shape()).unwrap();
     // The composite key survives whole: both `cs` enrollments, no `math`.
+    // The view presents its key in canonical order, the `course` columns
+    // before the student's (ADR 0043 decision 4).
     assert_eq!(
         rows,
         vec![
             vec![
-                Value::String("p1".into()),
                 Value::String("cs".into()),
                 Value::String("algorithms".into()),
                 Value::Int(2026),
+                Value::String("p1".into()),
                 Value::Real(9.5),
             ],
             vec![
-                Value::String("p2".into()),
                 Value::String("cs".into()),
                 Value::String("algorithms".into()),
                 Value::Int(2026),
+                Value::String("p2".into()),
                 Value::Real(8.0),
             ],
         ]
