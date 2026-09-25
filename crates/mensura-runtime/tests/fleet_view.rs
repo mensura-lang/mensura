@@ -125,7 +125,7 @@ fn attention_needed_materializes_the_degraded_machines() {
             // The bag registry reduces at its own key with no `assume`
             // (ADR 0033): three samples across two machines, two rows out.
             ("machine_vibration".to_string(), 2),
-            // `latest` is a reduction, so one row per fiber: two machines
+            // `last` is a reduction, so one row per fiber: two machines
             // with vibration samples, three with readings (ADR 0037
             // decision 7).
             ("newest_vibration".to_string(), 2),

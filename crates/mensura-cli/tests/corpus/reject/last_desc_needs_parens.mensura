@@ -1,6 +1,6 @@
-// Reject: resolve.  `latest`'s point takes the `desc` marker
-// (`accept/latest_at_the_dual_order.mensura`), but the marker applies to the
-// point rather than sitting beside it: an unparenthesized `latest desc
+// Reject: resolve.  `last`'s point takes the `desc` marker
+// (`accept/last_at_the_dual_order.mensura`), but the marker applies to the
+// point rather than sitting beside it: an unparenthesized `last desc
 // taken_at` is one application spine, so it flattens to *two* arguments and is
 // an arity error.
 //
@@ -20,5 +20,5 @@ registry readings {
 view first_reading {
   readings |> demote taken_at
            |> assume { complete }
-           |> latest desc taken_at
+           |> last desc taken_at
 }

@@ -217,7 +217,7 @@ fn dispatch_op(
         "completeness_check" => op_completeness_check(sources, input, args, span),
         "window" => op_window(sources, input, args, span),
         "closed" => op_closed(input, args, span),
-        "latest" => op_latest(input, args, span),
+        "last" => op_last(input, args, span),
         "dense" => op_dense(sources, input, args, span),
         other => {
             // TODO(ADR-0025): `map` is a deliberately vacant name. Give it a
@@ -239,7 +239,7 @@ fn dispatch_op(
                 "completeness_check",
                 "window",
                 "closed",
-                "latest",
+                "last",
                 "dense",
             ];
             let hint = suffix(other, OPS.iter().map(|s| s.to_string()));
@@ -1443,7 +1443,7 @@ fn op_window(
 /// the name `desc` is sound because it is an ambient builtin that
 /// `resolve` refuses to let a program redeclare or shadow.
 ///
-/// The direction is deliberately dropped: no obligation in `op_latest`
+/// The direction is deliberately dropped: no obligation in `op_last`
 /// depends on it, and the runtime reads it back off the same syntax.
 fn point_argument(arg: &Expr) -> Option<&str> {
     match &arg.kind {
@@ -1458,8 +1458,10 @@ fn point_argument(arg: &Expr) -> Option<&str> {
     }
 }
 
-/// `latest p` (section 6.9, ADR 0037 decision 7): keep, per fiber, the row
-/// with the maximal point `p`.
+/// `last p` (section 6.9, ADR 0037 decision 7): keep, per fiber, the row
+/// with the maximal point `p`, the last row of the fiber's arrangement by
+/// `p`.  The name is relative to the arrangement rather than to time
+/// (ADR 0044), so it composes with the `desc` marker below.
 ///
 /// A **reduction**, not a window: fiber-to-row, so the result is
 /// `singletons` at the current key with `p` an ordinary total attribute.
@@ -1470,7 +1472,7 @@ fn point_argument(arg: &Expr) -> Option<&str> {
 /// case: **tie-freedom** of `p` (a grading, or `assume { arranged }`,
 /// exactly as a scan), because the argmax of a tied key is not determined;
 /// and **completeness** at the current key (ADR 0023), because a partial
-/// bag's "latest" is silently wrong.
+/// bag's last row is silently wrong.
 ///
 /// **`p` must already be an attribute.**  ADR 0037 decision 7 also
 /// specifies a fused form over a key column (`demote p`, then the argmax),
@@ -1482,7 +1484,7 @@ fn point_argument(arg: &Expr) -> Option<&str> {
 /// the explicit spelling keeps every accepted use dischargeable.
 ///
 /// **The dual is the same operation under a marked point** (ADR 0037
-/// decision 7, direction settled): `latest (desc p)` keeps the *minimal*
+/// decision 7, direction settled): `last (desc p)` keeps the *minimal*
 /// point, which is `getLast (arrange p fiber)` at the dual order, so
 /// `Mensura.IsArrangement.unique` covers it at `ωᵒᵈ` with no new theorem.
 /// Nothing below branches on the direction, because nothing below depends on
@@ -1490,30 +1492,30 @@ fn point_argument(arg: &Expr) -> Option<&str> {
 /// injective, so both obligations discharge by the same rules.  There is no
 /// `earliest`: direction is already a value-level marker, and a dual name per
 /// point-reduction would double the vocabulary.
-fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
+fn op_last(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<TypeError>> {
     let mut table = expect_table(input, span)?;
     let [p_arg] = args else {
-        // `latest desc p` flattens to two arguments, so the arity error is
+        // `last desc p` flattens to two arguments, so the arity error is
         // the likeliest way to spell the dual wrong; name the fix.
         if let [head, _] = args
             && matches!(&head.kind, ExprKind::Name(n) if n == "desc")
         {
             return Err(error(
-                "`latest`'s `desc` marker needs parentheses, as in \
-                 `latest (desc taken_at)`",
+                "`last`'s `desc` marker needs parentheses, as in \
+                 `last (desc taken_at)`",
                 span,
             ));
         }
         return Err(error(
-            "`latest` takes one point column, as in `latest taken_at` or \
-             `latest (desc taken_at)`",
+            "`last` takes one point column, as in `last taken_at` or \
+             `last (desc taken_at)`",
             span,
         ));
     };
     let Some(p) = point_argument(p_arg) else {
         return Err(error(
-            "`latest`'s point column must be an identifier, optionally marked \
-             descending (`latest (desc taken_at)`)",
+            "`last`'s point column must be an identifier, optionally marked \
+             descending (`last (desc taken_at)`)",
             p_arg.span,
         ));
     };
@@ -1521,10 +1523,10 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     if table.content.key.iter().any(|c| c.name == p) {
         return Err(error(
             format!(
-                "`latest` needs `{p}` in the fiber, not in the key: coarsening \
+                "`last` needs `{p}` in the fiber, not in the key: coarsening \
                  inside the operation would leave its completeness demand with \
                  nowhere to stand, so write the coarsening out (`demote {p}`, \
-                 then the claim the fold rests on, then `latest {p}`)"
+                 then the claim the fold rests on, then `last {p}`)"
             ),
             p_arg.span,
         ));
@@ -1535,7 +1537,7 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     if !point.domain.is_orderable() {
         return Err(error(
             format!(
-                "`latest` orders by `{p}`, which must land in an orderable \
+                "`last` orders by `{p}`, which must land in an orderable \
                  domain (`int`, `real`, a dimensioned real, `date`, or \
                  `instant`), found `{}`",
                 crate::resolve::type_name(&point.domain)
@@ -1546,8 +1548,8 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     if table.qualifiers.totality.is_optional(p) {
         return Err(error(
             format!(
-                "`latest` needs `{p}` total: a missing point has no position in \
-                 the order, so there is no latest row to keep"
+                "`last` needs `{p}` total: a missing point has no position in \
+                 the order, so there is no last row to keep"
             ),
             p_arg.span,
         ));
@@ -1568,7 +1570,7 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
         {
             return Err(error(
                 format!(
-                    "`latest`'s point `{p}` may have ties, so the latest row is \
+                    "`last`'s point `{p}` may have ties, so the last row is \
                      not determined: nothing says at most one row per key \
                      shares it.  Order by a column projected out of the key \
                      (`demote` carries that fact), or claim it with \
@@ -1580,13 +1582,13 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
     }
 
     // Completeness, the demand every reducer makes (ADR 0023): a partial
-    // bag's latest row is silently wrong.  A `singletons` input discharges
+    // bag's last row is silently wrong.  A `singletons` input discharges
     // it trivially, a present key's single row being its whole fiber.
     if table.qualifiers.cardinality == Cardinality::Bag
         && table.qualifiers.completeness != Completeness::Complete
     {
         return Err(error(
-            "`latest` reduces each fiber to one row, which is silently wrong \
+            "`last` reduces each fiber to one row, which is silently wrong \
              on a partial bag, so it needs completeness over the current key; \
              establish it with `completeness_check { ... }` or \
              `assume { complete }` first, after any `demote` (the fact does \
@@ -1597,7 +1599,7 @@ fn op_latest(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
 
     // Fiber-to-row: one row per present key, so the result is `singletons`
     // and the gradings follow from the key (the conservative `sync_functional`
-    // in `dispatch_op` does that, since `latest` is not in its carve-out).
+    // in `dispatch_op` does that, since `last` is not in its carve-out).
     table.qualifiers.cardinality = Cardinality::Singletons;
     table.qualifiers.completeness = Completeness::Complete;
     table.qualifiers.windows.clear();
@@ -4675,11 +4677,11 @@ mod tests {
         assert!(errs[0].message.contains("needs completeness"));
     }
 
-    /// `latest p` reduces each fiber to its maximal-point row, demanding
+    /// `last p` reduces each fiber to its maximal-point row, demanding
     /// tie-freedom and completeness exactly as the other ordered
     /// reductions do (ADR 0037 decision 7).
     #[test]
-    fn latest_reduces_to_the_maximal_point_row() {
+    fn last_reduces_to_the_maximal_point_row() {
         let s = windowed_sources(true);
         // The explicit spelling: coarsen, claim what the fold rests on,
         // then reduce.  Tie-freedom comes from the surviving grading, so
@@ -4687,7 +4689,7 @@ mod tests {
         let t = table_of(
             pipe_ty(
                 &s,
-                "readings |> demote taken_at |> assume { complete } |> latest taken_at",
+                "readings |> demote taken_at |> assume { complete } |> last taken_at",
             )
             .expect("ok"),
         );
@@ -4709,22 +4711,22 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> window w taken_at (15.0 * si.minute) (15.0 * si.minute) \
-                 |> demote taken_at |> closed |> latest taken_at",
+                 |> demote taken_at |> closed |> last taken_at",
             )
             .is_ok()
         );
     }
 
-    /// `latest (desc p)` is the same operation at the dual order, so it
+    /// `last (desc p)` is the same operation at the dual order, so it
     /// produces the same type and demands the same facts (ADR 0037
     /// decision 7, direction settled).
     #[test]
-    fn latest_takes_the_descending_marker() {
+    fn last_takes_the_descending_marker() {
         let s = windowed_sources(true);
         let ascending = table_of(
             pipe_ty(
                 &s,
-                "readings |> demote taken_at |> assume { complete } |> latest taken_at",
+                "readings |> demote taken_at |> assume { complete } |> last taken_at",
             )
             .expect("ok"),
         );
@@ -4732,7 +4734,7 @@ mod tests {
             pipe_ty(
                 &s,
                 "readings |> demote taken_at |> assume { complete } \
-                 |> latest (desc taken_at)",
+                 |> last (desc taken_at)",
             )
             .expect("the dual is reachable"),
         );
@@ -4743,12 +4745,12 @@ mod tests {
         // total order is total, the dual of an injective key injective.
         for (src, needle) in [
             (
-                "readings |> demote taken_at |> latest (desc taken_at)",
+                "readings |> demote taken_at |> last (desc taken_at)",
                 "needs completeness",
             ),
             (
                 "readings |> demote taken_at |> assume { complete } \
-                 |> latest (desc temperature)",
+                 |> last (desc temperature)",
                 "may have ties",
             ),
         ] {
@@ -4758,48 +4760,51 @@ mod tests {
     }
 
     #[test]
-    fn latest_rejections_name_their_rule() {
+    fn last_rejections_name_their_rule() {
         let s = windowed_sources(true);
         for (src, needle) in [
             // The fused key-column form is not shipped: its completeness
             // demand would have nowhere to stand (ADR 0037 decision 7).
-            ("readings |> latest taken_at", "not in the key"),
+            ("readings |> last taken_at", "not in the key"),
             // The reducer's two facts, each demanded on its own terms.
             (
-                "readings |> demote taken_at |> latest taken_at",
+                "readings |> demote taken_at |> last taken_at",
                 "needs completeness",
             ),
             (
-                "readings |> demote taken_at |> assume { complete } |> latest temperature",
+                "readings |> demote taken_at |> assume { complete } |> last temperature",
                 "may have ties",
             ),
             // A point needs an order, and it needs to be there at all.
             (
-                "readings |> demote taken_at |> assume { complete } |> latest note",
+                "readings |> demote taken_at |> assume { complete } |> last note",
                 "orderable domain",
             ),
             (
-                "readings |> demote taken_at |> assume { complete } |> latest peak",
+                "readings |> demote taken_at |> assume { complete } |> last peak",
                 "needs `peak` total",
             ),
+            ("readings |> demote taken_at |> last nope", "unknown column"),
             (
-                "readings |> demote taken_at |> latest nope",
-                "unknown column",
-            ),
-            (
-                "readings |> demote taken_at |> latest",
+                "readings |> demote taken_at |> last",
                 "takes one point column",
+            ),
+            // The ADR 0037 spelling is gone, not aliased (ADR 0044), and the
+            // edit-distance hint points at the new one.
+            (
+                "readings |> demote taken_at |> assume { complete } |> latest taken_at",
+                "did you mean `last`?",
             ),
             // The marker is a marker on one argument, so the flattened
             // application is an arity error that names the fix.
             (
                 "readings |> demote taken_at |> assume { complete } \
-                 |> latest desc taken_at",
+                 |> last desc taken_at",
                 "needs parentheses",
             ),
             (
                 "readings |> demote taken_at |> assume { complete } \
-                 |> latest (desc (desc taken_at))",
+                 |> last (desc (desc taken_at))",
                 "must be an identifier",
             ),
         ] {
