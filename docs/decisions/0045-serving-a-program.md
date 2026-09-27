@@ -366,7 +366,7 @@ Four constraints shape the answer.
 
     ```toml
     program   = "fleet-monitoring.mensura"
-    database  = { url_env = "MENSURA_DATABASE_URL" }
+    database  = { env = "MENSURA_DATABASE_URL" }
     namespace = "fleet"
     roles     = ["intake", "read", "materializer"]
     listen    = "0.0.0.0:8080"
@@ -397,11 +397,31 @@ Four constraints shape the answer.
     is testable with a hand-written file and never learns what a cloud
     is.
 
-    The file holds no secret.  The database address, which carries a
-    password, is named by the environment variable that holds it, which
-    is how an orchestrator injects a secret.  Tokens appear as digests,
-    and a digest in a configuration file or a container image reveals
-    nothing usable, since tokens are generated high-entropy secrets.
+    The file holds no secret.  A field whose value may be secret (the
+    database address, which carries a password, and later any key
+    material) takes a **secret reference** instead of a value, spelled
+    one of two ways:
+
+    ```toml
+    database = { env = "MENSURA_DATABASE_URL" }
+    database = { file = "/run/secrets/database-url" }
+    ```
+
+    `env` reads the named environment variable and `file` reads the
+    named file, with one trailing newline removed.  Exactly one of the
+    two keys is present, and the reference is resolved once, at
+    startup.  An unset variable, a missing or unreadable file, or an
+    empty value refuses to start and names the field, never falling
+    back to a default.  A secret-valued field does not accept a
+    literal, so a password pasted into the file is a load error rather
+    than a leak.  The two spellings cover the ways every target
+    delivers a secret: an orchestrator injects a variable or mounts a
+    file (a Kubernetes Secret, a Cloud Run secret volume, a compose
+    secret, a systemd credential), and local work uses either.
+
+    Tokens appear as digests, not references, since a digest in a
+    configuration file or a container image reveals nothing usable,
+    tokens being generated high-entropy secrets.
 
 ## Consequences
 
@@ -480,6 +500,20 @@ so what is built on them survives the replacement.
 **Put the grants in the program now.**  It would anticipate the
 `auth {}` surface without designing it, freezing a syntax on a
 serving slice's schedule.
+
+**Other spellings of a secret.**  A field named after its source
+(`url_env = "..."`) repeats a new field shape for every secret and
+every source; one reference form serves them all.  A fixed,
+well-known variable read without being named leaves the file an
+incomplete description of the instance.  `${VAR}` interpolation
+templates the whole file as strings, so an unset variable silently
+expands to empty and a secret is indistinguishable from any other
+value once loaded.  Providers that fetch from a secret manager
+(`{ gcp_secret = ... }`) would put cloud SDKs and their credentials in
+a runtime meant to know nothing about clouds; a target that keeps its
+secrets in one delivers them as a variable or a file, which the two
+spellings already read.  Rendering the secret into the generated file
+puts it in a bundle meant to be reviewed and diffed.
 
 **Accept any store change and let the first write fail.**  That is the
 behavior without decision 9, and a changed column type can make the
