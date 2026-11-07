@@ -448,8 +448,10 @@ Four constraints shape the answer.
   the write log is its input, a served fleet with enough history is
   its workload, and prefix consistency is what it must preserve.
 - `ROADMAP.md`'s execution order changes: the serving slice lands
-  before M5's refresh half and M6.  The roadmap is updated when this
-  ADR is accepted.
+  before M5's refresh half and M6.  The roadmap already records this
+  as M7's slice 7.1, with the deploy bundle, the bridged integration
+  demonstration, the MQTT intake, and the data-space export as the
+  slices after it.
 - A suggested implementation order, open to revision: the write log,
   positions, and roles over embedded SQLite in one process first,
   since they exercise every decision; the Postgres backend second,
