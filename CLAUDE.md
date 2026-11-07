@@ -58,7 +58,15 @@ The toolchain is a Rust workspace under `crates/`.  The pipeline is
   `mensura run <file> [--db <path>]` typechecks and creates the stores
   (`--db` defaults to an in-memory database);
   `mensura ingest <file> <target> --data <rows.jsonl>` appends a batch to a
-  store or registry; `mensura lsp` runs the language server over stdio.
+  store or registry; `mensura floor` advances a closure floor;
+  `mensura serve --config <toml>` runs a program as a service
+  (`docs/toolkit/06-serving.md`); `mensura lsp` runs the language server
+  over stdio.
+- `mensura-serve`: the service of ADR 0045: the runtime configuration,
+  bearer principals and scopes, the HTTP projection of `append`, `read`,
+  `advance_floor`, and `health`, and the materializer, over the runtime's
+  positioned writes, write log, and schema guard.  Embedded SQLite in one
+  process in the first slice; Postgres next.
 - `mensura-lsp`, `mensura-highlight`, `mensura-mdbook`: the language server
   backend, the shared source-classification layer for highlighting, and the
   mdBook preprocessor that highlights and check-gates the `book/` code

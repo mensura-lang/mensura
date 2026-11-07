@@ -83,6 +83,8 @@ mensura/
     mensura-highlight/  -- source classification shared by the LSP and the book
     mensura-lsp/        -- the `mensura lsp` backend
     mensura-mdbook/     -- the `mdbook-mensura` preprocessor (book highlighting)
+    mensura-serve/      -- `mensura serve`: configuration, principals, the
+                           HTTP projection, and the materializer (ADR 0045)
     mensura-cli/        -- the `mensura` binary
   formal/               -- Lean 4 formalization of the algebra (Mathlib-backed);
                            see decisions/0008
@@ -155,10 +157,13 @@ mensura/
   combiner's identity where one exists and pushes the rest onto the value
   axis, and establishes the completeness that survives `demote w`
   (ADR 0038).  What remains of M5 is the *refresh* half.
-  **Serving is designed** (ADR 0045, accepted): roles, a
-  serialized write log, prefix consistency, an HTTP projection, static
-  bearer tokens as an interim subset of ADR 0005, a Postgres backend
-  beside SQLite, and a schema guard.  It pulls the first slice of M7
+  **Serving's first slice is implemented** (ADR 0045, accepted;
+  `docs/toolkit/06-serving.md`): positioned writes and the write log,
+  the identity check for re-sent rows, views materialized at a position
+  by compare-and-set, the schema guard, and `mensura serve` with its
+  configuration, bearer principals, and HTTP projection, over embedded
+  SQLite in one process.  The Postgres backend, which makes the roles
+  separable across instances, is next.  The ADR pulls this slice of M7
   ahead of M5's refresh half and M6; the execution order below records
   that.
 - **Design docs still to write** (each ahead of its milestone, per specs
@@ -393,7 +398,9 @@ demonstration**; 7.4 and 7.5 extend it.
   JSON Lines, `GET /<name>`), static bearer tokens carrying ADR 0005
   identities and scopes, a Postgres backend beside embedded SQLite, and a
   schema guard that refuses a program its namespace was not created for.
-  No language change.
+  No language change.  Implemented over embedded SQLite in one process
+  (`docs/toolkit/06-serving.md`); the Postgres backend is the slice's
+  second half.
 - **7.2 Deploy configuration and bundle.**  The user-authored deploy
   configuration of ADR 0006 names a target and the surfaces each
   transport exposes; `mensura deploy` compiles it and the program into a
