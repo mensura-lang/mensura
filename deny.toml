@@ -1,0 +1,33 @@
+# Dependency policy, checked by `cargo deny check` in CI.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory in the RustSec database fails the check, including
+# unmaintained and yanked crates.  An accepted exception goes in `ignore`
+# with its advisory id and a reason.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses compatible with the project's MIT OR Apache-2.0.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of one crate is a warning: often unavoidable for a while
+# upstream, but worth seeing.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

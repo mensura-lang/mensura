@@ -18,12 +18,12 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/mensura-lang/mensura"
 
 [workspace.dependencies]
-mensura-syntax = { path = "crates/mensura-syntax" }
-mensura-types = { path = "crates/mensura-types" }
-mensura-runtime = { path = "crates/mensura-runtime" }
-mensura-highlight = { path = "crates/mensura-highlight" }
-mensura-lsp = { path = "crates/mensura-lsp" }
-mensura-serve = { path = "crates/mensura-serve" }
+mensura-syntax = { path = "crates/mensura-syntax", version = "0.0.0" }
+mensura-types = { path = "crates/mensura-types", version = "0.0.0" }
+mensura-runtime = { path = "crates/mensura-runtime", version = "0.0.0" }
+mensura-highlight = { path = "crates/mensura-highlight", version = "0.0.0" }
+mensura-lsp = { path = "crates/mensura-lsp", version = "0.0.0" }
+mensura-serve = { path = "crates/mensura-serve", version = "0.0.0" }
 unicode-xid = "0.2"
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

@@ -77,6 +77,8 @@ around the demonstration and ends there.
 ```
 mensura/
   ROADMAP.md            -- this file
+  deny.toml             -- dependency policy (licenses, advisories, sources),
+                           checked in CI by cargo-deny
   docs/
     language/           -- language design documents (one per concept)
     toolkit/            -- design docs for the subcommands and the backend

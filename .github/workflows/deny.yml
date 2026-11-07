@@ -1,0 +1,25 @@
+name: Dependencies
+
+on:
+  pull_request:
+  schedule:
+    # Weekly, so an advisory published against an unchanged lockfile
+    # still surfaces.
+    - cron: "17 9 * * 1"
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    # A newly published advisory should not block an unrelated pull
+    # request; it is reported here and by the weekly run instead.
+    continue-on-error: ${{ matrix.checks == 'advisories' && github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}
