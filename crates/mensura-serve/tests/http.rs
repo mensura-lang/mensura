@@ -9,7 +9,6 @@ use std::path::Path;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use http_body_util::BodyExt;
 use mensura_runtime::{
     Delta, SqliteBackend, StorageBackend, decode_jsonl, encode_rows, materialize_views,
 };
@@ -104,7 +103,9 @@ async fn call(app: &Router, req: Request<Body>) -> (StatusCode, HeaderMap, serde
     let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
