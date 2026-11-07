@@ -71,7 +71,8 @@ mensura/
     language/           -- language design documents (one per concept)
     toolkit/            -- design docs for the subcommands and the backend
     examples/           -- worked examples that must compile (validate design)
-    decisions/          -- ADR-style notes for non-obvious choices
+    decisions/          -- ADR-style notes for non-obvious choices;
+                           README.md there indexes them with status
   book/                 -- the Mensura book (mdBook, hosted on GitHub Pages);
                            ```mensura examples are highlighted and check-gated
   crates/
@@ -154,7 +155,7 @@ mensura/
   combiner's identity where one exists and pushes the rest onto the value
   axis, and establishes the completeness that survives `demote w`
   (ADR 0038).  What remains of M5 is the *refresh* half.
-  **Serving is designed and proposed** (ADR 0045, draft): roles, a
+  **Serving is designed** (ADR 0045, accepted): roles, a
   serialized write log, prefix consistency, an HTTP projection, static
   bearer tokens as an interim subset of ADR 0005, a Postgres backend
   beside SQLite, and a schema guard.  It pulls the first slice of M7
@@ -375,7 +376,7 @@ Design settled ahead of implementation:
 unified `auth {}`, RBAC plus bounded ABAC),
 `docs/decisions/0006-transport-agnostic-surface.md` (the core stays
 wire-agnostic; deploy config owns transport selection), and
-`docs/decisions/0045-serving-a-program.md` (proposed: what `mensura serve`
+`docs/decisions/0045-serving-a-program.md` (accepted: what `mensura serve`
 is).  Naming and wire translation are in
 `docs/language/05-naming-and-casing.md`.
 
@@ -540,7 +541,7 @@ M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 (windows) �
 
 Units (M3) precede streaming (M5) because a window rollup is a rollup of
 dimensioned quantities.  Serving (M7.1 to M7.3) moved ahead of M5's
-refresh half and M6 when ADR 0045 was proposed: a deployment is what the
+refresh half and M6 when ADR 0045 was accepted: a deployment is what the
 driving application needs next, incremental refresh is an optimization
 nobody has measured, and a served workload is what will measure it.
 Streaming precedes ML validation (M6) because the features are windowed;
@@ -558,7 +559,7 @@ them correctly, and every `docs/examples/` file compiles.
 1. **`assume` only, or also an `exploratory` mode?**  Recommendation: only
    `assume`, no mode.  Every relaxation is local, visible, and auditable.
 2. **How much of the serving surface forks into a companion project?**  ADR
-   0045 proposes the answer for `serve`: a new crate in this workspace
+   0045 answers it for `serve`: a new crate in this workspace
    hosts the server, keeping `mensura-runtime` free of an HTTP stack, and
    the language stays usable without it.  The data-space connector (M7.5)
    is settled the same way: it never lives here.  Mensura exports a

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.  Pulls the first slice of `ROADMAP.md` M7 ahead of M5's
+Accepted.  Pulls the first slice of `ROADMAP.md` M7 ahead of M5's
 refresh half and M6, so that a Mensura program can run as a service
 before the rest of M7 is designed.  Realizes
 `docs/decisions/0006-transport-agnostic-surface.md` for one transport

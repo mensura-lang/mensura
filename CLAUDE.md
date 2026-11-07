@@ -106,6 +106,10 @@ rejected with "not yet supported" diagnostics.  Worked examples live in
   `00`; the same number in two folders is fine because the path
   disambiguates.  `docs/decisions/` is the exception: a 4-digit, append-only
   ADR series that is never renumbered (a superseded ADR keeps its number).
+  `docs/decisions/README.md` indexes every ADR with its status, its main
+  point, and what amends or supersedes it; read it before looking for a
+  decision, add a line when adding an ADR, and update both entries when
+  one ADR amends another.
   Cite docs by path or name, never by bare number.
 - Do not create new top-level files without a clear place for them in the
   repository layout described in `ROADMAP.md`.
