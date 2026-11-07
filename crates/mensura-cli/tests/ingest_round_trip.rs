@@ -77,7 +77,9 @@ fn ingesting_the_fleet_registry_feeds_its_views() {
         3
     );
 
-    let materialized = materialize_views(&mut db, &program).expect("materialize");
+    let materialized = materialize_views(&mut db, &program)
+        .expect("materialize")
+        .views;
     let count = |name: &str| {
         materialized
             .iter()

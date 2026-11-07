@@ -81,7 +81,7 @@ fn attention_needed_materializes_the_degraded_machines() {
     let program = fleet_program();
     let mut db = seeded_db(&program);
 
-    let materialized = materialize_views(&mut db, &program).unwrap();
+    let materialized = materialize_views(&mut db, &program).unwrap().views;
     assert_eq!(
         materialized,
         vec![
@@ -158,7 +158,7 @@ fn attention_needed_materializes_the_degraded_machines() {
     );
 
     // A re-run over unchanged stores replaces the contents, not appends.
-    let again = materialize_views(&mut db, &program).unwrap();
+    let again = materialize_views(&mut db, &program).unwrap().views;
     assert_eq!(again, materialized);
     assert_eq!(db.scan(&view.shape()).unwrap().len(), 1);
 }

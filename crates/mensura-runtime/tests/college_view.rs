@@ -108,7 +108,7 @@ fn nested_key_access_filters_the_compound_store() {
     let program = college_program();
     let mut db = seeded_db(&program);
 
-    let materialized = materialize_views(&mut db, &program).unwrap();
+    let materialized = materialize_views(&mut db, &program).unwrap().views;
     assert_eq!(
         materialized,
         vec![

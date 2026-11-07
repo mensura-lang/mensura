@@ -216,11 +216,12 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
         }
     }
     match materialize_views(&mut backend, &program) {
-        Ok(views) => {
-            for (name, rows) in views {
+        Ok(materialized) => {
+            for (name, rows) in materialized.views {
                 let noun = if rows == 1 { "row" } else { "rows" };
                 println!("materialized view {name} ({rows} {noun})");
             }
+            println!("views reflect position {}", materialized.position);
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -294,8 +295,11 @@ fn cmd_floor(path: &Path, target: &str, column: &str, point: &str, db_path: &Pat
         eprintln!("note: using an in-memory database; pass --db <path> to persist");
     }
     match backend.advance_floor(target, column, &stored) {
-        Ok(()) => {
-            println!("{target}.{column} is closed through {stored}");
+        Ok(floored) => {
+            println!(
+                "{target}.{column} is closed through {stored} (position {})",
+                floored.position
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -390,10 +394,16 @@ fn cmd_ingest(path: &Path, target: &str, data: &Path, db_path: &Path) -> ExitCod
     match backend.apply(&schema.shape(), &Delta::appending(rows)) {
         Ok(applied) => {
             let noun = if applied.inserted == 1 { "row" } else { "rows" };
+            let skipped = if applied.skipped > 0 {
+                format!(", {} already stored", applied.skipped)
+            } else {
+                String::new()
+            };
             println!(
-                "appended {} {noun} to {} {target}",
+                "appended {} {noun} to {} {target}{skipped} (position {})",
                 applied.inserted,
-                schema.kind.keyword()
+                schema.kind.keyword(),
+                applied.position
             );
             ExitCode::SUCCESS
         }

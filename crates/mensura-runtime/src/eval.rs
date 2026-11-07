@@ -2482,15 +2482,30 @@ impl From<EvalError> for RunError {
     }
 }
 
+/// What [`materialize_views`] produced: the log position every view now
+/// reflects (ADR 0045 decision 5), and each view's name and row count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Materialized {
+    pub position: u64,
+    pub views: Vec<(String, usize)>,
+}
+
 /// Materialize every view of a resolved program over `backend`, in the
 /// dependency order the checker fixed (ADR 0042,
 /// `docs/toolkit/04-processing-layer.md`): gather the sources, evaluate the
-/// body, replace the view table's contents.  Returns each view's name and
-/// row count.
+/// body, replace the view table's contents.
+///
+/// The log position is read first, and every source and watermark is read
+/// after it in the same snapshot, so each view is recorded at a position
+/// it exactly reflects: this is prefix consistency (ADR 0045 decision 5),
+/// and it is what makes a served view equal to what this function computes
+/// over the database after writes `1..N`.
 pub fn materialize_views<B: StorageBackend>(
     backend: &mut B,
     program: &ResolvedProgram,
-) -> Result<Vec<(String, usize)>, RunError> {
+) -> Result<Materialized, RunError> {
+    let position = backend.position()?;
+
     // The intake contracts and their watermarks, read once per run *before*
     // any evaluation (ADR 0037 decision 4).  Reading them here rather than
     // mid-pipeline is what keeps `eval_view` a pure function of its inputs,
@@ -2537,11 +2552,14 @@ pub fn materialize_views<B: StorageBackend>(
         }
         let table = eval_view_table(plan, &sources, &contracts)?;
         let rows = align(plan, table.clone())?;
-        backend.materialize_view(&plan.shape(), &rows)?;
+        backend.materialize_view(&plan.shape(), &rows, position)?;
         out.push((plan.name.clone(), rows.len()));
         evaluated.insert(plan.name.clone(), table);
     }
-    Ok(out)
+    Ok(Materialized {
+        position,
+        views: out,
+    })
 }
 
 #[cfg(test)]

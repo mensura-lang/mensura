@@ -21,7 +21,7 @@ fn materialize(src: &str, seed: &str) -> (ResolvedProgram, SqliteBackend, Vec<(S
         db.ensure_store(schema).unwrap();
     }
     db.execute_sql(seed).unwrap();
-    let materialized = materialize_views(&mut db, &program).unwrap();
+    let materialized = materialize_views(&mut db, &program).unwrap().views;
     (program, db, materialized)
 }
 

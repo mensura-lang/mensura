@@ -3,11 +3,14 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use mensura_types::{ColumnRole, ColumnType, Lateness, Schema, TableShape};
+use mensura_types::{ColumnRole, ColumnType, Lateness, ResolvedProgram, Schema, TableShape};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
-use crate::backend::{Applied, Delta, EnsureOutcome, StorageBackend, StorageError, Watermarks};
+use crate::backend::{
+    Applied, Delta, EnsureOutcome, Floored, GuardOutcome, StorageBackend, StorageError, Watermarks,
+};
+use crate::fingerprint::{program_fingerprint, program_tables};
 use crate::temporal::{instant_to_ms, ms_to_instant};
 use crate::value::{Row, Value};
 
@@ -41,33 +44,159 @@ impl SqliteBackend {
     /// seeding rows (`docs/toolkit/04-processing-layer.md`, "Validation"),
     /// kept because it bypasses decoding; the supported intake is
     /// [`StorageBackend::apply`] (`docs/toolkit/05-ingestion.md`).
-    pub fn execute_sql(&self, sql: &str) -> Result<(), StorageError> {
-        self.conn.execute_batch(sql)?;
-        Ok(())
+    ///
+    /// It is nonetheless a positioned write (ADR 0045 decision 4), logged
+    /// under [`crate::LOCAL_PRINCIPAL`]: nothing may change a store
+    /// without taking a position, or a view materialized afterwards would
+    /// be refused by the compare-and-set as already current.
+    pub fn execute_sql(&mut self, sql: &str) -> Result<u64, StorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_reserved(&tx)?;
+        let position = next_position(&tx)?;
+        tx.execute_batch(sql)?;
+        log_entry(
+            &tx,
+            position,
+            "sql",
+            "(raw)",
+            Applied::default(),
+            crate::LOCAL_PRINCIPAL,
+        )?;
+        tx.commit()?;
+        Ok(position)
     }
 
-    /// Advance a contract's declared closure floor (ADR 0041 decision 4):
-    /// the point through which the deployment asserts the world is closed.
-    ///
-    /// The floor is the stored half of the watermark, because nothing
-    /// derives an assertion.  Storing it rather than reading a clock is
-    /// what keeps `mensura run` a function of the database, and storing it
-    /// rather than writing it in the program is what keeps advancing time
-    /// from being a recompile.
-    ///
-    /// **It only ever advances.**  Lowering a floor reopens windows
-    /// already reported final, which retracts published results; that is
-    /// the same deliberate override as relaxing a `lateness` bound, and
-    /// neither is designed yet, so this refuses rather than guessing.
-    ///
-    /// `point` is the column's own text (a normalized instant, or an
-    /// integer count for an `int` point).
-    pub fn advance_floor(
+    fn table_exists(&self, name: &str) -> Result<bool, StorageError> {
+        let found: i64 = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |row| row.get(0),
+        )?;
+        Ok(found != 0)
+    }
+}
+
+impl StorageBackend for SqliteBackend {
+    fn ensure_store(&mut self, schema: &Schema) -> Result<EnsureOutcome, StorageError> {
+        let existed = self.table_exists(&schema.store)?;
+        create_store(&self.conn, &schema.shape())?;
+        Ok(if existed {
+            EnsureOutcome::AlreadyExists
+        } else {
+            EnsureOutcome::Created
+        })
+    }
+
+    fn guard_program(&mut self, program: &ResolvedProgram) -> Result<GuardOutcome, StorageError> {
+        // Under the serialization point, so instances starting together
+        // agree: one creates, the others find the fingerprint and verify
+        // it (ADR 0045 decision 9).
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_reserved(&tx)?;
+        let mut stored: BTreeMap<String, String> = BTreeMap::new();
+        {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT \"table\", \"fingerprint\" FROM {}",
+                quote_ident(PROGRAM_TABLE)
+            ))?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                stored.insert(r.get(0)?, r.get(1)?);
+            }
+        }
+        let current = program_tables(program);
+        if stored.is_empty() {
+            for schema in &program.schemas {
+                create_store(&tx, &schema.shape())?;
+            }
+            for (table, fingerprint) in &current {
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {} (\"table\", \"fingerprint\") VALUES (?1, ?2)",
+                        quote_ident(PROGRAM_TABLE)
+                    ),
+                    rusqlite::params![table, fingerprint],
+                )?;
+            }
+            tx.commit()?;
+            return Ok(GuardOutcome::Created {
+                fingerprint: program_fingerprint(&current),
+            });
+        }
+        let current_map: BTreeMap<&str, &str> = current
+            .iter()
+            .map(|(t, f)| (t.as_str(), f.as_str()))
+            .collect();
+        let mut tables: Vec<String> = Vec::new();
+        for (table, fingerprint) in &stored {
+            if current_map.get(table.as_str()) != Some(&fingerprint.as_str()) {
+                tables.push(table.clone());
+            }
+        }
+        for table in current_map.keys() {
+            if !stored.contains_key(*table) {
+                tables.push((*table).to_string());
+            }
+        }
+        tables.sort();
+        tables.dedup();
+        let stored_pairs: Vec<(String, String)> = stored.into_iter().collect();
+        let stored_fp = program_fingerprint(&stored_pairs);
+        if tables.is_empty() {
+            Ok(GuardOutcome::Verified {
+                fingerprint: stored_fp,
+            })
+        } else {
+            Ok(GuardOutcome::Mismatch {
+                tables,
+                stored: stored_fp,
+                program: program_fingerprint(&current),
+            })
+        }
+    }
+
+    fn position(&self) -> Result<u64, StorageError> {
+        ensure_reserved(&self.conn)?;
+        latest_position(&self.conn)
+    }
+
+    fn view_position(&self, view: &str) -> Result<Option<u64>, StorageError> {
+        ensure_reserved(&self.conn)?;
+        let position: Option<i64> = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT \"position\" FROM {} WHERE \"view\" = ?1",
+                    quote_ident(VIEWS_TABLE)
+                ),
+                [view],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(position.map(|p| p as u64))
+    }
+
+    fn advance_floor_as(
         &mut self,
         store: &str,
         column: &str,
         point: &str,
-    ) -> Result<(), StorageError> {
+        principal: &str,
+    ) -> Result<Floored, StorageError> {
+        // The floor is the stored half of the watermark, because nothing
+        // derives an assertion (ADR 0041 decision 4).  Storing it rather
+        // than reading a clock is what keeps `mensura run` a function of
+        // the database, and storing it rather than writing it in the
+        // program is what keeps advancing time from being a recompile.
+        //
+        // It only ever advances: lowering a floor reopens windows already
+        // reported final, which retracts published results, the same
+        // deliberate override as relaxing a `lateness` bound, and neither
+        // is designed yet, so this refuses rather than guessing.
         let grain = match instant_to_ms(point) {
             Ok(ms) => ms,
             Err(_) => point.parse::<i64>().map_err(|_| {
@@ -77,8 +206,11 @@ impl SqliteBackend {
                 ))
             })?,
         };
-        let tx = self.conn.transaction()?;
-        tx.execute_batch(&create_floor_table_sql())?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_reserved(&tx)?;
+        let position = next_position(&tx)?;
         let current: Option<i64> = tx
             .query_row(
                 &format!(
@@ -107,39 +239,16 @@ impl SqliteBackend {
             ),
             rusqlite::params![store, column, grain],
         )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn table_exists(&self, name: &str) -> Result<bool, StorageError> {
-        let found: i64 = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [name],
-            |row| row.get(0),
+        log_entry(
+            &tx,
+            position,
+            "advance_floor",
+            &format!("{store}.{column}"),
+            Applied::default(),
+            principal,
         )?;
-        Ok(found != 0)
-    }
-}
-
-impl StorageBackend for SqliteBackend {
-    fn ensure_store(&mut self, schema: &Schema) -> Result<EnsureOutcome, StorageError> {
-        let existed = self.table_exists(&schema.store)?;
-        let shape = schema.shape();
-        self.conn.execute_batch(&create_table_sql(&shape))?;
-        // A `bag` store has no primary key (per-row addressability is lost by
-        // definition, ADR 0022); its key columns get an ordinary non-unique
-        // covering index instead, and SQLite's implicit rowid is the
-        // surrogate row identifier.
-        if !shape.keyed
-            && let Some(sql) = create_key_index_sql(&shape)
-        {
-            self.conn.execute_batch(&sql)?;
-        }
-        Ok(if existed {
-            EnsureOutcome::AlreadyExists
-        } else {
-            EnsureOutcome::Created
-        })
+        tx.commit()?;
+        Ok(Floored { position })
     }
 
     fn scan(&self, table: &TableShape) -> Result<Vec<Row>, StorageError> {
@@ -180,9 +289,33 @@ impl StorageBackend for SqliteBackend {
         Ok(out)
     }
 
-    fn materialize_view(&mut self, view: &TableShape, rows: &[Row]) -> Result<(), StorageError> {
-        let tx = self.conn.transaction()?;
+    fn materialize_view(
+        &mut self,
+        view: &TableShape,
+        rows: &[Row],
+        position: u64,
+    ) -> Result<bool, StorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_reserved(&tx)?;
         tx.execute_batch(&create_table_sql(view))?;
+        // Compare-and-set on the recorded position (ADR 0045 decision 5):
+        // a materializer that read an older snapshot never overwrites a
+        // newer result.  Dropping the transaction here rolls it back.
+        let recorded: Option<i64> = tx
+            .query_row(
+                &format!(
+                    "SELECT \"position\" FROM {} WHERE \"view\" = ?1",
+                    quote_ident(VIEWS_TABLE)
+                ),
+                [&view.name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if recorded.is_some_and(|r| r as u64 >= position) {
+            return Ok(false);
+        }
         tx.execute(&format!("DELETE FROM {}", quote_ident(&view.name)), [])?;
         let cols: Vec<String> = view.columns.iter().map(|c| quote_ident(&c.name)).collect();
         let holes: Vec<String> = (1..=cols.len()).map(|i| format!("?{i}")).collect();
@@ -198,8 +331,16 @@ impl StorageBackend for SqliteBackend {
                 stmt.execute(rusqlite::params_from_iter(row.iter().map(encode)))?;
             }
         }
+        tx.execute(
+            &format!(
+                "INSERT INTO {} (\"view\", \"position\") VALUES (?1, ?2) \
+                 ON CONFLICT (\"view\") DO UPDATE SET \"position\" = ?2",
+                quote_ident(VIEWS_TABLE)
+            ),
+            rusqlite::params![view.name, position as i64],
+        )?;
         tx.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     fn watermarks(
@@ -276,14 +417,38 @@ impl StorageBackend for SqliteBackend {
         ))
     }
 
-    fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError> {
+    fn apply_as(
+        &mut self,
+        table: &TableShape,
+        delta: &Delta,
+        principal: &str,
+    ) -> Result<Applied, StorageError> {
         // One transaction for the batch: every change lands or none does
         // (ADR 0034 decision 4).  The `lateness` check and the watermark
         // advance ride the same transaction, so a rejected batch leaves the
         // watermark untouched and an accepted one can never land without
-        // advancing it.
-        let tx = self.conn.transaction()?;
-        enforce_lateness(&tx, table, delta)?;
+        // advancing it.  The transaction is immediate: that is the
+        // serialization point of ADR 0045 decision 4, under which the
+        // position is taken, so positions are gapless and the lateness
+        // check cannot race another writer.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_reserved(&tx)?;
+        let position = next_position(&tx)?;
+        // Decision 11, ahead of the lateness check: a row already stored
+        // identically is a no-op, and a re-sent old row must not read as
+        // late.
+        let (inserts, skipped) = if table.keyed {
+            skip_stored_rows(&tx, table, &delta.inserts)?
+        } else {
+            (delta.inserts.clone(), 0)
+        };
+        let delta = Delta {
+            inserts,
+            deletes: delta.deletes.clone(),
+        };
+        enforce_lateness(&tx, table, &delta)?;
         let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
 
         let mut applied = Applied::default();
@@ -325,9 +490,184 @@ impl StorageBackend for SqliteBackend {
             }
         }
 
+        applied.skipped = skipped;
+        applied.position = position;
+        log_entry(&tx, position, "append", &table.name, applied, principal)?;
         tx.commit()?;
         Ok(applied)
     }
+}
+
+/// The reserved write log (ADR 0045 decision 4): one entry per positioned
+/// write, in position order, which is also the changelog incremental
+/// refresh will consume.
+pub(crate) const LOG_TABLE: &str = "mensura_log";
+/// The position each view was last materialized at (ADR 0045 decision 5).
+pub(crate) const VIEWS_TABLE: &str = "mensura_views";
+/// The per-table fingerprints of the program the namespace was created
+/// for (ADR 0045 decision 9).
+pub(crate) const PROGRAM_TABLE: &str = "mensura_program";
+
+/// Create every reserved table that is absent.  Idempotent, and called at
+/// the start of each operation that reads or writes one, so a database
+/// created by an older toolchain gains them on first use.
+fn ensure_reserved(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {log} (\n  \
+           \"position\" INTEGER PRIMARY KEY,\n  \
+           \"operation\" TEXT NOT NULL,\n  \
+           \"target\" TEXT NOT NULL,\n  \
+           \"appended\" INTEGER NOT NULL,\n  \
+           \"deleted\" INTEGER NOT NULL,\n  \
+           \"skipped\" INTEGER NOT NULL,\n  \
+           \"principal\" TEXT NOT NULL\n);\n\
+         CREATE TABLE IF NOT EXISTS {views} (\n  \
+           \"view\" TEXT PRIMARY KEY,\n  \
+           \"position\" INTEGER NOT NULL\n);\n\
+         CREATE TABLE IF NOT EXISTS {program} (\n  \
+           \"table\" TEXT PRIMARY KEY,\n  \
+           \"fingerprint\" TEXT NOT NULL\n);\n\
+         {floors}",
+        log = quote_ident(LOG_TABLE),
+        views = quote_ident(VIEWS_TABLE),
+        program = quote_ident(PROGRAM_TABLE),
+        floors = create_floor_table_sql(),
+    ))?;
+    Ok(())
+}
+
+/// The latest committed position: zero before the first write.
+fn latest_position(conn: &Connection) -> Result<u64, StorageError> {
+    let n: i64 = conn.query_row(
+        &format!(
+            "SELECT COALESCE(MAX(\"position\"), 0) FROM {}",
+            quote_ident(LOG_TABLE)
+        ),
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n as u64)
+}
+
+/// The position the write in progress takes.  Called under the immediate
+/// transaction, which is what makes positions gapless.
+fn next_position(conn: &Connection) -> Result<u64, StorageError> {
+    Ok(latest_position(conn)? + 1)
+}
+
+/// Record one write in the log, inside its own transaction.
+fn log_entry(
+    conn: &Connection,
+    position: u64,
+    operation: &str,
+    target: &str,
+    counts: Applied,
+    principal: &str,
+) -> Result<(), StorageError> {
+    conn.execute(
+        &format!(
+            "INSERT INTO {} (\"position\", \"operation\", \"target\", \"appended\", \
+             \"deleted\", \"skipped\", \"principal\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            quote_ident(LOG_TABLE)
+        ),
+        rusqlite::params![
+            position as i64,
+            operation,
+            target,
+            counts.inserted as i64,
+            counts.deleted as i64,
+            counts.skipped as i64,
+            principal
+        ],
+    )?;
+    Ok(())
+}
+
+/// Create a store's table and, for a `bag` store, its covering key index.
+/// A `bag` store has no primary key (per-row addressability is lost by
+/// definition, ADR 0022); its key columns get an ordinary non-unique
+/// covering index instead, and SQLite's implicit rowid is the surrogate
+/// row identifier.
+fn create_store(conn: &Connection, shape: &TableShape) -> Result<(), StorageError> {
+    conn.execute_batch(&create_table_sql(shape))?;
+    if !shape.keyed
+        && let Some(sql) = create_key_index_sql(shape)
+    {
+        conn.execute_batch(&sql)?;
+    }
+    Ok(())
+}
+
+/// The identity check of ADR 0045 decision 11 on a keyed table: drop from
+/// the batch every row equal, column for column, to the row already
+/// stored at its key, counting it as skipped, and reject the batch on a
+/// row whose key is stored with different content.  Rows at keys not yet
+/// stored pass through; a key repeated within the batch itself is left
+/// for the primary key to catch.
+fn skip_stored_rows(
+    conn: &Connection,
+    table: &TableShape,
+    inserts: &[Row],
+) -> Result<(Vec<Row>, usize), StorageError> {
+    let key: Vec<(usize, &str)> = table
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.role == ColumnRole::Key)
+        .map(|(i, c)| (i, c.name.as_str()))
+        .collect();
+    if inserts.is_empty() || key.is_empty() {
+        return Ok((inserts.to_vec(), 0));
+    }
+    let cols: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
+    let where_key = key
+        .iter()
+        .enumerate()
+        .map(|(n, (_, name))| format!("{} IS ?{}", quote_ident(name), n + 1))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let sql = format!(
+        "SELECT {} FROM {} WHERE {where_key}",
+        cols.join(", "),
+        quote_ident(&table.name)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut kept = Vec::with_capacity(inserts.len());
+    let mut skipped = 0;
+    for row in inserts {
+        let params: Vec<rusqlite::types::Value> =
+            key.iter().map(|(i, _)| encode(&row[*i])).collect();
+        let stored: Option<Vec<rusqlite::types::Value>> = stmt
+            .query_row(rusqlite::params_from_iter(params.iter()), |r| {
+                (0..table.columns.len()).map(|i| r.get(i)).collect()
+            })
+            .optional()?;
+        let Some(cells) = stored else {
+            kept.push(row.clone());
+            continue;
+        };
+        let mut decoded = Vec::with_capacity(cells.len());
+        for (cell, col) in cells.iter().zip(&table.columns) {
+            decoded.push(decode(
+                ValueRef::from(cell),
+                &col.ty,
+                &table.name,
+                &col.name,
+            )?);
+        }
+        if decoded == *row {
+            skipped += 1;
+        } else {
+            return Err(StorageError::KeyConflict {
+                table: table.name.clone(),
+                key: key
+                    .iter()
+                    .map(|(i, name)| ((*name).to_string(), describe_value(&row[*i])))
+                    .collect(),
+            });
+        }
+    }
+    Ok((kept, skipped))
 }
 
 /// The reserved table holding each contract's declared closure floor
@@ -766,7 +1106,7 @@ fn quote_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::EnsureOutcome;
+    use crate::backend::{EnsureOutcome, LOCAL_PRINCIPAL};
 
     fn schema(src: &str, store: &str) -> Schema {
         let tokens = mensura_syntax::tokenize(src).expect("should lex");
@@ -1077,7 +1417,7 @@ mod tests {
             Value::Date("2000-01-01".into()),
             Value::String("x".into()),
         ]];
-        db.materialize_view(&shape, &first).unwrap();
+        assert!(db.materialize_view(&shape, &first, 1).unwrap());
         assert_eq!(db.scan(&shape).unwrap(), first);
 
         // A second materialization replaces, not accumulates.
@@ -1093,7 +1433,7 @@ mod tests {
                 Value::String("z".into()),
             ],
         ];
-        db.materialize_view(&shape, &second).unwrap();
+        assert!(db.materialize_view(&shape, &second, 2).unwrap());
         assert_eq!(db.scan(&shape).unwrap(), second);
     }
 
@@ -1209,14 +1549,33 @@ mod tests {
             Value::String("m-01".into()),
             Value::Date("2026-01-05".into()),
         ];
-        db.apply(&shapes[0], &Delta::appending(vec![row.clone()]))
-            .unwrap();
+        // A key repeated within one batch is a duplicate (ADR 0001).
         let err = db
-            .apply(&shapes[0], &Delta::appending(vec![row]))
+            .apply(
+                &shapes[0],
+                &Delta::appending(vec![row.clone(), row.clone()]),
+            )
             .expect_err("a singletons tabulation holds one row per key");
         assert!(
             matches!(err, StorageError::DuplicateKey { .. }),
             "expected a duplicate-key error, got {err:?}"
+        );
+        // The same row re-sent in a later batch is a no-op (ADR 0045
+        // decision 11); only different content at the key is a conflict.
+        db.apply(&shapes[0], &Delta::appending(vec![row.clone()]))
+            .unwrap();
+        let again = db
+            .apply(&shapes[0], &Delta::appending(vec![row.clone()]))
+            .unwrap();
+        assert_eq!((again.inserted, again.skipped), (0, 1));
+        let mut changed = row;
+        changed[1] = Value::Date("2026-01-06".into());
+        let err = db
+            .apply(&shapes[0], &Delta::appending(vec![changed]))
+            .expect_err("different content at a stored key");
+        assert!(
+            matches!(err, StorageError::KeyConflict { .. }),
+            "expected a key conflict, got {err:?}"
         );
     }
 
@@ -1472,5 +1831,204 @@ mod tests {
         assert!(msg.contains("`seq` is 4"), "{msg}");
         db.apply(&shape, &Delta::appending(vec![row(5)]))
             .expect("the boundary count is admissible");
+    }
+
+    // -----------------------------------------------------------------
+    // ADR 0045: positioned writes, the identity check, compare-and-set
+    // views, and the schema guard
+    // -----------------------------------------------------------------
+
+    fn resolve(src: &str) -> mensura_types::ResolvedProgram {
+        let tokens = mensura_syntax::tokenize(src).expect("should lex");
+        let program = mensura_syntax::parse(&tokens).expect("should parse");
+        mensura_types::resolve(&program).expect("should resolve")
+    }
+
+    fn person(id: &str, name: &str) -> Row {
+        vec![
+            Value::String(id.into()),
+            Value::Date("1990-01-01".into()),
+            Value::String(name.into()),
+        ]
+    }
+
+    #[test]
+    fn writes_take_gapless_positions_and_a_rejected_batch_takes_none() {
+        let schema = schema(PERSONS, "persons");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        db.ensure_store(&schema).unwrap();
+        assert_eq!(db.position().unwrap(), 0);
+
+        let first = db
+            .apply(&shape, &Delta::appending(vec![person("p1", "Ada")]))
+            .unwrap();
+        assert_eq!(first.position, 1);
+        assert_eq!(db.position().unwrap(), 1);
+
+        // A conflicting batch is rejected whole and takes no position.
+        let err = db
+            .apply(&shape, &Delta::appending(vec![person("p1", "Bob")]))
+            .unwrap_err();
+        assert!(matches!(err, StorageError::KeyConflict { .. }), "{err}");
+        assert_eq!(db.position().unwrap(), 1);
+
+        let second = db
+            .apply(&shape, &Delta::appending(vec![person("p2", "Cy")]))
+            .unwrap();
+        assert_eq!(second.position, 2);
+
+        // Advancing a floor is a write like any other.
+        let floored = db.advance_floor("persons", "birthdate", "7").unwrap();
+        assert_eq!(floored.position, 3);
+        assert_eq!(db.position().unwrap(), 3);
+
+        // The log names the principal of every write.
+        let principals: Vec<String> = {
+            let mut stmt = db
+                .conn
+                .prepare("SELECT \"principal\" FROM \"mensura_log\" ORDER BY \"position\"")
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(principals, vec![LOCAL_PRINCIPAL; 3]);
+    }
+
+    #[test]
+    fn a_row_already_stored_is_a_no_op_and_a_different_one_is_a_conflict() {
+        let schema = schema(PERSONS, "persons");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        db.ensure_store(&schema).unwrap();
+        db.apply(&shape, &Delta::appending(vec![person("p1", "Ada")]))
+            .unwrap();
+
+        // The same row again, beside a new one: one skipped, one inserted,
+        // and the batch still takes a position.
+        let again = db
+            .apply(
+                &shape,
+                &Delta::appending(vec![person("p1", "Ada"), person("p2", "Cy")]),
+            )
+            .unwrap();
+        assert_eq!((again.inserted, again.skipped, again.position), (1, 1, 2));
+        assert_eq!(db.scan(&shape).unwrap().len(), 2);
+
+        // The same key with different content names the key.
+        let err = db
+            .apply(&shape, &Delta::appending(vec![person("p2", "Dee")]))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("`id` = p2"), "{msg}");
+        assert!(msg.contains("already holds a different row"), "{msg}");
+    }
+
+    #[test]
+    fn a_resent_old_row_is_a_no_op_rather_than_late() {
+        let src = r#"
+            unit Tick { seq: int }
+            registry ticks {
+              unit { Tick }
+              attr { level: real }
+              lateness { seq: 5 }
+            }
+        "#;
+        let schema = schema(src, "ticks");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().expect("open");
+        db.ensure_store(&schema).expect("create");
+        let row = |seq: i64| -> Row { vec![Value::Int(seq), Value::Real(1.0)] };
+        db.apply(&shape, &Delta::appending(vec![row(10)])).unwrap();
+        db.apply(&shape, &Delta::appending(vec![row(20)])).unwrap();
+        // 10 < 20 - 5, so a *new* row at 10 would be late; the stored one
+        // re-sent is a no-op (ADR 0045 decision 11).
+        let resent = db.apply(&shape, &Delta::appending(vec![row(10)])).unwrap();
+        assert_eq!((resent.inserted, resent.skipped), (0, 1));
+        let err = db
+            .apply(&shape, &Delta::appending(vec![row(11)]))
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Lateness { .. }), "{err}");
+    }
+
+    #[test]
+    fn materializing_a_view_is_a_compare_and_set() {
+        let schema = schema(PERSONS, "persons");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        assert_eq!(db.view_position("persons").unwrap(), None);
+        assert!(
+            db.materialize_view(&shape, &[person("p1", "Ada")], 2)
+                .unwrap()
+        );
+        assert_eq!(db.view_position("persons").unwrap(), Some(2));
+        // An older result never replaces a newer one.
+        assert!(
+            !db.materialize_view(&shape, &[person("p1", "Old")], 1)
+                .unwrap()
+        );
+        assert_eq!(db.scan(&shape).unwrap(), vec![person("p1", "Ada")]);
+        assert_eq!(db.view_position("persons").unwrap(), Some(2));
+        // The same position is not newer either.
+        assert!(!db.materialize_view(&shape, &[], 2).unwrap());
+        assert!(db.materialize_view(&shape, &[], 3).unwrap());
+        assert_eq!(db.scan(&shape).unwrap(), Vec::<Row>::new());
+        assert_eq!(db.view_position("persons").unwrap(), Some(3));
+    }
+
+    #[test]
+    fn the_guard_creates_then_verifies_then_refuses_a_changed_store() {
+        let src = r#"
+            unit Person { id: string }
+            enum Mood { "x" "y" }
+            store persons {
+              unit { Person }
+              attr { birthdate: date  mood: Mood }
+            }
+            view cheerful {
+              persons |> flat_map |_, r| if r.mood == "x" then r else ()
+            }
+        "#;
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        let created = db.guard_program(&resolve(src)).unwrap();
+        let GuardOutcome::Created { fingerprint } = created else {
+            panic!("expected creation, got {created:?}");
+        };
+        assert!(db.table_exists("persons").unwrap());
+
+        // The same program verifies, and so does one whose only change is
+        // in a view.
+        assert_eq!(
+            db.guard_program(&resolve(src)).unwrap(),
+            GuardOutcome::Verified {
+                fingerprint: fingerprint.clone()
+            }
+        );
+        let view_edited = src.replace("== \"x\"", "== \"y\"");
+        assert_eq!(
+            db.guard_program(&resolve(&view_edited)).unwrap(),
+            GuardOutcome::Verified {
+                fingerprint: fingerprint.clone()
+            }
+        );
+
+        // A changed store is refused, naming the table; nothing is changed.
+        let store_edited = src.replace("birthdate: date", "birthdate: date?");
+        let outcome = db.guard_program(&resolve(&store_edited)).unwrap();
+        let GuardOutcome::Mismatch {
+            tables,
+            stored,
+            program,
+        } = outcome
+        else {
+            panic!("expected a mismatch, got {outcome:?}");
+        };
+        assert_eq!(tables, vec!["persons".to_string()]);
+        assert_eq!(stored, fingerprint);
+        assert_ne!(program, fingerprint);
+        assert_eq!(
+            db.guard_program(&resolve(src)).unwrap(),
+            GuardOutcome::Verified { fingerprint }
+        );
     }
 }
