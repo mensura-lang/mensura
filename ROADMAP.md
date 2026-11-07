@@ -22,8 +22,17 @@ validated rows in tables Mensura owns, serves the processed views over
 HTTP, and publishes a machine-generated self-description of what it serves
 in the vocabulary of industrial data spaces.  The platform is proprietary
 and is not named here.  What Mensura ships is generic; the program and
-configuration specific to the demonstration live beside the platform.  M7
-below is organized around it.
+configuration specific to the demonstration live beside the platform.
+
+The end point of the plan, past the demonstration, is the **end user's own
+agent**.  Once the platform's sensors are served and analyses are exposed,
+a director who uses an agentic assistant daily connects it to the Mensura
+service over the Model Context Protocol, discovers what is served from the
+program's machine-generated self-description, pulls the data, derives new
+views in Mensura that the compiler checks before they run, and asks
+questions whose answers carry the typed facts (units, keys, whether a
+window is final) instead of guesses about them.  M7 below is organized
+around the demonstration and ends there.
 
 ## Implementation choices (decided)
 
@@ -50,7 +59,8 @@ below is organized around it.
   - `mensura lsp`: language server (LSP over stdio).
   - `mensura serve --config <serve.toml>`: run a program as a service (ADR
     0045: intake, read, and materializer roles over a database reached by
-    address).
+    address).  The read role gains the MCP projection of M7.6 by
+    configuration, not by a separate subcommand.
   - `mensura deploy`: compile a program and a deploy configuration into a
     self-contained bundle for a named target (M7.2).
   - `mensura describe <file>`: emit the self-description of a program's
@@ -171,8 +181,10 @@ mensura/
   and the DBSP lowering) and the sampling qualifier that per-window
   sampling inference needs; ML signatures and validation; the deploy
   configuration and bundle (M7.2), the MQTT projection of the intake and
-  the provenance it records (M7.4), the data-space self-description
-  export (M7.5), and the tenancy model (one namespace per participant);
+  the provenance it records (M7.4), the self-description with its
+  data-space export (M7.5) and its agent projection over MCP together
+  with the ephemeral view evaluation that rests on (M7.6), and the
+  tenancy model (one namespace per participant);
   and the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
   document: ADR 0005 eliminated the construct; devices are authenticated
   principals, not declarations.)
@@ -372,7 +384,8 @@ computes.
 ## M7 - Serving, transport, and the integration demonstration (the North Star)
 
 Output: a Mensura program runs as a service beside an existing industrial
-IoT platform, consuming its telemetry and serving typed views; the
+IoT platform, consuming its telemetry and serving typed views, and the
+end user's agent reaches those views, and derives new ones, over MCP; the
 streaming predictive-maintenance service of the North Star runs on the
 same footing once M5's refresh half and M6 land.
 
@@ -387,7 +400,8 @@ is).  Naming and wire translation are in
 
 The milestone is cut into slices, each its own ADR, in the order a
 deployment needs them.  Slices 7.1 to 7.3 are the **minimal functional
-demonstration**; 7.4 and 7.5 extend it.
+demonstration**; 7.4 to 7.6 extend it, and 7.6 is where the plan ends:
+the service in the hands of the end user's agent.
 
 - **7.1 Serve (ADR 0045).**  `mensura serve` runs `intake`, `read`, and
   `materializer` roles over a database reached by address, with every
@@ -507,6 +521,63 @@ demonstration**; 7.4 and 7.5 extend it.
   specifications in the ISO/IEC PAS process as of late 2025, not yet
   approved standards; the export targets their published versions and
   tracks them.
+- **7.6 The agent projection.**  The end user of the demonstration is
+  not a dashboard but an agent: the director's assistant, connected to
+  `mensura serve` over the Model Context Protocol (MCP).  ADR 0006 makes
+  this one more projection of the one logical surface, with no language
+  change: the `read` role gains an MCP endpoint, selected and bound in
+  the deploy configuration, under the same bearer principals and
+  `read:<name>` scopes as HTTP.  Nothing on the write or floor side is
+  reachable through it.  The slice has two halves.
+
+  The **thin half** is discovery and access.  The MCP exposes the
+  program's self-description, the same resolved-schema export 7.5 feeds
+  into AAS and DCAT, so the two slices share one core and the export
+  gains an access section (DCAT's distribution) for free: what is
+  served; each table's columns with their units, key, `kind`, lateness
+  contract, and completeness facts; and, per live transport, how to
+  fetch it.  Small views are read inline.  Large ones the agent
+  downloads itself over `GET` into a file and analyses locally, which is
+  why the MCP tells it how rather than paging rows through the protocol.
+  Two items on the serve side are prerequisites: content negotiation on
+  `read` (JSON Lines today; CSV, then Parquet, whose file metadata can
+  carry the self-description so that a downloaded file describes
+  itself), and a read at a fixed log position, so that several downloads
+  the agent cross-references reflect one prefix of the log.  Tool and
+  resource descriptions are generated from the schema, never from rows:
+  data is untrusted input to the agent.
+
+  The **derive half** is where the type system meets the agent.  A tool
+  takes one `view` declaration in Mensura whose sources are served
+  names, resolves it against the program, and either returns diagnostics
+  with spans or evaluates it ephemerally at a position and returns the
+  rows together with the resulting `Table<Qs, C>`: whether the view is
+  complete, by mechanism or by assumption, its cardinality, its units.
+  An `assume` is allowed and surfaced, so that a report says what it
+  assumed.  Nothing is written; the evaluation runs on the `read` role
+  under a timeout and a row bound, and a derived view may only read
+  names its principal can.  This rests on an ephemeral evaluation path
+  in the runtime (`eval_view` is already pure over in-memory sources;
+  what is new is reaching a served view's evaluated table rather than
+  its materialized rows, ADR 0042 decision 3), which `mensura repl`
+  shares.  A derived view the user keeps becomes an edit to the program,
+  which redeploys without migration (7.3's third criterion):
+  exploration and service are the same text.  The MCP ships a condensed
+  language reference and the worked examples as resources, since
+  diagnostics are the feedback the agent learns the language from.
+
+  The criterion: the director's agent, given a reader token and nothing
+  else, lists what the service serves; explains a view's columns with
+  their units and says whether the view is final; answers a question
+  that needs a view the program does not declare by deriving it; and is
+  refused by the compiler, with a diagnostic it can act on, when the
+  derived view mixes units or reduces over an incomplete window without
+  saying so.
+
+  The thin half needs only 7.1 and a program with views, so it can start
+  as soon as the demonstration runs; the execution order below places
+  the slice last because it is where the plan ends, not because it waits
+  on 7.4 and 7.5.
 
 Still in M7, after the slices above: change-control annotations
 (`@audited`, `@versioned`, `@auto`, `@allowcreate`), compile-time
@@ -542,7 +613,7 @@ M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 (windows) �
               └──► tooling (LSP, fmt, repl) in parallel from ~M1         │
                                                                          │
                      ┌───────────────────────────────────────────────────┘
-                     ├──► M7.4 ──► M7.5
+                     ├──► M7.4 ──► M7.5 ──► M7.6
                      └──► M5 (refresh) ──► M6 ──► rest of M7
 ```
 
@@ -553,6 +624,9 @@ driving application needs next, incremental refresh is an optimization
 nobody has measured, and a served workload is what will measure it.
 Streaming precedes ML validation (M6) because the features are windowed;
 M6 and the rest of M7 then put the whole typed pipeline behind endpoints.
+The agent projection (M7.6) closes the demonstration chain: it is what
+the served views are for, and its thin half may be pulled ahead of 7.4
+and 7.5 the moment a program with views is running.
 
 ## Validation criterion
 
@@ -570,7 +644,9 @@ them correctly, and every `docs/examples/` file compiles.
    hosts the server, keeping `mensura-runtime` free of an HTTP stack, and
    the language stays usable without it.  The data-space connector (M7.5)
    is settled the same way: it never lives here.  Mensura exports a
-   self-description, and the connector is a separate service.
+   self-description, and the connector is a separate service.  The MCP
+   projection (M7.6) follows `serve`: a crate of its own beside
+   `mensura-serve`, so that the runtime stays free of both protocols.
 3. **Decidability bounds of the qualifier hooks.**  The disjointness hook has a
    decidable fragment with an `assume` fallback (`08-lineage.md`); whether
    other `std` qualifiers stay inside a decidable fragment is open (ADR 0004).
