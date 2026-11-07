@@ -2457,6 +2457,12 @@ fn arithmetic(op: BinOp, a: Value, b: Value) -> Result<Value, EvalError> {
 pub enum RunError {
     Storage(StorageError),
     Eval(EvalError),
+    /// A failure while evaluating or writing one view, named so that a
+    /// server can report which view is stale (ADR 0045 decision 5).
+    View {
+        name: String,
+        error: Box<RunError>,
+    },
 }
 
 impl std::fmt::Display for RunError {
@@ -2464,6 +2470,7 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Storage(e) => write!(f, "{e}"),
             RunError::Eval(e) => write!(f, "{e}"),
+            RunError::View { name, error } => write!(f, "view `{name}`: {error}"),
         }
     }
 }
@@ -2550,9 +2557,15 @@ pub fn materialize_views<B: StorageBackend>(
             };
             sources.insert(name.clone(), table);
         }
-        let table = eval_view_table(plan, &sources, &contracts)?;
-        let rows = align(plan, table.clone())?;
-        backend.materialize_view(&plan.shape(), &rows, position)?;
+        let in_view = |error: RunError| RunError::View {
+            name: plan.name.clone(),
+            error: Box::new(error),
+        };
+        let table = eval_view_table(plan, &sources, &contracts).map_err(|e| in_view(e.into()))?;
+        let rows = align(plan, table.clone()).map_err(|e| in_view(e.into()))?;
+        backend
+            .materialize_view(&plan.shape(), &rows, position)
+            .map_err(|e| in_view(e.into()))?;
         out.push((plan.name.clone(), rows.len()));
         evaluated.insert(plan.name.clone(), table);
     }

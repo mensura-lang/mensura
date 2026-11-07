@@ -7,6 +7,7 @@ members = [
     "crates/mensura-highlight",
     "crates/mensura-lsp",
     "crates/mensura-mdbook",
+    "crates/mensura-serve",
     "crates/mensura-cli",
 ]
 
@@ -22,6 +23,7 @@ mensura-types = { path = "crates/mensura-types" }
 mensura-runtime = { path = "crates/mensura-runtime" }
 mensura-highlight = { path = "crates/mensura-highlight" }
 mensura-lsp = { path = "crates/mensura-lsp" }
+mensura-serve = { path = "crates/mensura-serve" }
 unicode-xid = "0.2"
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
