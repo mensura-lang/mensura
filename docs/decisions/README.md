@@ -25,7 +25,7 @@ both rows.
 | 0013 | `C` is structure, `Qs` is every propagated fact | Accepted |
 | 0014 | `int`/`real` split; domain properties gate operations | Accepted |
 | 0015 | `flat_map` returns a row multiset; key-first lambdas | Accepted; names per 0025 |
-| 0016 | see 0020 | Superseded by 0020 |
+| 0016 | `unpivot`/`pivot` surface syntax | Accepted; amended by 0020 |
 | 0017 | `completeness_check` and `assume { complete }` | Accepted; consumer per 0023 |
 | 0018 | `x \|> g` means `g x`; juxtaposition is application | Accepted |
 | 0019 | `attr` blocks; `const`/`var` dropped | Accepted |
@@ -38,7 +38,7 @@ both rows.
 | 0026 | Dimensions as `D[real]` over the seven SI bases | Accepted |
 | 0027 | Top-level `let`, `import`, bundled modules | Accepted |
 | 0028 | The bundled `si` standard library | Accepted |
-| 0029 | see 0031 | Superseded by 0031 |
+| 0029 | Aggregates as a fold and scan family; two proof stages | Accepted, design-only; revised by 0031 |
 | 0030 | Lambdas as const values; explicit currying | Accepted |
 | 0031 | `fold`/`scan` primitives; `bag` and `series` modules | Accepted |
 | 0032 | Compound keys flatten to dotted columns | Accepted |
