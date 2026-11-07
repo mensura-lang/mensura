@@ -145,9 +145,10 @@ Four constraints shape the answer.
    embedded SQLite, an immediate transaction).  Holding it, the write
    takes the next **position**, runs the intake checks (keys, `domain`
    references, the lateness contract against its grain's effective
-   watermark), applies the change, records one entry in the reserved
-   log table `mensura_log` (position, operation, target, row count,
-   principal), and commits.
+   watermark, and decision 11's identity check ahead of the lateness
+   check), applies the change, records one entry in the reserved log
+   table `mensura_log` (position, operation, target, rows appended and
+   rows skipped, principal), and commits.
 
    Two properties follow, and both are required rather than
    convenient.
@@ -270,7 +271,7 @@ Four constraints shape the answer.
      |---|---|
      | malformed JSON or JSON Lines | 400 |
      | a record that does not decode (with record index and field) | 422 |
-     | a duplicate key, a violated `domain` reference, or a late row (with its grain) | 409 |
+     | a key stored with different content (decision 11), a violated `domain` reference, or a late row (with its grain) | 409 |
      | an `append` to a view | 405 |
      | an unknown name | 404 |
      | no credential, or an unknown one | 401 |
@@ -423,6 +424,32 @@ Four constraints shape the answer.
     configuration file or a container image reveals nothing usable,
     tokens being generated high-entropy secrets.
 
+11. **Appending a row already stored is a no-op.**  An `append` whose
+    row equals, column for column, the row stored at the same key is
+    accepted and changes nothing; a row whose key is stored with
+    different content is a conflict, and the batch is rejected with a
+    409 as decision 7 says.  The identity check runs before the
+    lateness check, so a re-sent old reading is a no-op rather than a
+    late rejection.  The batch takes a position like any append, its
+    log entry records how many rows were appended and how many were
+    skipped, and a batch in which every row was skipped changes no
+    view.
+
+    This is what makes `append` safe to retry and safe behind an
+    at-least-once transport.  A device that times out and re-posts, and
+    a broker that redelivers a message into a later batch, both produce
+    a row the registry already holds, and both are routine rather than
+    faults.  Under a plain duplicate-key rejection either one costs the
+    whole batch, and the sender cannot tell it from a genuine conflict.
+    The rule needs no memory beyond the table: the stored row is the
+    witness.  It is also the semantics a registry already has:
+    append-only means a fact is appended, and a fact appended twice is
+    one fact.
+
+    The rule applies to keyed tables only.  A `bag` registry has no key
+    to compare at, so there a re-sent batch double-counts, and the open
+    question below keeps the per-batch idempotency key for that case.
+
 ## Consequences
 
 - A program runs as a service with no language change, and the
@@ -522,14 +549,21 @@ behavior without decision 9, and a changed column type can make the
 first write succeed against the wrong table, which is the silent
 failure the language exists to rule out.
 
+**Accept a batch partially.**  Appending the rows that pass and
+reporting the ones that do not would keep a re-sent row from costing
+its neighbours.  It would also make one request several outcomes with
+no single position, against decision 4, and would turn the intake's
+rejections into warnings a sender can ignore.  Decision 11 removes the
+routine cause of whole-batch loss instead and leaves a genuine defect
+fatal to its batch, which is what makes the rejection log a signal.
+
 ## Open questions
 
-- **Idempotent appends.**  A device that times out and retries posts
-  its batch twice.  A `singletons` target rejects the retry with a
-  409, which the device cannot tell apart from a genuine conflict; a
-  `bag` registry accepts it and double-counts.  An idempotency key per
-  batch, recorded in its log entry, is the natural answer, and the
-  question is how long the host remembers one.
+- **Idempotent appends to a `bag` registry.**  Decision 11 makes a
+  re-sent row a no-op on a keyed table.  A `bag` registry has no key,
+  so a retried batch double-counts there.  An idempotency key per
+  batch, recorded in its log entry, is the natural answer for that
+  case, and the question is how long the host remembers one.
 - **Log retention.**  The log grows by one entry per write.  Whether
   old entries are compacted, and what compaction may drop once
   incremental refresh reads the log, is decided with that slice.
