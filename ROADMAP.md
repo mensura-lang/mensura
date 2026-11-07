@@ -13,6 +13,18 @@ features, incrementally refreshed views, and a leak-free temporal/grouped
 validation pipeline served behind endpoints) is the North Star that orders the
 milestones below.
 
+The nearest concrete form of that application, and the first thing to
+deploy, is an **integration demonstration**: a Mensura program runs beside
+an existing industrial IoT platform that it does not replace, subscribes to
+one telemetry topic on the platform's MQTT broker, validates every batch
+through the typed intake (units, keys, the lateness contract), keeps the
+validated rows in tables Mensura owns, serves the processed views over
+HTTP, and publishes a machine-generated self-description of what it serves
+in the vocabulary of industrial data spaces.  The platform is proprietary
+and is not named here.  What Mensura ships is generic; the program and
+configuration specific to the demonstration live beside the platform.  M7
+below is organized around it.
+
 ## Implementation choices (decided)
 
 - **Host language:** Rust.
@@ -36,8 +48,14 @@ milestones below.
   - `mensura fmt <file>`: format.
   - `mensura repl`: interactive REPL.
   - `mensura lsp`: language server (LSP over stdio).
-  - `mensura serve <file>`: run a program as a web service (store and
-    `registry` endpoints).
+  - `mensura serve --config <serve.toml>`: run a program as a service (ADR
+    0045: intake, read, and materializer roles over a database reached by
+    address).
+  - `mensura deploy`: compile a program and a deploy configuration into a
+    self-contained bundle for a named target (M7.2).
+  - `mensura describe <file>`: emit the self-description of a program's
+    stores, registries, and views for a data-space catalog (M7.5; the
+    subcommand name is provisional).
   - `mensura migrate <from> <to>`: generate a migration plan between two schema
     revisions.
 - **Specs first.**  Every language- or tooling-level feature lands as a design
@@ -53,7 +71,8 @@ mensura/
     language/           -- language design documents (one per concept)
     toolkit/            -- design docs for the subcommands and the backend
     examples/           -- worked examples that must compile (validate design)
-    decisions/          -- ADR-style notes for non-obvious choices
+    decisions/          -- ADR-style notes for non-obvious choices;
+                           README.md there indexes them with status
   book/                 -- the Mensura book (mdBook, hosted on GitHub Pages);
                            ```mensura examples are highlighted and check-gated
   crates/
@@ -136,13 +155,20 @@ mensura/
   combiner's identity where one exists and pushes the rest onto the value
   axis, and establishes the completeness that survives `demote w`
   (ADR 0038).  What remains of M5 is the *refresh* half.
+  **Serving is designed** (ADR 0045, accepted): roles, a
+  serialized write log, prefix consistency, an HTTP projection, static
+  bearer tokens as an interim subset of ADR 0005, a Postgres backend
+  beside SQLite, and a schema guard.  It pulls the first slice of M7
+  ahead of M5's refresh half and M6; the execution order below records
+  that.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): incremental refresh (`on_change`, the changelog, the plan IR,
   and the DBSP lowering) and the sampling qualifier that per-window
-  sampling inference needs; ML signatures and validation; the
-  serving/transport integration (including the ingestion *endpoints*, whose
-  local intake is already specified in `docs/toolkit/05-ingestion.md`); and
-  the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
+  sampling inference needs; ML signatures and validation; the deploy
+  configuration and bundle (M7.2), the MQTT projection of the intake and
+  the provenance it records (M7.4), the data-space self-description
+  export (M7.5), and the tenancy model (one namespace per participant);
+  and the toolkit docs for the CLI, diagnostics, and LSP.  (No `device`
   document: ADR 0005 eliminated the construct; devices are authenticated
   principals, not declarations.)
 
@@ -302,6 +328,10 @@ Output: windowed, incrementally refreshed views over device streams.
   layer (the changelog, the plan IR, and the DBSP lowering,
   `docs/toolkit/04-processing-layer.md`), and with it the honest exit for
   the frontier window that ADR 0037 records as an open question.
+  Refresh now waits behind M7's first slices: ADR 0045's write log is the
+  changelog it will consume, prefix consistency is its correctness
+  oracle, and a served workload is what measures whether full recompute
+  is too slow, which is the evidence the refresh design has lacked.
 - Per-window sampling inference (Exhaustive when the fleet is fully covered,
   Biased or Representative otherwise).  Waits on the sampling-qualifier ADR
   whose slot `docs/language/09-typing-reference.md` section 13 holds.
@@ -334,23 +364,148 @@ computes.
 - A showcase suite in which leakage, the wrong CV on temporal data, unit
   mismatch, and group leak are each a compile error.
 
-## M7 - Serving, transport, and auth (the North Star)
+## M7 - Serving, transport, and the integration demonstration (the North Star)
 
-Output: the streaming predictive-maintenance service runs end to end.
+Output: a Mensura program runs as a service beside an existing industrial
+IoT platform, consuming its telemetry and serving typed views; the
+streaming predictive-maintenance service of the North Star runs on the
+same footing once M5's refresh half and M6 land.
 
 Design settled ahead of implementation:
 `docs/decisions/0005-identity-and-authorization.md` (federated identity, a
-unified `auth {}`, RBAC plus bounded ABAC) and
+unified `auth {}`, RBAC plus bounded ABAC),
 `docs/decisions/0006-transport-agnostic-surface.md` (the core stays
-wire-agnostic; deploy config owns transport selection).  Naming and wire
-translation are in `docs/language/05-naming-and-casing.md`.
+wire-agnostic; deploy config owns transport selection), and
+`docs/decisions/0045-serving-a-program.md` (accepted: what `mensura serve`
+is).  Naming and wire translation are in
+`docs/language/05-naming-and-casing.md`.
 
-- Auto-generated REST and MQTT endpoints for stores, `registry`, and views.
-- Device identity, RBAC, and compile-time permission-flow analysis.
-- Change-control annotations (`@audited`, `@versioned`, `@auto`,
-  `@allowcreate`).
-- Live views served with `on_change` refresh.
-- `mensura serve`, and `mensura test` over language and endpoint tests.
+The milestone is cut into slices, each its own ADR, in the order a
+deployment needs them.  Slices 7.1 to 7.3 are the **minimal functional
+demonstration**; 7.4 and 7.5 extend it.
+
+- **7.1 Serve (ADR 0045).**  `mensura serve` runs `intake`, `read`, and
+  `materializer` roles over a database reached by address, with every
+  write serialized through a numbered log, views materialized at a log
+  position (prefix consistency: a served view holds exactly what
+  `mensura run` computes over writes `1..N`), reads that report their
+  position and can wait for one, an HTTP projection (`POST /<name>` with
+  JSON Lines, `GET /<name>`), static bearer tokens carrying ADR 0005
+  identities and scopes, a Postgres backend beside embedded SQLite, and a
+  schema guard that refuses a program its namespace was not created for.
+  No language change.
+- **7.2 Deploy configuration and bundle.**  The user-authored deploy
+  configuration of ADR 0006 names a target and the surfaces each
+  transport exposes; `mensura deploy` compiles it and the program into a
+  self-contained folder (one serve configuration per role group, and a
+  script that brings the system up).  A local target first (a compose
+  file or a local cluster), then one cheap cloud target (a managed
+  container runtime with a managed Postgres).  Typed schema migrations,
+  guarded by the fingerprint 7.1 records, are the slice after the first
+  deploy, so that a store change becomes a generated migration rather
+  than a refusal.
+- **7.3 The bridged demonstration.**  The platform side runs a thin
+  bridge: a subscriber on one topic family of its broker that maps each
+  payload to a name-keyed record and posts batches to 7.1's intake.  No
+  Mensura transport work is needed, and that is the point: the
+  demonstration exercises serve and deploy as shipped.  The program
+  declares the device population as a store, the readings as a registry
+  with dimensioned columns and a `lateness` contract matching the
+  platform's documented delivery bound, and views the platform cannot
+  compute honestly today: closed windows in which a device reported
+  nothing, as final rows (`window`, `closed`, `dense`); per-window peaks;
+  and a rate of change between consecutive readings.  The demonstration
+  criterion:
+  1. batches from live or replayed telemetry land, and the intake's
+     rejections (a unit, a duplicate key, a late row) each name a real
+     defect in the platform's data;
+  2. the silent-window view is stable across re-reads and reruns, and a
+     device removed from the replay appears in it rather than vanishing;
+  3. editing a view redeploys with no migration, and editing the readings
+     table is refused by the schema guard with a diagnostic naming the
+     table.
+- **7.4 MQTT intake and provenance.**  The MQTT projection of `append`
+  (ADR 0006's ingest direction): a `serve` instance subscribes to a
+  broker itself and the topic-to-table mapping moves into the deploy
+  configuration, retiring the bridge.  With it, the facts a row's lineage
+  records about where it came from: MQTT does not tell a subscriber who
+  published, so a row from a topic carries **channel provenance** under a
+  `connector` identity (ADR 0005), and only a signed payload verified
+  against a trust bundle earns a `device` identity.  This is also where
+  ADR 0005's JWT and X.509/SVID verification replaces 7.1's static
+  tokens; what was built on them survives, since a static token is the
+  bundled-issuer case of the same identity.
+- **7.5 The data-space projection.**  A data space standardizes how data
+  is shared between organizations (a catalog, a contract negotiation with
+  usage policies, a transfer, and verifiable participant identity) and
+  says almost nothing checkable about *what* is shared: the asset's
+  self-description is metadata someone typed.  Mensura's resolved schema
+  already is a machine-checked self-description (units, key columns, the
+  lateness contract, completeness by mechanism, lineage with
+  device-versus-connector provenance), so the slice is an **export**, not
+  a protocol implementation: `mensura describe` emits, from the resolved
+  schema, an Asset Administration Shell submodel template (the shop-floor
+  data model industrial data spaces have settled on, with semantic IDs
+  and units per property) and a DCAT dataset entry per served table, with
+  Mensura's facts attached where the target vocabulary has a slot and in
+  the catalog entry where it does not.  The connector that speaks the
+  Dataspace Protocol stays outside Mensura, in front of the `read` role,
+  since connectors are heavy and the read projection is already the
+  operation they call.  Tenancy is by deployment: one namespace per
+  participant, which ADR 0045's namespaces give for free.  The credential
+  kind this needs (a verifiable presentation under the Decentralized
+  Claims Protocol) is one more issuer shape for ADR 0005's verifier.
+
+  Background.  The data-space programme and its weighting of sovereignty
+  and trust over pricing are documented in Otto and Jarke (2019),
+  *Electronic Markets* 29(4), doi:10.1007/s12525-019-00362-x, framed as
+  alliance-driven ecosystems in Jarke, Otto, and Ram (2019), *Business &
+  Information Systems Engineering* 61(5),
+  doi:10.1007/s12599-019-00614-2, and brought up to date for industry in
+  Möller et al. (2024), *Industrial data ecosystems and data spaces*,
+  *Electronic Markets*, doi:10.1007/s12525-024-00724-0; the design and
+  deployment survey is Curry, Scerri, and Tuikka, eds. (2022), *Data
+  Spaces: Design, Deployment and Future Directions*, Springer,
+  doi:10.1007/978-3-030-98636-0.  What practitioners find hard is
+  recorded in Hellmeier et al. (2023), *Implementing Data Sovereignty:
+  Requirements and Challenges from Practice*, ARES,
+  doi:10.1145/3600160.3604995; the connector landscape is in Gieß et al.
+  (2024), *What Does it Take to Connect?*, HICSS,
+  doi:10.24251/hicss.2024.511, and Dam et al. (2023), *A Survey of
+  Dataspace Connector Implementations*, arXiv:2309.11282, which together
+  are the evidence for keeping the connector outside Mensura.  The
+  architecture the export targets, the Asset Administration Shell as
+  data model beside a dataspace connector and OPC UA, is Neubauer et al.
+  (2023), *Architecture for Manufacturing-X*, *Manufacturing Letters*,
+  doi:10.1016/j.mfglet.2023.05.002; the semantic lifting of the AAS and
+  its feasibility on constrained devices is Bader and Maleshkova (2019),
+  *The Semantic Asset Administration Shell*, LNCS 11702,
+  doi:10.1007/978-3-030-33220-4_12; and the slot the export fills for
+  units is the IDTA data specification template for measurement units,
+  *Specification of the Asset Administration Shell, Part 3b*,
+  doi:10.62628/idta.01003-b-3.0.  That semantics is the gap a data space
+  leaves open is Auer (2022), *Semantic Integration and
+  Interoperability*, in *Designing Data Spaces*, Springer,
+  doi:10.1007/978-3-030-93975-5_12.  Graded trust in what is shared,
+  which 7.4's channel-versus-signed provenance maps onto, is Zimmer,
+  Haber, and Kaneko (2025), *Levels of Assurance for Data
+  Trustworthiness*, SCITEPRESS, doi:10.5220/0013461800003967.  An
+  AAS-based predictive-maintenance model, the shape the North Star's
+  output takes in that vocabulary, is Cavalieri and Salafia (2020),
+  *Sensors* 20(21), doi:10.3390/s20216028.  The type-theoretic treatment
+  of units, the property the export carries into the self-description,
+  is Kennedy (1997), *Relational parametricity and units of measure*,
+  POPL, doi:10.1145/263699.263761.  The Dataspace Protocol and the
+  Decentralized Claims Protocol are Eclipse Dataspace Working Group
+  specifications in the ISO/IEC PAS process as of late 2025, not yet
+  approved standards; the export targets their published versions and
+  tracks them.
+
+Still in M7, after the slices above: change-control annotations
+(`@audited`, `@versioned`, `@auto`, `@allowcreate`), compile-time
+permission-flow analysis and the `auth {}` surface, live views with
+`on_change` refresh (after M5's refresh half), subscriptions and the
+GraphQL projection, and `mensura test` over language and endpoint tests.
 
 ## Cross-cutting (continuous)
 
@@ -375,15 +530,22 @@ translation are in `docs/language/05-naming-and-casing.md`.
 ## Suggested execution order
 
 ```
-M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 ──► M6 ──► M7
-              │
-              └──► tooling (LSP, fmt, repl) in parallel from ~M1
+M0 ──► M1 ──► M2 ──► M3 ──► M4 ──► M5 (windows) ──► M7.1 ──► M7.2 ──► M7.3
+              │                                                          │
+              └──► tooling (LSP, fmt, repl) in parallel from ~M1         │
+                                                                         │
+                     ┌───────────────────────────────────────────────────┘
+                     ├──► M7.4 ──► M7.5
+                     └──► M5 (refresh) ──► M6 ──► rest of M7
 ```
 
 Units (M3) precede streaming (M5) because a window rollup is a rollup of
-dimensioned quantities; streaming precedes ML validation (M6) because the
-features are windowed; serving (M7) is last because it puts the whole typed
-pipeline behind endpoints.
+dimensioned quantities.  Serving (M7.1 to M7.3) moved ahead of M5's
+refresh half and M6 when ADR 0045 was accepted: a deployment is what the
+driving application needs next, incremental refresh is an optimization
+nobody has measured, and a served workload is what will measure it.
+Streaming precedes ML validation (M6) because the features are windowed;
+M6 and the rest of M7 then put the whole typed pipeline behind endpoints.
 
 ## Validation criterion
 
@@ -396,10 +558,12 @@ them correctly, and every `docs/examples/` file compiles.
 
 1. **`assume` only, or also an `exploratory` mode?**  Recommendation: only
    `assume`, no mode.  Every relaxation is local, visible, and auditable.
-2. **How much of the serving surface forks into a companion project?**  The
-   core language is usable without the web surface; whether `mensura serve` and
-   the transport layer live here or in a `mensura-server` companion is settled
-   when M7 is scoped.
+2. **How much of the serving surface forks into a companion project?**  ADR
+   0045 answers it for `serve`: a new crate in this workspace
+   hosts the server, keeping `mensura-runtime` free of an HTTP stack, and
+   the language stays usable without it.  The data-space connector (M7.5)
+   is settled the same way: it never lives here.  Mensura exports a
+   self-description, and the connector is a separate service.
 3. **Decidability bounds of the qualifier hooks.**  The disjointness hook has a
    decidable fragment with an `assume` fallback (`08-lineage.md`); whether
    other `std` qualifiers stay inside a decidable fragment is open (ADR 0004).
