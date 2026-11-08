@@ -8,6 +8,8 @@
 //!   materialize its views (`docs/toolkit/04-processing-layer.md`).
 //! - `ingest` -- decode a batch of records and append it to a store or
 //!   registry (`docs/toolkit/05-ingestion.md`).
+//! - `floor` -- advance a registry's closure floor (ADR 0041).
+//! - `serve` -- run a program as a service (`docs/toolkit/06-serving.md`).
 //! - `lsp`   -- run the language server over stdio.
 
 use std::path::{Path, PathBuf};
@@ -78,6 +80,13 @@ enum Command {
         #[arg(long, default_value = ":memory:")]
         db: PathBuf,
     },
+    /// Run a program as a service: intake, read, and materializer roles
+    /// over a database, from a runtime configuration (ADR 0045).
+    Serve {
+        /// The runtime configuration file (TOML).
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Run the language server, speaking LSP over stdio.
     Lsp,
 }
@@ -101,7 +110,29 @@ fn main() -> ExitCode {
             point,
             db,
         } => cmd_floor(&file, &target, &column, &point, &db),
+        Command::Serve { config } => cmd_serve(&config),
         Command::Lsp => cmd_lsp(),
+    }
+}
+
+/// Run a program as a service until `SIGTERM` or `SIGINT`
+/// (`docs/toolkit/06-serving.md`).  Startup refuses, with a diagnostic, a
+/// configuration that does not load, a program that does not typecheck, a
+/// database this build cannot serve, or a namespace created for a
+/// different program.
+fn cmd_serve(config: &Path) -> ExitCode {
+    match mensura_serve::run(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(mensura_serve::StartError::Program(diagnostics)) => {
+            for d in diagnostics {
+                eprintln!("{d}");
+            }
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -216,11 +247,12 @@ fn cmd_run(path: &Path, db_path: &Path) -> ExitCode {
         }
     }
     match materialize_views(&mut backend, &program) {
-        Ok(views) => {
-            for (name, rows) in views {
+        Ok(materialized) => {
+            for (name, rows) in materialized.views {
                 let noun = if rows == 1 { "row" } else { "rows" };
                 println!("materialized view {name} ({rows} {noun})");
             }
+            println!("views reflect position {}", materialized.position);
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -294,8 +326,11 @@ fn cmd_floor(path: &Path, target: &str, column: &str, point: &str, db_path: &Pat
         eprintln!("note: using an in-memory database; pass --db <path> to persist");
     }
     match backend.advance_floor(target, column, &stored) {
-        Ok(()) => {
-            println!("{target}.{column} is closed through {stored}");
+        Ok(floored) => {
+            println!(
+                "{target}.{column} is closed through {stored} (position {})",
+                floored.position
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -390,10 +425,16 @@ fn cmd_ingest(path: &Path, target: &str, data: &Path, db_path: &Path) -> ExitCod
     match backend.apply(&schema.shape(), &Delta::appending(rows)) {
         Ok(applied) => {
             let noun = if applied.inserted == 1 { "row" } else { "rows" };
+            let skipped = if applied.skipped > 0 {
+                format!(", {} already stored", applied.skipped)
+            } else {
+                String::new()
+            };
             println!(
-                "appended {} {noun} to {} {target}",
+                "appended {} {noun} to {} {target}{skipped} (position {})",
                 applied.inserted,
-                schema.kind.keyword()
+                schema.kind.keyword(),
+                applied.position
             );
             ExitCode::SUCCESS
         }

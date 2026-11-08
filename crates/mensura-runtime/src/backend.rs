@@ -6,14 +6,43 @@
 
 use std::fmt;
 
-use mensura_types::{Lateness, Schema, TableShape};
+use mensura_types::{Lateness, ResolvedProgram, Schema, TableShape};
 
 use crate::value::Row;
 
+/// The principal a write carries when the toolchain itself is the writer,
+/// acting in-process beside the database: a one-shot CLI command or a
+/// test.  In ADR 0005's canonical form, under a trust domain that stands
+/// for "this machine".  A served write carries the caller's identity
+/// instead (ADR 0045 decision 8).
+pub const LOCAL_PRINCIPAL: &str = "spiffe://local/service/mensura";
+
 /// A persistent place where stores and views are materialized.
+///
+/// Every change to the program's inputs is a **positioned write**
+/// (ADR 0045 decision 4): it takes the next position in the write log
+/// under the backend's serialization point, and commits with its log
+/// entry.  Positions are therefore gapless in every committed snapshot,
+/// which is what lets a view be materialized "at position `N`"
+/// (decision 5).
 pub trait StorageBackend {
     /// Ensure the store's table exists, creating it if absent.
     fn ensure_store(&mut self, schema: &Schema) -> Result<EnsureOutcome, StorageError>;
+
+    /// Create the program's tables on first start, or verify that the
+    /// namespace was created for this program (ADR 0045 decision 9): the
+    /// per-table fingerprints of the stores and registries are recorded
+    /// on creation and compared afterwards, and a mismatch names the
+    /// tables that differ.  Views are not fingerprinted: a changed view is
+    /// rebuilt by the next materialization.
+    fn guard_program(&mut self, program: &ResolvedProgram) -> Result<GuardOutcome, StorageError>;
+
+    /// The latest committed position: the number of writes the database
+    /// has taken (ADR 0045 decision 4).  Zero before the first write.
+    fn position(&self) -> Result<u64, StorageError>;
+
+    /// The position a view was last materialized at, if it ever was.
+    fn view_position(&self, view: &str) -> Result<Option<u64>, StorageError>;
 
     /// Read a table's current rows, decoded to typed values in column order
     /// (`docs/toolkit/04-processing-layer.md`).  Rows come back ordered by
@@ -22,13 +51,66 @@ pub trait StorageBackend {
     fn scan(&self, table: &TableShape) -> Result<Vec<Row>, StorageError>;
 
     /// Ensure the view's table exists and replace its contents with `rows`
-    /// in one transaction: readers see the previous materialization or the
-    /// new one, never a partial state.
-    fn materialize_view(&mut self, view: &TableShape, rows: &[Row]) -> Result<(), StorageError>;
+    /// in one transaction, recording `position` as the position the rows
+    /// reflect (ADR 0045 decision 5): readers see the previous
+    /// materialization or the new one, never a partial state.
+    ///
+    /// The replacement is a compare-and-set: it happens only if the view's
+    /// recorded position is below `position`, so a slower materializer can
+    /// never overwrite a newer result with an older one.  Returns whether
+    /// the replacement happened.
+    fn materialize_view(
+        &mut self,
+        view: &TableShape,
+        rows: &[Row],
+        position: u64,
+    ) -> Result<bool, StorageError>;
 
-    /// Apply a batch of row changes to a table in one transaction: every
-    /// change lands or none does (`docs/toolkit/05-ingestion.md`, ADR 0034).
-    fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError>;
+    /// Apply a batch of row changes to a table as one positioned write:
+    /// every change lands or none does (`docs/toolkit/05-ingestion.md`,
+    /// ADR 0034), under `principal`'s identity in the log entry.
+    ///
+    /// On a keyed table, a row equal to the row already stored at its key
+    /// is accepted as a no-op and counted as skipped, and a row whose key
+    /// is stored with different content is a conflict that rejects the
+    /// batch (ADR 0045 decision 11).  The identity check runs before the
+    /// lateness check, so a re-sent old row is a no-op rather than a late
+    /// rejection.
+    fn apply_as(
+        &mut self,
+        table: &TableShape,
+        delta: &Delta,
+        principal: &str,
+    ) -> Result<Applied, StorageError>;
+
+    /// [`StorageBackend::apply_as`] under the toolchain's own identity,
+    /// [`LOCAL_PRINCIPAL`]: what a CLI command or a test writes as.
+    fn apply(&mut self, table: &TableShape, delta: &Delta) -> Result<Applied, StorageError> {
+        self.apply_as(table, delta, LOCAL_PRINCIPAL)
+    }
+
+    /// Advance a contract's declared closure floor (ADR 0041 decision 4)
+    /// as a positioned write under `principal`: the point through which
+    /// the deployment asserts the world is closed.  A floor only ever
+    /// advances; lowering one is refused.  `point` is the column's own
+    /// text (a normalized instant, or an integer count for an `int` point).
+    fn advance_floor_as(
+        &mut self,
+        store: &str,
+        column: &str,
+        point: &str,
+        principal: &str,
+    ) -> Result<Floored, StorageError>;
+
+    /// [`StorageBackend::advance_floor_as`] under [`LOCAL_PRINCIPAL`].
+    fn advance_floor(
+        &mut self,
+        store: &str,
+        column: &str,
+        point: &str,
+    ) -> Result<Floored, StorageError> {
+        self.advance_floor_as(store, column, point, LOCAL_PRINCIPAL)
+    }
 
     /// The effective watermark of every grain under one intake contract
     /// (ADR 0041 decision 3): `max(observed, floor)`, where the observed
@@ -105,11 +187,56 @@ impl Delta {
     }
 }
 
-/// What [`StorageBackend::apply`] did.
+/// What [`StorageBackend::apply_as`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Applied {
     pub inserted: usize,
     pub deleted: usize,
+    /// Rows already stored identically, accepted as no-ops (ADR 0045
+    /// decision 11).
+    pub skipped: usize,
+    /// The position this write took in the log.
+    pub position: u64,
+}
+
+/// What [`StorageBackend::advance_floor_as`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Floored {
+    /// The position this write took in the log.
+    pub position: u64,
+}
+
+/// What [`StorageBackend::guard_program`] found (ADR 0045 decision 9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GuardOutcome {
+    /// The namespace was empty: the program's tables were created and its
+    /// fingerprint recorded.
+    Created { fingerprint: String },
+    /// The namespace was created for a program with the same stored
+    /// tables; nothing was changed.
+    Verified { fingerprint: String },
+    /// The namespace was created for a different program.  Nothing was
+    /// changed, and `tables` names every store or registry whose
+    /// fingerprint differs, is missing from the database, or is missing
+    /// from the program.
+    Mismatch {
+        tables: Vec<String>,
+        stored: String,
+        program: String,
+    },
+}
+
+impl GuardOutcome {
+    /// The fingerprint of the program the namespace holds, or of this
+    /// program if it was just created or verified.
+    pub fn fingerprint(&self) -> &str {
+        match self {
+            GuardOutcome::Created { fingerprint } | GuardOutcome::Verified { fingerprint } => {
+                fingerprint
+            }
+            GuardOutcome::Mismatch { stored, .. } => stored,
+        }
+    }
 }
 
 /// What [`StorageBackend::ensure_store`] did.
@@ -142,9 +269,19 @@ pub enum StorageError {
         references: Vec<(String, String)>,
     },
     /// A write violated the key discipline: a `singletons` tabulation holds
-    /// at most one row per key (ADR 0001).
+    /// at most one row per key (ADR 0001), and this batch repeats one
+    /// within itself.
     DuplicateKey {
         table: String,
+    },
+    /// A batch carries a row whose key is already stored with different
+    /// content (ADR 0045 decision 11).  A row equal to the stored one is a
+    /// no-op; a different one is a conflict, since no operation updates a
+    /// row (ADR 0034 decision 7).
+    KeyConflict {
+        table: String,
+        /// The conflicting key, as `column = value` pairs.
+        key: Vec<(String, String)>,
     },
     /// A batch broke the registry's `lateness` contract (ADR 0037
     /// decision 4): it contains a row whose contracted point is older than
@@ -196,6 +333,20 @@ impl fmt::Display for StorageError {
                 "`{table}` holds at most one row per key, and this batch \
                  repeats one"
             ),
+            StorageError::KeyConflict { table, key } => {
+                let pairs: Vec<String> = key
+                    .iter()
+                    .map(|(col, value)| format!("`{col}` = {value}"))
+                    .collect();
+                write!(
+                    f,
+                    "`{table}` already holds a different row at {}; a row \
+                     equal to the stored one would be a no-op, but no \
+                     operation updates a row, so the batch was rejected \
+                     whole (ADR 0045)",
+                    pairs.join(", ")
+                )
+            }
             StorageError::Lateness {
                 table,
                 column,
@@ -231,6 +382,7 @@ impl std::error::Error for StorageError {
             | StorageError::Refused(_)
             | StorageError::ForeignKey { .. }
             | StorageError::DuplicateKey { .. }
+            | StorageError::KeyConflict { .. }
             | StorageError::Lateness { .. } => None,
         }
     }

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use mensura_types::{ColumnType, Schema};
+use mensura_types::{ColumnType, Schema, TableShape};
 
 use crate::value::{Row, Value};
 
@@ -236,6 +236,45 @@ pub fn decode_jsonl(schema: &Schema, src: &str) -> Result<Vec<Row>, IngestError>
     decode_records(schema, &records)
 }
 
+/// Encode one stored row as a name-keyed JSON record: the decoder's inverse
+/// (ADR 0045 decision 7).  An instant is its normalized UTC form, a
+/// dimensioned value its base-unit magnitude, an enum its variant literal,
+/// a compound component its dotted name, and a missing value `null`, so a
+/// record read from a table re-ingests into a table of the same schema.
+/// Fields follow the table's column order.
+pub fn encode_record(table: &TableShape, row: &Row) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (col, value) in table.columns.iter().zip(row) {
+        out.insert(col.name.clone(), encode_value(value));
+    }
+    out
+}
+
+/// Encode a scan of `table` as a JSON array of records, in the scan's
+/// order.
+pub fn encode_rows(table: &TableShape, rows: &[Row]) -> serde_json::Value {
+    serde_json::Value::Array(
+        rows.iter()
+            .map(|row| serde_json::Value::Object(encode_record(table, row)))
+            .collect(),
+    )
+}
+
+fn encode_value(value: &Value) -> serde_json::Value {
+    use serde_json::Value as Json;
+    match value {
+        Value::String(s) | Value::Date(s) | Value::Instant(s) | Value::Enum(s) => {
+            Json::String(s.clone())
+        }
+        Value::Int(n) => Json::from(*n),
+        // JSON has no NaN or infinity; a non-finite magnitude encodes as
+        // `null`, which is the honest rendering of a value JSON cannot say.
+        Value::Real(x) => Json::from(*x),
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Missing => Json::Null,
+    }
+}
+
 fn json_scalar(v: &serde_json::Value) -> Option<Scalar> {
     Some(match v {
         serde_json::Value::Null => Scalar::Null,
@@ -297,6 +336,37 @@ mod tests {
             ("status".into(), Scalar::Text("ok".into())),
             ("note".into(), Scalar::Text("hi".into())),
         ])
+    }
+
+    /// The encoder is the decoder's inverse (ADR 0045 decision 7): a
+    /// record read from a table re-ingests into a table of the same
+    /// schema, and a second encoding is byte-identical.
+    #[test]
+    fn encoding_round_trips_through_the_decoder() {
+        let schema = schema(EVERY_TYPE, "rows");
+        let shape = schema.shape();
+        let row = decode_record(&schema, &full_record(), 1).expect("decodes");
+        let encoded = serde_json::Value::Object(encode_record(&shape, &row));
+        // Fields in column order, the instant in its normalized UTC form.
+        assert_eq!(
+            encoded.to_string(),
+            r#"{"id":"k-1","count":3,"ratio":0.5,"flag":true,"day":"2026-07-31","at":"2026-07-31T08:07:31.221Z","status":"ok","note":"hi"}"#
+        );
+        let again = decode_jsonl(&schema, &encoded.to_string()).expect("re-ingests");
+        assert_eq!(again, vec![row.clone()]);
+        // A missing optional encodes as `null` and decodes back to missing.
+        let mut absent = row;
+        absent[7] = Value::Missing;
+        let encoded = encode_rows(&shape, &[absent.clone()]);
+        assert!(
+            encoded.to_string().ends_with(r#""note":null}]"#),
+            "{encoded}"
+        );
+        let line = encoded[0].to_string();
+        assert_eq!(
+            decode_jsonl(&schema, &line).expect("re-ingests"),
+            vec![absent]
+        );
     }
 
     #[test]

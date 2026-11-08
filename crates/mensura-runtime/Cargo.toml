@@ -11,3 +11,4 @@ mensura-syntax = { workspace = true }
 mensura-types = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }

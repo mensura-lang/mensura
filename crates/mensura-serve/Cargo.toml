@@ -1,0 +1,21 @@
+[package]
+name = "mensura-serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runs a Mensura program as a service (ADR 0045)."
+
+[dependencies]
+mensura-syntax = { workspace = true }
+mensura-types = { workspace = true }
+mensura-runtime = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }

@@ -15,4 +15,5 @@ mensura-syntax = { workspace = true }
 mensura-types = { workspace = true }
 mensura-runtime = { workspace = true }
 mensura-lsp = { workspace = true }
+mensura-serve = { workspace = true }
 clap = { workspace = true }
