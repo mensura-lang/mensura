@@ -15,7 +15,7 @@ both rows.
 | 0003 | A `shape` is a structural contract claimed with `:` | Accepted; blocks per 0019 |
 | 0004 | Table type `Table<Qs, C>`; qualifiers propagate facts | Accepted; boundary per 0013 |
 | 0005 | Mensura verifies federated SPIFFE-style identities | Proposed; subset in 0045 |
-| 0006 | Programs name surfaces, never wires | Proposed; HTTP in 0045 |
+| 0006 | Programs name surfaces, never wires | Proposed; HTTP in 0045, deploy config in 0046 |
 | 0007 | One expression sublanguage at every site | Accepted |
 | 0008 | The algebra is mechanized in Lean 4 under `formal/` | Accepted |
 | 0009 | Pipelines are curried expressions over a small kernel | Accepted; names per 0025 |
@@ -55,3 +55,4 @@ both rows.
 | 0043 | Record spread `...r` | Accepted |
 | 0044 | `last p` names the point reduction | Accepted |
 | 0045 | `mensura serve`: roles, write log, HTTP projection | Accepted |
+| 0046 | `mensura deploy`: the deploy configuration and the compose bundle | Proposed |

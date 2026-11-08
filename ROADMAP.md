@@ -97,7 +97,11 @@ mensura/
     mensura-mdbook/     -- the `mdbook-mensura` preprocessor (book highlighting)
     mensura-serve/      -- `mensura serve`: configuration, principals, the
                            HTTP projection, and the materializer (ADR 0045)
+    mensura-deploy/     -- `mensura deploy`: the deploy configuration and
+                           the bundle generator per target (ADR 0046)
     mensura-cli/        -- the `mensura` binary
+  Dockerfile            -- the toolchain image `mensura serve` is deployed
+                           from (ADR 0046); published from CI
   formal/               -- Lean 4 formalization of the algebra (Mathlib-backed);
                            see decisions/0008
 ```
@@ -181,8 +185,9 @@ mensura/
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): incremental refresh (`on_change`, the changelog, the plan IR,
   and the DBSP lowering) and the sampling qualifier that per-window
-  sampling inference needs; ML signatures and validation; the deploy
-  configuration and bundle (M7.2), the MQTT projection of the intake and
+  sampling inference needs; ML signatures and validation; the toolkit
+  document for the deploy configuration and bundle (M7.2, ADR 0046
+  proposed), the MQTT projection of the intake and
   the provenance it records (M7.4), the self-description with its
   data-space export (M7.5) and its agent projection over MCP together
   with the ephemeral view evaluation that rests on (M7.6), and the
@@ -425,13 +430,14 @@ the service in the hands of the end user's agent.
   into Postgres: a copy at the storage level, never a re-ingestion
   through the intake, since the old rows sit below the closure floor and
   would be refused.
-- **7.2 Deploy configuration and bundle.**  The user-authored deploy
-  configuration of ADR 0006 names a target and the surfaces each
-  transport exposes; `mensura deploy` compiles it and the program into a
-  self-contained folder (one serve configuration per role group, and a
-  script that brings the system up).  A compose target first, and it is
-  the one the demonstration deploys with: on a host shared with the
-  platform's broker, the bundle must give each service a memory limit,
+- **7.2 Deploy configuration and bundle (ADR 0046, proposed).**  The
+  user-authored deploy configuration of ADR 0006 names a target and the
+  surfaces each transport exposes; `mensura deploy` compiles it and the
+  program into a self-contained folder (one serve configuration per
+  role group, and a script that brings the system up).  A compose
+  target first, and it is the one the demonstration deploys with: on a
+  host shared with the platform's broker, the bundle must give each
+  service a memory limit,
   so that memory pressure stops Mensura before the broker, and put the
   database file on its own volume, so that it cannot crowd out the
   broker's queue.  One cheap cloud target (a managed container runtime
