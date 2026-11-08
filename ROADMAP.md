@@ -415,15 +415,32 @@ the service in the hands of the end user's agent.
   identities and scopes, a Postgres backend beside embedded SQLite, and a
   schema guard that refuses a program its namespace was not created for.
   No language change.  Implemented over embedded SQLite in one process
-  (`docs/toolkit/06-serving.md`); the Postgres backend is the slice's
-  second half.
+  (`docs/toolkit/06-serving.md`), and that is what the first deployment
+  runs on: the platform's broker host is a small virtual machine with
+  no room for a database server, and a single instance over a file on
+  its own volume fits beside the broker with margin.  The Postgres
+  backend, with the roles separable across instances, is deferred until
+  tenancy by namespace needs it (one namespace per participant, after
+  7.3), together with a **backend-to-backend copy** from the SQLite file
+  into Postgres: a copy at the storage level, never a re-ingestion
+  through the intake, since the old rows sit below the closure floor and
+  would be refused.
 - **7.2 Deploy configuration and bundle.**  The user-authored deploy
   configuration of ADR 0006 names a target and the surfaces each
   transport exposes; `mensura deploy` compiles it and the program into a
   self-contained folder (one serve configuration per role group, and a
-  script that brings the system up).  A local target first (a compose
-  file or a local cluster), then one cheap cloud target (a managed
-  container runtime with a managed Postgres).  Typed schema migrations,
+  script that brings the system up).  A compose target first, and it is
+  the one the demonstration deploys with: on a host shared with the
+  platform's broker, the bundle must give each service a memory limit,
+  so that memory pressure stops Mensura before the broker, and put the
+  database file on its own volume, so that it cannot crowd out the
+  broker's queue.  One cheap cloud target (a managed container runtime
+  with a managed Postgres) comes later, with the Postgres backend.
+  Retention is the open question the first host forces: a reading per
+  sensor per second fills a small disk in months, and Mensura has no
+  mechanism yet for dropping rows below the closure floor (ADR 0045
+  leaves even log retention open); the design belongs beside the copy
+  tool of 7.1, before the deployment runs for long.  Typed schema migrations,
   guarded by the fingerprint 7.1 records, are the slice after the first
   deploy, so that a store change becomes a generated migration rather
   than a refusal.
