@@ -26,7 +26,7 @@ mensura-lsp = { path = "crates/mensura-lsp", version = "0.0.0" }
 mensura-serve = { path = "crates/mensura-serve", version = "0.0.0" }
 unicode-xid = "0.2"
 clap = { version = "4", features = ["derive"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 lsp-server = "0.10"
 lsp-types = "0.97"
 serde_json = { version = "1", features = ["preserve_order"] }
