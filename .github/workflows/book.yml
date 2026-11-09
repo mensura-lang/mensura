@@ -41,7 +41,7 @@ jobs:
       # Build the preprocessor up front so `mdbook build` (which invokes it via
       # `cargo run`) does not pay for the compile mid-build.
       - name: Build preprocessor
-        run: cargo build --package mensura-mdbook
+        run: cargo build --package mensura-mdbook --locked
       # Building the book runs mdbook-mensura, which fails here if any
       # ```mensura example stops compiling.
       - name: Build book
