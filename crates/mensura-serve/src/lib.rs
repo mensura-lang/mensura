@@ -15,6 +15,7 @@
 pub mod auth;
 pub mod config;
 pub mod frontend;
+pub mod probe;
 pub mod server;
 pub mod state;
 

@@ -292,6 +292,7 @@ impl StorageBackend for SqliteBackend {
     fn materialize_view(
         &mut self,
         view: &TableShape,
+        definition: &str,
         rows: &[Row],
         position: u64,
     ) -> Result<bool, StorageError> {
@@ -299,10 +300,28 @@ impl StorageBackend for SqliteBackend {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_reserved(&tx)?;
+        // Rows produced by another definition of the view are stale at any
+        // position, and their table may have another shape, which
+        // `CREATE TABLE IF NOT EXISTS` would keep: drop it and start over.
+        let recorded_definition: Option<String> = tx
+            .query_row(
+                &format!(
+                    "SELECT \"definition\" FROM {} WHERE \"view\" = ?1",
+                    quote_ident(VIEW_DEFINITIONS_TABLE)
+                ),
+                [&view.name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let redefined = recorded_definition.as_deref() != Some(definition);
+        if redefined {
+            tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", quote_ident(&view.name)))?;
+        }
         tx.execute_batch(&create_table_sql(view))?;
         // Compare-and-set on the recorded position (ADR 0045 decision 5):
         // a materializer that read an older snapshot never overwrites a
-        // newer result.  Dropping the transaction here rolls it back.
+        // newer result of the same definition.  Dropping the transaction
+        // here rolls it back.
         let recorded: Option<i64> = tx
             .query_row(
                 &format!(
@@ -313,7 +332,7 @@ impl StorageBackend for SqliteBackend {
                 |r| r.get(0),
             )
             .optional()?;
-        if recorded.is_some_and(|r| r as u64 >= position) {
+        if !redefined && recorded.is_some_and(|r| r as u64 >= position) {
             return Ok(false);
         }
         tx.execute(&format!("DELETE FROM {}", quote_ident(&view.name)), [])?;
@@ -339,6 +358,16 @@ impl StorageBackend for SqliteBackend {
             ),
             rusqlite::params![view.name, position as i64],
         )?;
+        if redefined {
+            tx.execute(
+                &format!(
+                    "INSERT INTO {} (\"view\", \"definition\") VALUES (?1, ?2) \
+                     ON CONFLICT (\"view\") DO UPDATE SET \"definition\" = ?2",
+                    quote_ident(VIEW_DEFINITIONS_TABLE)
+                ),
+                rusqlite::params![view.name, definition],
+            )?;
+        }
         tx.commit()?;
         Ok(true)
     }
@@ -507,6 +536,11 @@ pub(crate) const VIEWS_TABLE: &str = "mensura_views";
 /// The per-table fingerprints of the program the namespace was created
 /// for (ADR 0045 decision 9).
 pub(crate) const PROGRAM_TABLE: &str = "mensura_program";
+/// The definition digest each view's rows were produced by
+/// (`fingerprint::view_definitions`).  A table of its own rather than a
+/// column of `mensura_views`, so that a database created by an older
+/// toolchain gains it by creation, with no reserved-table migration.
+pub(crate) const VIEW_DEFINITIONS_TABLE: &str = "mensura_view_definitions";
 
 /// Create every reserved table that is absent.  Idempotent, and called at
 /// the start of each operation that reads or writes one, so a database
@@ -527,10 +561,14 @@ fn ensure_reserved(conn: &Connection) -> Result<(), StorageError> {
          CREATE TABLE IF NOT EXISTS {program} (\n  \
            \"table\" TEXT PRIMARY KEY,\n  \
            \"fingerprint\" TEXT NOT NULL\n);\n\
+         CREATE TABLE IF NOT EXISTS {definitions} (\n  \
+           \"view\" TEXT PRIMARY KEY,\n  \
+           \"definition\" TEXT NOT NULL\n);\n\
          {floors}",
         log = quote_ident(LOG_TABLE),
         views = quote_ident(VIEWS_TABLE),
         program = quote_ident(PROGRAM_TABLE),
+        definitions = quote_ident(VIEW_DEFINITIONS_TABLE),
         floors = create_floor_table_sql(),
     ))?;
     Ok(())
@@ -1417,7 +1455,7 @@ mod tests {
             Value::Date("2000-01-01".into()),
             Value::String("x".into()),
         ]];
-        assert!(db.materialize_view(&shape, &first, 1).unwrap());
+        assert!(db.materialize_view(&shape, "d", &first, 1).unwrap());
         assert_eq!(db.scan(&shape).unwrap(), first);
 
         // A second materialization replaces, not accumulates.
@@ -1433,7 +1471,7 @@ mod tests {
                 Value::String("z".into()),
             ],
         ];
-        assert!(db.materialize_view(&shape, &second, 2).unwrap());
+        assert!(db.materialize_view(&shape, "d", &second, 2).unwrap());
         assert_eq!(db.scan(&shape).unwrap(), second);
     }
 
@@ -1958,22 +1996,54 @@ mod tests {
         let mut db = SqliteBackend::open_in_memory().unwrap();
         assert_eq!(db.view_position("persons").unwrap(), None);
         assert!(
-            db.materialize_view(&shape, &[person("p1", "Ada")], 2)
+            db.materialize_view(&shape, "d", &[person("p1", "Ada")], 2)
                 .unwrap()
         );
         assert_eq!(db.view_position("persons").unwrap(), Some(2));
         // An older result never replaces a newer one.
         assert!(
-            !db.materialize_view(&shape, &[person("p1", "Old")], 1)
+            !db.materialize_view(&shape, "d", &[person("p1", "Old")], 1)
                 .unwrap()
         );
         assert_eq!(db.scan(&shape).unwrap(), vec![person("p1", "Ada")]);
         assert_eq!(db.view_position("persons").unwrap(), Some(2));
         // The same position is not newer either.
-        assert!(!db.materialize_view(&shape, &[], 2).unwrap());
-        assert!(db.materialize_view(&shape, &[], 3).unwrap());
+        assert!(!db.materialize_view(&shape, "d", &[], 2).unwrap());
+        assert!(db.materialize_view(&shape, "d", &[], 3).unwrap());
         assert_eq!(db.scan(&shape).unwrap(), Vec::<Row>::new());
         assert_eq!(db.view_position("persons").unwrap(), Some(3));
+    }
+
+    #[test]
+    fn a_redefined_view_is_replaced_at_any_position_and_reshaped() {
+        let schema = schema(PERSONS, "persons");
+        let shape = schema.shape();
+        let mut db = SqliteBackend::open_in_memory().unwrap();
+        assert!(
+            db.materialize_view(&shape, "d1", &[person("p1", "Ada")], 2)
+                .unwrap()
+        );
+        // Same position, new definition: the old rows are stale.
+        assert!(
+            db.materialize_view(&shape, "d2", &[person("p1", "Eve")], 2)
+                .unwrap()
+        );
+        assert_eq!(db.scan(&shape).unwrap(), vec![person("p1", "Eve")]);
+        // Even an older position: the recorded rows came from a definition
+        // that no longer exists, so nothing newer is being overwritten.
+        let narrower = TableShape {
+            columns: shape.columns[..1].to_vec(),
+            ..shape.clone()
+        };
+        assert!(
+            db.materialize_view(&narrower, "d3", &[vec![Value::String("p9".into())]], 1)
+                .unwrap()
+        );
+        assert_eq!(
+            db.scan(&narrower).unwrap(),
+            vec![vec![Value::String("p9".into())]]
+        );
+        assert_eq!(db.view_position("persons").unwrap(), Some(1));
     }
 
     #[test]

@@ -438,3 +438,70 @@ fn the_guard_refuses_a_changed_store_across_restarts() {
     assert_eq!(stored, fingerprint);
     let _ = std::fs::remove_file(&path);
 }
+
+/// The readiness probe of `mensura health` (ADR 0046 decision 6) against
+/// a listening instance: a real socket, not the router in process.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_health_probe_reads_a_listening_instance() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(axum::serve(listener, router(state())).into_future());
+    let ready = tokio::task::spawn_blocking(move || {
+        mensura_serve::probe::health(&addr.to_string(), std::time::Duration::from_secs(5))
+    })
+    .await
+    .unwrap()
+    .expect("the instance answers ready");
+    assert_eq!(ready.namespace, "test");
+    assert_eq!(ready.position, 0);
+    server.abort();
+}
+
+#[test]
+fn a_new_token_matches_its_digest_format() {
+    let token = auth::new_token().unwrap();
+    assert_eq!(token.len(), 64);
+    assert_ne!(token, auth::new_token().unwrap());
+    assert_eq!(auth::digest(&token).len(), 64);
+}
+
+/// A redeploy that edits a view, with no write in between, serves the new
+/// definition rather than the old rows (ADR 0045 decision 9: a changed
+/// view is rebuilt; ADR 0046 decision 7), even when the edit changes the
+/// view's columns.
+#[tokio::test]
+async fn a_redefined_view_is_rebuilt_without_a_new_write() {
+    let path = std::env::temp_dir().join(format!(
+        "mensura-serve-redefine-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let open = || SqliteBackend::open(&path).unwrap();
+
+    let first = AppState::open(config(8_388_608), program(PROGRAM), open()).unwrap();
+    let app = router(first.clone());
+    let (status, _, body) = call(&app, request("POST", "/readings", Some(WRITER), BATCH)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    materialize_once(&first).await.unwrap();
+    let (_, _, before) = call(&app, request("GET", "/peaks", Some(READER), "")).await;
+    assert!(before[0]["peak"].is_number(), "{before}");
+    drop(app);
+    drop(first);
+
+    let edited = PROGRAM.replace(
+        "(.peak = bag.max b.temperature)",
+        "(.low = bag.min b.temperature)",
+    );
+    let second = AppState::open(config(8_388_608), program(&edited), open()).unwrap();
+    assert_eq!(materialize_once(&second).await.unwrap().position, 1);
+    let app = router(second);
+    let (status, headers, after) = call(&app, request("GET", "/peaks", Some(READER), "")).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(position_of(&headers), 1);
+    assert!(after[0]["low"].is_number(), "{after}");
+    assert!(after[0].get("peak").is_none(), "{after}");
+    let _ = std::fs::remove_file(&path);
+}

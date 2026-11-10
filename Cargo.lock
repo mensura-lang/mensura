@@ -554,11 +554,23 @@ name = "mensura-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "mensura-deploy",
  "mensura-lsp",
  "mensura-runtime",
  "mensura-serve",
  "mensura-syntax",
  "mensura-types",
+]
+
+[[package]]
+name = "mensura-deploy"
+version = "0.0.0"
+dependencies = [
+ "mensura-serve",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
 ]
 
 [[package]]

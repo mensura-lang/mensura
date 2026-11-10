@@ -57,11 +57,16 @@ pub trait StorageBackend {
     ///
     /// The replacement is a compare-and-set: it happens only if the view's
     /// recorded position is below `position`, so a slower materializer can
-    /// never overwrite a newer result with an older one.  Returns whether
-    /// the replacement happened.
+    /// never overwrite a newer result with an older one.  `definition` is
+    /// the view's definition digest (`fingerprint::view_definitions`),
+    /// recorded beside the position; when it differs from the recorded
+    /// one, the rows were produced by another definition and are replaced
+    /// whatever their position, the table recreated so that a changed
+    /// shape applies.  Returns whether the replacement happened.
     fn materialize_view(
         &mut self,
         view: &TableShape,
+        definition: &str,
         rows: &[Row],
         position: u64,
     ) -> Result<bool, StorageError>;
