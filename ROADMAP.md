@@ -178,16 +178,21 @@ mensura/
   the identity check for re-sent rows, views materialized at a position
   by compare-and-set, the schema guard, and `mensura serve` with its
   configuration, bearer principals, and HTTP projection, over embedded
-  SQLite in one process.  The Postgres backend, which makes the roles
-  separable across instances, is next.  The ADR pulls this slice of M7
+  SQLite in one process.  The ADR pulls this slice of M7
   ahead of M5's refresh half and M6; the execution order below records
   that.
+- **Deploying's first slice is implemented** (ADR 0046, accepted;
+  `docs/toolkit/07-deploying.md`): `mensura deploy` compiles a deploy
+  configuration and a program into a compose bundle (one runtime
+  configuration per instance, a service with a memory limit, a named
+  data volume, and a readiness check), with `mensura token` and
+  `mensura health` beside it, and CI publishes the toolchain image.
+  The bridged demonstration (M7.3) is next.
 - **Design docs still to write** (each ahead of its milestone, per specs
   first): incremental refresh (`on_change`, the changelog, the plan IR,
   and the DBSP lowering) and the sampling qualifier that per-window
-  sampling inference needs; ML signatures and validation; the toolkit
-  document for the deploy configuration and bundle (M7.2, ADR 0046
-  proposed), the MQTT projection of the intake and
+  sampling inference needs; ML signatures and validation; the MQTT
+  projection of the intake and
   the provenance it records (M7.4), the self-description with its
   data-space export (M7.5) and its agent projection over MCP together
   with the ephemeral view evaluation that rests on (M7.6), and the
@@ -430,7 +435,7 @@ the service in the hands of the end user's agent.
   into Postgres: a copy at the storage level, never a re-ingestion
   through the intake, since the old rows sit below the closure floor and
   would be refused.
-- **7.2 Deploy configuration and bundle (ADR 0046, proposed).**  The
+- **7.2 Deploy configuration and bundle (ADR 0046).**  The
   user-authored deploy configuration of ADR 0006 names a target and the
   surfaces each transport exposes; `mensura deploy` compiles it and the
   program into a self-contained folder (one serve configuration per
@@ -442,6 +447,8 @@ the service in the hands of the end user's agent.
   database file on its own volume, so that it cannot crowd out the
   broker's queue.  One cheap cloud target (a managed container runtime
   with a managed Postgres) comes later, with the Postgres backend.
+  The compose target is implemented (`docs/toolkit/07-deploying.md`),
+  with the toolchain image published from CI.
   Retention is the open question the first host forces: a reading per
   sensor per second fills a small disk in months, and Mensura has no
   mechanism yet for dropping rows below the closure floor (ADR 0045

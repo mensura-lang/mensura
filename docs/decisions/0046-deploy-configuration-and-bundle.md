@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.  The second slice of `ROADMAP.md` M7.  Realizes the
+Accepted.  The second slice of `ROADMAP.md` M7.  Realizes the
 deploy-configuration half of
 `docs/decisions/0006-transport-agnostic-surface.md` for one target and
 settles its "format and home" open question.  Generates the runtime

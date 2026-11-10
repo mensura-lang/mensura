@@ -9,6 +9,8 @@
 //! added to the model for the checker's benefit does not silently change
 //! every deployment's fingerprint.
 
+use std::collections::BTreeMap;
+
 use mensura_types::{Cardinality, ColumnRole, ColumnType, ResolvedProgram, Schema};
 use sha2::{Digest, Sha256};
 
@@ -107,6 +109,45 @@ pub fn program_fingerprint(tables: &[(String, String)]) -> String {
     hex(&hasher.finalize())
 }
 
+/// Every view's definition digest, by name.  The schema guard leaves views
+/// out because they are derived, but a materialized view is only as
+/// current as the definition that produced it: when the digest recorded
+/// beside a view's rows differs from the program's, the rows are replaced
+/// whatever their position (`SqliteBackend::materialize_view`), so a
+/// redeployed program never serves an old definition's rows.
+///
+/// A view's rows are determined by its resolved plan and by its sources,
+/// so the digest covers the plan and chains through each source's digest:
+/// a store's table fingerprint, or an upstream view's definition digest.
+/// Editing a view therefore invalidates every view that reads it.  The
+/// plan is rendered with `Debug`, which includes source spans, so moving
+/// a view's text also invalidates it; that is conservative, since a
+/// spurious invalidation costs one replacement and never a stale read.
+pub fn view_definitions(program: &ResolvedProgram) -> BTreeMap<String, String> {
+    let mut digests: BTreeMap<String, String> = BTreeMap::new();
+    // Views come in dependency order (ADR 0042), so every upstream view's
+    // digest is known when a view needs it.
+    for plan in &program.views {
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{plan:?}").as_bytes());
+        for source in &plan.sources {
+            let upstream = digests.get(source).cloned().or_else(|| {
+                program
+                    .schemas
+                    .iter()
+                    .find(|s| &s.store == source)
+                    .map(table_fingerprint)
+            });
+            hasher.update(b"\nsource ");
+            hasher.update(source.as_bytes());
+            hasher.update(b" ");
+            hasher.update(upstream.unwrap_or_default().as_bytes());
+        }
+        digests.insert(plan.name.clone(), hex(&hasher.finalize()));
+    }
+    digests
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -186,6 +227,16 @@ mod tests {
             base,
             program_fingerprint(&program_tables(&program(&bound_edited)))
         );
+    }
+
+    #[test]
+    fn a_view_definition_change_reaches_the_views_that_read_it() {
+        let src = format!("{FLEET}\nview hot_again {{ hot }}\n");
+        let base = view_definitions(&program(&src));
+        assert_eq!(base, view_definitions(&program(&src)), "deterministic");
+        let edited = view_definitions(&program(&src.replace("350.0", "340.0")));
+        assert_ne!(base["hot"], edited["hot"]);
+        assert_ne!(base["hot_again"], edited["hot_again"], "chained");
     }
 
     #[test]

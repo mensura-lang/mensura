@@ -55,4 +55,4 @@ both rows.
 | 0043 | Record spread `...r` | Accepted |
 | 0044 | `last p` names the point reduction | Accepted |
 | 0045 | `mensura serve`: roles, write log, HTTP projection | Accepted |
-| 0046 | `mensura deploy`: the deploy configuration and the compose bundle | Proposed |
+| 0046 | `mensura deploy`: the deploy configuration and the compose bundle | Accepted |
