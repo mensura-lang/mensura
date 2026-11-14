@@ -232,7 +232,7 @@
   \label{thm:innerjoin-splitsafe}\lean{Mensura.lookupTotal_splitSafe}\leanok
   \uses{def:innerjoin, def:splitsafe}
   The fixed-right inner join is split-safe.  The book leaves the binary
-  join open (see the open problems chapter); in the unary form the only
+  join open (settled in \ref{thm:join-aligned-diagonal}); in the unary form the only
   effect is dropping unmatched left rows, a flatMap.
 \end{theorem}
 \begin{proof}\leanok
@@ -591,6 +591,116 @@
 \end{theorem}
 \begin{proof}\leanok
   It is a strict fiber flatMap.
+\end{proof}
+
+\section{Binary joins and self-derived lookups}
+
+The fixed-right joins of \ref{thm:leftjoin-splitsafe} and
+\ref{thm:innerjoin-splitsafe} let the right table vary here.  This settles
+the book's binary-join question, ported from the Lean development of the
+split-safety paper (Zeferino, Verri, Quiles), and then applies it to the
+case a pipeline actually builds: a right table computed from the left
+table itself.
+
+\begin{definition}[Aligned splits]
+  \label{def:aligned}\lean{Mensura.Aligned}\leanok
+  \uses{def:split}
+  A split $s$ of the left keys is aligned with a split $s_R$ of the right
+  keys along $\mathit{key}$ when $s = s_R \circ \mathit{key}$: each entity
+  goes to the same side in both tables, so $s$ reads only the lookup key.
+\end{definition}
+
+\begin{definition}[The aligned diagonal law]
+  \label{def:aligned-diagonal}\lean{Mensura.AlignedDiagonal}\leanok
+  \uses{def:aligned, def:union}
+  A binary operation satisfies the diagonal law when, for every aligned
+  split, its value on the whole is the union of its values on the
+  matching halves.  This is binary split-invariance; the four-term
+  statement with cross terms is the leak it excludes.
+\end{definition}
+
+\begin{definition}[Binary fiber map]
+  \label{def:bifibermap}\lean{Mensura.biFiberMap}\leanok
+  \uses{def:fibermap}
+  The output bag at $k$ is a function of the left bag at $k$ and the
+  right bag at $\mathit{key}\,k$; it is jointly strict
+  (\texttt{JointlyStrict}) when two empty bags give an empty bag.
+\end{definition}
+
+\begin{theorem}[The joins satisfy the diagonal law]
+  \label{thm:join-aligned-diagonal}
+  \lean{Mensura.lookup_alignedDiagonal}\leanok
+  \uses{def:aligned-diagonal, def:bifibermap, def:leftjoin, def:innerjoin}
+  Both \texttt{lookup} and \texttt{lookup\_total}, as binary operations,
+  satisfy the aligned diagonal law (the latter is
+  \texttt{lookupTotal\_alignedDiagonal}).  Alignment is necessary
+  (\texttt{lookup\_not\_alignedDiagonal},
+  \texttt{lookupTotal\_not\_alignedDiagonal}), and \texttt{lookup} is not
+  split-invariant in its right argument alone
+  (\texttt{lookup\_not\_splitInvariant\_right}).
+\end{theorem}
+\begin{proof}\leanok
+  Both are jointly strict binary fiber maps, and every such map
+  satisfies the law: under alignment one side is empty in both arguments
+  at each key.
+\end{proof}
+
+\begin{theorem}[Binary safe completeness]
+  \label{thm:binary-safe-completeness}
+  \lean{Mensura.alignedDiagonal_biKeyLocal_iff_biFiberMap}\leanok
+  \uses{def:aligned-diagonal, def:bifibermap, thm:fibermap-iff}
+  A binary operation is bi-key-local and satisfies the aligned diagonal
+  law \emph{iff} it is a jointly strict binary fiber map: the binary
+  counterpart of \ref{thm:fibermap-iff}.
+\end{theorem}
+\begin{proof}\leanok
+  Witness the action on pairs of point tables, as in the unary case.
+\end{proof}
+
+\begin{theorem}[Joining back a whole-table statistic leaks]
+  \label{thm:joinmean-not-splitinvariant}
+  \lean{Mensura.joinMean_not_splitInvariant}\leanok
+  \uses{def:innerjoin, def:split-invariant}
+  Joining each row with the mean of the whole table, and mean imputation
+  built on it (\texttt{imputeMean\_not\_splitInvariant}), are not
+  split-invariant, although the join with a fixed right table is
+  split-safe.
+\end{theorem}
+\begin{proof}\leanok
+  A four-row witness: the first row joins the mean $40$ from the whole
+  table and $20$ from its half.
+\end{proof}
+
+\begin{definition}[Aligned-commuting reference]
+  \label{def:commutes-aligned}\lean{Mensura.CommutesAligned}\leanok
+  \uses{def:aligned}
+  An operation $g$ building a right table from a left one commutes with
+  aligned splits when $g$ of a side is that side of $g$ of the whole.
+  Every strict gather along $\pi_1$ does
+  (\texttt{gatherMap\_commutesAligned}), hence \texttt{demote} followed by
+  any per-key reduction (\texttt{demote\_then\_aggregate\_commutesAligned}).
+\end{definition}
+
+\begin{theorem}[A self-derived lookup is leak-free on aligned splits]
+  \label{thm:self-lookup-split}
+  \lean{Mensura.lookup_self_split}\leanok
+  \uses{def:commutes-aligned, def:bifibermap, thm:join-aligned-diagonal, thm:joinmean-not-splitinvariant}
+  If $g$ commutes with aligned splits and $s$ is aligned along
+  $\mathit{key}$, then each side of $\mathrm{split}\,s\,(\mathrm{lookup}\
+  \mathit{key}\,(g\,T)\,T)$ equals the same pipeline run on that side of
+  $T$ alone (for any jointly strict binary fiber map,
+  \texttt{selfJoin\_split}; for \texttt{lookup\_total},
+  \texttt{lookupTotal\_self\_split}).  In particular, joining each row
+  back to a per-group statistic (\texttt{demote} to the group key,
+  reduce, look up on the group key) and then splitting by a predicate of
+  the group key is leak-free
+  (\texttt{lookup\_demote\_aggregate\_split}).  Alignment cannot be dropped:
+  \ref{thm:joinmean-not-splitinvariant} is the same composite on an
+  unaligned split.
+\end{theorem}
+\begin{proof}\leanok
+  Rewrite $g$ of each side as that side of $g\,T$, then compare key by
+  key: under alignment both arguments of the join land on the same side.
 \end{proof}
 
 \section{The monoid-parameterized fold}
@@ -1290,23 +1400,6 @@ the cheap order of operations computes the expensive one's answer.
 
 The white nodes below are planned, not yet formalized; the Lean names
 are the intended targets.
-
-\begin{definition}[Binary join]
-  \label{def:binary-join}\lean{Mensura.binaryInnerJoin} % planned
-  \uses{def:innerjoin}
-  The join of \emph{two} table arguments, generalizing the fixed-right
-  form.  Requires a notion of split-invariance for binary operations,
-  which the book leaves open.
-\end{definition}
-
-\begin{theorem}[Split-invariance of the binary join]
-  \label{thm:binary-join-splitinvariant}
-  \lean{Mensura.binaryInnerJoin_splitInvariant} % planned
-  \uses{def:binary-join, def:split-invariant}
-  The book's closing conjecture: state binary split-invariance (both
-  arguments split by compatible indicators) and settle it for the binary
-  inner join, which can erase rows from either side.
-\end{theorem}
 
 \begin{theorem}[Axis-blind splits preserve the rectangle]
   \label{thm:split-exhaustive-axis-blind}

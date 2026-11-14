@@ -36,6 +36,13 @@ Module flatMap (each file imports only what it builds on):
     CompleteOver     population-relative completeness, its propagation
                      through demote/demote, and the fiber-level
                      trivial discharge at card <= 1 (ADR 0023)
+    BinaryJoins      joins with both arguments split: the aligned
+                     diagonal law and binary safe completeness
+  Leak               joining back a whole-table statistic (and mean
+                     imputation) is not split-invariant
+  SelfLookup         a lookup against a reference built from its own
+                     input is leak-free exactly on splits aligned with the
+                     lookup key
   Units/
     Dimension        physical dimensions as the free abelian group over the
                      seven SI base dimensions, with decidable equality
@@ -78,6 +85,9 @@ import Mensura.Completeness.Reindex
 import Mensura.Completeness.Verbs
 import Mensura.Completeness.PivotAttr
 import Mensura.Completeness.CompleteOver
+import Mensura.Completeness.BinaryJoins
+import Mensura.Leak
+import Mensura.SelfLookup
 import Mensura.Units.Dimension
 import Mensura.Units.Torsor
 import Mensura.Expr.Missing
