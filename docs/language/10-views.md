@@ -57,6 +57,14 @@ view feature_window : Tabular[Machine] {
   result.  Forking a pipeline is binding a table with `let` and using it twice;
   joining several tables is tupling them for a `union`.  No pipeline-specific
   grammar is introduced: a view body is exactly a block (`04-grammar.md`).
+- **`let (a, b)` names the sides of a split.**  A `split` yields a pair, and
+  destructuring binds each side to a name
+  (`docs/decisions/0047-destructuring-a-split-pair.md`): `let (train, test)
+  = data |> split |k| pred`.  The first name is the side where `pred` holds.
+  Each name is an ordinary local table carrying its side's lineage tag, so
+  the two stay disjoint; `_` discards a side.  The view still ends in a
+  single table, which may be either side.  There is no positional
+  projection (`parts.0`).
 - **Sources resolve by name.**  A bare name in the pipeline (`readings`) refers
   to a store, a registry, or another view in scope, presented to the
   pipeline as a table value.  This is the context model of
@@ -197,6 +205,20 @@ view full_dataset {
 the disjoint pair preserves `singletons` and reconstructs `data` (`union_split`,
 `09-typing-reference.md`, section 11).  The view claims no shape, so it is a free
 table; its lineage and cardinality are whatever the pipeline computes.
+
+**Name one side of a split.**
+
+```mensura
+view training_rows {
+  let (train, _) = data |> split |k| hash k < threshold;
+  train
+}
+```
+
+The pattern binds the side where the predicate holds to `train` and
+discards the other.  The view materializes one side, with its lineage tag,
+so a reader of `training_rows` sees a table disjoint from the other side of
+this split (ADR 0047).
 
 **Keep only the rows that matter (filter via `flat_map`).**
 

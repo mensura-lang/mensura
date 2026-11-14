@@ -2543,7 +2543,7 @@ fn op_assume(input: PipeTy, args: &[&Expr], span: Span) -> Result<PipeTy, Vec<Ty
                     e.span,
                 )),
             },
-            Stmt::Let { value, .. } => {
+            Stmt::Let { value, .. } | Stmt::LetPair { value, .. } => {
                 errs.push(te(
                     "`assume` blocks hold claims, not `let` bindings",
                     value.span,
@@ -2596,7 +2596,7 @@ fn op_completeness_check(
                 assert_count += 1;
                 errs.extend(require_known_bool(&ctx, e));
             }
-            Stmt::Let { value, .. } => {
+            Stmt::Let { value, .. } | Stmt::LetPair { value, .. } => {
                 errs.push(te(
                     "a `completeness_check` block holds only `assert`s",
                     value.span,
@@ -2651,6 +2651,45 @@ pub fn type_view_body(sources: &Sources, block: &Block) -> Result<PipeTy, Vec<Ty
                 Ok(pipe) => env.bind(&name.name, pipe),
                 Err(e) => errs.extend(e),
             },
+            Stmt::LetPair {
+                left,
+                right,
+                value,
+                span,
+            } => {
+                if left.name == right.name && left.name != "_" {
+                    errs.push(te(
+                        format!("`{}` names both sides of the pair", left.name),
+                        *span,
+                    ));
+                }
+                // Each side keeps its type, sibling lineage tag included
+                // (ADR 0047 decision 4); `_` discards a side.  A single table
+                // is an error, but binding it to both names keeps later uses
+                // from reporting the same mistake again as unknown sources.
+                let sides = match type_pipeline(&env, value) {
+                    Ok(PipeTy::Pair(a, b)) => Some((a, b)),
+                    Ok(PipeTy::Table(t)) => {
+                        errs.push(te(
+                            "`let (a, b)` destructures a pair, such as a `split`'s result, \
+                             but this is a single table",
+                            value.span,
+                        ));
+                        Some((t.clone(), t))
+                    }
+                    Err(e) => {
+                        errs.extend(e);
+                        None
+                    }
+                };
+                if let Some((a, b)) = sides {
+                    for (name, side) in [(left, a), (right, b)] {
+                        if name.name != "_" {
+                            env.bind(&name.name, PipeTy::Table(side));
+                        }
+                    }
+                }
+            }
             Stmt::Assert(e) => {
                 errs.push(te("`assert` in a view body is not yet supported", e.span));
             }
@@ -2692,6 +2731,13 @@ pub fn table_references(block: &Block) -> Vec<(String, Span)> {
             Stmt::Let { name, value, .. } => {
                 pipeline_refs(value, &local, &mut found);
                 local.push(&name.name);
+            }
+            Stmt::LetPair {
+                left, right, value, ..
+            } => {
+                pipeline_refs(value, &local, &mut found);
+                local.push(&left.name);
+                local.push(&right.name);
             }
             Stmt::Expr(e) => pipeline_refs(e, &local, &mut found),
             Stmt::Assert(_) => {}
@@ -4479,6 +4525,60 @@ mod tests {
         let body = view_body("view bad { readings |> split |k| k.ts > 100 }");
         let errs = type_view(&s, &body).expect_err("pair");
         assert!(errs[0].message.contains("single table"));
+    }
+
+    #[test]
+    fn let_pair_binds_the_sides_of_a_split() {
+        // ADR 0047: each name is a side, with its sibling lineage tag.
+        let s = sample_sources();
+        let side = |pick: &str| {
+            let body = view_body(&format!(
+                "view v {{ let (lo, hi) = readings |> split |k| k.ts > 100; {pick} }}"
+            ));
+            type_view(&s, &body).expect("ok")
+        };
+        let (lo, hi) = (side("lo"), side("hi"));
+        assert!(lo.qualifiers.lineage.disjoint(&hi.qualifiers.lineage));
+        assert_eq!(lo.content, hi.content);
+        // The sides recombine like the undestructured pair.
+        let rebound = side("(lo, hi) |> union");
+        assert_eq!(rebound.qualifiers.cardinality, Cardinality::Singletons);
+    }
+
+    #[test]
+    fn let_pair_underscore_discards_a_side() {
+        let s = sample_sources();
+        let body = view_body("view v { let (_, hi) = readings |> split |k| k.ts > 100; hi }");
+        assert!(type_view(&s, &body).is_ok());
+        let body = view_body("view v { let (_, hi) = readings |> split |k| k.ts > 100; _ }");
+        let errs = type_view(&s, &body).expect_err("`_` binds nothing");
+        assert!(errs[0].message.contains("unknown source `_`"));
+    }
+
+    #[test]
+    fn let_pair_rejects_a_single_table() {
+        let s = sample_sources();
+        let body = view_body("view v { let (a, b) = readings; a }");
+        let errs = type_view(&s, &body).expect_err("not a pair");
+        assert!(errs[0].message.contains("destructures a pair"));
+    }
+
+    #[test]
+    fn let_pair_rejects_one_name_for_both_sides() {
+        let s = sample_sources();
+        let body = view_body("view v { let (a, a) = readings |> split |k| k.ts > 100; a }");
+        let errs = type_view(&s, &body).expect_err("duplicate");
+        assert!(errs[0].message.contains("names both sides"));
+    }
+
+    #[test]
+    fn let_pair_names_are_local_not_references() {
+        let body = view_body("view v { let (a, b) = readings |> split |k| k.ts > 100; a }");
+        let refs: Vec<String> = table_references(&body)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(refs, vec!["readings".to_string()]);
     }
 
     #[test]

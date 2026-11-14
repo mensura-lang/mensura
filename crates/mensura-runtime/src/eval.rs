@@ -258,6 +258,20 @@ fn eval_view_table(
                 let table = eval_pipeline(&env, contracts, value)?;
                 env.insert(name.name.clone(), table);
             }
+            Stmt::LetPair {
+                left, right, value, ..
+            } => {
+                let TableVal::Pair(a, b) = eval_pipeline(&env, contracts, value)? else {
+                    return internal(
+                        "`let (a, b)` over a single table the checker should have rejected",
+                    );
+                };
+                for (name, side) in [(left, a), (right, b)] {
+                    if name.name != "_" {
+                        env.insert(name.name.clone(), TableVal::Table(side));
+                    }
+                }
+            }
             Stmt::Expr(e) if i == last => result = Some(eval_pipeline(&env, contracts, e)?),
             _ => return internal("view body statement the checker should have rejected"),
         }
@@ -3262,6 +3276,51 @@ mod tests {
             ]
         );
         assert_eq!(rows.len(), 3);
+    }
+
+    fn split_side_ids(body: &str) -> Vec<Value> {
+        let rows = eval(
+            body,
+            vec![
+                machine("m1", "operational", 10, None),
+                machine("m2", "degraded", 20, None),
+                machine("m3", "failure", 30, None),
+            ],
+        );
+        rows.into_iter().map(|r| r[0].clone()).collect()
+    }
+
+    #[test]
+    fn let_pair_binds_each_side_of_a_split() {
+        // ADR 0047: the first name is the predicate's side, the second the rest.
+        let matching = split_side_ids(
+            r#"view matching {
+                 let (hit, miss) = machines |> split |k| k.id == "m1";
+                 hit
+               }"#,
+        );
+        assert_eq!(matching, vec![Value::String("m1".into())]);
+        let rest = split_side_ids(
+            r#"view rest {
+                 let (_, miss) = machines |> split |k| k.id == "m1";
+                 miss
+               }"#,
+        );
+        assert_eq!(
+            rest,
+            vec![Value::String("m2".into()), Value::String("m3".into())]
+        );
+    }
+
+    #[test]
+    fn destructured_sides_recombine() {
+        let ids = split_side_ids(
+            r#"view roundtrip {
+                 let (a, b) = machines |> split |k| k.id == "m2";
+                 (b, a) |> union
+               }"#,
+        );
+        assert_eq!(ids.len(), 3);
     }
 
     const FLEET: &str = r#"

@@ -98,7 +98,10 @@ impl Subst {
 pub(crate) fn lower_view_body(block: &mut Block, subst: &Subst) {
     for stmt in &mut block.stmts {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Expr(value) | Stmt::Assert(value) => {
+            Stmt::Let { value, .. }
+            | Stmt::LetPair { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Assert(value) => {
                 lower_pipeline(value, subst);
             }
         }
@@ -281,6 +284,13 @@ fn reduce(e: &mut Expr, s: &Subst, env: &mut Vec<Binding>, depth: u32, fresh: &m
                         reduce(value, s, env, depth, fresh);
                         env.push(Binding::Shadow(name.name.clone()));
                     }
+                    Stmt::LetPair {
+                        left, right, value, ..
+                    } => {
+                        reduce(value, s, env, depth, fresh);
+                        env.push(Binding::Shadow(left.name.clone()));
+                        env.push(Binding::Shadow(right.name.clone()));
+                    }
                     Stmt::Assert(inner) | Stmt::Expr(inner) => reduce(inner, s, env, depth, fresh),
                 }
             }
@@ -335,9 +345,10 @@ fn mentions_name(e: &Expr, name: &str) -> bool {
         ExprKind::Record(fields) => fields.iter().any(|f| mentions_name(f.value(), name)),
         ExprKind::Lambda { body, .. } => mentions_name(body, name),
         ExprKind::Block(block) => block.stmts.iter().any(|stmt| match stmt {
-            Stmt::Let { value, .. } | Stmt::Assert(value) | Stmt::Expr(value) => {
-                mentions_name(value, name)
-            }
+            Stmt::Let { value, .. }
+            | Stmt::LetPair { value, .. }
+            | Stmt::Assert(value)
+            | Stmt::Expr(value) => mentions_name(value, name),
         }),
         _ => false,
     }
