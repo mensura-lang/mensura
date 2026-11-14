@@ -168,7 +168,19 @@ let score         = test  |> evaluate model                 // demands Disjoint 
 
 Here `fit` and `evaluate` are learning operations, not part of the kernel; their
 typing is the subject of a later design round, and what fixes them is precisely
-this demand that their two tables be disjoint.
+this demand that their two tables be disjoint.  The first line already works:
+`let (train, test)` names the two halves of the split, and each keeps the
+lineage that makes them disjoint.
+
+```mensura
+unit Enrollment { student: string }
+store enrollments { unit { Enrollment } attr { grade: real } }
+
+view training_set {
+  let (_, train) = enrollments |> split |k| k.student == "s-0042";
+  train
+}
+```
 
 The fact survives a whole pipeline because every split-invariant (Tier A)
 operation preserves it, and such operations compose: a disjointness fact
