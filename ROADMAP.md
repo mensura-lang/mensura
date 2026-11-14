@@ -379,6 +379,13 @@ promises to prevent, and the leak-free predictive-maintenance pipeline
 computes.
 
 - Design doc first: ML signatures and validation.
+- Taken ahead of order (proposed): destructuring a split pair so a side
+  can be named (ADR 0047), and the reach fact that separates
+  confinement from disjointness, under which a lookup against a table's
+  own statistic is leak-free exactly on splits aligned with the lookup
+  key (ADR 0048, backed by `formal/Mensura/SelfLookup.lean`).  The
+  learning operations consume it; their typing is still this
+  milestone's design doc.
 - Model signatures (`fit`, `predict`, `evaluate`) as typed primitives
   (`random_forest`, `arima`, `mixed_effects`, ...), each with its structural
   input requirements.
