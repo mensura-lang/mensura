@@ -91,61 +91,80 @@ pub fn compose_file(
     config_name: &str,
     digests: &BTreeMap<String, String>,
 ) -> String {
+    // The templates below are raw strings starting at column zero, so
+    // that the source shows the YAML exactly as it is written out.
     let mut out = header("#", config_name);
-    let _ = writeln!(out, "\nname: {}\n\nservices:", quote(&config.target.name));
+    let project = quote(&config.target.name);
+    let image = quote(&config.target.image);
+    let database = quote(&database_address(config));
+    let health_addr = format!("127.0.0.1:{CONTAINER_PORT}");
+    let health = quoted_list(["CMD", "mensura", "health", health_addr.as_str()]);
+    let _ = write!(
+        out,
+        r#"
+name: {project}
+
+services:
+"#
+    );
     for instance in &config.instances {
-        let config_file = format!("{CONFIG_DIR}/{}.toml", instance.name);
-        let health_addr = format!("127.0.0.1:{CONTAINER_PORT}");
-        let _ = writeln!(out, "  {}:", instance.name);
-        let _ = writeln!(out, "    image: {}", quote(&config.target.image));
-        let _ = writeln!(
+        let name = &instance.name;
+        let config_file = format!("{CONFIG_DIR}/{name}.toml");
+        let command = quoted_list(["serve", "--config", config_file.as_str()]);
+        let port = quote(&format!("{}:{CONTAINER_PORT}", instance.publish_addr()));
+        // The optional blocks are whole lines or nothing, so each sits at
+        // the start of the line of the key that follows it.
+        let labels = digests.get(name).map_or_else(String::new, |digest| {
+            let digest = quote(digest);
+            format!(
+                r#"    labels:
+      {DIGEST_LABEL}: {digest}
+"#
+            )
+        });
+        let limits = instance.memory.as_ref().map_or_else(String::new, |memory| {
+            let memory = quote(memory);
+            format!(
+                r#"    deploy:
+      resources:
+        limits:
+          memory: {memory}
+"#
+            )
+        });
+        let _ = write!(
             out,
-            "    command: {}",
-            quoted_list(["serve", "--config", config_file.as_str()])
+            r#"  {name}:
+    image: {image}
+    command: {command}
+{labels}    environment:
+      {DATABASE_ENV}: {database}
+    volumes:
+      - type: bind
+        source: ./mensura
+        target: {CONFIG_DIR}
+        read_only: true
+      - type: volume
+        source: data
+        target: {DATA_DIR}
+    ports:
+      - {port}
+{limits}    restart: unless-stopped
+    healthcheck:
+      test: {health}
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+"#
         );
-        if let Some(digest) = digests.get(&instance.name) {
-            let _ = writeln!(out, "    labels:");
-            let _ = writeln!(out, "      {DIGEST_LABEL}: {}", quote(digest));
-        }
-        let _ = writeln!(out, "    environment:");
-        let _ = writeln!(
-            out,
-            "      {DATABASE_ENV}: {}",
-            quote(&database_address(config))
-        );
-        let _ = writeln!(out, "    volumes:");
-        let _ = writeln!(out, "      - type: bind");
-        let _ = writeln!(out, "        source: ./mensura");
-        let _ = writeln!(out, "        target: {CONFIG_DIR}");
-        let _ = writeln!(out, "        read_only: true");
-        let _ = writeln!(out, "      - type: volume");
-        let _ = writeln!(out, "        source: data");
-        let _ = writeln!(out, "        target: {DATA_DIR}");
-        let _ = writeln!(out, "    ports:");
-        let _ = writeln!(
-            out,
-            "      - {}",
-            quote(&format!("{}:{CONTAINER_PORT}", instance.publish_addr()))
-        );
-        if let Some(memory) = &instance.memory {
-            let _ = writeln!(out, "    deploy:");
-            let _ = writeln!(out, "      resources:");
-            let _ = writeln!(out, "        limits:");
-            let _ = writeln!(out, "          memory: {}", quote(memory));
-        }
-        let _ = writeln!(out, "    restart: unless-stopped");
-        let _ = writeln!(out, "    healthcheck:");
-        let _ = writeln!(
-            out,
-            "      test: {}",
-            quoted_list(["CMD", "mensura", "health", health_addr.as_str()])
-        );
-        let _ = writeln!(out, "      interval: 10s");
-        let _ = writeln!(out, "      timeout: 5s");
-        let _ = writeln!(out, "      retries: 3");
-        let _ = writeln!(out, "      start_period: 30s");
     }
-    let _ = writeln!(out, "\nvolumes:\n  data: {{}}");
+    out.push_str(
+        r#"
+volumes:
+  data: {}
+"#,
+    );
     out
 }
 
@@ -182,5 +201,44 @@ mod tests {
         assert_eq!(quote("a\"b\\c"), r#""a\"b\\c""#);
         let parsed: toml::Value = toml::from_str(&format!("x = {}", quote("a\"b\\c\n"))).unwrap();
         assert_eq!(parsed["x"].as_str(), Some("a\"b\\c\n"));
+    }
+
+    /// The whole file, byte for byte, over two instances: one with both
+    /// optional blocks (the digest label and the memory limit) and one
+    /// with neither.  Indentation is structure in YAML, so a substring
+    /// check would let a misplaced key through.
+    #[test]
+    fn the_compose_file_matches_the_golden_file() {
+        let mut config = DeployConfig::parse(
+            r#"
+            program   = "fleet-monitoring.mensura"
+            namespace = "fleet"
+
+            [target]
+            kind  = "compose"
+            name  = "mensura-fleet"
+            image = "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+
+            [[instance]]
+            name    = "mensura"
+            publish = "127.0.0.1:8080"
+            memory  = "256M"
+
+            [[principal]]
+            id           = "spiffe://plant.acme/service/dashboard"
+            token_sha256 = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"
+            scopes       = ["read:all"]
+            "#,
+        )
+        .unwrap();
+        let mut bare = config.instances[0].clone();
+        bare.name = "bare".to_string();
+        bare.publish = "127.0.0.1:8081".to_string();
+        bare.memory = None;
+        config.instances.push(bare);
+        let digests = BTreeMap::from([("mensura".to_string(), "0123abcd".to_string())]);
+
+        let rendered = compose_file(&config, "deploy.toml", &digests);
+        assert_eq!(rendered, include_str!("../tests/golden/compose.yaml"));
     }
 }
