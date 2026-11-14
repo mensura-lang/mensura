@@ -2,12 +2,22 @@ name: Image
 
 # Publishes the toolchain image a deployment runs `mensura serve` from
 # (ADR 0046 decision 4): ghcr.io/mensura-lang/mensura, tagged `main` and
-# `sha-<short commit>` on every push to main.  A pull request that touches
-# the image's build only builds it, and checks that the binary runs.
+# `sha-<short commit>` on every push to main that changes what the image
+# is built from: the Cargo workspace (the whole build context, see
+# `.dockerignore`), the Dockerfile, or this workflow.  A pull request that
+# touches the image's build only builds it, and checks that the binary
+# runs.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/image.yml'
   pull_request:
     paths:
       - 'Dockerfile'

@@ -194,9 +194,10 @@ Three constraints shape the answer.
    `Dockerfile` that builds the `mensura` binary in a Rust stage and
    copies it into a minimal runtime image, and continuous integration
    publishes it as `ghcr.io/mensura-lang/mensura` tagged `main` and
-   `sha-<short commit>` on every push to `main`.  Building inside the
-   bundle was rejected (alternatives, 3): a Rust build does not fit
-   the first host, and an image is what a container target consumes.
+   `sha-<short commit>` on every push to `main` that changes the
+   image's build inputs.  Building inside the bundle was rejected
+   (alternatives, 3): a Rust build does not fit the first host, and an
+   image is what a container target consumes.
 
 5. **Exposure is by scope in this slice.**  ADR 0006 gives the deploy
    configuration the list of surfaces each transport exposes.  With

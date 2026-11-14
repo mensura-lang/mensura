@@ -182,11 +182,16 @@ directory.  The runtime image has no shell, which is why the readiness
 check is `mensura health`.  The entrypoint is `mensura`, so a compose
 `command` is a subcommand.
 
-The `Image` workflow builds the image on every push to `main` and on a
-pull request that touches the `Dockerfile`, `.dockerignore`, or the
-workflow, runs `mensura --version` in it, and on `main` pushes it as
+The `Image` workflow builds the image on a push to `main` that changes
+what the image is built from (`Cargo.toml`, `Cargo.lock`, `crates/`, the
+`Dockerfile`, `.dockerignore`, or the workflow) and on a pull request
+that touches the `Dockerfile`, `.dockerignore`, or the workflow, runs
+`mensura --version` in it, and on `main` pushes it as
 `ghcr.io/mensura-lang/mensura:main` and `:sha-<short commit>`.  A
-deployment pins the latter.
+deployment pins the latter.  A push that changes none of those paths
+(documentation, the book, `formal/`) publishes nothing, so not every
+commit on `main` has a `sha-` tag: the tag to pin is that of the latest
+commit that changed the build, which is also what `main` points at.
 
 ## `mensura token` and `mensura health`
 
