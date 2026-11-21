@@ -1,0 +1,27 @@
+// Accepted: `let (a, b)` names the two sides of a `split` (ADR 0047).  Each
+// name is an ordinary local table: a view may end in one side, `_` discards
+// a side, and the named sides recombine with `union`.
+unit Enrollment {
+  year: int
+  student: string
+}
+
+store enrollments {
+  unit { Enrollment }
+  attr { grade: real }
+}
+
+view training_rows {
+  let (train, _) = enrollments |> split |k| k.year < 2024;
+  train
+}
+
+view evaluation_rows {
+  let (_, test) = enrollments |> split |k| k.year < 2024;
+  test |> flat_map |_, r| (.passed = r.grade >= 5.0)
+}
+
+view recombined {
+  let (train, test) = enrollments |> split |k| k.year < 2024;
+  (test, train) |> union
+}

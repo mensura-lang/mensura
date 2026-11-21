@@ -1,0 +1,11 @@
+unit Machine {
+  id: string
+}
+store readings {
+  unit { Machine }
+  attr* { kelvin: real }
+}
+view held_out {
+  let (_, rest) = readings |> split |k| k.id == "m-01";
+  rest |> flat_map |k, r| (.celsius = r.kelvin - 273.15)
+}

@@ -39,6 +39,18 @@ train/test divide.  There is no special pipeline grammar: stages compose left
 to right, `let` names a table, and a tuple brings several tables together for
 a merge like `union`.
 
+To work with one side on its own, name the sides as you bind the pair:
+
+```mensura
+{{#include ../examples/view-split-sides.mensura}}
+```
+
+`let (_, rest)` binds each side of the split to a name: the first is the side
+where the predicate holds, the second the side where it does not, and `_`
+discards a side you do not need.  Each name is an ordinary table, so `rest`
+carries on into a `flat_map`, and a view may end in either side.  The sides
+keep what the split established: they share no machine.
+
 ## Aggregating over a bag
 
 In a bag store the bags are already there: the machine is the key, and its

@@ -1,0 +1,16 @@
+// Rejected at parse: a split's sides are named by destructuring, never by
+// position (ADR 0047 decision 2).  `parts.0` is not member access, since a
+// member is a name; write `let (train, test) = ...` instead.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { kelvin: real }
+}
+
+view bad {
+  let parts = readings |> split |k| k.id == "m-01";
+  parts.0
+}

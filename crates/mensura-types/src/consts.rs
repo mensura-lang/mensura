@@ -291,6 +291,15 @@ impl<'a> Evaluator<'a> {
                     let v = self.eval_expr(value, locals)?;
                     locals.push((name.name.clone(), v));
                 }
+                // Only a `split` yields a pair, and only a view body hosts a
+                // pipeline (ADR 0047), so a const block has nothing to
+                // destructure.
+                Stmt::LetPair { span, .. } => {
+                    return self.fail(
+                        "`let (a, b)` destructures a `split`'s pair, which only a view body has",
+                        *span,
+                    );
+                }
                 Stmt::Assert(e) => {
                     return self.fail(
                         "an `assert` in a const binding is not yet supported",
