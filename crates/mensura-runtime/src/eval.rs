@@ -2539,6 +2539,7 @@ pub fn materialize_views<B: StorageBackend>(
     // decision 3).
     let mut evaluated: BTreeMap<String, SourceTable> = BTreeMap::new();
     let mut out = Vec::new();
+    let definitions = crate::fingerprint::view_definitions(program);
     for plan in &program.views {
         let mut sources = BTreeMap::new();
         for name in &plan.sources {
@@ -2564,7 +2565,7 @@ pub fn materialize_views<B: StorageBackend>(
         let table = eval_view_table(plan, &sources, &contracts).map_err(|e| in_view(e.into()))?;
         let rows = align(plan, table.clone()).map_err(|e| in_view(e.into()))?;
         backend
-            .materialize_view(&plan.shape(), &rows, position)
+            .materialize_view(&plan.shape(), &definitions[&plan.name], &rows, position)
             .map_err(|e| in_view(e.into()))?;
         out.push((plan.name.clone(), rows.len()));
         evaluated.insert(plan.name.clone(), table);

@@ -10,6 +10,10 @@
 //!   registry (`docs/toolkit/05-ingestion.md`).
 //! - `floor` -- advance a registry's closure floor (ADR 0041).
 //! - `serve` -- run a program as a service (`docs/toolkit/06-serving.md`).
+//! - `deploy` -- compile a deploy configuration into a bundle
+//!   (`docs/toolkit/07-deploying.md`).
+//! - `token` -- generate a bearer token and its digest (ADR 0046).
+//! - `health` -- probe a running instance's readiness (ADR 0046).
 //! - `lsp`   -- run the language server over stdio.
 
 use std::path::{Path, PathBuf};
@@ -87,6 +91,28 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Compile a deploy configuration and its program into a bundle a
+    /// target's tooling brings up (ADR 0046).
+    Deploy {
+        /// The deploy configuration file (TOML).
+        config: PathBuf,
+        /// The bundle directory.  Defaults to `bundle` beside the
+        /// configuration file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Generate a bearer token and print it with the SHA-256 digest a
+    /// principal records.
+    Token,
+    /// Probe a running instance and exit zero when it reports ready.
+    Health {
+        /// The instance's address, as `host:port`.
+        address: String,
+        /// How long to wait on each of connecting, writing, and reading,
+        /// in seconds.
+        #[arg(long, default_value_t = 5)]
+        timeout: u64,
+    },
     /// Run the language server, speaking LSP over stdio.
     Lsp,
 }
@@ -111,6 +137,9 @@ fn main() -> ExitCode {
             db,
         } => cmd_floor(&file, &target, &column, &point, &db),
         Command::Serve { config } => cmd_serve(&config),
+        Command::Deploy { config, out } => cmd_deploy(&config, out.as_deref()),
+        Command::Token => cmd_token(),
+        Command::Health { address, timeout } => cmd_health(&address, timeout),
         Command::Lsp => cmd_lsp(),
     }
 }
@@ -128,6 +157,70 @@ fn cmd_serve(config: &Path) -> ExitCode {
                 eprintln!("{d}");
             }
             ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Compile a deploy configuration into a bundle
+/// (`docs/toolkit/07-deploying.md`).  Nothing is written unless the
+/// program typechecks and every generated file validates.
+fn cmd_deploy(config: &Path, out: Option<&Path>) -> ExitCode {
+    let bundle = match mensura_deploy::compile(config) {
+        Ok(bundle) => bundle,
+        Err(mensura_deploy::DeployError::Program(diagnostics)) => {
+            for d in diagnostics {
+                eprintln!("{d}");
+            }
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = out.map_or_else(|| mensura_deploy::default_out(config), Path::to_path_buf);
+    if let Err(e) = bundle.write(&out) {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    for file in &bundle.files {
+        println!("wrote {}", out.join(&file.path).display());
+    }
+    for note in &bundle.notes {
+        eprintln!("note: {note}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Print a fresh bearer token and its digest.  The token goes to the
+/// client; only the digest goes into a configuration.
+fn cmd_token() -> ExitCode {
+    match mensura_serve::auth::new_token() {
+        Ok(token) => {
+            println!("token        = {token}");
+            println!("token_sha256 = \"{}\"", mensura_serve::auth::digest(&token));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: cannot read the operating system's randomness: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Probe an instance's readiness: the container's health check.
+fn cmd_health(address: &str, timeout: u64) -> ExitCode {
+    match mensura_serve::probe::health(address, std::time::Duration::from_secs(timeout)) {
+        Ok(ready) => {
+            println!(
+                "ready: namespace {}, position {}",
+                ready.namespace, ready.position
+            );
+            ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("error: {e}");

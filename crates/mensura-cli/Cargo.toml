@@ -16,4 +16,5 @@ mensura-types = { workspace = true }
 mensura-runtime = { workspace = true }
 mensura-lsp = { workspace = true }
 mensura-serve = { workspace = true }
+mensura-deploy = { workspace = true }
 clap = { workspace = true }

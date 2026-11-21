@@ -83,7 +83,24 @@ records the fingerprints; afterwards it compares, and a mismatch names
 every table that differs, is missing from the database, or is missing
 from the program.  Views are not fingerprinted: a changed view is rebuilt
 by the next materialization, so editing a view and redeploying is always
-accepted, and editing a store is always refused.  A database created by
+accepted, and editing a store is always refused.
+
+What makes the rebuild happen is the view's **definition digest**
+(`fingerprint::view_definitions`): a SHA-256 over the view's resolved
+plan, chained through the digest of each source it reads, so that
+editing a view also invalidates every view downstream of it.  Each
+materialization records the digest beside the view's position, in the
+reserved table `mensura_view_definitions`, and the compare-and-set
+replaces a view whose recorded digest differs at any position,
+recreating its table so that a changed set of columns applies.  Without
+it, a redeploy with no write in between would serve the old
+definition's rows, since the position alone says they are current.  The
+plan is rendered with `Debug`, which includes source spans, so moving a
+view's text invalidates it too; that is conservative, since a spurious
+invalidation costs one replacement and never a stale read.  This holds
+for `mensura run` over a persistent database as well.
+
+A database created by
 `mensura run` before this slice carries no fingerprints; the guard
 records them on first start without verifying the existing tables'
 shape, which is the one case it cannot check.
@@ -170,7 +187,9 @@ materialization in flight runs to completion.
 
 - Runtime: positions are gapless and a rejected batch takes none; a
   re-sent row is a no-op and a conflicting one names its key; a re-sent
-  old row is a no-op rather than late; a view write is a compare-and-set;
+  old row is a no-op rather than late; a view write is a compare-and-set,
+  and a redefined view is replaced at any position and reshaped; a view
+  definition digest reaches the views that read it;
   the guard creates, verifies, accepts a view change, and refuses a store
   change naming the table; a record encodes and re-ingests byte for byte.
 - Serve: health is open; an append takes position 1 and the served view
@@ -179,14 +198,17 @@ materialization in flight runs to completion.
   each refusal carries its status; a body over the limit is a 413 in the
   same error shape; the floor is a positioned write under its own scope
   that refuses to lower and closes the intake; the guard survives a
-  restart over a file.
+  restart over a file; a restart with an edited view serves the new
+  definition, columns included, with no write in between; the readiness
+  probe of `mensura health` reads a listening instance.
 
 ## Forward references
 
 - The Postgres backend behind the same trait, which makes several
   instances meaningful, and the materializer lease with it.
-- The deploy configuration and bundle (`ROADMAP.md` M7.2), which
-  generates this file per role group.
+- The deploy configuration and bundle (`ROADMAP.md` M7.2,
+  `docs/toolkit/07-deploying.md`), which generates this file per
+  instance.
 - The MQTT projection of `append` (M7.4) as another caller of the same
   four operations.
 - Idempotent appends to a `bag` registry, pagination and filtering on
