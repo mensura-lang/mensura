@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Runs a Mensura program as a service (ADR 0045)."
+description = "Runs a Mensura program as a service."
 
 [dependencies]
 mensura-syntax = { workspace = true }

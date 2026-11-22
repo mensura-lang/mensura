@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Compiles a deploy configuration and a Mensura program into a bundle (ADR 0046)."
+description = "Compiles a deploy configuration and a Mensura program into a bundle."
 
 [dependencies]
 mensura-serve = { workspace = true }
