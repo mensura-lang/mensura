@@ -189,12 +189,12 @@ kinds of tag:
   publishes `:0.1.0`).  The workflow fails if the tag disagrees with the
   workspace version, so the tag is what `mensura --version` prints.
   This is what a lasting deployment pins.
-- `edge`, a moving tag, on a push to `main` that changes what the image
+- `main`, a moving tag, on a push to `main` that changes what the image
   is built from (`Cargo.toml`, `Cargo.lock`, `crates/`, the
   `Dockerfile`, `.dockerignore`, or the workflow).  It is for trying an
   unreleased commit.  Pin it by digest
   (`ghcr.io/mensura-lang/mensura@sha256:...`), never by name, and move
-  to a version before the deployment has to last: a superseded `edge`
+  to a version before the deployment has to last: a superseded `main`
   image stays in the registry untagged, and only the ten newest of those
   are kept.
 

@@ -6,8 +6,8 @@ name: Image
 #
 # - `<version>` on a `v<version>` tag, which must match the workspace
 #   version.  This is what a lasting deployment pins.
-# - `edge`, a moving tag, on a push to main that changes what the image is
-#   built from.  Superseded `edge` images stay as untagged versions, of
+# - `main`, a moving tag, on a push to main that changes what the image is
+#   built from.  Superseded `main` images stay as untagged versions, of
 #   which the newest few are kept.
 #
 # A pull request that touches the image's build only builds it, and checks
@@ -66,7 +66,7 @@ jobs:
           flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=edge,enable={{is_default_branch}}
+            type=raw,value=main,enable={{is_default_branch}}
       - name: Build
         uses: docker/build-push-action@v6
         with:
@@ -93,7 +93,7 @@ jobs:
       - name: Push
         if: github.event_name == 'push'
         run: docker push --all-tags "$IMAGE"
-      - name: Prune superseded edge images
+      - name: Prune superseded main images
         if: github.event_name == 'push' && github.ref_type == 'branch'
         uses: actions/delete-package-versions@v5
         with:

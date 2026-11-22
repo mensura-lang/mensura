@@ -195,7 +195,7 @@ Three constraints shape the answer.
    copies it into a minimal runtime image, and continuous integration
    publishes it as `ghcr.io/mensura-lang/mensura` under two kinds of
    tag: `<version>` for each `v<version>` tag of the repository, and
-   `edge`, a moving tag rebuilt on every push to `main` that changes
+   `main`, a moving tag rebuilt on every push to `main` that changes
    the image's build inputs.  Building inside the bundle was rejected
    (alternatives, 3): a Rust build does not fit the first host, and an
    image is what a container target consumes.
