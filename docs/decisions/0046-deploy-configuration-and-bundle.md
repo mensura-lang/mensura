@@ -94,7 +94,7 @@ Three constraints shape the answer.
    [target]
    kind  = "compose"
    name  = "mensura-fleet"
-   image = "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+   image = "ghcr.io/mensura-lang/mensura:0.1.0"
 
    [database]
    kind = "sqlite"
@@ -190,12 +190,13 @@ Three constraints shape the answer.
 
 4. **The image is named, not built, by the bundle.**  `target.image`
    is required and copied verbatim into the compose file; a deployment
-   pins a digest or a commit-tagged image.  The repository ships a
+   pins a version-tagged image or a digest.  The repository ships a
    `Dockerfile` that builds the `mensura` binary in a Rust stage and
    copies it into a minimal runtime image, and continuous integration
-   publishes it as `ghcr.io/mensura-lang/mensura` tagged `main` and
-   `sha-<short commit>` on every push to `main` that changes the
-   image's build inputs.  Building inside the bundle was rejected
+   publishes it as `ghcr.io/mensura-lang/mensura` under two kinds of
+   tag: `<version>` for each `v<version>` tag of the repository, and
+   `edge`, a moving tag rebuilt on every push to `main` that changes
+   the image's build inputs.  Building inside the bundle was rejected
    (alternatives, 3): a Rust build does not fit the first host, and an
    image is what a container target consumes.
 
@@ -255,7 +256,7 @@ Negative:
   second generator over the same model.  The model is kept small for
   that reason, but each target is work.
 - The image is a release artifact the project must now publish and
-  version, and a deployment that pins a commit tag must be re-pinned
+  version, and a deployment that pins a version must be re-pinned
   deliberately.
 - Memory limits are the user's numbers.  Deploy prints a note when an
   instance has none, but it cannot know the host.

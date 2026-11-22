@@ -217,7 +217,7 @@ mod tests {
             [target]
             kind  = "compose"
             name  = "mensura-fleet"
-            image = "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+            image = "ghcr.io/mensura-lang/mensura:0.1.0"
 
             [[instance]]
             name    = "mensura"

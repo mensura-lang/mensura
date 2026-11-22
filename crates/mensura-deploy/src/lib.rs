@@ -233,7 +233,7 @@ mod tests {
         [target]
         kind  = "compose"
         name  = "mensura-fleet"
-        image = "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+        image = "ghcr.io/mensura-lang/mensura:0.1.0"
 
         [[instance]]
         name    = "mensura"
@@ -294,7 +294,7 @@ mod tests {
         let compose = &bundle.file("compose.yaml").unwrap().contents;
         for needle in [
             "name: \"mensura-fleet\"",
-            "image: \"ghcr.io/mensura-lang/mensura:sha-1a2b3c4\"",
+            "image: \"ghcr.io/mensura-lang/mensura:0.1.0\"",
             "command: [\"serve\", \"--config\", \"/etc/mensura/mensura.toml\"]",
             "MENSURA_DATABASE_URL: \"sqlite:/var/lib/mensura/fleet.db\"",
             "\"127.0.0.1:8080:8080\"",

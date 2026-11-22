@@ -36,7 +36,7 @@ namespace = "fleet"
 [target]
 kind  = "compose"
 name  = "mensura-fleet"
-image = "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+image = "ghcr.io/mensura-lang/mensura:0.1.0"
 
 [database]
 kind = "sqlite"
@@ -182,16 +182,25 @@ directory.  The runtime image has no shell, which is why the readiness
 check is `mensura health`.  The entrypoint is `mensura`, so a compose
 `command` is a subcommand.
 
-The `Image` workflow builds the image on a push to `main` that changes
-what the image is built from (`Cargo.toml`, `Cargo.lock`, `crates/`, the
-`Dockerfile`, `.dockerignore`, or the workflow) and on a pull request
-that touches the `Dockerfile`, `.dockerignore`, or the workflow, runs
-`mensura --version` in it, and on `main` pushes it as
-`ghcr.io/mensura-lang/mensura:main` and `:sha-<short commit>`.  A
-deployment pins the latter.  A push that changes none of those paths
-(documentation, the book, `formal/`) publishes nothing, so not every
-commit on `main` has a `sha-` tag: the tag to pin is that of the latest
-commit that changed the build, which is also what `main` points at.
+The `Image` workflow publishes `ghcr.io/mensura-lang/mensura` under two
+kinds of tag:
+
+- `<version>`, on a `v<version>` tag of the repository (`v0.1.0`
+  publishes `:0.1.0`).  The workflow fails if the tag disagrees with the
+  workspace version, so the tag is what `mensura --version` prints.
+  This is what a lasting deployment pins.
+- `edge`, a moving tag, on a push to `main` that changes what the image
+  is built from (`Cargo.toml`, `Cargo.lock`, `crates/`, the
+  `Dockerfile`, `.dockerignore`, or the workflow).  It is for trying an
+  unreleased commit.  Pin it by digest
+  (`ghcr.io/mensura-lang/mensura@sha256:...`), never by name, and move
+  to a version before the deployment has to last: a superseded `edge`
+  image stays in the registry untagged, and only the ten newest of those
+  are kept.
+
+A pull request that touches the `Dockerfile`, `.dockerignore`, or the
+workflow builds the image without publishing it.  Every build runs
+`mensura --version` in the image before anything is pushed.
 
 ## `mensura token` and `mensura health`
 

@@ -5,7 +5,7 @@ name: "mensura-fleet"
 
 services:
   mensura:
-    image: "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+    image: "ghcr.io/mensura-lang/mensura:0.1.0"
     command: ["serve", "--config", "/etc/mensura/mensura.toml"]
     labels:
       io.mensura.mounted-sha256: "0123abcd"
@@ -33,7 +33,7 @@ services:
       retries: 3
       start_period: 30s
   bare:
-    image: "ghcr.io/mensura-lang/mensura:sha-1a2b3c4"
+    image: "ghcr.io/mensura-lang/mensura:0.1.0"
     command: ["serve", "--config", "/etc/mensura/bare.toml"]
     environment:
       MENSURA_DATABASE_URL: "sqlite:/var/lib/mensura/fleet.db"
