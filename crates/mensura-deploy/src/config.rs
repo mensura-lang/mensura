@@ -24,10 +24,9 @@ pub struct DeployConfig {
     /// file on the data volume.
     pub namespace: String,
     pub target: Target,
-    #[serde(default)]
     pub database: Database,
-    /// The `serve` processes; one running every role when none is given.
-    #[serde(default, rename = "instance")]
+    /// The `serve` processes; at least one.
+    #[serde(rename = "instance")]
     pub instances: Vec<Instance>,
     /// Passed through unchanged into every runtime configuration.
     #[serde(default)]
@@ -47,25 +46,13 @@ pub struct Target {
     pub image: String,
 }
 
-/// The database kind.  `sqlite` is the default and the only kind of this
-/// slice.
+/// The database kind; `sqlite` is the only kind of this slice.  Required,
+/// like the instances, their roles, and their addresses: each decides
+/// what runs and who can reach it.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Database {
-    #[serde(default = "default_database_kind")]
     pub kind: String,
-}
-
-impl Default for Database {
-    fn default() -> Self {
-        Database {
-            kind: default_database_kind(),
-        }
-    }
-}
-
-fn default_database_kind() -> String {
-    "sqlite".to_string()
 }
 
 /// One `serve` process (decision 2).
@@ -73,50 +60,26 @@ fn default_database_kind() -> String {
 #[serde(deny_unknown_fields)]
 pub struct Instance {
     pub name: String,
-    #[serde(default = "all_roles")]
     pub roles: Vec<Role>,
-    /// The host address and port the listener is published on; loopback
-    /// by default, so that nothing is exposed until the user says so.
-    #[serde(default = "default_publish")]
+    /// The host address and port the listener is published on.
     pub publish: String,
     /// A compose memory limit such as `256M`; none when absent.
     pub memory: Option<String>,
 }
 
 impl Instance {
-    /// The instance a configuration with no `[[instance]]` gets.
-    pub fn default_instance() -> Instance {
-        Instance {
-            name: "mensura".to_string(),
-            roles: all_roles(),
-            publish: default_publish(),
-            memory: None,
-        }
-    }
-
     /// The parsed publish address (validated by [`DeployConfig::parse`]).
     pub fn publish_addr(&self) -> SocketAddr {
         self.publish.parse().expect("validated at parse")
     }
 }
 
-fn all_roles() -> Vec<Role> {
-    vec![Role::Intake, Role::Read, Role::Materializer]
-}
-
-fn default_publish() -> String {
-    "127.0.0.1:8080".to_string()
-}
-
 impl DeployConfig {
     /// Parse and validate configuration text.  The program path is left
     /// relative; the caller resolves it against the file's directory.
     pub fn parse(text: &str) -> Result<DeployConfig, DeployError> {
-        let mut config: DeployConfig =
+        let config: DeployConfig =
             toml::from_str(text).map_err(|e| DeployError::Invalid(e.to_string()))?;
-        if config.instances.is_empty() {
-            config.instances.push(Instance::default_instance());
-        }
         config.validate()?;
         Ok(config)
     }
@@ -174,6 +137,9 @@ impl DeployConfig {
                     "`database.kind` is `{other}`; the only kind is `sqlite`"
                 ));
             }
+        }
+        if self.instances.is_empty() {
+            return invalid("`instance` is empty; declare at least one `[[instance]]`".to_string());
         }
         let mut names = BTreeSet::new();
         let mut published = BTreeSet::new();
@@ -306,26 +272,60 @@ mod tests {
         name  = "mensura-fleet"
         image = "ghcr.io/mensura-lang/mensura:0.1.0"
 
+        [database]
+        kind = "sqlite"
+
+        [[instance]]
+        name    = "mensura"
+        roles   = ["intake", "read", "materializer"]
+        publish = "127.0.0.1:8080"
+
         [[principal]]
         id           = "spiffe://local/service/dashboard"
         token_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
         scopes       = ["read:all"]
     "#;
 
+    const INSTANCE: &str = r#"
+        [[instance]]
+        name    = "mensura"
+        roles   = ["intake", "read", "materializer"]
+        publish = "127.0.0.1:8080"
+"#;
+
     fn err(text: &str) -> String {
         DeployConfig::parse(text).unwrap_err().to_string()
     }
 
     #[test]
-    fn defaults_give_one_loopback_instance_over_sqlite() {
+    fn the_minimal_configuration_parses_as_written() {
         let config = DeployConfig::parse(MINIMAL).unwrap();
         assert_eq!(config.database.kind, "sqlite");
         assert_eq!(config.instances.len(), 1);
         let only = &config.instances[0];
         assert_eq!(only.name, "mensura");
-        assert_eq!(only.roles, all_roles());
-        assert!(only.publish_addr().ip().is_loopback());
+        assert_eq!(only.roles, [Role::Intake, Role::Read, Role::Materializer]);
+        assert_eq!(only.publish_addr().to_string(), "127.0.0.1:8080");
         assert_eq!(only.memory, None);
+    }
+
+    #[test]
+    fn database_instances_roles_and_publish_have_no_defaults() {
+        let text = MINIMAL.replace("[database]\n        kind = \"sqlite\"", "");
+        assert!(err(&text).contains("database"));
+        let text = MINIMAL.replace("kind = \"sqlite\"", "");
+        assert!(err(&text).contains("kind"));
+        let text = MINIMAL.replace(INSTANCE, "\n");
+        assert!(err(&text).contains("instance"));
+        let text = MINIMAL.replace(INSTANCE, "\n").replace(
+            "namespace = \"fleet\"",
+            "namespace = \"fleet\"\n        instance  = []",
+        );
+        assert!(err(&text).contains("at least one"));
+        let text = MINIMAL.replace("roles   = [\"intake\", \"read\", \"materializer\"]", "");
+        assert!(err(&text).contains("roles"));
+        let text = MINIMAL.replace("publish = \"127.0.0.1:8080\"", "");
+        assert!(err(&text).contains("publish"));
     }
 
     #[test]
@@ -338,17 +338,18 @@ mod tests {
     fn only_compose_and_sqlite_are_admitted() {
         let text = MINIMAL.replace("kind  = \"compose\"", "kind  = \"kubernetes\"");
         assert!(err(&text).contains("`compose` is the only target"));
-        let text = format!("{MINIMAL}\n[database]\nkind = \"postgres\"\n");
+        let text = MINIMAL.replace("kind = \"sqlite\"", "kind = \"postgres\"");
         assert!(err(&text).contains("Postgres backend"));
     }
 
     #[test]
     fn sqlite_admits_only_the_all_in_one_instance() {
-        let two = format!(
-            "{MINIMAL}\n[[instance]]\nname = \"a\"\n\n[[instance]]\nname = \"b\"\npublish = \"127.0.0.1:8081\"\n"
-        );
+        let second = INSTANCE
+            .replace("\"mensura\"", "\"b\"")
+            .replace("8080", "8081");
+        let two = format!("{MINIMAL}{second}");
         assert!(err(&two).contains("all-in-one"));
-        let subset = format!("{MINIMAL}\n[[instance]]\nname = \"a\"\nroles = [\"read\"]\n");
+        let subset = MINIMAL.replace("[\"intake\", \"read\", \"materializer\"]", "[\"read\"]");
         assert!(err(&subset).contains("1 of the three roles"));
     }
 
@@ -364,12 +365,16 @@ mod tests {
         assert!(err(&text).contains("target.name"));
         let text = MINIMAL.replace("\"fleet\"", "\"../fleet\"");
         assert!(err(&text).contains("namespace"));
-        let text = format!("{MINIMAL}\n[[instance]]\nname = \"a\"\npublish = \"8080\"\n");
+        let text = MINIMAL.replace("\"127.0.0.1:8080\"", "\"8080\"");
         assert!(err(&text).contains("publish"));
-        let text = format!("{MINIMAL}\n[[instance]]\nname = \"a\"\nmemory = \"lots\"\n");
-        assert!(err(&text).contains("memory"));
-        let text = format!("{MINIMAL}\n[[instance]]\nname = \"a\"\nmemory = \"256M\"\n");
-        DeployConfig::parse(&text).unwrap();
+        let with_memory = |m: &str| {
+            MINIMAL.replace(
+                "publish = \"127.0.0.1:8080\"",
+                &format!("publish = \"127.0.0.1:8080\"\n        memory  = \"{m}\""),
+            )
+        };
+        assert!(err(&with_memory("lots")).contains("memory"));
+        DeployConfig::parse(&with_memory("256M")).unwrap();
     }
 
     #[test]

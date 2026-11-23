@@ -127,20 +127,28 @@ Three constraints shape the answer.
    - `[target]` names the kind (`compose` is the only kind of this
      slice), the project name the target's tooling uses, and the
      container image (decision 4).
-   - `[database]` names the kind.  `sqlite` is the default and the
-     only kind of this slice; `postgres` arrives with the backend and
-     adds a secret reference for the address here.
+   - `[database]` names the kind.  It is required: `sqlite` is the
+     only kind of this slice, and `postgres` arrives with the backend
+     and adds a secret reference for the address here.
    - `[[instance]]` is one `serve` process: its name, its roles
-     (ADR 0045 decision 1; all three by default), the host address
-     and port its listener is published on (loopback by default, so
-     that nothing is exposed until the user says so; TLS terminates in
-     front, as decision 8 says), and an optional memory limit.  With no
-     `[[instance]]` at all, there is one, named `mensura`, running
-     every role.  Over SQLite exactly one instance running all three
-     roles is admitted; a second instance, or a proper subset of the
-     roles, is refused at deploy time with the same diagnostic `serve`
-     would give, naming the database reached by address that makes
-     roles separable.
+     (ADR 0045 decision 1), the host address and port its listener is
+     published on (TLS terminates in front, as decision 8 says), and
+     an optional memory limit.  At least one `[[instance]]` is
+     required, and each states its `roles` and `publish`.  Over
+     SQLite exactly one instance running all three roles is admitted;
+     a second instance, or a proper subset of the roles, is refused at
+     deploy time with the same diagnostic `serve` would give, naming
+     the database reached by address that makes roles separable.
+
+   The database kind, the instances, their roles, and their published
+   addresses have no defaults.  Each is a decision about what runs and
+   who can reach it: a default would choose a storage engine, conjure
+   a service and its name, or open a port without a line in the file
+   saying so, and once a second database kind and separable roles
+   exist, a silent default would carry that choice into every
+   configuration that omitted it.  What keeps defaults is what only
+   tunes (`[limits]`, from ADR 0045) or what is absent when omitted
+   (no memory limit, no principals).
    - `[limits]` and `[[principal]]` are ADR 0045 decision 10's and
      pass through unchanged into every instance's runtime
      configuration.  A token appears only as its digest.

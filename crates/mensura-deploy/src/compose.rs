@@ -219,8 +219,12 @@ mod tests {
             name  = "mensura-fleet"
             image = "ghcr.io/mensura-lang/mensura:0.1.0"
 
+            [database]
+            kind = "sqlite"
+
             [[instance]]
             name    = "mensura"
+            roles   = ["intake", "read", "materializer"]
             publish = "127.0.0.1:8080"
             memory  = "256M"
 

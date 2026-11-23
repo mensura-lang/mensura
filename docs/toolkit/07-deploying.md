@@ -67,14 +67,18 @@ deploy checks, beyond `serve`'s own:
 | `target.kind` | `compose` |
 | `target.name` | a compose project name: lowercase letters, digits, `-`, `_` |
 | `target.image` | non-empty, no whitespace; copied verbatim |
-| `database.kind` | `sqlite` (default); `postgres` names the slice it waits for |
-| `[[instance]]` | one, named like a compose service, all three roles (default) |
-| `publish` | a host address and port; `127.0.0.1:8080` by default |
+| `database.kind` | required; `sqlite`, and `postgres` names the slice it waits for |
+| `[[instance]]` | required; one, named like a compose service, all three roles |
+| `roles` | required; the role names of `serve` |
+| `publish` | required; a host address and port |
 | `memory` | digits and an optional `b`, `k`, `m`, `g` (or `kb`, `mb`, `gb`) |
 | `[[principal]]` | at least one, since the container binds every interface |
 
 `[limits]` and `[[principal]]` are `serve`'s types, deserialized by
-`serve`'s code, and passed through unchanged.
+`serve`'s code, and passed through unchanged.  The database kind, the
+instances, their roles, and their published addresses have no
+defaults (ADR 0046 decision 2): each decides what runs and who can
+reach it, so each is a line in the file.
 
 ## Compilation
 
@@ -223,8 +227,8 @@ else, including a refused connection, exits non-zero with the reason.
 
 ## Validation
 
-- Configuration: defaults give one loopback instance over SQLite;
-  unknown fields are refused; only `compose` and `sqlite` are admitted,
+- Configuration: a missing `[database]`, `[[instance]]`, `roles`, or
+  `publish` is refused; unknown fields are refused; only `compose` and `sqlite` are admitted,
   and `postgres` names the slice it waits for; a second instance or a
   proper subset of the roles is refused as `serve` would refuse it; a
   deployment with no principal is refused and names `mensura token`;
