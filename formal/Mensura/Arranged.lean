@@ -329,7 +329,7 @@ theorem keyInjOn_demote_tag [Fintype D] [LinearOrder D] [Inhabited D]
     KeyInjOn (K := K) (ω := D)
       (fun _ r => (r (Sum.inr ()) : Cell D).getD default) (demote T) := by
   intro k a ha b hb hab
-  simp only [Set.mem_setOf_eq, demote, Multiset.mem_sum, Multiset.mem_map] at ha hb
+  simp only [Set.mem_ofPred_eq, demote, Multiset.mem_sum, Multiset.mem_map] at ha hb
   obtain ⟨da, -, ra, hra, rfl⟩ := ha
   obtain ⟨db, -, rb, hrb, rfl⟩ := hb
   -- Each row carries its own tag, so the keys agreeing means the tags agree.

@@ -78,6 +78,8 @@ theorem joinMean_not_splitInvariant : ¬ SplitInvariant (joinMean (K := Fin 4)) 
   have e := h _ _ (split_disjoint leakSplit leakTable)
   rw [union_split] at e
   have := congrArg (fun X => ((X.rows 0).map (fun f => (f (Sum.inr ()) : Option ℚ)))) e
+  -- `Sum.elim _ _ (Sum.inr ())` no longer unfolds to `ℚ` during unification.
+  set_option backward.isDefEq.respectTransparency false in
   simp [joinMean, lookupTotal, flatMap, union, split, meanRef, globalMean, presentValues,
     leakTable, leakSplit, Fin.sum_univ_four, filterMap_singleton] at this
   norm_num at this

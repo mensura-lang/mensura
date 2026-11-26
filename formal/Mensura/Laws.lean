@@ -206,6 +206,8 @@ theorem demote_promote {D : Type} [Fintype D] [DecidableEq D]
     cases c with
     | inl h => rfl
     | inr u => cases u; exact hd₀.symm
+  -- `Sum.elim σ _ (Sum.inl h)` no longer unfolds to `σ h` during unification.
+  set_option backward.isDefEq.respectTransparency false in
   simp [hd₀, apply_ite, Finset.sum_ite_eq]
   exact hrow
 
@@ -241,6 +243,8 @@ theorem promote_functional {β : Type} [DecidableEq β]
     simp only [promote, hf, Multiset.singleton_bind]
     cases f (Sum.inr ()) with
     | none => simp
-    | some w => split <;> (try split) <;> simp
+    | some w =>
+      split <;> (try split) <;> simp
+      exact (Multiset.card_singleton _).le
 
 end Mensura

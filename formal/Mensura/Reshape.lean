@@ -113,7 +113,7 @@ theorem pivot_unpivot [Fintype N] [Nonempty N] {T : Table K N (fun _ => V)}
       have h1 := hall n₀
       simp [unpivot, hf] at h1
     simp only [pivot]
-    rw [if_neg hguard]
+    rw [ite_eq_right hguard]
     simp [unpivot, hf, Multiset.map_singleton]
 
 /-! ### The drop-variant unpivot: a truly inverse pair (ADR 0020)
@@ -185,7 +185,7 @@ theorem pivot_unpivotDrop [Fintype N] {T : Table K N (fun _ => V)}
       have h1 := hall n₀
       simp [unpivotDrop, hf, hv₀] at h1
     simp only [pivot]
-    rw [if_neg hguard, hf, Multiset.singleton_inj]
+    rw [ite_eq_right hguard, hf, Multiset.singleton_inj]
     funext n
     cases hfn : f n <;> simp [unpivotDrop, hf, hfn]
 
@@ -209,7 +209,7 @@ theorem unpivotDrop_pivot [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
     rcases Nat.lt_or_ge (L.rows (k, n)).card 1 with hc | hc
     · have h0 : L.rows (k, n) = 0 := Multiset.card_eq_zero.mp (by omega)
       simp only [unpivotDrop, pivot]
-      rw [if_neg hg]
+      rw [ite_eq_right hg]
       simp [h0]
     · have hc1 : (L.rows (k, n)).card = 1 := le_antisymm (hL (k, n)) hc
       obtain ⟨g, hgrow⟩ := Multiset.card_eq_one.mp hc1
@@ -217,7 +217,7 @@ theorem unpivotDrop_pivot [Fintype N] {L : Table (K × N) Unit (fun _ => V)}
       have hu' : g () ≠ none := by cases u; exact hu
       obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp hu'
       simp only [unpivotDrop, pivot]
-      rw [if_neg hg]
+      rw [ite_eq_right hg]
       have hcell : cellOf (L.rows (k, n)) = some v := by
         rw [hgrow, cellOf_singleton, hv]
       simp only [Multiset.singleton_bind, hcell]

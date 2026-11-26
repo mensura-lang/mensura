@@ -104,7 +104,7 @@ theorem dense_present_of_mem_grid {grid : K → Finset D} {fill : K → D → Ro
 theorem dense_rows_of_present {grid : K → Finset D} {fill : K → D → Row H σ}
     {T : Table (K × D) H σ} {k : K} {d : D} (h : T.Present (k, d)) :
     (dense grid fill T).rows (k, d) = T.rows (k, d) := by
-  rw [dense_rows, if_neg]
+  rw [dense_rows, ite_eq_right]
   exact fun hc => h (Multiset.card_eq_zero.mp hc.1)
 
 /-! ## Item 1: agreement with the ideal, per column
@@ -206,7 +206,7 @@ theorem dense_idem (grid : K → Finset D) (fill : K → D → Row H σ)
   rintro ⟨k, d⟩
   by_cases hd : d ∈ grid k
   · exact dense_rows_of_present (dense_present_of_mem_grid hd)
-  · rw [dense_rows, dense_rows, if_neg (by simp [hd]), if_neg (by simp [hd])]
+  · rw [dense_rows, dense_rows, ite_eq_right (by simp [hd]), ite_eq_right (by simp [hd])]
 
 /-! ## Item 3: stability under append
 
@@ -236,7 +236,7 @@ end Mensura
 
 namespace Mensura.Units.Instant
 
-open Mensura Units
+open Mensura Mensura.Units
 
 variable {K H : Type _} {σ : H → Type}
 
