@@ -38,8 +38,9 @@ before it is committed to as the M0 calculus.  Concretely:
   cardinality, finite maps, indicator functions, and domains as enumerable
   sets; re-deriving those is not the work we want to do.
 - The Mathlib `rev` in `formal/lakefile.toml` is pinned to the tag matching
-  `formal/lean-toolchain` (currently `v4.31.0`) so the prebuilt olean cache is
-  available and builds are reproducible.  The two are bumped together.
+  `formal/lean-toolchain` (currently `v4.37.0-rc1`) so the prebuilt olean
+  cache is available and builds are reproducible.  The two are bumped
+  together.
 - Each definition box in the chapter maps to a Lean definition that records
   the chapter's `\label` in its doc comment, so the formalization and the
   source stay traceable.

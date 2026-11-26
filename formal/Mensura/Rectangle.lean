@@ -78,7 +78,7 @@ theorem pivot_total_of_exhaustive [Fintype N] {L : Table (K × N) Unit (fun _ =>
   · simp [pivot, hg] at hf
   · have hfF : f = fun n' => cellOf (L.rows (k, n')) := by
       simp only [pivot] at hf
-      rw [if_neg hg] at hf
+      rw [ite_eq_right hg] at hf
       exact Multiset.mem_singleton.mp hf
     obtain ⟨n₀, hn₀⟩ := not_forall.mp hg
     have hpres : L.rows (k, n) ≠ 0 := by
@@ -150,10 +150,10 @@ theorem lookup_exhaustive (key : (K × N) → U) (right : Table U G τ)
     Exhaustive (lookup key right T) := by
   refine flatMap_exhaustive (fun p f => ?_) hE
   by_cases hR : (right.rows (key p)).card = 0
-  · simp only [if_pos hR]
+  · simp only [ite_eq_left hR]
     intro h0
     simpa using congrArg Multiset.card h0
-  · simp only [if_neg hR]
+  · simp only [ite_eq_right hR]
     intro h0
     exact hR (by simpa using congrArg Multiset.card h0)
 
@@ -169,7 +169,7 @@ theorem aggregate_exhaustive (f : (K × N) → Multiset (Row H σ) → Row H σ)
     · intro h hrows
       exact h (by simp [hrows])
     · intro h
-      rw [if_neg (fun hc => h (Multiset.card_eq_zero.mp hc))]
+      rw [ite_eq_right (fun hc => h (Multiset.card_eq_zero.mp hc))]
       intro h0
       simpa using congrArg Multiset.card h0
   rintro k ⟨n₀, h₀⟩ n

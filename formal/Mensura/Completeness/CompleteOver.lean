@@ -67,7 +67,7 @@ theorem demote_completeWrt {R T : Table (K × D) H σ}
     (h : CompleteWrt R T) : CompleteWrt (demote R) (demote T) := by
   intro k hR
   simp only [Table.Present, demote] at hR ⊢
-  contrapose! hR
+  contrapose hR
   rw [Finset.sum_eq_zero_iff] at hR ⊢
   intro d _
   have hT : (T.rows (k, d)).map (fun f => Row.elim f (fun _ => some d)) = 0 :=
