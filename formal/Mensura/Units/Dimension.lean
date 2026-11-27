@@ -20,10 +20,14 @@ This module is standalone: it does not depend on, or change, the table algebra
 in `Core/`.  The blueprint chapter "Physical dimensions" records the nodes.
 -/
 
-import Mathlib.Algebra.Group.TypeTags.Basic
-import Mathlib.Algebra.Group.Pi.Basic
-import Mathlib.Data.Fintype.Pi
-import Mathlib.Tactic
+module
+
+public import Mathlib.Algebra.Group.TypeTags.Basic
+public import Mathlib.Algebra.Group.Pi.Basic
+public import Mathlib.Data.Fintype.Pi
+public import Mathlib.Tactic
+
+@[expose] public section
 
 namespace Mensura.Units
 

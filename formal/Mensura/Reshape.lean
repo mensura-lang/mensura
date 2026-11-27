@@ -17,7 +17,11 @@ on functional minimal tables, the long-to-wide-to-long direction carrying no
 completeness side condition.
 -/
 
-import Mensura.Core.Defs
+module
+
+public import Mensura.Core.Defs
+
+@[expose] public section
 
 namespace Mensura
 

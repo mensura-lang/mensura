@@ -58,9 +58,13 @@ available in item 4, which needs a `Fintype` of slots where `Instant` is
 not one.
 -/
 
-import Mensura.Window.Defs
-import Mensura.Fold
-import Mensura.Completeness.CompleteOver
+module
+
+public import Mensura.Window.Defs
+public import Mensura.Fold
+public import Mensura.Completeness.CompleteOver
+
+@[expose] public section
 
 namespace Mensura
 

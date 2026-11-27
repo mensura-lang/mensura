@@ -13,7 +13,11 @@ lives in `Mensura.Reshape`, and the split-safety of everything here is proved
 in `Mensura.SplitSafety`.
 -/
 
-import Mensura.Core.Defs
+module
+
+public import Mensura.Core.Defs
+
+@[expose] public section
 
 namespace Mensura
 
