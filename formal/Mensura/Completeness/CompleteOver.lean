@@ -36,8 +36,12 @@ result is graded `singletons` (ADR 0035), keeping `promote`/`demote` a
 true inverse pair on the whole qualifier vector.
 -/
 
-import Mensura.Core.Ops
-import Mensura.Reshape
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Reshape
+
+@[expose] public section
 
 namespace Mensura
 

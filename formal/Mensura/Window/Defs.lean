@@ -36,9 +36,13 @@ deterministic; it rests on the order-compatibility lemma of
 before this one.
 -/
 
-import Mensura.SplitSafety
-import Mensura.Reshape
-import Mensura.Units.Torsor
+module
+
+public import Mensura.SplitSafety
+public import Mensura.Reshape
+public import Mensura.Units.Torsor
+
+@[expose] public section
 
 namespace Mensura
 

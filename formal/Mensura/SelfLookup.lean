@@ -1,6 +1,10 @@
-import Mensura.Completeness.BinaryJoins
-import Mensura.Completeness.Reindex
-import Mensura.Leak
+module
+
+public import Mensura.Completeness.BinaryJoins
+public import Mensura.Completeness.Reindex
+public import Mensura.Leak
+
+@[expose] public section
 
 /-!
 Self-derived lookups: joining a table against a reference computed from that same

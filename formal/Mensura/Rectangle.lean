@@ -12,8 +12,12 @@ destroys it (`split_not_exhaustive`) -- ADR 0020's "destroyed by `split`"
 row, the honest price of keeping the name in the key.
 -/
 
-import Mensura.Core.Ops
-import Mensura.Reshape
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Reshape
+
+@[expose] public section
 
 namespace Mensura
 

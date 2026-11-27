@@ -72,24 +72,26 @@ The statement inventory and its dependency graph live in the blueprint
 (`formal/blueprint/`).
 -/
 
-import Mensura.Core.Defs
-import Mensura.Core.Ops
-import Mensura.SplitSafety
-import Mensura.Laws
-import Mensura.Reshape
-import Mensura.Rectangle
-import Mensura.Fold
-import Mensura.Arranged
-import Mensura.Completeness.FiberMap
-import Mensura.Completeness.Reindex
-import Mensura.Completeness.Verbs
-import Mensura.Completeness.PivotAttr
-import Mensura.Completeness.CompleteOver
-import Mensura.Completeness.BinaryJoins
-import Mensura.Leak
-import Mensura.SelfLookup
-import Mensura.Units.Dimension
-import Mensura.Units.Torsor
-import Mensura.Expr.Missing
-import Mensura.Window.Defs
-import Mensura.Window.Dense
+module
+
+public import Mensura.Core.Defs
+public import Mensura.Core.Ops
+public import Mensura.SplitSafety
+public import Mensura.Laws
+public import Mensura.Reshape
+public import Mensura.Rectangle
+public import Mensura.Fold
+public import Mensura.Arranged
+public import Mensura.Completeness.FiberMap
+public import Mensura.Completeness.Reindex
+public import Mensura.Completeness.Verbs
+public import Mensura.Completeness.PivotAttr
+public import Mensura.Completeness.CompleteOver
+public import Mensura.Completeness.BinaryJoins
+public import Mensura.Leak
+public import Mensura.SelfLookup
+public import Mensura.Units.Dimension
+public import Mensura.Units.Torsor
+public import Mensura.Expr.Missing
+public import Mensura.Window.Defs
+public import Mensura.Window.Dense

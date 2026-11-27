@@ -13,9 +13,13 @@ fails to preserve disjointness.  Together these place every operation of the
 algebra.
 -/
 
-import Mensura.Core.Ops
-import Mensura.Reshape
-import Mensura.Completeness.FiberMap
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Reshape
+public import Mensura.Completeness.FiberMap
+
+@[expose] public section
 
 namespace Mensura
 

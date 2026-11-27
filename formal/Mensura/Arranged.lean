@@ -78,8 +78,12 @@ difference, so the *total* is determined even when the intermediates are not.
 That asymmetry is exactly why `fold` needs no order and `scan` does.
 -/
 
-import Mensura.Fold
-import Mensura.Reshape
+module
+
+public import Mensura.Fold
+public import Mensura.Reshape
+
+@[expose] public section
 
 namespace Mensura
 
@@ -184,10 +188,11 @@ which is where `lag`'s missing first row comes from. -/
 def prescanBag (op : α → α → α) (e : α) (l : List α) : List α :=
   (l.scanl op e).dropLast
 
-@[simp] theorem scanBag_nil (op : α → α → α) (e : α) : scanBag op e [] = [] := rfl
+@[simp] theorem scanBag_nil (op : α → α → α) (e : α) : scanBag op e [] = [] := by
+  simp [scanBag]
 
 @[simp] theorem prescanBag_nil (op : α → α → α) (e : α) :
-    prescanBag op e [] = [] := rfl
+    prescanBag op e [] = [] := by simp [prescanBag]
 
 @[simp] theorem length_scanBag (op : α → α → α) (e : α) (l : List α) :
     (scanBag op e l).length = l.length := by

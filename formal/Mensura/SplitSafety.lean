@@ -12,7 +12,11 @@ Version v1.0.0. Victoria, British Columbia, Canada: Leanpub. doi:
 10.5281/zenodo.14498010. url: https://leanpub.com/dsp.
 -/
 
-import Mensura.Core.Ops
+module
+
+public import Mensura.Core.Ops
+
+@[expose] public section
 
 namespace Mensura
 
