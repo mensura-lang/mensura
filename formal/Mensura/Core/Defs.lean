@@ -44,8 +44,12 @@ The inventory of results and their dependencies lives in the blueprint
 (`formal/blueprint/`), not here.
 -/
 
-import Mathlib.Data.Multiset.Bind
-import Mathlib.Tactic
+module
+
+public import Mathlib.Data.Multiset.Bind
+public import Mathlib.Tactic
+
+@[expose] public section
 
 namespace Mensura
 

@@ -36,8 +36,12 @@ result is graded `singletons` (ADR 0035), keeping `promote`/`demote` a
 true inverse pair on the whole qualifier vector.
 -/
 
-import Mensura.Core.Ops
-import Mensura.Reshape
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Reshape
+
+@[expose] public section
 
 namespace Mensura
 
@@ -67,7 +71,7 @@ theorem demote_completeWrt {R T : Table (K × D) H σ}
     (h : CompleteWrt R T) : CompleteWrt (demote R) (demote T) := by
   intro k hR
   simp only [Table.Present, demote] at hR ⊢
-  contrapose! hR
+  contrapose hR
   rw [Finset.sum_eq_zero_iff] at hR ⊢
   intro d _
   have hT : (T.rows (k, d)).map (fun f => Row.elim f (fun _ => some d)) = 0 :=

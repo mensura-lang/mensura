@@ -37,8 +37,12 @@ What the arrangement adds is an order *within* a fiber, which `split` never
 tears; what stays out of scope is an order *across* keys.
 -/
 
-import Mensura.Core.Ops
-import Mensura.Rectangle
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Rectangle
+
+@[expose] public section
 
 namespace Mensura
 

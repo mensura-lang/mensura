@@ -78,8 +78,12 @@ difference, so the *total* is determined even when the intermediates are not.
 That asymmetry is exactly why `fold` needs no order and `scan` does.
 -/
 
-import Mensura.Fold
-import Mensura.Reshape
+module
+
+public import Mensura.Fold
+public import Mensura.Reshape
+
+@[expose] public section
 
 namespace Mensura
 
@@ -184,10 +188,11 @@ which is where `lag`'s missing first row comes from. -/
 def prescanBag (op : α → α → α) (e : α) (l : List α) : List α :=
   (l.scanl op e).dropLast
 
-@[simp] theorem scanBag_nil (op : α → α → α) (e : α) : scanBag op e [] = [] := rfl
+@[simp] theorem scanBag_nil (op : α → α → α) (e : α) : scanBag op e [] = [] := by
+  simp [scanBag]
 
 @[simp] theorem prescanBag_nil (op : α → α → α) (e : α) :
-    prescanBag op e [] = [] := rfl
+    prescanBag op e [] = [] := by simp [prescanBag]
 
 @[simp] theorem length_scanBag (op : α → α → α) (e : α) (l : List α) :
     (scanBag op e l).length = l.length := by
@@ -329,7 +334,7 @@ theorem keyInjOn_demote_tag [Fintype D] [LinearOrder D] [Inhabited D]
     KeyInjOn (K := K) (ω := D)
       (fun _ r => (r (Sum.inr ()) : Cell D).getD default) (demote T) := by
   intro k a ha b hb hab
-  simp only [Set.mem_setOf_eq, demote, Multiset.mem_sum, Multiset.mem_map] at ha hb
+  simp only [Set.mem_ofPred_eq, demote, Multiset.mem_sum, Multiset.mem_map] at ha hb
   obtain ⟨da, -, ra, hra, rfl⟩ := ha
   obtain ⟨db, -, rb, hrb, rfl⟩ := hb
   -- Each row carries its own tag, so the keys agreeing means the tags agree.

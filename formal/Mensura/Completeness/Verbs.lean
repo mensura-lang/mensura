@@ -58,9 +58,13 @@ aggregate families of exactly this shape.  ADR 0029 surfaced this gap rather
 than creating it; the theorem above is what closes it.
 -/
 
-import Mathlib.Data.Multiset.Dedup
-import Mensura.SplitSafety
-import Mensura.Completeness.FiberMap
+module
+
+public import Mathlib.Data.Multiset.Dedup
+public import Mensura.SplitSafety
+public import Mensura.Completeness.FiberMap
+
+@[expose] public section
 
 namespace Mensura
 

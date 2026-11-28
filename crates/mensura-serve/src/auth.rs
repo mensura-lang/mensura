@@ -86,6 +86,16 @@ pub fn digest(token: &str) -> String {
         .collect()
 }
 
+/// A fresh bearer token (ADR 0046 decision 6): 32 bytes from the
+/// operating system's randomness, in hexadecimal.  The configuration
+/// records only its [`digest`], taken over exactly these characters.
+pub fn new_token() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// The wire form of a declared name (`docs/language/05-naming-and-casing.md`):
 /// one kebab-case segment, which is also a scope's resource half.
 pub fn wire_segment(name: &str) -> String {

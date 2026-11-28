@@ -1,4 +1,8 @@
-import Mensura.Core.Ops
+module
+
+public import Mensura.Core.Ops
+
+@[expose] public section
 
 /-!
 The classic leak: joining back a statistic computed from the whole table.
@@ -80,6 +84,9 @@ theorem joinMean_not_splitInvariant : ¬ SplitInvariant (joinMean (K := Fin 4)) 
   have := congrArg (fun X => ((X.rows 0).map (fun f => (f (Sum.inr ()) : Option ℚ)))) e
   simp [joinMean, lookupTotal, flatMap, union, split, meanRef, globalMean, presentValues,
     leakTable, leakSplit, Fin.sum_univ_four, filterMap_singleton] at this
+  -- The projected cell has type `Sum.elim _ _ (Sum.inr ())`, which `rw` does not
+  -- unfold to `Option ℚ`; `erw` matches up to that unfolding.
+  erw [Multiset.map_singleton, Multiset.map_singleton] at this
   norm_num at this
 
 /-- Mean imputation is not split invariant: the missing age at id `1` is imputed as
