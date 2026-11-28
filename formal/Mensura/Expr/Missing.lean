@@ -29,7 +29,11 @@ fold and scan accumulators, keys) are typing demands, not lifted
 operations, so they have no statement here.
 -/
 
-import Mathlib.Tactic
+module
+
+public import Mathlib.Tactic
+
+@[expose] public section
 
 namespace Mensura.Expr
 

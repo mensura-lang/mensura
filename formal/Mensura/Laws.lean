@@ -17,8 +17,12 @@ preserving functionality (`promote_functional`, the checker's
 "`promote` keeps `singletons`" row).
 -/
 
-import Mensura.Core.Ops
-import Mensura.Reshape
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Reshape
+
+@[expose] public section
 
 namespace Mensura
 
@@ -200,14 +204,16 @@ theorem demote_promote {D : Type} [Fintype D] [DecidableEq D]
   rw [sum_bind]
   conv_rhs => rw [← bind_singleton_id (T.rows k)]
   refine Multiset.bind_congr (fun f hf => ?_)
-  obtain ⟨d₀, hd₀⟩ := Option.ne_none_iff_exists'.mp (htot k f hf)
+  obtain ⟨d₀, hd₀⟩ : ∃ d₀ : D, f (Sum.inr ()) = some d₀ :=
+    Option.ne_none_iff_exists'.mp (htot k f hf)
   have hrow : Row.elim (fun h => f (Sum.inl h)) (fun _ => some d₀) = f := by
     funext c
     cases c with
     | inl h => rfl
     | inr u => cases u; exact hd₀.symm
   simp [hd₀, apply_ite, Finset.sum_ite_eq]
-  exact hrow
+  -- `map_singleton` does not fire: the row's cells sit at `Sum.elim σ _ (Sum.inl h)`.
+  exact congrArg ({·}) hrow
 
 /-- **`promote` undoes `demote` (ADR 0024)** -- with no side
 condition: `demote` tags every demoted row with its own key component,
@@ -241,6 +247,8 @@ theorem promote_functional {β : Type} [DecidableEq β]
     simp only [promote, hf, Multiset.singleton_bind]
     cases f (Sum.inr ()) with
     | none => simp
-    | some w => split <;> (try split) <;> simp
+    | some w =>
+      split <;> (try split) <;> simp
+      exact (Multiset.card_singleton _).le
 
 end Mensura

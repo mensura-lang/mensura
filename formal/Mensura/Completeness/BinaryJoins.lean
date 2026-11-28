@@ -1,5 +1,9 @@
-import Mensura.SplitSafety
-import Mensura.Completeness.FiberMap
+module
+
+public import Mensura.SplitSafety
+public import Mensura.Completeness.FiberMap
+
+@[expose] public section
 
 /-!
 Binary joins: both arguments are tables, and either may be split.

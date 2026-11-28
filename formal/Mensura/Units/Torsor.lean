@@ -32,10 +32,14 @@ interval test `w <= p < w + size` and its `closedWindow_stable` gate both
 rest on it, which is why this module lands before the window lemmas.
 -/
 
-import Mathlib.Algebra.Torsor.Defs
-import Mathlib.Order.Basic
-import Mathlib.Tactic
-import Mensura.Units.Dimension
+module
+
+public import Mathlib.Algebra.Torsor.Defs
+public import Mathlib.Order.Basic
+public import Mathlib.Tactic
+public import Mensura.Units.Dimension
+
+@[expose] public section
 
 namespace Mensura.Units
 

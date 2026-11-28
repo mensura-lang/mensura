@@ -19,9 +19,13 @@ back to attribute form, i.e. `T = demote (unpivot (pivotAttr T))` on tables that
 hold exactly one row per name.  The lone non-split-safe step is that `demote`.
 -/
 
-import Mensura.Core.Ops
-import Mensura.Reshape
-import Mensura.Completeness.FiberMap
+module
+
+public import Mensura.Core.Ops
+public import Mensura.Reshape
+public import Mensura.Completeness.FiberMap
+
+@[expose] public section
 
 namespace Mensura
 
@@ -90,10 +94,11 @@ single value stored there. -/
 theorem valuesAt_image [Fintype N] [DecidableEq N] (n : N) (g : N → Cell V) :
     valuesAt n ((Finset.univ.val : Multiset N).map (fun m => longRow (g m) m))
       = {fun _ => g n} := by
-  simp only [valuesAt, Multiset.filter_map, Function.comp_def, longRow_inr, longRow_inl,
+  simp only [valuesAt, Multiset.filter_map, Function.comp_def, longRow_inr,
     Option.some.injEq, Multiset.filter_eq',
     Multiset.count_eq_one_of_mem Finset.univ.nodup (Finset.mem_univ n),
-    Multiset.replicate_one, Multiset.map_singleton]
+    Multiset.replicate_one]
+  rfl
 
 /-- Sum of singletons over any multiset is the flatMap of that multiset. -/
 private theorem msum_map_singleton {α β : Type _} (s : Multiset α) (x : α → β) :
@@ -132,7 +137,7 @@ theorem pivotAttr_reversible [Fintype N] [DecidableEq N] [Nonempty N]
       rw [Finset.card_univ]
       exact Fintype.card_ne_zero
     have hpiv : (pivotAttr T).rows k = {g} := by
-      simp only [pivotAttr, if_neg hcard]
+      simp only [pivotAttr, ite_eq_right hcard]
       rw [Multiset.singleton_inj]
       funext n
       rw [hk, valuesAt_image, cellOf_singleton]

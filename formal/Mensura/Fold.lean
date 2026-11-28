@@ -38,7 +38,11 @@ the identity.  That theorem is the reason the surface has no seed at all
 (ADR 0029 Alternative 3, re-rejected in ADR 0031 Decision 5).
 -/
 
-import Mensura.Completeness.FiberMap
+module
+
+public import Mensura.Completeness.FiberMap
+
+@[expose] public section
 
 namespace Mensura
 

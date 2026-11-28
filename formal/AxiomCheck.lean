@@ -4,6 +4,10 @@ Axiom hygiene gate (ADR 0021,
 `Mensura` namespace may depend only on the three standard axioms.  CI runs
 this file (`lake env lean AxiomCheck.lean`); elaboration fails if any other
 axiom is reachable, so a smuggled `axiom` fails the pull request.
+
+This file is deliberately not a `module`: a non-module importer loads every
+proof body of the library, which `collectAxioms` needs to see axioms used
+inside proofs.
 -/
 
 import Lean.Util.CollectAxioms

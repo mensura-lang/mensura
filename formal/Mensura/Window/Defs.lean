@@ -36,9 +36,13 @@ deterministic; it rests on the order-compatibility lemma of
 before this one.
 -/
 
-import Mensura.SplitSafety
-import Mensura.Reshape
-import Mensura.Units.Torsor
+module
+
+public import Mensura.SplitSafety
+public import Mensura.Reshape
+public import Mensura.Units.Torsor
+
+@[expose] public section
 
 namespace Mensura
 
@@ -184,7 +188,7 @@ theorem closedWindow_stable {Γ : Type _} {starts : P → Finset P} {size : G}
   have hA : ∀ f ∈ A.rows k,
       (if w ∈ starts (point k f) then ({f} : Multiset (Row H σ)) else 0) = 0 := by
     intro f hf
-    rw [if_neg]
+    rw [ite_eq_right]
     intro hmem
     have hp : lateness +ᵥ point k f < (size + lateness) +ᵥ w := by
       have hlt : lateness +ᵥ point k f < lateness +ᵥ (size +ᵥ w) :=
@@ -224,7 +228,7 @@ declaration, no data dependence, deterministic. -/
 
 namespace Units.Instant
 
-open Units
+open Mensura.Units
 
 /-- The window starts whose window contains the point `p`: the integer
 multiples of `stride` (milliseconds from the epoch) in the half-open interval

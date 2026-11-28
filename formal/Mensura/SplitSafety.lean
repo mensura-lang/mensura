@@ -12,7 +12,11 @@ Version v1.0.0. Victoria, British Columbia, Canada: Leanpub. doi:
 10.5281/zenodo.14498010. url: https://leanpub.com/dsp.
 -/
 
-import Mensura.Core.Ops
+module
+
+public import Mensura.Core.Ops
+
+@[expose] public section
 
 namespace Mensura
 
@@ -87,8 +91,8 @@ theorem aggregate_splitInvariant (f : K → Multiset (Row H σ) → Row H σ) :
   intro k
   simp only [aggregate, union]
   rcases hdisj k with h | h
-  · rw [h, zero_add]; simp
-  · rw [h, add_zero]; simp
+  · simp only [h, zero_add]; simp
+  · simp only [h, add_zero]; simp
 
 /-- `aggregate` is *not* a union-homomorphism: on a key present in both summands
 it folds the merged bag to one row on the left but binds two aggregated rows on
