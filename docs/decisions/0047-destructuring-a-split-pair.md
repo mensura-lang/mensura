@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed.  The first of two ADRs that prepare the language for leak
+Accepted, and implemented: the parser's pair pattern, the checker's
+binding in a view body, the runtime's binding, and the corpus cases
+`let_pair_names_split_sides`, `let_pair_of_a_single_table`,
+`let_pair_in_a_const_block`, and `split_side_by_position`.  The first of
+two ADRs that prepare the language for leak
 detection across a `split` (ROADMAP M6, taken ahead of order); the
 second is `docs/decisions/0048-reach-and-self-derived-lookups.md`, which
 needs the sides this one makes reachable.  Changes the view-body `let`

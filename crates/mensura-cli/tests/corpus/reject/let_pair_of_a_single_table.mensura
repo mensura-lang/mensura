@@ -1,0 +1,15 @@
+// Rejected at resolve: `let (a, b)` destructures a pair, and only `split`
+// yields one (ADR 0047 decision 1).  A single table has no sides to name.
+unit Machine {
+  id: string
+}
+
+store readings {
+  unit { Machine }
+  attr { kelvin: real }
+}
+
+view bad {
+  let (a, b) = readings;
+  a
+}

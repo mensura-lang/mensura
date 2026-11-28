@@ -199,6 +199,15 @@ pub enum Stmt {
         ty: Option<TypeExpr>,
         value: Expr,
     },
+    /// `let (left, right) = value`: destructure a pair (ADR 0047).  Only a
+    /// `split` yields a pair, so only a view body admits it; `_` discards a
+    /// side.  `span` covers the parenthesized pattern.
+    LetPair {
+        left: Ident,
+        right: Ident,
+        value: Expr,
+        span: Span,
+    },
     /// `assert expr`.
     Assert(Expr),
     /// A bare expression; as the last statement it is the block's result.

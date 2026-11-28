@@ -418,7 +418,8 @@ collection_body = [ expr { "," expr } ] ;
 
 block       = "{" [ stmt { ";" stmt } [ ";" ] ] "}" ;
 stmt        = let_stmt | assert_stmt | expr ;
-let_stmt    = "let" ident [ ":" type ] "=" expr ;
+let_stmt    = "let" ( ident [ ":" type ] | pair_pat ) "=" expr ;
+pair_pat    = "(" ident "," ident ")" ;
 assert_stmt = "assert" expr ;
 ```
 
@@ -553,7 +554,13 @@ and lambda-return ascriptions reuse the declaration grammar's `type`.
   (`docs/decisions/0043-record-spread.md`).
 - **`block`**: `{` opens it; each statement is dispatched on its first token
   (`let` -> `let_stmt`, `assert` -> `assert_stmt`, otherwise a result
-  `expr`); `;` separates statements and `}` ends.  This is the only `{ }` in
+  `expr`); `;` separates statements and `}` ends.  Within a `let_stmt`, the
+  token after `let` picks the binder: an `ident` the single name, `(` a
+  `pair_pat`, which destructures the pair a `split` yields
+  (`docs/decisions/0047-destructuring-a-split-pair.md`).  The pattern takes
+  no ascription, and `_` in it discards a side.  The grammar admits it in
+  every block; the checker accepts it only in a view body, the one block a
+  pair can reach.  This is the only `{ }` in
   expression position, so there is no record-versus-block ambiguity (records
   are `( )`).  As with `unit`'s two roles, a declaration body `{ ... }` is
   reached from a different parser state and never confused with a block.

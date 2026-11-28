@@ -1357,10 +1357,29 @@ impl<'a> Parser<'a> {
     }
 
     /// `stmt = let_stmt | assert_stmt | expr`.  `let` and `assert` are reserved
-    /// only here, in statement position.
+    /// only here, in statement position.  After `let`, `(` opens a pair
+    /// pattern (ADR 0047) and an identifier the single-name form.
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         if self.at_keyword("let") {
             self.bump_keyword();
+            if self.check(&TokenKind::LParen) {
+                let start = self.cur_span().start;
+                self.pos += 1;
+                let left = self.expect_binder("a name in a `let (a, b)` pattern")?;
+                self.expect(&TokenKind::Comma, "`,` between the two names of a pair")?;
+                let right = self.expect_binder("a second name in a `let (a, b)` pattern")?;
+                let end = self
+                    .expect(&TokenKind::RParen, "`)` to close a `let (a, b)` pattern")?
+                    .end;
+                self.expect(&TokenKind::Eq, "`=` in a `let` binding")?;
+                let value = self.parse_expr_inner()?;
+                return Ok(Stmt::LetPair {
+                    left,
+                    right,
+                    value,
+                    span: Span::new(start, end),
+                });
+            }
             let name = self.expect_binder("a name after `let`")?;
             let ty = if self.eat(&TokenKind::Colon) {
                 Some(self.parse_type()?)
@@ -2023,6 +2042,36 @@ mod tests {
     }
 
     #[test]
+    fn let_destructures_a_pair() {
+        // ADR 0047: `(` after `let` opens a two-name pattern.
+        let src = "view v { let (train, _) = t |> split |k| k.id == 1; train }";
+        let program = parse_str(src).unwrap();
+        let Item::View(view) = &program.items[0] else {
+            panic!("expected a view");
+        };
+        let Stmt::LetPair {
+            left, right, span, ..
+        } = &view.body.stmts[0]
+        else {
+            panic!("expected a pair let");
+        };
+        assert_eq!(left.name, "train");
+        assert_eq!(right.name, "_");
+        assert_eq!(span.slice(src), "(train, _)");
+    }
+
+    #[test]
+    fn let_pair_pattern_has_exactly_two_names() {
+        for src in [
+            "view v { let (a) = t; a }",
+            "view v { let (a, b, c) = t; a }",
+            "view v { let (a, b): T = t; a }",
+        ] {
+            assert!(parse_str(src).is_err(), "should not parse: {src}");
+        }
+    }
+
+    #[test]
     fn unbraced_top_level_let_points_at_the_brace_form() {
         let err = parse_str("let km = 1000.0 * meter").unwrap_err();
         assert!(err.message.contains("brace-closed"));
@@ -2309,6 +2358,11 @@ mod tests {
                     .map(|s| match s {
                         Stmt::Let { name, value, .. } => {
                             format!("let {}={}", name.name, sexpr(value))
+                        }
+                        Stmt::LetPair {
+                            left, right, value, ..
+                        } => {
+                            format!("let ({},{})={}", left.name, right.name, sexpr(value))
                         }
                         Stmt::Assert(e) => format!("assert {}", sexpr(e)),
                         Stmt::Expr(e) => sexpr(e),

@@ -243,7 +243,7 @@ mechanism discharged it.
 
 ```
 let folds = data |> split |k| hash k < 0.5      // (a, b), disjoint
-let all   = (folds.0, folds.1) |> union          // region a or b; Disjoint _ c
+let all   = folds |> union                       // region a or b; Disjoint _ c
                                                 // now requires both a,b vs c
 let coarse = all |> demote region           // key changes: fact dropped
 let safe   = (coarse, holdout)

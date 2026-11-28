@@ -87,7 +87,8 @@ unit references resolved through `domain`); shapes with `Unit`/`string`
 parameters; views hosting the core pipeline algebra over the expression
 sublanguage, including the Tier B completeness discharge (ADR 0017), and
 reading other views with every qualifier intact, checked and
-materialized in dependency order (ADR 0042); and
+materialized in dependency order (ADR 0042), and naming the sides of
+a `split` with `let (a, b)` (ADR 0047); and
 typed ingestion through `mensura ingest` (ADR 0034).  A `registry`
 (ADR 0033) shares the store's grammar and resolved model exactly, differing
 in one `kind` field: its table is `Complete` by mechanism at its own
